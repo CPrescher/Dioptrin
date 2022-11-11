@@ -5,22 +5,23 @@
 
 use std::fs::File;
 use std::io::{self, BufRead};
+use std::num::ParseFloatError;
 use std::path::Path;
 
 /// A struct to hold the poni file data
 /// which provides the calibration parameters for the detector
 /// poni stands for point of normal incidence
 pub struct Poni {
-    pixel1: f32,
-    pixel2: f32,
-    distance: f32,
-    poni1: f32,
-    poni2: f32,
-    rot1: f32,
-    rot2: f32,
-    rot3: f32,
-    spline_file: String,
-    wavelength: f32,
+    pub pixel1: f32,
+    pub pixel2: f32,
+    pub distance: f32,
+    pub poni1: f32,
+    pub poni2: f32,
+    pub rot1: f32,
+    pub rot2: f32,
+    pub rot3: f32,
+    pub spline_file: String,
+    pub wavelength: f32,
 }
 
 impl Poni {
@@ -55,51 +56,52 @@ impl Poni {
     }
 
     /// Read a poni file into a Poni struct
-    pub fn read(filename: &str) -> Poni {
+    pub fn read(filename: &str) -> Result<Poni, Box<dyn std::error::Error>> {
         println!("Reading {}", filename);
         let mut poni = Poni::new();
 
-        if let Ok(lines) = read_lines(filename) {
-            for line in lines {
-                if let Ok(line) = line {
-                    if !is_comment(&line) {
-                        Poni::assign_values(&mut poni, &line);
-                    }
+        let lines = read_lines(filename)?;
+
+        for line in lines {
+            if let Ok(line) = line {
+                if !is_comment(&line) {
+                    Poni::assign_values(&mut poni, &line)?
                 }
             }
         }
-        return poni;
+        Ok(poni)
     }
 
     /// Assigns values in each line to the corresponding field in the Poni struct
-    fn assign_values(poni: &mut Poni, line: &str) {
+    fn assign_values(poni: &mut Poni, line: &str) -> Result<(), ParseFloatError> {
         let parts: Vec<&str> = line.split(":").collect();
         let key = parts[0].trim();
         let temp = parts[1..].join(":");
         let value = temp.trim();
         match key {
-            "PixelSize1" => poni.pixel1 = value.parse().unwrap(),
-            "PixelSize2" => poni.pixel2 = value.parse().unwrap(),
+            "PixelSize1" => poni.pixel1 = value.parse()?,
+            "PixelSize2" => poni.pixel2 = value.parse()?,
             "Detector_config" => {
-                let (pixel1, pixel2) = Poni::parse_detector_config(value);
+                let (pixel1, pixel2) = Poni::parse_detector_config(value)?;
                 poni.pixel1 = pixel1;
                 poni.pixel2 = pixel2;
             }
-            "Distance" => poni.distance = value.parse().unwrap(),
-            "Poni1" => poni.poni1 = value.parse().unwrap(),
-            "Poni2" => poni.poni2 = value.parse().unwrap(),
-            "Rot1" => poni.rot1 = value.parse().unwrap(),
-            "Rot2" => poni.rot2 = value.parse().unwrap(),
-            "Rot3" => poni.rot3 = value.parse().unwrap(),
+            "Distance" => poni.distance = value.parse()?,
+            "Poni1" => poni.poni1 = value.parse()?,
+            "Poni2" => poni.poni2 = value.parse()?,
+            "Rot1" => poni.rot1 = value.parse()?,
+            "Rot2" => poni.rot2 = value.parse()?,
+            "Rot3" => poni.rot3 = value.parse()?,
             "SplineFile" => poni.spline_file = value.to_string(),
-            "Wavelength" => poni.wavelength = value.parse().unwrap(),
+            "Wavelength" => poni.wavelength = value.parse()?,
             _ => (),
-        }
+        };
+        Ok(())
     }
 
     /// Parse the detector config string to get the pixel sizes
     /// typical format of the string is {"pixel1": 0.0002, "pixel2": 0.0002, "max_shape": [605, 1070]}
-    fn parse_detector_config(value: &str) -> (f32, f32) {
+    fn parse_detector_config(value: &str) -> Result<(f32, f32), ParseFloatError> {
         let mut pixel1: f32 = 0.0;
         let mut pixel2: f32 = 0.0;
 
@@ -111,13 +113,13 @@ impl Poni {
                 let temp = key_value[1..].join(":");
                 let value = temp.trim();
                 match key {
-                    "\"pixel1\"" => pixel1 = value.parse().unwrap(),
-                    "\"pixel2\"" => pixel2 = value.parse().unwrap(),
+                    "\"pixel1\"" => pixel1 = value.parse()?,
+                    "\"pixel2\"" => pixel2 = value.parse()?,
                     _ => (),
                 }
             }
         }
-        return (pixel1, pixel2);
+        Ok((pixel1, pixel2))
     }
 }
 
@@ -145,23 +147,29 @@ mod tests {
     }
 
     #[test]
-    fn read_poni_version_1() {
-        let result = Poni::read("test_data/v1.poni");
+    fn read_poni_version1() {
+        let result = Poni::read("test_data/v1.poni").unwrap();
         assert_eq!(result.pixel1, 0.000172);
     }
 
     #[test]
     fn read_detector_config() {
         let config_str = "{\"pixel1\": 0.0002, \"pixel2\": 0.0003, \"max_shape\": [605, 1070]}";
-        let (pixel1, pixel2) = Poni::parse_detector_config(config_str);
+        let (pixel1, pixel2) = Poni::parse_detector_config(config_str).unwrap();
         assert_eq!(pixel1, 0.0002);
         assert_eq!(pixel2, 0.0003);
     }
 
     #[test]
     fn read_poni_version2() {
-        let result = Poni::read("test_data/v2.poni");
+        let result = Poni::read("test_data/v2.poni").unwrap();
         assert_eq!(result.pixel1, 0.0002);
         result.print();
+    }
+
+    #[test]
+    fn read_non_existent_poni_file() {
+        let result = Poni::read("test_data/non_existent.poni");
+        assert!(result.is_err());
     }
 }
