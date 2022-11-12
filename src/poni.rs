@@ -12,16 +12,16 @@ use std::path::Path;
 /// which provides the calibration parameters for the detector
 /// poni stands for point of normal incidence
 pub struct Poni {
-    pub pixel1: f32,
-    pub pixel2: f32,
-    pub distance: f32,
-    pub poni1: f32,
-    pub poni2: f32,
-    pub rot1: f32,
-    pub rot2: f32,
-    pub rot3: f32,
+    pub pixel1: f64,
+    pub pixel2: f64,
+    pub distance: f64,
+    pub poni1: f64,
+    pub poni2: f64,
+    pub rot1: f64,
+    pub rot2: f64,
+    pub rot3: f64,
     pub spline_file: String,
-    pub wavelength: f32,
+    pub wavelength: f64,
 }
 
 impl Poni {
@@ -56,7 +56,7 @@ impl Poni {
     }
 
     /// Read a poni file into a Poni struct
-    pub fn read(filename: &str) -> Result<Poni, Box<dyn std::error::Error>> {
+    pub fn load(filename: &str) -> Result<Poni, Box<dyn std::error::Error>> {
         println!("Reading {}", filename);
         let mut poni = Poni::new();
 
@@ -101,9 +101,9 @@ impl Poni {
 
     /// Parse the detector config string to get the pixel sizes
     /// typical format of the string is {"pixel1": 0.0002, "pixel2": 0.0002, "max_shape": [605, 1070]}
-    fn parse_detector_config(value: &str) -> Result<(f32, f32), ParseFloatError> {
-        let mut pixel1: f32 = 0.0;
-        let mut pixel2: f32 = 0.0;
+    fn parse_detector_config(value: &str) -> Result<(f64, f64), ParseFloatError> {
+        let mut pixel1: f64 = 0.0;
+        let mut pixel2: f64 = 0.0;
 
         let key_value_parts: Vec<&str> = value[1..value.len() - 1].split(",").collect();
         for part in key_value_parts {
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn read_poni_version1() {
-        let result = Poni::read("test_data/v1.poni").unwrap();
+        let result = Poni::load("test_data/v1.poni").unwrap();
         assert_eq!(result.pixel1, 0.000172);
     }
 
@@ -162,14 +162,13 @@ mod tests {
 
     #[test]
     fn read_poni_version2() {
-        let result = Poni::read("test_data/v2.poni").unwrap();
+        let result = Poni::load("test_data/v2.poni").unwrap();
         assert_eq!(result.pixel1, 0.0002);
-        result.print();
     }
 
     #[test]
     fn read_non_existent_poni_file() {
-        let result = Poni::read("test_data/non_existent.poni");
+        let result = Poni::load("test_data/non_existent.poni");
         assert!(result.is_err());
     }
 }
