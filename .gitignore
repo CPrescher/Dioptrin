@@ -1,2 +1,4 @@
 /target
 /Cargo.lock
+
+notebooks/test_output/*.txt
