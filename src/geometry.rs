@@ -125,11 +125,22 @@ impl Geometry {
         return (x_sample, y_sample, z_sample);
     }
 
+    /// Calculates the two theta angle for each pixel in the detector
+    /// The result is saved in radians in the tth field of the Geometry struct
     fn calc_tth(&mut self) {
         let (x_sample, y_sample, z_sample) = self.calc_pixel_positions_with_sample_reference();
         for i in 0..self.size {
             self.tth
                 .push(f_tth(&x_sample[i], &y_sample[i], &z_sample[i]));
+        }
+    }
+
+    /// Calculates the chi angle for each pixel in the detector
+    /// The output is saved in radians in the chi field of the Geometry struct
+    fn calc_chi(&mut self) {
+        let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference();
+        for i in 0..self.size {
+            self.chi.push(f_chi(&x_sample[i], &y_sample[i]));
         }
     }
 }
@@ -180,6 +191,12 @@ fn f_x3(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
 /// Parameters are the x, y and z values of the pixel position
 fn f_tth(x: &f64, y: &f64, z: &f64) -> f64 {
     (y * y + x * x).sqrt().atan2(*z)
+}
+
+/// Calculates the azimuthal angle for a pixel position in the sample reference coordinate system
+/// Parameters are the x and y values of the pixel position
+fn f_chi(x: &f64, y: &f64) -> f64 {
+    x.atan2(*y)
 }
 
 #[cfg(test)]
@@ -277,6 +294,19 @@ mod tests {
         assert_eq!(geometry.tth.len(), SIZE);
         assert!((geometry.tth[0] - 0.7841512459252314).abs() < 0.0000001);
         assert!((geometry.tth[TEST_INDEX] - 0.7821114852040393).abs() < 0.0000001);
+    }
+
+    #[test]
+    fn calc_chi() {
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        geometry.calc_chi();
+
+        save_vec("chi.txt", &geometry.chi);
+
+        assert_eq!(geometry.chi.len(), SIZE);
+        assert!((geometry.chi[0] + 1.9895718171402677).abs() < 0.0000001);
+        assert!((geometry.chi[TEST_INDEX] + 1.986763738717781).abs() < 0.0000001);
     }
 
     fn save_vec(path: &str, vec: &Vec<f64>) {
