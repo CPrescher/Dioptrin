@@ -7,24 +7,16 @@ use crate::poni::Poni;
 pub struct Geometry {
     pub dim1: usize,
     pub dim2: usize,
-    size: usize,
     pub poni: Poni,
-    pub tth: Vec<f64>,
-    pub chi: Vec<f64>,
 }
 
 impl Geometry {
     pub fn new(dim1: usize, dim2: usize, poni: Poni) -> Geometry {
-        let size = dim1 * dim2;
+        Geometry { dim1, dim2, poni }
+    }
 
-        Geometry {
-            dim1,
-            dim2,
-            size,
-            poni,
-            tth: Vec::with_capacity(size),
-            chi: Vec::with_capacity(size),
-        }
+    pub fn size(&self) -> usize {
+        self.dim1 * self.dim2
     }
 
     /// Calculates the pixel positions in the detector reference coordinate system
@@ -36,7 +28,7 @@ impl Geometry {
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
     fn calc_pixel_position_det_reference(
-        &mut self,
+        &self,
         d1: Vec<f64>,
         d2: Vec<f64>,
     ) -> (Vec<f64>, Vec<f64>) {
@@ -59,9 +51,9 @@ impl Geometry {
     /// coordinate system/ return coordinates are in cartesian coordinates. Be aware
     /// that y and x are swapped in this framework. This results in | being the d1
     /// direction and _ being the d2 direction
-    fn calc_pixel_position_det_reference_all(&mut self) -> (Vec<f64>, Vec<f64>) {
-        let mut d1_cart = Vec::with_capacity(self.size);
-        let mut d2_cart = Vec::with_capacity(self.size);
+    fn calc_pixel_position_det_reference_all(&self) -> (Vec<f64>, Vec<f64>) {
+        let mut d1_cart = Vec::with_capacity(self.size());
+        let mut d2_cart = Vec::with_capacity(self.size());
 
         for i in 0..self.dim1 {
             for j in 0..self.dim2 {
@@ -76,16 +68,17 @@ impl Geometry {
     /// coordinate system. return coordinates are in cartesian coordinates. Be aware
     /// that y and x are swapped in this framework. This results in | being the d1 (first)
     /// direction and _ being the d2 (second) direction.
-    fn calc_pixel_positions_with_poni_reference(&mut self) -> (Vec<f64>, Vec<f64>) {
+    fn calc_pixel_positions_with_poni_reference(&self) -> (Vec<f64>, Vec<f64>) {
+        let size = self.size();
         let (x, y) = self.calc_pixel_position_det_reference_all();
 
-        let mut d1_cart_poni = Vec::with_capacity(self.size);
-        let mut d2_cart_poni = Vec::with_capacity(self.size);
+        let mut d1_cart_poni = Vec::with_capacity(size);
+        let mut d2_cart_poni = Vec::with_capacity(size);
 
         let poni1 = self.poni.poni1;
         let poni2 = self.poni.poni2;
 
-        for i in 0..self.size {
+        for i in 0..size {
             d1_cart_poni.push(x[i] - poni1);
             d2_cart_poni.push(y[i] - poni2);
         }
@@ -93,16 +86,17 @@ impl Geometry {
     }
 
     /// Calculates the pixel center positions in the sample reference coordinate system
-    fn calc_pixel_positions_with_sample_reference(&mut self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    fn calc_pixel_positions_with_sample_reference(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let size = self.size();
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference();
 
-        let mut x_sample = Vec::with_capacity(self.size);
-        let mut y_sample = Vec::with_capacity(self.size);
-        let mut z_sample = Vec::with_capacity(self.size);
+        let mut x_sample = Vec::with_capacity(size);
+        let mut y_sample = Vec::with_capacity(size);
+        let mut z_sample = Vec::with_capacity(size);
 
         let tc = TrigonometricConstants::new(&self.poni);
 
-        for i in 0..self.size {
+        for i in 0..size {
             x_sample.push(f_x1(
                 &d1_cart_poni[i],
                 &d2_cart_poni[i],
@@ -125,30 +119,31 @@ impl Geometry {
         return (x_sample, y_sample, z_sample);
     }
 
-    /// Calculates the two theta angle for each pixel in the detector
-    /// The result is saved in radians in the tth field of the Geometry struct
-    fn calc_tth(&mut self) {
+    /// Calculates the two theta angle in radians for each pixel in the detector
+    pub fn calc_tth(&self) -> Vec<f64> {
         let (x_sample, y_sample, z_sample) = self.calc_pixel_positions_with_sample_reference();
-        for i in 0..self.size {
-            self.tth
-                .push(f_tth(&x_sample[i], &y_sample[i], &z_sample[i]));
+        let mut tth = Vec::with_capacity(self.size());
+        for i in 0..self.size() {
+            tth.push(f_tth(&x_sample[i], &y_sample[i], &z_sample[i]));
         }
+        tth
     }
 
-    /// Calculates the chi angle for each pixel in the detector
-    /// The output is saved in radians in the chi field of the Geometry struct
-    fn calc_chi(&mut self) {
+    /// Calculates the azimuthal angle in radians for each pixel in the detector
+    pub fn calc_chi(&self) -> Vec<f64> {
         let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference();
-        for i in 0..self.size {
-            self.chi.push(f_chi(&x_sample[i], &y_sample[i]));
+        let mut chi = Vec::with_capacity(self.size());
+        for i in 0..self.size() {
+            chi.push(f_chi(&x_sample[i], &y_sample[i]));
         }
+        chi
     }
 
     /// Calculates Solid Angle for each pixel in the detector
-    fn calc_solid_angle(&mut self) -> Vec<f64> {
+    pub fn calc_solid_angle(&self) -> Vec<f64> {
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference();
-        let mut solid_angle = Vec::with_capacity(self.size);
-        for i in 0..self.size {
+        let mut solid_angle = Vec::with_capacity(self.size());
+        for i in 0..self.size() {
             solid_angle.push(f_solid_angle(
                 &d1_cart_poni[i],
                 &d2_cart_poni[i],
@@ -161,24 +156,20 @@ impl Geometry {
     /// Calculates polarization for each pixel in the detector
     ///
     /// Arguments:
-    ///   * `factor` - polarization factor (value between -1 and 1)
-    fn calc_polarization(&mut self, factor: f64) -> Vec<f64> {
-        if self.tth.len() == 0 {
-            self.calc_tth();
-        }
-        if self.chi.len() == 0 {
-            self.calc_chi();
-        }
+    ///  * `factor` - polarization factor (value between -1 and 1)
+    ///  * `tth` - two theta array in radians
+    ///  * `chi` - chi array in radians
+    pub fn calc_polarization(&self, factor: f64, tth: &Vec<f64>, chi: &Vec<f64>) -> Vec<f64> {
+        let size = self.size();
+        let mut polarization = Vec::with_capacity(size);
 
-        let mut polarization = Vec::with_capacity(self.size);
-
-        let mut cos2_tth = Vec::with_capacity(self.size);
-        for i in 0..self.size {
-            cos2_tth.push(self.tth[i].cos().powi(2));
+        let mut cos2_tth = Vec::with_capacity(size);
+        for i in 0..size {
+            cos2_tth.push(tth[i].cos().powi(2));
         }
 
-        for i in 0..self.size {
-            polarization.push(f_polarization(&factor, &cos2_tth[i], &self.chi[i]));
+        for i in 0..size {
+            polarization.push(f_polarization(&factor, &cos2_tth[i], &chi[i]));
         }
         polarization
     }
@@ -257,7 +248,7 @@ fn f_cosa(p1: &f64, p2: &f64, p3: &f64) -> f64 {
 ///
 /// Arguments:
 ///   * `factor` - polarization factor (value between -1 and 1)
-///   * `cos2_tth` - cosine squared of the 2theta angle
+///   * `cos2_tth` - cosine squared of the 2theta angle in radians
 ///   * `chi` - azimuthal angle in radians
 fn f_polarization(factor: &f64, cos2_tth: &f64, chi: &f64) -> f64 {
     0.5 * (1.0 + cos2_tth - factor * (2.0 * chi).cos() * (1.0 - cos2_tth))
@@ -278,8 +269,7 @@ mod tests {
     #[test]
     fn create_geometry() {
         let poni = Poni::new();
-        let corners = Geometry::new(DIM1, DIM2, poni);
-        assert_eq!(corners.tth.capacity(), SIZE);
+        let _corners = Geometry::new(DIM1, DIM2, poni);
     }
 
     #[test]
@@ -289,7 +279,7 @@ mod tests {
         let mut poni = Poni::new();
         poni.pixel1 = pixel1;
         poni.pixel2 = pixel2;
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        let geometry = Geometry::new(DIM1, DIM2, poni);
         let (d1_cart, d2_cart) = geometry.calc_pixel_position_det_reference_all();
 
         save_vec("d1_cart.txt", &d1_cart);
@@ -313,7 +303,7 @@ mod tests {
         poni.pixel2 = 0.0003;
         poni.poni1 = 0.032;
         poni.poni2 = 0.034;
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        let geometry = Geometry::new(DIM1, DIM2, poni);
         let (d1_cart_poni, d2_cart_poni) = geometry.calc_pixel_positions_with_poni_reference();
         assert_eq!(d1_cart_poni.len(), SIZE);
         assert_eq!(d2_cart_poni.len(), SIZE);
@@ -327,7 +317,7 @@ mod tests {
     #[test]
     fn calc_pixel_positions_with_sample_reference() {
         let poni = Poni::load("test_data/v1.poni").unwrap();
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        let geometry = Geometry::new(DIM1, DIM2, poni);
         let (x, y, z) = geometry.calc_pixel_positions_with_sample_reference();
 
         save_vec("x.txt", &x);
@@ -350,33 +340,33 @@ mod tests {
     #[test]
     fn calc_tth() {
         let poni = Poni::load("test_data/v1.poni").unwrap();
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
-        geometry.calc_tth();
+        let geometry = Geometry::new(DIM1, DIM2, poni);
+        let tth = geometry.calc_tth();
 
-        save_vec("tth.txt", &geometry.tth);
+        save_vec("tth.txt", &tth);
 
-        assert_eq!(geometry.tth.len(), SIZE);
-        assert!((geometry.tth[0] - 0.7841512459252314).abs() < 0.0000001);
-        assert!((geometry.tth[TEST_INDEX] - 0.7821114852040393).abs() < 0.0000001);
+        assert_eq!(tth.len(), SIZE);
+        assert!((tth[0] - 0.7841512459252314).abs() < 0.0000001);
+        assert!((tth[TEST_INDEX] - 0.7821114852040393).abs() < 0.0000001);
     }
 
     #[test]
     fn calc_chi() {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
-        geometry.calc_chi();
+        let geometry = Geometry::new(DIM1, DIM2, poni);
+        let chi = geometry.calc_chi();
 
-        save_vec("chi.txt", &geometry.chi);
+        save_vec("chi.txt", &chi);
 
-        assert_eq!(geometry.chi.len(), SIZE);
-        assert!((geometry.chi[0] + 1.9895718171402677).abs() < 0.0000001);
-        assert!((geometry.chi[TEST_INDEX] + 1.986763738717781).abs() < 0.0000001);
+        assert_eq!(chi.len(), SIZE);
+        assert!((chi[0] + 1.9895718171402677).abs() < 0.0000001);
+        assert!((chi[TEST_INDEX] + 1.986763738717781).abs() < 0.0000001);
     }
 
     #[test]
     fn calc_solid_angle() {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        let geometry = Geometry::new(DIM1, DIM2, poni);
         let solid_angle = geometry.calc_solid_angle();
 
         save_vec("solid_angle.txt", &solid_angle);
@@ -388,8 +378,10 @@ mod tests {
     #[test]
     fn calc_polarization() {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-        let mut geometry = Geometry::new(DIM1, DIM2, poni);
-        let polarization = geometry.calc_polarization(0.99);
+        let geometry = Geometry::new(DIM1, DIM2, poni);
+        let tth = geometry.calc_tth();
+        let chi = geometry.calc_chi();
+        let polarization = geometry.calc_polarization(0.99, &tth, &chi);
 
         save_vec("polarization.txt", &polarization);
 
