@@ -143,6 +143,45 @@ impl Geometry {
             self.chi.push(f_chi(&x_sample[i], &y_sample[i]));
         }
     }
+
+    /// Calculates Solid Angle for each pixel in the detector
+    fn calc_solid_angle(&mut self) -> Vec<f64> {
+        let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference();
+        let mut solid_angle = Vec::with_capacity(self.size);
+        for i in 0..self.size {
+            solid_angle.push(f_solid_angle(
+                &d1_cart_poni[i],
+                &d2_cart_poni[i],
+                &self.poni.distance,
+            ));
+        }
+        solid_angle
+    }
+
+    /// Calculates polarization for each pixel in the detector
+    ///
+    /// Arguments:
+    ///   * `factor` - polarization factor (value between -1 and 1)
+    fn calc_polarization(&mut self, factor: f64) -> Vec<f64> {
+        if self.tth.len() == 0 {
+            self.calc_tth();
+        }
+        if self.chi.len() == 0 {
+            self.calc_chi();
+        }
+
+        let mut polarization = Vec::with_capacity(self.size);
+
+        let mut cos2_tth = Vec::with_capacity(self.size);
+        for i in 0..self.size {
+            cos2_tth.push(self.tth[i].cos().powi(2));
+        }
+
+        for i in 0..self.size {
+            polarization.push(f_polarization(&factor, &cos2_tth[i], &self.chi[i]));
+        }
+        polarization
+    }
 }
 
 struct TrigonometricConstants {
@@ -167,21 +206,21 @@ impl TrigonometricConstants {
     }
 }
 
-/// Calculates t1 (y value) for a pixel position in the sample reference coordinate system
+/// Calculates x1 for a pixel position in the sample reference coordinate system
 fn f_x1(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
     p1 * tc.cos_rot2 * tc.cos_rot3
         + p2 * (tc.cos_rot3 * tc.sin_rot1 * tc.sin_rot2 - tc.cos_rot1 * tc.sin_rot3)
         - p3 * (tc.cos_rot1 * tc.cos_rot3 * tc.sin_rot2 + tc.sin_rot1 * tc.sin_rot3)
 }
 
-/// Calculates t2 (x value) for a pixel position in the sample reference coordinate system
+/// Calculates x2 for a pixel position in the sample reference coordinate system
 fn f_x2(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
     p1 * tc.cos_rot2 * tc.sin_rot3
         + p2 * (tc.cos_rot1 * tc.cos_rot3 + tc.sin_rot1 * tc.sin_rot2 * tc.sin_rot3)
         - p3 * (-(tc.cos_rot3 * tc.sin_rot1) + tc.cos_rot1 * tc.sin_rot2 * tc.sin_rot3)
 }
 
-/// Calculates t3 (-z value) for a pixel position in the sample reference coordinate system
+/// Calculates x3 for a pixel position in the sample reference coordinate system
 /// Note that the z axis is inverted in the sample reference coordinate system
 fn f_x3(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
     p1 * tc.sin_rot2 - p2 * tc.cos_rot2 * tc.sin_rot1 + p3 * tc.cos_rot1 * tc.cos_rot2
@@ -197,6 +236,31 @@ fn f_tth(x: &f64, y: &f64, z: &f64) -> f64 {
 /// Parameters are the x and y values of the pixel position
 fn f_chi(x: &f64, y: &f64) -> f64 {
     x.atan2(*y)
+}
+
+/// Calculates the solid angle for a pixel position in the detector reference coordinate system
+/// p1 and p2 are coordinates in the detector reference coordinate system
+/// p3 is the distance from the sample to the detector
+fn f_solid_angle(p1: &f64, p2: &f64, p3: &f64) -> f64 {
+    let cosa = f_cosa(p1, p2, p3);
+    return cosa.powi(3);
+}
+
+/// Calculates the cosine of the angle between the pixel position and the sample
+/// p1 and p2 are coordinates in the detector reference coordinate system
+/// p3 is the distance from the sample to the detector
+fn f_cosa(p1: &f64, p2: &f64, p3: &f64) -> f64 {
+    p3 / (p1 * p1 + p2 * p2 + p3 * p3).sqrt()
+}
+
+/// Calculates polarization
+///
+/// Arguments:
+///   * `factor` - polarization factor (value between -1 and 1)
+///   * `cos2_tth` - cosine squared of the 2theta angle
+///   * `chi` - azimuthal angle in radians
+fn f_polarization(factor: &f64, cos2_tth: &f64, chi: &f64) -> f64 {
+    0.5 * (1.0 + cos2_tth - factor * (2.0 * chi).cos() * (1.0 - cos2_tth))
 }
 
 #[cfg(test)]
@@ -307,6 +371,30 @@ mod tests {
         assert_eq!(geometry.chi.len(), SIZE);
         assert!((geometry.chi[0] + 1.9895718171402677).abs() < 0.0000001);
         assert!((geometry.chi[TEST_INDEX] + 1.986763738717781).abs() < 0.0000001);
+    }
+
+    #[test]
+    fn calc_solid_angle() {
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        let solid_angle = geometry.calc_solid_angle();
+
+        save_vec("solid_angle.txt", &solid_angle);
+
+        assert!((solid_angle[0] - 0.3667949927780228).abs() < 0.0000001);
+        assert!((solid_angle[TEST_INDEX] - 0.36893966446276066).abs() < 0.0000001);
+    }
+
+    #[test]
+    fn calc_polarization() {
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let mut geometry = Geometry::new(DIM1, DIM2, poni);
+        let polarization = geometry.calc_polarization(0.99);
+
+        save_vec("polarization.txt", &polarization);
+
+        assert!((polarization[0] - 0.915858268737793).abs() < 0.0000001);
+        assert!((polarization[TEST_INDEX] - 0.9172257781028748).abs() < 0.0000001);
     }
 
     fn save_vec(path: &str, vec: &Vec<f64>) {
