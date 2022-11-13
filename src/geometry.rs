@@ -94,22 +94,22 @@ impl Geometry {
         let mut y_sample = Vec::with_capacity(size);
         let mut z_sample = Vec::with_capacity(size);
 
-        let tc = TrigonometricConstants::new(&self.poni);
+        let tc = math::TrigonometricConstants::new(&self.poni);
 
         for i in 0..size {
-            x_sample.push(f_x1(
+            x_sample.push(math::f_x1(
                 &d1_cart_poni[i],
                 &d2_cart_poni[i],
                 &self.poni.distance,
                 &tc,
             ));
-            y_sample.push(f_x2(
+            y_sample.push(math::f_x2(
                 &d1_cart_poni[i],
                 &d2_cart_poni[i],
                 &self.poni.distance,
                 &tc,
             ));
-            z_sample.push(f_x3(
+            z_sample.push(math::f_x3(
                 &d1_cart_poni[i],
                 &d2_cart_poni[i],
                 &self.poni.distance,
@@ -124,7 +124,7 @@ impl Geometry {
         let (x_sample, y_sample, z_sample) = self.calc_pixel_positions_with_sample_reference();
         let mut tth = Vec::with_capacity(self.size());
         for i in 0..self.size() {
-            tth.push(f_tth(&x_sample[i], &y_sample[i], &z_sample[i]));
+            tth.push(math::f_tth(&x_sample[i], &y_sample[i], &z_sample[i]));
         }
         tth
     }
@@ -134,7 +134,7 @@ impl Geometry {
         let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference();
         let mut chi = Vec::with_capacity(self.size());
         for i in 0..self.size() {
-            chi.push(f_chi(&x_sample[i], &y_sample[i]));
+            chi.push(math::f_chi(&x_sample[i], &y_sample[i]));
         }
         chi
     }
@@ -144,7 +144,7 @@ impl Geometry {
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference();
         let mut solid_angle = Vec::with_capacity(self.size());
         for i in 0..self.size() {
-            solid_angle.push(f_solid_angle(
+            solid_angle.push(math::f_solid_angle(
                 &d1_cart_poni[i],
                 &d2_cart_poni[i],
                 &self.poni.distance,
@@ -169,89 +169,91 @@ impl Geometry {
         }
 
         for i in 0..size {
-            polarization.push(f_polarization(&factor, &cos2_tth[i], &chi[i]));
+            polarization.push(math::f_polarization(&factor, &cos2_tth[i], &chi[i]));
         }
         polarization
     }
 }
 
-struct TrigonometricConstants {
-    sin_rot1: f64,
-    cos_rot1: f64,
-    sin_rot2: f64,
-    cos_rot2: f64,
-    sin_rot3: f64,
-    cos_rot3: f64,
-}
+mod math {
+    pub struct TrigonometricConstants {
+        sin_rot1: f64,
+        cos_rot1: f64,
+        sin_rot2: f64,
+        cos_rot2: f64,
+        sin_rot3: f64,
+        cos_rot3: f64,
+    }
 
-impl TrigonometricConstants {
-    fn new(poni: &Poni) -> TrigonometricConstants {
-        TrigonometricConstants {
-            sin_rot1: poni.rot1.sin(),
-            cos_rot1: poni.rot1.cos(),
-            sin_rot2: poni.rot2.sin(),
-            cos_rot2: poni.rot2.cos(),
-            sin_rot3: poni.rot3.sin(),
-            cos_rot3: poni.rot3.cos(),
+    impl TrigonometricConstants {
+        pub fn new(poni: &super::Poni) -> TrigonometricConstants {
+            TrigonometricConstants {
+                sin_rot1: poni.rot1.sin(),
+                cos_rot1: poni.rot1.cos(),
+                sin_rot2: poni.rot2.sin(),
+                cos_rot2: poni.rot2.cos(),
+                sin_rot3: poni.rot3.sin(),
+                cos_rot3: poni.rot3.cos(),
+            }
         }
     }
-}
 
-/// Calculates x1 for a pixel position in the sample reference coordinate system
-fn f_x1(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
-    p1 * tc.cos_rot2 * tc.cos_rot3
-        + p2 * (tc.cos_rot3 * tc.sin_rot1 * tc.sin_rot2 - tc.cos_rot1 * tc.sin_rot3)
-        - p3 * (tc.cos_rot1 * tc.cos_rot3 * tc.sin_rot2 + tc.sin_rot1 * tc.sin_rot3)
-}
+    /// Calculates x1 for a pixel position in the sample reference coordinate system
+    pub fn f_x1(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
+        p1 * tc.cos_rot2 * tc.cos_rot3
+            + p2 * (tc.cos_rot3 * tc.sin_rot1 * tc.sin_rot2 - tc.cos_rot1 * tc.sin_rot3)
+            - p3 * (tc.cos_rot1 * tc.cos_rot3 * tc.sin_rot2 + tc.sin_rot1 * tc.sin_rot3)
+    }
 
-/// Calculates x2 for a pixel position in the sample reference coordinate system
-fn f_x2(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
-    p1 * tc.cos_rot2 * tc.sin_rot3
-        + p2 * (tc.cos_rot1 * tc.cos_rot3 + tc.sin_rot1 * tc.sin_rot2 * tc.sin_rot3)
-        - p3 * (-(tc.cos_rot3 * tc.sin_rot1) + tc.cos_rot1 * tc.sin_rot2 * tc.sin_rot3)
-}
+    /// Calculates x2 for a pixel position in the sample reference coordinate system
+    pub fn f_x2(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
+        p1 * tc.cos_rot2 * tc.sin_rot3
+            + p2 * (tc.cos_rot1 * tc.cos_rot3 + tc.sin_rot1 * tc.sin_rot2 * tc.sin_rot3)
+            - p3 * (-(tc.cos_rot3 * tc.sin_rot1) + tc.cos_rot1 * tc.sin_rot2 * tc.sin_rot3)
+    }
 
-/// Calculates x3 for a pixel position in the sample reference coordinate system
-/// Note that the z axis is inverted in the sample reference coordinate system
-fn f_x3(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
-    p1 * tc.sin_rot2 - p2 * tc.cos_rot2 * tc.sin_rot1 + p3 * tc.cos_rot1 * tc.cos_rot2
-}
+    /// Calculates x3 for a pixel position in the sample reference coordinate system
+    /// Note that the z axis is inverted in the sample reference coordinate system
+    pub fn f_x3(p1: &f64, p2: &f64, p3: &f64, tc: &TrigonometricConstants) -> f64 {
+        p1 * tc.sin_rot2 - p2 * tc.cos_rot2 * tc.sin_rot1 + p3 * tc.cos_rot1 * tc.cos_rot2
+    }
 
-/// Calculates the 2theta angle for a pixel position in the sample reference coordinate system
-/// Parameters are the x, y and z values of the pixel position
-fn f_tth(x: &f64, y: &f64, z: &f64) -> f64 {
-    (y * y + x * x).sqrt().atan2(*z)
-}
+    /// Calculates the 2theta angle for a pixel position in the sample reference coordinate system
+    /// Parameters are the x, y and z values of the pixel position
+    pub fn f_tth(x: &f64, y: &f64, z: &f64) -> f64 {
+        (y * y + x * x).sqrt().atan2(*z)
+    }
 
-/// Calculates the azimuthal angle for a pixel position in the sample reference coordinate system
-/// Parameters are the x and y values of the pixel position
-fn f_chi(x: &f64, y: &f64) -> f64 {
-    x.atan2(*y)
-}
+    /// Calculates the azimuthal angle for a pixel position in the sample reference coordinate system
+    /// Parameters are the x and y values of the pixel position
+    pub fn f_chi(x: &f64, y: &f64) -> f64 {
+        x.atan2(*y)
+    }
 
-/// Calculates the solid angle for a pixel position in the detector reference coordinate system
-/// p1 and p2 are coordinates in the detector reference coordinate system
-/// p3 is the distance from the sample to the detector
-fn f_solid_angle(p1: &f64, p2: &f64, p3: &f64) -> f64 {
-    let cosa = f_cosa(p1, p2, p3);
-    return cosa.powi(3);
-}
+    /// Calculates the solid angle for a pixel position in the detector reference coordinate system
+    /// p1 and p2 are coordinates in the detector reference coordinate system
+    /// p3 is the distance from the sample to the detector
+    pub fn f_solid_angle(p1: &f64, p2: &f64, p3: &f64) -> f64 {
+        let cosa = f_cosa(p1, p2, p3);
+        return cosa.powi(3);
+    }
 
-/// Calculates the cosine of the angle between the pixel position and the sample
-/// p1 and p2 are coordinates in the detector reference coordinate system
-/// p3 is the distance from the sample to the detector
-fn f_cosa(p1: &f64, p2: &f64, p3: &f64) -> f64 {
-    p3 / (p1 * p1 + p2 * p2 + p3 * p3).sqrt()
-}
+    /// Calculates the cosine of the angle between the pixel position and the sample
+    /// p1 and p2 are coordinates in the detector reference coordinate system
+    /// p3 is the distance from the sample to the detector
+    pub fn f_cosa(p1: &f64, p2: &f64, p3: &f64) -> f64 {
+        p3 / (p1 * p1 + p2 * p2 + p3 * p3).sqrt()
+    }
 
-/// Calculates polarization
-///
-/// Arguments:
-///   * `factor` - polarization factor (value between -1 and 1)
-///   * `cos2_tth` - cosine squared of the 2theta angle in radians
-///   * `chi` - azimuthal angle in radians
-fn f_polarization(factor: &f64, cos2_tth: &f64, chi: &f64) -> f64 {
-    0.5 * (1.0 + cos2_tth - factor * (2.0 * chi).cos() * (1.0 - cos2_tth))
+    /// Calculates polarization
+    ///
+    /// Arguments:
+    ///   * `factor` - polarization factor (value between -1 and 1)
+    ///   * `cos2_tth` - cosine squared of the 2theta angle in radians
+    ///   * `chi` - azimuthal angle in radians
+    pub fn f_polarization(factor: &f64, cos2_tth: &f64, chi: &f64) -> f64 {
+        0.5 * (1.0 + cos2_tth - factor * (2.0 * chi).cos() * (1.0 - cos2_tth))
+    }
 }
 
 #[cfg(test)]
@@ -328,13 +330,13 @@ mod tests {
         assert_eq!(y.len(), SIZE);
         assert_eq!(z.len(), SIZE);
 
-        assert!((x[0] + 0.1880643204202641).abs() < 0.0000001);
+        assert!((x[0] + 0.08806517640608046).abs() < 0.0000001);
         assert!((y[0] + 0.0837083064488318).abs() < 0.0000001);
-        assert!((z[0] - 0.2063665578247668).abs() < 0.0000001);
+        assert!((z[0] - 0.20678031672865527).abs() < 0.0000001);
 
-        assert!((x[TEST_INDEX] + 0.18754839043309052).abs() < 0.0000001);
-        assert!((y[TEST_INDEX] + 0.08284845270907473).abs() < 0.0000001);
-        assert!((z[TEST_INDEX] - 0.20638455211721887).abs() < 0.0000001);
+        assert!((x[TEST_INDEX] + 0.08754924641890685).abs() < 0.0000001);
+        assert!((y[TEST_INDEX] + 0.08284845548551084).abs() < 0.0000001);
+        assert!((z[TEST_INDEX] - 0.20679831102110732).abs() < 0.0000001);
     }
 
     #[test]
@@ -346,8 +348,8 @@ mod tests {
         save_vec("tth.txt", &tth);
 
         assert_eq!(tth.len(), SIZE);
-        assert!((tth[0] - 0.7841512459252314).abs() < 0.0000001);
-        assert!((tth[TEST_INDEX] - 0.7821114852040393).abs() < 0.0000001);
+        assert!((tth[0] - 0.5312416909412438).abs() < 0.0000001);
+        assert!((tth[TEST_INDEX] - 0.5277239168700532).abs() < 0.0000001);
     }
 
     #[test]
@@ -359,8 +361,8 @@ mod tests {
         save_vec("chi.txt", &chi);
 
         assert_eq!(chi.len(), SIZE);
-        assert!((chi[0] + 1.9895718171402677).abs() < 0.0000001);
-        assert!((chi[TEST_INDEX] + 1.986763738717781).abs() < 0.0000001);
+        assert!((chi[0] + 2.3308359247396537).abs() < 0.0000001);
+        assert!((chi[TEST_INDEX] + 2.3286143321574952).abs() < 0.0000001);
     }
 
     #[test]
@@ -371,8 +373,8 @@ mod tests {
 
         save_vec("solid_angle.txt", &solid_angle);
 
-        assert!((solid_angle[0] - 0.3667949927780228).abs() < 0.0000001);
-        assert!((solid_angle[TEST_INDEX] - 0.36893966446276066).abs() < 0.0000001);
+        assert!((solid_angle[0] - 0.6584579594239173).abs() < 0.0000001);
+        assert!((solid_angle[TEST_INDEX] - 0.6623642784717598).abs() < 0.0000001);
     }
 
     #[test]
@@ -385,8 +387,8 @@ mod tests {
 
         save_vec("polarization.txt", &polarization);
 
-        assert!((polarization[0] - 0.915858268737793).abs() < 0.0000001);
-        assert!((polarization[TEST_INDEX] - 0.9172257781028748).abs() < 0.0000001);
+        assert!((polarization[0] - 0.8781164288520813).abs() < 0.0000001);
+        assert!((polarization[TEST_INDEX] - 0.880129873752594).abs() < 0.0000001);
     }
 
     fn save_vec(path: &str, vec: &Vec<f64>) {
