@@ -8,3 +8,10 @@ edition = "2021"
 [dependencies]
 tiff = "0.8"
 rayon = "1.5"
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "my_benchmark"
+harness = false
