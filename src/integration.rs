@@ -36,7 +36,7 @@ impl Integrator {
     pub fn integrate(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
-        histogram(&self.tth, &intensity, n_points)
+        histogram_parallel(&self.tth, &intensity, n_points)
     }
 
     fn correct_intensity(&mut self, data: &Vec<f64>) -> Vec<f64> {
@@ -56,10 +56,71 @@ fn histogram(data: &Vec<f64>, weights: &Vec<f64>, n_points: usize) -> (Vec<f64>,
     let mut count = vec![0.0; n_points];
 
     // Calulate the histogram
-    for (i, tth) in data.iter().enumerate() {
-        let index = ((tth - min) / step).floor() as usize;
+    for (i, y) in data.iter().enumerate() {
+        let index = ((y - min) / step).floor() as usize;
         sum[index] += weights[i];
         count[index] += 1.0;
+    }
+
+    // normalize to amount of points
+    let normed_sum = sum
+        .iter()
+        .zip(count.iter())
+        .map(|(sum, count)| sum / count)
+        .collect::<Vec<f64>>();
+
+    // create tth values for bin centers
+    let bin = (0..n_points)
+        .map(|i| min + ((i as f64) + 0.5) * step)
+        .collect::<Vec<f64>>();
+    (bin, normed_sum)
+}
+
+use std::sync::mpsc;
+use std::thread;
+
+fn histogram_parallel(
+    data: &Vec<f64>,
+    weights: &Vec<f64>,
+    n_points: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let min = min(data);
+    let max = max(data);
+    let step = (max - min) / (n_points as f64 - 1.0);
+
+    let mut sum = vec![0.0; n_points];
+    let mut count = vec![0.0; n_points];
+
+    let (tx, rx) = mpsc::channel();
+
+    let n_threads = 4;
+    let chunk_size = data.len() / n_threads;
+
+    for i in 0..n_threads {
+        let tx_thread = mpsc::Sender::clone(&tx);
+        let data_thread = data[i * chunk_size..(i + 1) * chunk_size].to_vec();
+        let weights_thread = weights[i * chunk_size..(i + 1) * chunk_size].to_vec();
+
+        thread::spawn(move || {
+            let mut sum_thread = vec![0.0; n_points];
+            let mut count_thread = vec![0.0; n_points];
+
+            for (i, y) in data_thread.iter().enumerate() {
+                let index = ((y - min) / step).floor() as usize;
+                sum_thread[index] += weights_thread[i];
+                count_thread[index] += 1.0;
+            }
+
+            tx_thread.send((sum_thread, count_thread)).unwrap();
+        });
+    }
+    drop(tx);
+
+    for (sum_thread, count_thread) in rx {
+        for i in 0..n_points {
+            sum[i] += sum_thread[i];
+            count[i] += count_thread[i];
+        }
     }
 
     // normalize to amount of points
