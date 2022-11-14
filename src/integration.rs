@@ -5,52 +5,75 @@ use super::geometry::Geometry;
 
 struct Integrator {
     pub geometry: Geometry,
+    tth: Vec<f64>,
+    chi: Vec<f64>,
+    solid_angle: Vec<f64>,
+    polarization: Vec<f64>,
 }
 
 impl Integrator {
     pub fn new(geometry: Geometry) -> Integrator {
-        Integrator { geometry }
-    }
-
-    pub fn integrate(&self, image: &Vec<f64>, n_points: usize) -> (Vec<f64>, Vec<f64>) {
-        let tth = self.geometry.calc_tth();
-        let chi: Vec<f64> = self.geometry.calc_chi();
-        let solid_angle = self.geometry.calc_solid_angle();
-        let polarization = self.geometry.calc_polarization(0.99, &tth, &chi);
-
-        let intensity = image
-            .iter()
-            .enumerate()
-            .map(|(i, y)| y / polarization[i] / solid_angle[i])
-            .collect::<Vec<f64>>();
-
-        let min_tth = min(&tth);
-        let max_tth = max(&tth);
-        let step_tth = (max_tth - min_tth) / (n_points as f64 - 1.0);
-
-        let mut pattern_sum = vec![0.0; n_points];
-        let mut pattern_count = vec![0.0; n_points];
-
-        // Calulate the histogram
-        for (i, tth) in tth.iter().enumerate() {
-            let index = ((tth - min_tth) / step_tth).floor() as usize;
-            pattern_sum[index] += intensity[i];
-            pattern_count[index] += 1.0;
+        Integrator {
+            geometry,
+            tth: vec![],
+            chi: vec![],
+            solid_angle: vec![],
+            polarization: vec![],
         }
-
-        // normalize to amount of points
-        let pattern_intensity = pattern_sum
-            .iter()
-            .zip(pattern_count.iter())
-            .map(|(sum, count)| sum / count)
-            .collect::<Vec<f64>>();
-
-        // create tth values for bin centers
-        let pattern_tth = (0..n_points)
-            .map(|i| min_tth + ((i as f64) + 0.5) * step_tth)
-            .collect::<Vec<f64>>();
-        (pattern_tth, pattern_intensity)
     }
+
+    fn update_geometry_arrays(&mut self, dim1: usize, dim2: usize) {
+        if self.geometry.dim1 != dim1 || self.geometry.dim2 != dim2 {
+            self.geometry.dim1 = dim1;
+            self.geometry.dim2 = dim2;
+            self.tth = self.geometry.calc_tth();
+            self.chi = self.geometry.calc_chi();
+            self.solid_angle = self.geometry.calc_solid_angle();
+            self.polarization = self.geometry.calc_polarization(0.99, &self.tth, &self.chi);
+        }
+    }
+
+    pub fn integrate(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let intensity = self.correct_intensity(&frame.data);
+        histogram(&self.tth, &intensity, n_points)
+    }
+
+    fn correct_intensity(&mut self, data: &Vec<f64>) -> Vec<f64> {
+        data.iter()
+            .enumerate()
+            .map(|(i, y)| y / self.polarization[i] / self.solid_angle[i])
+            .collect::<Vec<f64>>()
+    }
+}
+
+fn histogram(data: &Vec<f64>, weights: &Vec<f64>, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+    let min = min(data);
+    let max = max(data);
+    let step = (max - min) / (n_points as f64 - 1.0);
+
+    let mut sum = vec![0.0; n_points];
+    let mut count = vec![0.0; n_points];
+
+    // Calulate the histogram
+    for (i, tth) in data.iter().enumerate() {
+        let index = ((tth - min) / step).floor() as usize;
+        sum[index] += weights[i];
+        count[index] += 1.0;
+    }
+
+    // normalize to amount of points
+    let normed_sum = sum
+        .iter()
+        .zip(count.iter())
+        .map(|(sum, count)| sum / count)
+        .collect::<Vec<f64>>();
+
+    // create tth values for bin centers
+    let bin = (0..n_points)
+        .map(|i| min + ((i as f64) + 0.5) * step)
+        .collect::<Vec<f64>>();
+    (bin, normed_sum)
 }
 
 fn min(v: &Vec<f64>) -> f64 {
@@ -85,9 +108,9 @@ mod tests {
     fn test_integrator() {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-        let geometry = Geometry::new(frame.dim2, frame.dim1, poni);
-        let integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate(&frame.data, 850);
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry);
+        let (tth, int) = integrator.integrate(&frame, 850);
         save_vec("pattern_tth.txt", &tth);
         save_vec("pattern_int.txt", &int);
     }
