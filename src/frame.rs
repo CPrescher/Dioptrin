@@ -17,8 +17,9 @@ impl Frame {
         let mut decoder = tiff::decoder::Decoder::new(f)?;
 
         let dims = decoder.dimensions()?;
-        let dim1 = dims.0 as usize;
-        let dim2 = dims.1 as usize;
+        // tiff library returns (width, height) but we want (height, width)
+        let dim1 = dims.1 as usize;
+        let dim2 = dims.0 as usize;
 
         let array: Vec<f64> = match decoder.read_image()? {
             tiff::decoder::DecodingResult::U8(v) => v.iter().map(|x| *x as f64).collect(),
@@ -35,7 +36,7 @@ impl Frame {
 
         let frame = Frame {
             name: file_path,
-            data: flip_ud(&array, dim1, dim2),
+            data: flip_ud(&array, dim2, dim1),
             dim1,
             dim2,
         };
