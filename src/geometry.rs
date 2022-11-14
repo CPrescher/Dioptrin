@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use crate::poni::Poni;
+use rayon::prelude::*;
 
 pub struct Geometry {
     pub dim1: usize,
@@ -61,6 +62,7 @@ impl Geometry {
                 d2_cart.push((j as f64 + 0.5) * self.poni.pixel2);
             }
         }
+
         return (d1_cart, d2_cart);
     }
 
@@ -87,35 +89,27 @@ impl Geometry {
 
     /// Calculates the pixel center positions in the sample reference coordinate system
     fn calc_pixel_positions_with_sample_reference(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        let size = self.size();
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference();
-
-        let mut x_sample = Vec::with_capacity(size);
-        let mut y_sample = Vec::with_capacity(size);
-        let mut z_sample = Vec::with_capacity(size);
-
         let tc = math::TrigonometricConstants::new(&self.poni);
 
-        for i in 0..size {
-            x_sample.push(math::f_x1(
-                &d1_cart_poni[i],
-                &d2_cart_poni[i],
-                &self.poni.distance,
-                &tc,
-            ));
-            y_sample.push(math::f_x2(
-                &d1_cart_poni[i],
-                &d2_cart_poni[i],
-                &self.poni.distance,
-                &tc,
-            ));
-            z_sample.push(math::f_x3(
-                &d1_cart_poni[i],
-                &d2_cart_poni[i],
-                &self.poni.distance,
-                &tc,
-            ));
-        }
+        let x_sample: Vec<f64> = d1_cart_poni
+            .par_iter()
+            .zip(&d2_cart_poni)
+            .map(|(d1, d2)| math::f_x1(&d1, d2, &self.poni.distance, &tc))
+            .collect();
+
+        let y_sample: Vec<f64> = d1_cart_poni
+            .par_iter()
+            .zip(&d2_cart_poni)
+            .map(|(d1, d2)| math::f_x2(&d1, d2, &self.poni.distance, &tc))
+            .collect();
+
+        let z_sample: Vec<f64> = d1_cart_poni
+            .par_iter()
+            .zip(&d2_cart_poni)
+            .map(|(d1, d2)| math::f_x3(&d1, d2, &self.poni.distance, &tc))
+            .collect();
+
         return (x_sample, y_sample, z_sample);
     }
 
@@ -132,24 +126,22 @@ impl Geometry {
     /// Calculates the azimuthal angle in radians for each pixel in the detector
     pub fn calc_chi(&self) -> Vec<f64> {
         let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference();
-        let mut chi = Vec::with_capacity(self.size());
-        for i in 0..self.size() {
-            chi.push(math::f_chi(&x_sample[i], &y_sample[i]));
-        }
+        let chi = x_sample
+            .par_iter()
+            .zip(&y_sample)
+            .map(|(x, y)| math::f_chi(x, y))
+            .collect();
         chi
     }
 
     /// Calculates Solid Angle for each pixel in the detector
     pub fn calc_solid_angle(&self) -> Vec<f64> {
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference();
-        let mut solid_angle = Vec::with_capacity(self.size());
-        for i in 0..self.size() {
-            solid_angle.push(math::f_solid_angle(
-                &d1_cart_poni[i],
-                &d2_cart_poni[i],
-                &self.poni.distance,
-            ));
-        }
+        let solid_angle = d1_cart_poni
+            .par_iter()
+            .zip(&d2_cart_poni)
+            .map(|(d1, d2)| math::f_solid_angle(&d1, &d2, &self.poni.distance))
+            .collect::<Vec<f64>>();
         solid_angle
     }
 
@@ -160,17 +152,16 @@ impl Geometry {
     ///  * `tth` - two theta array in radians
     ///  * `chi` - chi array in radians
     pub fn calc_polarization(&self, factor: f64, tth: &Vec<f64>, chi: &Vec<f64>) -> Vec<f64> {
-        let size = self.size();
-        let mut polarization = Vec::with_capacity(size);
+        let cos2_tth = tth
+            .par_iter()
+            .map(|x| x.cos().powi(2))
+            .collect::<Vec<f64>>();
 
-        let mut cos2_tth = Vec::with_capacity(size);
-        for i in 0..size {
-            cos2_tth.push(tth[i].cos().powi(2));
-        }
-
-        for i in 0..size {
-            polarization.push(math::f_polarization(&factor, &cos2_tth[i], &chi[i]));
-        }
+        let polarization = cos2_tth
+            .par_iter()
+            .zip(chi)
+            .map(|(cos2_tth, chi)| math::f_polarization(&factor, &cos2_tth, &chi))
+            .collect();
         polarization
     }
 }
