@@ -250,9 +250,8 @@ mod math {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::io::Write;
-    use std::path::Path;
+    #[path = "../../util.rs"]
+    mod util;
 
     static DIM1: usize = 10;
     static DIM2: usize = 20;
@@ -275,18 +274,14 @@ mod tests {
         let geometry = Geometry::new(DIM1, DIM2, poni);
         let (d1_cart, d2_cart) = geometry.calc_pixel_position_det_reference_all();
 
-        save_vec("d1_cart.txt", &d1_cart);
-        save_vec("d2_cart.txt", &d2_cart);
+        util::save_vec("d1_cart.txt", &d1_cart);
+        util::save_vec("d2_cart.txt", &d2_cart);
 
-        assert_eq!(d1_cart.len(), SIZE);
-        assert_eq!(d2_cart.len(), SIZE);
-        assert_eq!(d1_cart[0], 0.0001);
-        assert_eq!(d2_cart[0], 0.00015);
+        let d1_cart_reference = util::read_vec("d1_cart.txt").unwrap();
+        let d2_cart_reference = util::read_vec("d2_cart.txt").unwrap();
 
-        let d1_last_pixel = (DIM1 as f64 - 0.5) * pixel1;
-        let d2_last_pixel = (DIM2 as f64 - 0.5) * pixel2;
-        assert!((d1_cart[d1_cart.len() - 1] - d1_last_pixel).abs() < 0.0000001);
-        assert!((d2_cart[d2_cart.len() - 1] - d2_last_pixel).abs() < 0.0000001);
+        util::compare_vecs(&d1_cart_reference, &d1_cart, "d1_cart", 1e-10);
+        util::compare_vecs(&d2_cart_reference, &d2_cart, "d1_cart", 1e-10);
     }
 
     #[test]
@@ -303,8 +298,24 @@ mod tests {
         assert_eq!(d1_cart_poni[0], -0.0319);
         assert!((d2_cart_poni[0] + 0.03385).abs() < 0.0000001);
 
-        save_vec("d1_cart_poni.txt", &d1_cart_poni);
-        save_vec("d2_cart_poni.txt", &d2_cart_poni);
+        util::save_vec("d1_cart_poni.txt", &d1_cart_poni);
+        util::save_vec("d2_cart_poni.txt", &d2_cart_poni);
+
+        let d1_cart_poni_reference = util::read_vec("d1_cart_poni.txt").unwrap();
+        let d2_cart_poni_reference = util::read_vec("d2_cart_poni.txt").unwrap();
+
+        util::compare_vecs(
+            &d1_cart_poni_reference,
+            &d1_cart_poni,
+            "d1_cart_poni",
+            1e-10,
+        );
+        util::compare_vecs(
+            &d2_cart_poni_reference,
+            &d2_cart_poni,
+            "d2_cart_poni",
+            1e-10,
+        );
     }
 
     #[test]
@@ -313,21 +324,17 @@ mod tests {
         let geometry = Geometry::new(DIM1, DIM2, poni);
         let (x, y, z) = geometry.calc_pixel_positions_with_sample_reference();
 
-        save_vec("x.txt", &x);
-        save_vec("y.txt", &y);
-        save_vec("z.txt", &z);
+        util::save_vec("x.txt", &x);
+        util::save_vec("y.txt", &y);
+        util::save_vec("z.txt", &z);
 
-        assert_eq!(x.len(), SIZE);
-        assert_eq!(y.len(), SIZE);
-        assert_eq!(z.len(), SIZE);
+        let x_ref = util::read_vec("x_pyFAI.txt").unwrap();
+        let y_ref = util::read_vec("y_pyFAI.txt").unwrap();
+        let z_ref = util::read_vec("z_pyFAI.txt").unwrap();
 
-        assert!((x[0] + 0.08806517640608046).abs() < 0.0000001);
-        assert!((y[0] + 0.0837083064488318).abs() < 0.0000001);
-        assert!((z[0] - 0.20678031672865527).abs() < 0.0000001);
-
-        assert!((x[TEST_INDEX] + 0.08754924641890685).abs() < 0.0000001);
-        assert!((y[TEST_INDEX] + 0.08284845548551084).abs() < 0.0000001);
-        assert!((z[TEST_INDEX] - 0.20679831102110732).abs() < 0.0000001);
+        util::compare_vecs(&x, &x_ref, "x", 1e-10);
+        util::compare_vecs(&y, &y_ref, "x", 1e-10);
+        util::compare_vecs(&z, &z_ref, "x", 1e-10);
     }
 
     #[test]
@@ -336,11 +343,10 @@ mod tests {
         let geometry = Geometry::new(DIM1, DIM2, poni);
         let tth = geometry.calc_tth();
 
-        save_vec("tth.txt", &tth);
+        util::save_vec("tth.txt", &tth);
 
-        assert_eq!(tth.len(), SIZE);
-        assert!((tth[0] - 0.5312416909412438).abs() < 0.0000001);
-        assert!((tth[TEST_INDEX] - 0.5277239168700532).abs() < 0.0000001);
+        let tth_ref = util::read_vec("tth_pyFAI.txt").unwrap();
+        util::compare_vecs(&tth, &tth_ref, "tth", 1e-6);
     }
 
     #[test]
@@ -349,11 +355,10 @@ mod tests {
         let geometry = Geometry::new(DIM1, DIM2, poni);
         let chi = geometry.calc_chi();
 
-        save_vec("chi.txt", &chi);
+        util::save_vec("chi.txt", &chi);
 
-        assert_eq!(chi.len(), SIZE);
-        assert!((chi[0] + 2.3308359247396537).abs() < 0.0000001);
-        assert!((chi[TEST_INDEX] + 2.3286143321574952).abs() < 0.0000001);
+        let chi_ref = util::read_vec("chi_pyFAI.txt").unwrap();
+        util::compare_vecs(&chi, &chi_ref, "chi", 1e-6);
     }
 
     #[test]
@@ -362,10 +367,10 @@ mod tests {
         let geometry = Geometry::new(DIM1, DIM2, poni);
         let solid_angle = geometry.calc_solid_angle();
 
-        save_vec("solid_angle.txt", &solid_angle);
+        util::save_vec("solid_angle.txt", &solid_angle);
 
-        assert!((solid_angle[0] - 0.6584579594239173).abs() < 0.0000001);
-        assert!((solid_angle[TEST_INDEX] - 0.6623642784717598).abs() < 0.0000001);
+        let solid_angle_ref = util::read_vec("solid_angle_pyFAI.txt").unwrap();
+        util::compare_vecs(&solid_angle, &solid_angle_ref, "solid_angle", 1e-6);
     }
 
     #[test]
@@ -376,20 +381,9 @@ mod tests {
         let chi = geometry.calc_chi();
         let polarization = geometry.calc_polarization(0.99, &tth, &chi);
 
-        save_vec("polarization.txt", &polarization);
+        util::save_vec("polarization.txt", &polarization);
 
-        assert!((polarization[0] - 0.8781164288520813).abs() < 0.0000001);
-        assert!((polarization[TEST_INDEX] - 0.880129873752594).abs() < 0.0000001);
-    }
-
-    fn save_vec(path: &str, vec: &Vec<f64>) {
-        let dir_str: String = "notebooks/test_output/".to_owned();
-        fs::create_dir(&dir_str).unwrap_or_default();
-        let path_str = dir_str + path;
-        let path: &Path = Path::new(path_str.as_str());
-        let mut file = fs::File::create(path).unwrap();
-        for val in vec.iter() {
-            file.write_all(format!("{}\n", val).as_bytes()).unwrap();
-        }
+        let polarization_ref = util::read_vec("polarization_pyFAI.txt").unwrap();
+        util::compare_vecs(&polarization, &polarization_ref, "polarization", 1e-6);
     }
 }

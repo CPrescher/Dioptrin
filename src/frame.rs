@@ -58,30 +58,19 @@ fn flip_ud(array: &Vec<f64>, dim1: usize, dim2: usize) -> Vec<f64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
-    use std::fs;
-    use std::io::Write;
-    use std::path::Path;
+    #[path = "../../util.rs"]
+    mod util;
 
     #[test]
     fn frame_from_tiff() {
+        util::download_pilatus_test_file();
         let file_path = String::from("test_data/CeO2_Pilatus1M.tif");
         let frame = Frame::from_tiff(file_path).unwrap();
-        assert_eq!(frame.dim1, 981);
-        assert_eq!(frame.dim2, 1043);
+        assert_eq!(frame.dim1, 1043);
+        assert_eq!(frame.dim2, 981);
 
-        save_vec("frame.txt", &frame.data);
-    }
-
-    fn save_vec(path: &str, vec: &Vec<f64>) {
-        let dir_str: String = "notebooks/test_output/".to_owned();
-        fs::create_dir(&dir_str).unwrap_or_default();
-        let path_str = dir_str + path;
-        let path: &Path = Path::new(path_str.as_str());
-        let mut file = fs::File::create(path).unwrap();
-        for val in vec.iter() {
-            file.write_all(format!("{}\n", val).as_bytes()).unwrap();
-        }
+        util::save_vec("frame.txt", &frame.data);
     }
 }

@@ -118,41 +118,62 @@ impl Integrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math;
     use crate::poni::Poni;
-    use std::fs;
-    use std::io::Write;
-    use std::path::Path;
+    #[path = "../../util.rs"]
+    mod util;
 
     #[test]
     fn test_integrator() {
+        util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
         let (tth, int) = integrator.integrate(&frame, 850);
-        save_vec("pattern_tth.txt", &tth);
-        save_vec("pattern_int.txt", &int);
+
+        util::save_vec("pattern_tth.txt", &tth);
+        util::save_vec("pattern_int.txt", &int);
+
+        let tth_pyfai = util::read_vec("pattern_tth_pyFAI.txt").unwrap();
+        let int_pyfai = util::read_vec("pattern_int_pyFAI.txt").unwrap();
+
+        util::compare_vecs(&tth, &tth_pyfai, "tth", 1e-6);
+
+        let int_diff: f64 = int
+            .par_iter()
+            .zip(int_pyfai.par_iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+
+        let int_diff = int_diff / int.len() as f64;
+        assert!(int_diff < math::max(&int) * 1e-4); // 0.001 difference in total
     }
 
     #[test]
     fn test_integrate_csr() {
+        util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
         let (tth, int) = integrator.integrate_csr(&frame, 850);
-        save_vec("pattern_tth_csr.txt", &tth);
-        save_vec("pattern_int_csr.txt", &int);
-    }
 
-    fn save_vec(path: &str, vec: &Vec<f64>) {
-        let dir_str: String = "notebooks/test_output/".to_owned();
-        fs::create_dir(&dir_str).unwrap_or_default();
-        let path_str = dir_str + path;
-        let path: &Path = Path::new(path_str.as_str());
-        let mut file = fs::File::create(path).unwrap();
-        for val in vec.iter() {
-            file.write_all(format!("{}\n", val).as_bytes()).unwrap();
-        }
+        util::save_vec("pattern_tth_csr.txt", &tth);
+        util::save_vec("pattern_int_csr.txt", &int);
+
+        let tth_pyfai = util::read_vec("pattern_tth_pyFAI.txt").unwrap();
+        let int_pyfai = util::read_vec("pattern_int_pyFAI.txt").unwrap();
+
+        util::compare_vecs(&tth, &tth_pyfai, "tth", 1e-6);
+
+        let int_diff: f64 = int
+            .par_iter()
+            .zip(int_pyfai.par_iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+
+        let int_diff = int_diff / int.len() as f64;
+        assert!(int_diff < math::max(&int) * 1e-4); // 0.001 difference in total
     }
 }

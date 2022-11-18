@@ -129,7 +129,7 @@ pub fn max(v: &Vec<f64>) -> f64 {
     max
 }
 
-/// Divides a by b element-wise
+/// Divides vector a by vector b element-wise
 pub fn divide(a: &Vec<f64>, b: &Vec<f64>) -> Vec<f64> {
     a.par_iter()
         .zip(b.par_iter())

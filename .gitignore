@@ -2,4 +2,4 @@
 /Cargo.lock
 
 test_data/*.tif
-notebooks/test_output/*.txt
+test_data/test_output/*.txt
