@@ -1,0 +1,47 @@
+# ---
+# jupyter:
+#   jupytext:
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.14.1
+#   kernelspec:
+#     display_name: Python 3.9.12 ('GlassAnalysis')
+#     language: python
+#     name: python3
+# ---
+
+# %%
+# %matplotlib widget
+from pylab import *
+import numpy as np
+import fabio
+from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
+
+# %%
+tth_rust = np.loadtxt("../test_data/test_output/pattern_tth.txt")
+int_rust = np.loadtxt("../test_data/test_output/pattern_int.txt")
+tth_rust_csr = np.loadtxt("../test_data/test_output/pattern_tth_csr.txt")
+int_rust_csr = np.loadtxt("../test_data/test_output/pattern_int_csr.txt")
+
+# %%
+azi = AzimuthalIntegrator()
+azi.load("../test_data/v1.poni")
+fabio_data = fabio.open("../test_data/CeO2_Pilatus1M.tif").data[::-1]
+
+tth_pyFAI, int_pyFAI = azi.integrate1d(fabio_data, len(int_rust), unit="2th_rad", method=("no", "histogram", "cython"), polarization_factor=0.99)
+tth_pyFAI_csr, int_pyFAI_csr = azi.integrate1d(fabio_data, len(int_rust), unit="2th_rad", method=("no", "csr", "cython"), polarization_factor=0.99)
+
+# %%
+figure()
+plot(tth_rust, int_rust, label="rust")
+plot(tth_pyFAI, int_pyFAI, label="pyFAI")
+plot(tth_pyFAI_csr, int_pyFAI_csr, label="pyFAI csr")
+legend()
+
+# %%
+np.savetxt("../test_data/test_output/pattern_tth_pyFAI.txt", tth_pyFAI)
+np.savetxt("../test_data/test_output/pattern_int_pyFAI.txt", int_pyFAI)
+
+# %%

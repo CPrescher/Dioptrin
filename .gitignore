@@ -3,3 +3,5 @@
 
 test_data/*.tif
 test_data/test_output/*.txt
+
+notebooks/*.ipynb
