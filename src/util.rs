@@ -3,6 +3,7 @@ use std::io::prelude::*;
 use std::io::Write;
 use std::path::Path;
 
+/// Downloads the CeO2_Pilatus1M.tiff file from the Dioptas repository into the test_data directory
 pub fn download_pilatus_test_file() {
     let url =
         "https://github.com/Dioptas/Dioptas/raw/develop/dioptas/tests/data/CeO2_Pilatus1M.tif";
@@ -14,6 +15,7 @@ pub fn download_pilatus_test_file() {
     }
 }
 
+/// Saves a vector of floats as a plain text file into the test_data/test_output directory
 pub fn save_vec(path: &str, vec: &Vec<f64>) {
     let dir_str: String = "test_data/test_output/".to_owned();
     fs::create_dir(&dir_str).unwrap_or_default();
@@ -26,6 +28,7 @@ pub fn save_vec(path: &str, vec: &Vec<f64>) {
     }
 }
 
+/// Reads a vector of floats from a plain text file in the test_data/test_reference directory
 pub fn read_vec(path: &str) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     let path_str = "test_data/test_reference/".to_owned() + path;
     let path: &Path = Path::new(path_str.as_str());
@@ -39,18 +42,19 @@ pub fn read_vec(path: &str) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     Ok(vec)
 }
 
-pub fn compare_vecs(exp: &[f64], calc: &[f64], what: &str, precision: f64) {
+/// compares two floats arrays with each other
+pub fn compare_vecs(actual: &[f64], expected: &[f64], what: &str, precision: f64) {
     assert_eq!(
-        exp.len(),
-        calc.len(),
-        "{} length expected = {}, length calculated = {}",
+        actual.len(),
+        expected.len(),
+        "{} actual length = {}, expected length = {}",
         what,
-        exp.len(),
-        calc.len()
+        actual.len(),
+        expected.len()
     );
-    for (i, (e, c)) in exp.iter().zip(calc.iter()).enumerate() {
-        if (*c - *e).abs() > precision {
-            panic!("{}: {} expected = {}, calculated = {}", i, what, *e, *c);
+    for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+        if (*e - *a).abs() > precision {
+            panic!("{}: {} actual = {}, expected = {}", i, what, *a, *e);
         }
     }
 }
