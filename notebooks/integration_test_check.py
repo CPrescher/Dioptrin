@@ -24,6 +24,8 @@ tth_rust = np.loadtxt("../test_data/test_output/pattern_tth.txt")
 int_rust = np.loadtxt("../test_data/test_output/pattern_int.txt")
 tth_rust_csr = np.loadtxt("../test_data/test_output/pattern_tth_csr.txt")
 int_rust_csr = np.loadtxt("../test_data/test_output/pattern_int_csr.txt")
+tth_rust_csr_ss = np.loadtxt("../test_data/test_output/pattern_tth_csr_ss.txt")
+int_rust_csr_ss = np.loadtxt("../test_data/test_output/pattern_int_csr_ss.txt")
 
 # %%
 azi = AzimuthalIntegrator()
@@ -38,6 +40,7 @@ figure()
 plot(tth_rust, int_rust, label="rust")
 plot(tth_pyFAI, int_pyFAI, label="pyFAI")
 plot(tth_pyFAI_csr, int_pyFAI_csr, label="pyFAI csr")
+plot(tth_rust_csr_ss, int_rust_csr_ss, label="rust_csr_ss")
 legend()
 
 # %%
