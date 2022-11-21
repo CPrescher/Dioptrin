@@ -12,8 +12,20 @@ pub fn integrate_csr_benchmark(c: &mut Criterion) {
     let mut integrator = Integrator::new(geometry);
     integrator.integrate_csr(&frame, 1250);
 
-    c.bench_function("bench", |b| {
+    c.bench_function("bench csr", |b| {
         b.iter(|| integrator.integrate_csr(&frame, 1250))
+    });
+}
+
+pub fn integrate_csr_supersample_benchmark(c: &mut Criterion) {
+    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let geometry = Geometry::new(0, 0, poni);
+    let mut integrator = Integrator::new(geometry);
+    integrator.integrate_csr_supersampled(&frame, 1250, 8);
+
+    c.bench_function("bench csr supersampled", |b| {
+        b.iter(|| integrator.integrate_csr_supersampled(&frame, 1250, 8))
     });
 }
 
@@ -23,5 +35,9 @@ pub fn read_frame_benchmark(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, integrate_csr_benchmark);
+criterion_group!(
+    benches,
+    integrate_csr_benchmark,
+    integrate_csr_supersample_benchmark
+);
 criterion_main!(benches);
