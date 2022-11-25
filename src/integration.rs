@@ -1,12 +1,9 @@
 #![allow(dead_code)]
 
-use crate::math;
+use crate::{csr, histogram};
 
 use super::frame::Frame;
 use super::geometry::Geometry;
-use rayon::prelude::*;
-
-use super::math::{divide, get_hist_min_max_step, histogram, histogram_bins};
 
 pub struct Integrator {
     pub geometry: Geometry,
@@ -16,6 +13,7 @@ pub struct Integrator {
     polarization: Vec<f64>,
     csr: Vec<Vec<usize>>,
     csr_supersampled: Vec<Vec<usize>>,
+    csr_supersampled_sub_pixel: usize,
 }
 
 impl Integrator {
@@ -28,6 +26,7 @@ impl Integrator {
             polarization: vec![],
             csr: vec![],
             csr_supersampled: vec![],
+            csr_supersampled_sub_pixel: 0,
         }
     }
 
@@ -48,173 +47,43 @@ impl Integrator {
     /// it is recalculated
     fn update_csr(&mut self, n_points: usize) {
         if self.csr.len() != n_points {
-            self.csr = self.calc_csr(n_points);
+            self.csr = csr::csr(&self.tth, n_points);
         }
     }
 
+    /// checks whether current supersampled csr was calculated for the same number of points (n_points), if not,
+    /// it is recalculated
     fn update_csr_supersampled(&mut self, n_points: usize, n_subpixels: usize) {
-        if self.csr_supersampled.len() != n_points {
-            self.csr_supersampled = self.calc_csr_supersampled(n_points, n_subpixels);
+        if self.csr_supersampled.len() != n_points || self.csr_supersampled_sub_pixel != n_subpixels
+        {
+            self.csr_supersampled =
+                csr::csr_supersampled(&self.geometry, &self.tth, n_points, n_subpixels);
+            self.csr_supersampled_sub_pixel = n_subpixels;
         }
-    }
-
-    /// Calculates a CSR implementation
-    /// This is a vector with length n_points (same as the output pattern). Each element of this vector is
-    /// a vector of indices of the pixels that contribute to the pattern point.
-    fn calc_csr(&self, n_points: usize) -> Vec<Vec<usize>> {
-        let mut csr: Vec<Vec<usize>> = vec![Vec::new(); n_points];
-
-        let (min, _max, step) = get_hist_min_max_step(&self.tth, n_points);
-
-        let index: Vec<usize> = self
-            .tth
-            .par_iter()
-            .map(|tth| math::get_bin(*tth, min, step))
-            .collect();
-
-        for i in 0..self.tth.len() {
-            csr[index[i]].push(i);
-        }
-        csr
-    }
-
-    fn calc_csr_supersampled(&self, n_points: usize, n_subpixels: usize) -> Vec<Vec<usize>> {
-        let mut csr: Vec<Vec<usize>> = vec![Vec::new(); n_points];
-
-        // Estimate the 2theta values of the hull of the detector for detemining the min and max of the integrated pattern
-        let (min, _max, step) = self.calc_supersampled_hist_min_max_step(n_points, n_subpixels);
-        println!("min: {}, max: {}, step: {}", min, _max, step);
-
-        for row in 0..self.geometry.dim1 {
-            let (d1, d2, actual_index) =
-                self.calc_csr_subgrid(row, self.geometry.dim2, n_subpixels);
-
-            // println!("### col: {}", row);
-            // for i in 0..d1.len() {
-            //     println!("{} {} {}", d1[i], d2[i], actual_index[i]);
-            // }
-
-            let tth = self.geometry.calc_tth(&d1, &d2);
-            let bin_indices: Vec<usize> = tth
-                .par_iter()
-                .map(|tth| math::get_bin(*tth, min, step))
-                .collect();
-
-            for (i, bin_index) in bin_indices.iter().enumerate() {
-                csr[*bin_index].push(actual_index[i]);
-                // println!(
-                //     "col: {} i: {}, bin_index: {}, actual_index: {} tth: {} actual_tth: {} tth_diff: {}",
-                //     row, i, bin_index, actual_index[i], tth[i], self.tth[actual_index[i]], tth[i] - self.tth[actual_index[i]]
-                // );
-            }
-        }
-        csr
-    }
-
-    fn calc_csr_subgrid(
-        &self,
-        col: usize,
-        dim2: usize,
-        n_subpixels: usize,
-    ) -> (Vec<f64>, Vec<f64>, Vec<usize>) {
-        let mut d1 = Vec::with_capacity(dim2 * n_subpixels);
-        let mut d2 = Vec::with_capacity(dim2 * n_subpixels);
-        let mut actual_index = Vec::with_capacity(dim2 * n_subpixels);
-
-        let dim_sub = dim2 * n_subpixels;
-
-        for i in 0..n_subpixels {
-            for j in 0..dim_sub {
-                d1.push(col as f64 + (i as f64 + 0.5) / n_subpixels as f64);
-                d2.push((j as f64 + 0.5) / n_subpixels as f64);
-                actual_index.push(col * dim2 + j / n_subpixels);
-            }
-        }
-
-        return (d1, d2, actual_index);
-    }
-
-    fn calc_hull_grid(&self, n_subpixels: usize) -> (Vec<f64>, Vec<f64>) {
-        let size = 2 * (self.geometry.dim1 + self.geometry.dim2 - 2) * n_subpixels;
-        let mut d1 = Vec::with_capacity(size);
-        let mut d2 = Vec::with_capacity(size);
-
-        let border_offset = 0.5 / n_subpixels as f64;
-        let step = 1.0 / n_subpixels as f64;
-
-        // left
-        for i in 0..self.geometry.dim1 * n_subpixels {
-            d1.push(border_offset + i as f64 * step);
-            d2.push(border_offset);
-        }
-
-        // right
-        for i in 0..self.geometry.dim1 * n_subpixels {
-            d1.push(border_offset + i as f64 * step);
-            d2.push(self.geometry.dim2 as f64 - border_offset);
-        }
-
-        // bottom
-        for i in 1..(self.geometry.dim1 * n_subpixels) {
-            d1.push(border_offset);
-            d2.push(border_offset + i as f64 * step);
-        }
-
-        // top
-        for i in 1..(self.geometry.dim1 * n_subpixels) {
-            d1.push(self.geometry.dim1 as f64 - border_offset);
-            d2.push(border_offset + i as f64 * step);
-        }
-        return (d1, d2);
-    }
-
-    fn calc_supersampled_hist_min_max_step(
-        &self,
-        n_points: usize,
-        n_subpixels: usize,
-    ) -> (f64, f64, f64) {
-        let (hull_d1, hull_d2) = self.calc_hull_grid(n_subpixels);
-        let hull_tth = self.geometry.calc_tth(&hull_d1, &hull_d2);
-        let min_tth = self.tth.iter().fold(std::f64::MAX, |a, &b| a.min(b));
-        let max_tth = self.tth.iter().fold(std::f64::MIN, |a, &b| a.max(b));
-        let min_tth_hull = hull_tth.iter().fold(std::f64::MAX, |a, &b| a.min(b));
-        let max_tth_hull = hull_tth.iter().fold(std::f64::MIN, |a, &b| a.max(b));
-
-        let min = min_tth.min(min_tth_hull);
-        let max = max_tth.max(max_tth_hull) + f64::EPSILON;
-        let step = (max - min) / n_points as f64;
-        (min, max, step)
     }
 
     /// Integrate a frame using CSR method
+    ///
+    /// # Arguments
+    /// * `frame` - The frame to integrate
+    /// * `n_points` - the number of points of the resulting pattern
     pub fn integrate_csr(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         self.update_csr(n_points);
 
-        let (min, _max, step) = get_hist_min_max_step(&self.tth, n_points);
-        let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
-
         let intensity = self.correct_intensity(&frame.data);
 
-        // summing all saved pixel indices in the csr for each tth
-        for i in 0..n_points {
-            pattern_intensity[i] += self.csr[i].iter().map(|j| intensity[*j]).sum::<f64>();
-        }
+        let (hist_min, _max, hist_step) = histogram::min_max_step(&self.tth, n_points);
 
-        // obtain the length of each tth vector in the csr
-        let csr_len = self
-            .csr
-            .par_iter()
-            .map(|v| v.len() as f64)
-            .collect::<Vec<f64>>();
-        // divide the summed intensity by the length of each tth vector in the csr for normalization
-        let pattern_intensity: Vec<f64> = divide(&pattern_intensity, &csr_len);
-
-        let pattern_tth = histogram_bins(n_points, min, step);
-
-        (pattern_tth, pattern_intensity)
+        csr::integrate(&intensity, &self.csr, hist_min, hist_step)
     }
 
+    /// Integrate a frame using CSR method with supersampling
+    ///
+    /// # Arguments
+    /// * `frame` - Frame to integrate
+    /// * `n_points` - the number of points of the resulting pattern
+    /// * `n_subpixels` - Number of subpixels per pixel (e.g. 2 means 2x2 subpixels per pixel)
     pub fn integrate_csr_supersampled(
         &mut self,
         frame: &Frame,
@@ -223,39 +92,23 @@ impl Integrator {
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         self.update_csr_supersampled(n_points, n_subpixels);
-
-        let (min, _max, step) = self.calc_supersampled_hist_min_max_step(n_points, n_subpixels);
-        let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
-
         let intensity = self.correct_intensity(&frame.data);
 
-        // summing all saved pixel indices in the csr for each tth
-        for i in 0..n_points {
-            pattern_intensity[i] += self.csr_supersampled[i]
-                .iter()
-                .map(|j| intensity[*j])
-                .sum::<f64>();
-        }
+        let (hist_min, _hist_max, hist_step) =
+            histogram::supersampled_min_max_step(&self.geometry, &self.tth, n_points, n_subpixels);
 
-        // obtain the length of each tth vector in the csr
-        let csr_len = self
-            .csr_supersampled
-            .par_iter()
-            .map(|v| v.len() as f64)
-            .collect::<Vec<f64>>();
-        // divide the summed intensity by the length of each tth vector in the csr for normalization
-        let pattern_intensity: Vec<f64> = divide(&pattern_intensity, &csr_len);
-
-        let pattern_tth = histogram_bins(n_points, min, step);
-
-        (pattern_tth, pattern_intensity)
+        csr::integrate_supersampled(&intensity, &self.csr_supersampled, hist_min, hist_step)
     }
 
     /// Integration of the frame using a simple histogram method
+    ///
+    /// # Arguments
+    /// * `frame` - Frame to integrate
+    /// * `n_points` - the number of points of the resulting pattern
     pub fn integrate(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
-        histogram(&self.tth, &intensity, n_points)
+        histogram::histogram(&self.tth, &intensity, n_points)
     }
 
     /// Apply polarization and solid angle corrections to the intensity
@@ -270,8 +123,10 @@ impl Integrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::math;
     use crate::poni::Poni;
+    use rayon::prelude::*;
     #[path = "../../util.rs"]
     mod util;
 
@@ -336,11 +191,9 @@ mod tests {
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_csr_supersampled(&frame, 850, 10);
+        let (tth, int) = integrator.integrate_csr_supersampled(&frame, 850, 1);
 
         util::save_vec("pattern_tth_csr_ss.txt", &tth);
         util::save_vec("pattern_int_csr_ss.txt", &int);
-        // integrator.update_geometry_arrays(5, 10);
-        // integrator.calc_csr_supersampled(10, 2);
     }
 }
