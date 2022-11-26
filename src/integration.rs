@@ -13,7 +13,7 @@ pub struct Integrator {
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
     csr: Vec<Vec<usize>>,
-    csr_supersampled: Vec<HashMap<usize, usize>>,
+    csr_supersampled: Vec<HashMap<usize, f64>>,
     csr_supersampled_sub_pixel: usize,
 }
 

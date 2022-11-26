@@ -106,9 +106,12 @@ pub fn integrate(
     let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
 
     // summing all saved pixel indices in the csr for each tth
-    for i in 0..n_points {
-        pattern_intensity[i] += csr[i].iter().map(|j| intensity[*j]).sum::<f64>();
-    }
+    pattern_intensity
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, int)| {
+            *int += csr[i].iter().map(|j| intensity[*j]).sum::<f64>();
+        });
 
     // obtain the length of each tth vector in the csr
     let csr_len = csr.par_iter().map(|v| v.len() as f64).collect::<Vec<f64>>();
@@ -134,8 +137,8 @@ pub fn csr_supersampled(
     tth: &Vec<f64>,
     n_points: usize,
     n_subpixels: usize,
-) -> Vec<HashMap<usize, usize>> {
-    let mut csr: Vec<HashMap<usize, usize>> = vec![HashMap::new(); n_points];
+) -> Vec<HashMap<usize, f64>> {
+    let mut csr: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n_points];
 
     // Estimate the 2theta values of the hull of the detector for detemining the min and max of the integrated pattern
     let (min, _max, step) =
@@ -151,11 +154,26 @@ pub fn csr_supersampled(
             .collect();
 
         for (i, bin_index) in bin_indices.iter().enumerate() {
-            let count = csr[*bin_index].entry(actual_index[i]).or_insert(1);
-            *count += 1;
+            let count = csr[*bin_index].entry(actual_index[i]).or_insert(1.0);
+            *count += 1.0;
         }
     }
-    csr
+
+    // obtain the length of each tth vector in the csr
+    let csr_len = csr
+        .par_iter()
+        .map(|hash| hash.values().map(|v| *v as f64).sum())
+        .collect::<Vec<f64>>();
+
+    // divide all values in the csr by the respective length of the tth vector
+    csr.par_iter()
+        .enumerate()
+        .map(|(i, hash)| {
+            hash.par_iter()
+                .map(|(k, v)| (*k, *v as f64 / csr_len[i]))
+                .collect()
+        })
+        .collect()
 }
 
 /// Integrates an image using a CSR implementation with supersampling
@@ -167,28 +185,19 @@ pub fn csr_supersampled(
 /// * `hist_step` - step size of the histogram
 pub fn integrate_supersampled(
     intensity: &Vec<f64>,
-    csr: &Vec<HashMap<usize, usize>>,
+    csr: &Vec<HashMap<usize, f64>>,
     hist_min: f64,
     hist_step: f64,
 ) -> (Vec<f64>, Vec<f64>) {
     let n_points = csr.len();
     let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
 
-    // summing all saved pixel indices in the csr for each tth
-    for i in 0..n_points {
-        pattern_intensity[i] += csr[i]
-            .iter()
-            .map(|(i, v)| intensity[*i] * *v as f64)
-            .sum::<f64>();
-    }
-
-    // obtain the length of each tth vector in the csr
-    let csr_len = csr
-        .par_iter()
-        .map(|hash| hash.values().map(|v| *v as f64).sum())
-        .collect::<Vec<f64>>();
-    // divide the summed intensity by the length of each tth vector in the csr for normalization
-    let pattern_intensity: Vec<f64> = math::divide(&pattern_intensity, &csr_len);
+    pattern_intensity
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, int)| {
+            *int += csr[i].iter().map(|(j, v)| intensity[*j] * *v).sum::<f64>();
+        });
 
     let pattern_tth = histogram::bins(n_points, hist_min, hist_step);
 
