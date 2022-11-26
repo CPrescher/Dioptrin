@@ -1,5 +1,6 @@
 use crate::{geometry::Geometry, histogram, math};
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 /// Creates a d1, d2 subgrid for a column in a dim1 x dim2 grid
 ///
@@ -88,43 +89,6 @@ pub fn csr(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
     csr
 }
 
-/// Calculates a CSR implementation with supersampling
-/// This is a vector with length n_points (same as the output pattern). Each element of this vector is
-/// a vector of indices of the pixels that contribute to the pattern point.
-///
-/// Arguments:
-/// * `geometry` - geometry of the detector
-/// * `tth` - 2theta values of the pixels
-/// * `n_points` - number of points in the output pattern
-/// * `n_subpixels` - number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
-pub fn csr_supersampled(
-    geometry: &Geometry,
-    tth: &Vec<f64>,
-    n_points: usize,
-    n_subpixels: usize,
-) -> Vec<Vec<usize>> {
-    let mut csr: Vec<Vec<usize>> = vec![Vec::new(); n_points];
-
-    // Estimate the 2theta values of the hull of the detector for detemining the min and max of the integrated pattern
-    let (min, _max, step) =
-        histogram::supersampled_min_max_step(&geometry, &tth, n_points, n_subpixels);
-
-    for row in 0..geometry.dim1 {
-        let (d1, d2, actual_index) = subgrid(row, geometry.dim2, n_subpixels);
-
-        let tth = geometry.calc_tth(&d1, &d2);
-        let bin_indices: Vec<usize> = tth
-            .par_iter()
-            .map(|tth| histogram::get_bin(*tth, min, step))
-            .collect();
-
-        for (i, bin_index) in bin_indices.iter().enumerate() {
-            csr[*bin_index].push(actual_index[i]);
-        }
-    }
-    csr
-}
-
 /// Integrates an image using a CSR implementation
 ///
 /// Arguments:
@@ -156,6 +120,44 @@ pub fn integrate(
     (pattern_tth, pattern_intensity)
 }
 
+/// Calculates a CSR implementation with supersampling
+/// This is a vector with length n_points (same as the output pattern). Each element of this vector is
+/// a vector of indices of the pixels that contribute to the pattern point.
+///
+/// Arguments:
+/// * `geometry` - geometry of the detector
+/// * `tth` - 2theta values of the pixels
+/// * `n_points` - number of points in the output pattern
+/// * `n_subpixels` - number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
+pub fn csr_supersampled(
+    geometry: &Geometry,
+    tth: &Vec<f64>,
+    n_points: usize,
+    n_subpixels: usize,
+) -> Vec<HashMap<usize, usize>> {
+    let mut csr: Vec<HashMap<usize, usize>> = vec![HashMap::new(); n_points];
+
+    // Estimate the 2theta values of the hull of the detector for detemining the min and max of the integrated pattern
+    let (min, _max, step) =
+        histogram::supersampled_min_max_step(&geometry, &tth, n_points, n_subpixels);
+
+    for row in 0..geometry.dim1 {
+        let (d1, d2, actual_index) = subgrid(row, geometry.dim2, n_subpixels);
+
+        let tth = geometry.calc_tth(&d1, &d2);
+        let bin_indices: Vec<usize> = tth
+            .par_iter()
+            .map(|tth| histogram::get_bin(*tth, min, step))
+            .collect();
+
+        for (i, bin_index) in bin_indices.iter().enumerate() {
+            let count = csr[*bin_index].entry(actual_index[i]).or_insert(1);
+            *count += 1;
+        }
+    }
+    csr
+}
+
 /// Integrates an image using a CSR implementation with supersampling
 ///
 /// Arguments:
@@ -165,7 +167,7 @@ pub fn integrate(
 /// * `hist_step` - step size of the histogram
 pub fn integrate_supersampled(
     intensity: &Vec<f64>,
-    csr: &Vec<Vec<usize>>,
+    csr: &Vec<HashMap<usize, usize>>,
     hist_min: f64,
     hist_step: f64,
 ) -> (Vec<f64>, Vec<f64>) {
@@ -174,11 +176,17 @@ pub fn integrate_supersampled(
 
     // summing all saved pixel indices in the csr for each tth
     for i in 0..n_points {
-        pattern_intensity[i] += csr[i].iter().map(|j| intensity[*j]).sum::<f64>();
+        pattern_intensity[i] += csr[i]
+            .iter()
+            .map(|(i, v)| intensity[*i] * *v as f64)
+            .sum::<f64>();
     }
 
     // obtain the length of each tth vector in the csr
-    let csr_len = csr.par_iter().map(|v| v.len() as f64).collect::<Vec<f64>>();
+    let csr_len = csr
+        .par_iter()
+        .map(|hash| hash.values().map(|v| *v as f64).sum())
+        .collect::<Vec<f64>>();
     // divide the summed intensity by the length of each tth vector in the csr for normalization
     let pattern_intensity: Vec<f64> = math::divide(&pattern_intensity, &csr_len);
 

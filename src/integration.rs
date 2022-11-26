@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::collections::HashMap;
 
 use crate::{csr, histogram};
 
@@ -12,7 +13,7 @@ pub struct Integrator {
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
     csr: Vec<Vec<usize>>,
-    csr_supersampled: Vec<Vec<usize>>,
+    csr_supersampled: Vec<HashMap<usize, usize>>,
     csr_supersampled_sub_pixel: usize,
 }
 
@@ -191,7 +192,7 @@ mod tests {
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_csr_supersampled(&frame, 850, 1);
+        let (tth, int) = integrator.integrate_csr_supersampled(&frame, 850, 3);
 
         util::save_vec("pattern_tth_csr_ss.txt", &tth);
         util::save_vec("pattern_int_csr_ss.txt", &int);
