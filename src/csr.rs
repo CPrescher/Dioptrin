@@ -53,13 +53,13 @@ pub fn hull_grid(dim1: usize, dim2: usize, n_subpixels: usize) -> (Vec<f64>, Vec
     }
 
     // bottom
-    for i in 1..(dim1 * n_subpixels) {
+    for i in 1..(dim2 * n_subpixels) {
         d1.push(border_offset);
         d2.push(border_offset + i as f64 * step);
     }
 
     // top
-    for i in 1..(dim1 * n_subpixels) {
+    for i in 1..(dim2 * n_subpixels) {
         d1.push(dim1 as f64 - border_offset);
         d2.push(border_offset + i as f64 * step);
     }

@@ -104,13 +104,9 @@ pub fn supersampled_min_max_step(
 ) -> (f64, f64, f64) {
     let (hull_d1, hull_d2) = csr::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
     let hull_tth = geometry.calc_tth(&hull_d1, &hull_d2);
-    let min_tth = tth.iter().fold(std::f64::MAX, |a, &b| a.min(b));
-    let max_tth = tth.iter().fold(std::f64::MIN, |a, &b| a.max(b));
-    let min_tth_hull = hull_tth.iter().fold(std::f64::MAX, |a, &b| a.min(b));
-    let max_tth_hull = hull_tth.iter().fold(std::f64::MIN, |a, &b| a.max(b));
 
-    let min = min_tth.min(min_tth_hull);
-    let max = max_tth.max(max_tth_hull) + f64::EPSILON;
+    let min = math::min(&tth).min(math::min(&hull_tth));
+    let max = math::max(&tth).max(math::max(&hull_tth)) + f64::EPSILON;
     let step = (max - min) / n_points as f64;
     (min, max, step)
 }
