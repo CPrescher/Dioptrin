@@ -65,6 +65,8 @@ impl Integrator {
         }
     }
 
+    /// checks whether current csr2d was calculated for the same number of points in tth and azimuth, if not,
+    /// it is recalculated
     fn update_csr2d(&mut self, n_points_tth: usize, n_points_azi: usize) {
         if self.csr2d.len() != n_points_tth || self.csr2d[0].len() != n_points_azi {
             self.csr2d = csr::csr2d(&self.tth, &self.chi, n_points_tth, n_points_azi);
@@ -109,6 +111,13 @@ impl Integrator {
         csr::integrate_supersampled(&intensity, &self.csr_supersampled, hist_min, hist_step)
     }
 
+    /// Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
+    /// CSR method
+    ///
+    /// # Arguments
+    /// * `frame` - Frame to integrate
+    /// * `n_points_tth` - Number of points in tth direction
+    /// * `n_points_azi` - Number of points in azimuthal angle direction
     pub fn integrate2d_csr(
         &mut self,
         frame: &Frame,

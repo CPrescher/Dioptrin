@@ -67,7 +67,7 @@ pub fn hull_grid(dim1: usize, dim2: usize, n_subpixels: usize) -> (Vec<f64>, Vec
 }
 
 /// Calculates a CSR implementation
-/// This is a vector with length n_points (same as the output pattern). Each element of this vector is
+/// A CSR is a vector with length n_points (same as the output pattern). Each element of this vector is
 /// a vector of indices of the pixels that contribute to the pattern point.
 ///
 /// Arguments:
@@ -89,13 +89,20 @@ pub fn csr(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
     csr
 }
 
+/// Calculates a CSR table for a 2D (cake) integration
+///
+/// Arguments:
+/// * `tth` - two theta values for each pixel
+/// * `azi` - azimuthal values for each pixel
+/// * `n_points_tth` - number of pattern points in ouput pattern in tth direction
+/// * `n_points_azi` - number of pattern points in ouput pattern in azi direction
 pub fn csr2d(
     tth: &Vec<f64>,
     azi: &Vec<f64>,
     n_points_tth: usize,
     n_points_azi: usize,
 ) -> Vec<Vec<Vec<usize>>> {
-    // initialize the CSR matrix
+    // matrix initialization
     let mut csr_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_points_tth);
     for v in 0..n_points_tth {
         csr_2d.push(Vec::with_capacity(n_points_azi));
@@ -104,9 +111,11 @@ pub fn csr2d(
         }
     }
 
+    // find the binning for tth and azi
     let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_points_tth);
     let (min_azi, _max_azi, step_azi) = histogram::min_max_step(azi, n_points_azi);
 
+    // find the indices for tth and azimuth for each pixel
     let tth_index: Vec<usize> = tth
         .par_iter()
         .map(|tth| histogram::get_bin(*tth, min_tth, step_tth))
@@ -162,13 +171,19 @@ pub fn integrate(
     (pattern_tth, pattern_intensity)
 }
 
+/// Integrates a image into a 2d pattern using a CSR implementation
+/// The output cake is a matrix with dimensions n_points_tth x n_points_azi flattened into a vector
 ///
+/// Arguments:
+/// * `intensity` - image intensity
+/// * `csr` - csr2D values
 pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64> {
     let n_points_tth = csr.len();
     let n_points_azi = csr[0].len();
 
     let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
 
+    // add all pixel intensities for each tth and azi to the corresponding pixel in the cake
     cake_intensity
         .par_iter_mut()
         .enumerate()
@@ -179,6 +194,7 @@ pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64>
                 .sum::<f64>();
         });
 
+    // normalize the cake based on the number of pixels in each tth and azi bin
     cake_intensity
         .par_iter_mut()
         .enumerate()
