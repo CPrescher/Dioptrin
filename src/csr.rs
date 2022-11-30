@@ -89,6 +89,45 @@ pub fn csr(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
     csr
 }
 
+pub fn csr2d(
+    tth: &Vec<f64>,
+    azi: &Vec<f64>,
+    n_points_tth: usize,
+    n_points_azi: usize,
+) -> Vec<Vec<Vec<usize>>> {
+    // initialize the CSR matrix
+    let mut csr_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_points_tth);
+    for v in 0..n_points_tth {
+        csr_2d.push(Vec::with_capacity(n_points_azi));
+        for _u in 0..n_points_azi {
+            csr_2d[v].push(Vec::new());
+        }
+    }
+
+    let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_points_tth);
+    let (min_azi, _max_azi, step_azi) = histogram::min_max_step(azi, n_points_azi);
+
+    let tth_index: Vec<usize> = tth
+        .par_iter()
+        .map(|tth| histogram::get_bin(*tth, min_tth, step_tth))
+        .collect();
+
+    let azi_index: Vec<usize> = azi
+        .par_iter()
+        .map(|azi| histogram::get_bin(*azi, min_azi, step_azi))
+        .collect();
+
+    // build CSR
+    for (i, (tth_index, azi_index)) in tth_index.iter().zip(&azi_index).enumerate() {
+        csr_2d[*tth_index][*azi_index].push(i);
+    }
+
+    for (i, (tth_index, azi_index)) in tth_index.iter().zip(&azi_index).enumerate() {
+        csr_2d[*tth_index][*azi_index].push(i);
+    }
+    csr_2d
+}
+
 /// Integrates an image using a CSR implementation
 ///
 /// Arguments:
@@ -121,6 +160,35 @@ pub fn integrate(
     let pattern_tth = histogram::bins(n_points, hist_min, hist_step);
 
     (pattern_tth, pattern_intensity)
+}
+
+///
+pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64> {
+    let n_points_tth = csr.len();
+    let n_points_azi = csr[0].len();
+
+    let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
+
+    cake_intensity
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, int)| {
+            *int += csr[i % n_points_tth][i / n_points_tth]
+                .iter()
+                .map(|j| intensity[*j])
+                .sum::<f64>();
+        });
+
+    cake_intensity
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, int)| {
+            let num_points = csr[i % n_points_tth][i / n_points_tth].len() as f64;
+            if num_points > 0 as f64 {
+                *int /= num_points;
+            }
+        });
+    cake_intensity
 }
 
 /// Calculates a CSR implementation with supersampling

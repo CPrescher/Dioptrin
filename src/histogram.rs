@@ -106,7 +106,7 @@ pub fn supersampled_min_max_step(
     let hull_tth = geometry.calc_tth(&hull_d1, &hull_d2);
 
     let min = math::min(&tth).min(math::min(&hull_tth));
-    let max = math::max(&tth).max(math::max(&hull_tth)) + f64::EPSILON;
+    let max = math::max(&tth).max(math::max(&hull_tth)) + 3.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
     (min, max, step)
 }
@@ -114,7 +114,7 @@ pub fn supersampled_min_max_step(
 /// Estimates min, max and step size for a histogram
 pub fn min_max_step(data: &Vec<f64>, n_points: usize) -> (f64, f64, f64) {
     let min = math::min(data);
-    let max = math::max(data) + f64::EPSILON;
+    let max = math::max(data) + 10.0 * f64::EPSILON; // the +10.0 * epsilon is a hack to avoid rounding errors
     let step = (max - min) / n_points as f64;
     (min, max, step)
 }

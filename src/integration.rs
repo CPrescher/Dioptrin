@@ -15,6 +15,7 @@ pub struct Integrator {
     csr: Vec<Vec<usize>>,
     csr_supersampled: Vec<HashMap<usize, f64>>,
     csr_supersampled_sub_pixel: usize,
+    csr2d: Vec<Vec<Vec<usize>>>,
 }
 
 impl Integrator {
@@ -28,6 +29,7 @@ impl Integrator {
             csr: vec![],
             csr_supersampled: vec![],
             csr_supersampled_sub_pixel: 0,
+            csr2d: vec![],
         }
     }
 
@@ -60,6 +62,12 @@ impl Integrator {
             self.csr_supersampled =
                 csr::csr_supersampled(&self.geometry, &self.tth, n_points, n_subpixels);
             self.csr_supersampled_sub_pixel = n_subpixels;
+        }
+    }
+
+    fn update_csr2d(&mut self, n_points_tth: usize, n_points_azi: usize) {
+        if self.csr2d.len() != n_points_tth * n_points_azi {
+            self.csr2d = csr::csr2d(&self.tth, &self.chi, n_points_tth, n_points_azi);
         }
     }
 
@@ -99,6 +107,19 @@ impl Integrator {
             histogram::supersampled_min_max_step(&self.geometry, &self.tth, n_points, n_subpixels);
 
         csr::integrate_supersampled(&intensity, &self.csr_supersampled, hist_min, hist_step)
+    }
+
+    pub fn integrate2d_csr(
+        &mut self,
+        frame: &Frame,
+        n_points_tth: usize,
+        n_points_azi: usize,
+    ) -> Vec<f64> {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        self.update_csr2d(n_points_tth, n_points_azi);
+        let intensity = self.correct_intensity(&frame.data);
+
+        csr::integrate2d(&intensity, &self.csr2d)
     }
 
     /// Integration of the frame using a simple histogram method
@@ -196,5 +217,16 @@ mod tests {
 
         util::save_vec("pattern_tth_csr_ss.txt", &tth);
         util::save_vec("pattern_int_csr_ss.txt", &int);
+    }
+
+    #[test]
+    fn test_integrate2d_csr() {
+        util::download_pilatus_test_file();
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry);
+        let cake = integrator.integrate2d_csr(&frame, 850, 360);
+        util::save_vec("cake_csr.txt", &cake);
     }
 }
