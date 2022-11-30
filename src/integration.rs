@@ -66,7 +66,7 @@ impl Integrator {
     }
 
     fn update_csr2d(&mut self, n_points_tth: usize, n_points_azi: usize) {
-        if self.csr2d.len() != n_points_tth * n_points_azi {
+        if self.csr2d.len() != n_points_tth || self.csr2d[0].len() != n_points_azi {
             self.csr2d = csr::csr2d(&self.tth, &self.chi, n_points_tth, n_points_azi);
         }
     }
