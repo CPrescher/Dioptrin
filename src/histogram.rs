@@ -6,7 +6,7 @@ use std::thread;
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;
-use crate::{csr, math};
+use crate::{lut, math};
 
 /// Calculates a normalized histogram of weights at data values
 pub fn histogram(data: &Vec<f64>, weights: &Vec<f64>, n_points: usize) -> (Vec<f64>, Vec<f64>) {
@@ -102,7 +102,7 @@ pub fn ss_tth_min_max_step(
     n_points: usize,
     n_ss: usize,
 ) -> (f64, f64, f64) {
-    let (hull_d1, hull_d2) = csr::hull_grid(geometry.dim1, geometry.dim2, n_ss);
+    let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1, geometry.dim2, n_ss);
     let hull_tth = geometry.calc_tth(&hull_d1, &hull_d2);
 
     let min = math::min(&tth).min(math::min(&hull_tth));
@@ -117,7 +117,7 @@ pub fn supersampled_chi_min_max_step(
     n_points: usize,
     n_subpixels: usize,
 ) -> (f64, f64, f64) {
-    let (hull_d1, hull_d2) = csr::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
+    let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
     let hull_chi = geometry.calc_chi(&hull_d1, &hull_d2);
 
     let min = math::min(&chi).min(math::min(&hull_chi));

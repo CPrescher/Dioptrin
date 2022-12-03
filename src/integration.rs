@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::collections::HashMap;
 
-use crate::{csr, histogram};
+use crate::{histogram, lut};
 
 use super::frame::Frame;
 use super::geometry::Geometry;
@@ -12,12 +12,12 @@ pub struct Integrator {
     chi: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
-    csr: Vec<Vec<usize>>,             // csr matrix for 1d integration
-    csr_ss: Vec<HashMap<usize, f64>>, // supersampled csr
-    csr_ss_sub_pixel: usize,
-    csr2d: Vec<Vec<Vec<usize>>>,
-    csr2d_ss: Vec<Vec<HashMap<usize, f64>>>,
-    csr2d_ss_sub_pixel: usize,
+    lut: Vec<Vec<usize>>,                     // lookup table for 1d integration
+    lut_ss: Vec<HashMap<usize, f64>>,         // supersampled lookup table for 1d integration
+    lut_ss_sub_pixel: usize, // number of subpixels for supersampling for 1d integration
+    lut_2d: Vec<Vec<Vec<usize>>>, // lookup table for 2d integration
+    lut_2d_ss: Vec<Vec<HashMap<usize, f64>>>, // supersampled lookup table for 2d integration
+    lust_2d_ss_sub_pixel: usize, // number of subpixels for supersampling for 2d integraion
 }
 
 impl Integrator {
@@ -28,12 +28,12 @@ impl Integrator {
             chi: vec![],
             solid_angle: vec![],
             polarization: vec![],
-            csr: vec![],
-            csr_ss: vec![],
-            csr_ss_sub_pixel: 0,
-            csr2d: vec![],
-            csr2d_ss: vec![],
-            csr2d_ss_sub_pixel: 0,
+            lut: vec![],
+            lut_ss: vec![],
+            lut_ss_sub_pixel: 0,
+            lut_2d: vec![],
+            lut_2d_ss: vec![],
+            lust_2d_ss_sub_pixel: 0,
         }
     }
 
@@ -50,111 +50,130 @@ impl Integrator {
         }
     }
 
-    /// checks whether current csr was calculated for the same number of points (n_points), if not,
+    /// checks whether current lut was calculated for the same number of points (n_points), if not,
     /// it is recalculated
-    fn update_csr(&mut self, n_points: usize) {
-        if self.csr.len() != n_points {
-            self.csr = csr::csr(&self.tth, n_points);
+    fn update_lut(&mut self, n_points: usize) {
+        if self.lut.len() != n_points {
+            self.lut = lut::lut(&self.tth, n_points);
         }
     }
 
-    /// checks whether current supersampled csr was calculated for the same number of points (n_points), if not,
+    /// checks whether current supersampled lookup table (LUT) was calculated for the same number of points (n_points), if not,
     /// it is recalculated
-    fn update_csr_ss(&mut self, n_points: usize, n_subpixels: usize) {
-        if self.csr_ss.len() != n_points || self.csr_ss_sub_pixel != n_subpixels {
-            self.csr_ss = csr::csr_supersampled(&self.geometry, &self.tth, n_points, n_subpixels);
-            self.csr_ss_sub_pixel = n_subpixels;
+    ///
+    /// # Arguments
+    /// * `n_points` - number of points for the 1d integration
+    /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
+    fn update_lut_ss(&mut self, n_points: usize, n_ss: usize) {
+        if self.lut_ss.len() != n_points || self.lut_ss_sub_pixel != n_ss {
+            self.lut_ss = lut::lut_ss(&self.geometry, &self.tth, n_points, n_ss);
+            self.lut_ss_sub_pixel = n_ss;
         }
     }
 
-    /// checks whether current csr2d was calculated for the same number of points in tth and azimuth, if not,
+    /// checks whether current lut_2d was calculated for the same number of points in tth and azimuth, if not,
     /// it is recalculated
-    fn update_csr2d(&mut self, n_points_tth: usize, n_points_azi: usize) {
-        if self.csr2d.len() != n_points_tth || self.csr2d[0].len() != n_points_azi {
-            self.csr2d = csr::csr2d(&self.tth, &self.chi, n_points_tth, n_points_azi);
+    ///
+    /// # Arguments
+    /// * `n_tth` - number of points in tth for the 2d integration
+    /// * `n_azimuth` - number of points in azimuth for the 2d integration
+    fn update_lut_2d(&mut self, n_tth: usize, n_azi: usize) {
+        if self.lut_2d.len() != n_tth || self.lut_2d[0].len() != n_azi {
+            self.lut_2d = lut::lut_2d(&self.tth, &self.chi, n_tth, n_azi);
         }
     }
 
-    fn update_csr2d_ss(&mut self, n_tth: usize, n_azi: usize, n_ss: usize) {
-        if self.csr2d_ss.len() != n_tth
-            || self.csr2d_ss[0].len() != n_azi
-            || self.csr2d_ss_sub_pixel != n_ss
+    /// checks whether current supersampled lut_2d was calculated for the same number of points in tth and azimuth, if not,
+    /// it is recalculated
+    ///
+    /// # Arguments
+    /// * `n_tth` - number of points in tth for the 2d integration
+    /// * `n_azimuth` - number of points in azimuth for the 2d integration
+    /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
+    fn update_lut_2d_ss(&mut self, n_tth: usize, n_azi: usize, n_ss: usize) {
+        if self.lut_2d_ss.len() != n_tth
+            || self.lut_2d_ss[0].len() != n_azi
+            || self.lust_2d_ss_sub_pixel != n_ss
         {
-            self.csr2d_ss = csr::csr2d_ss(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
-            self.csr2d_ss_sub_pixel = n_ss;
+            self.lut_2d_ss =
+                lut::lut_2d_ss(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
+            self.lust_2d_ss_sub_pixel = n_ss;
         }
     }
 
-    /// Integrate a frame using CSR method
+    /// Integrate a frame using look up table method
     ///
     /// # Arguments
     /// * `frame` - The frame to integrate
     /// * `n_points` - the number of points of the resulting pattern
-    pub fn integrate_csr(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+    pub fn integrate_lut(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_csr(n_points);
+        self.update_lut(n_points);
 
         let intensity = self.correct_intensity(&frame.data);
 
         let (hist_min, _max, hist_step) = histogram::min_max_step(&self.tth, n_points);
 
-        csr::integrate(&intensity, &self.csr, hist_min, hist_step)
+        lut::integrate(&intensity, &self.lut, hist_min, hist_step)
     }
 
-    /// Integrate a frame using CSR method with supersampling
+    /// Integrate a frame using lookup table (LUT) method with supersampling
     ///
     /// # Arguments
     /// * `frame` - Frame to integrate
     /// * `n_points` - the number of points of the resulting pattern
-    /// * `n_subpixels` - Number of subpixels per pixel (e.g. 2 means 2x2 subpixels per pixel)
-    pub fn integrate_csr_supersampled(
+    /// * `n_ss` - Number of subpixels per pixel (e.g. 2 means 2x2 subpixels per pixel)
+    pub fn integrate_lut_ss(
         &mut self,
         frame: &Frame,
         n_points: usize,
         n_ss: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_csr_ss(n_points, n_ss);
+        self.update_lut_ss(n_points, n_ss);
         let intensity = self.correct_intensity(&frame.data);
 
         let (hist_min, _hist_max, hist_step) =
             histogram::ss_tth_min_max_step(&self.geometry, &self.tth, n_points, n_ss);
 
-        csr::integrate_ss(&intensity, &self.csr_ss, hist_min, hist_step)
+        lut::integrate_ss(&intensity, &self.lut_ss, hist_min, hist_step)
     }
 
     /// Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
-    /// CSR method
+    /// lookup table (LUT) method
     ///
     /// # Arguments
     /// * `frame` - Frame to integrate
-    /// * `n_points_tth` - Number of points in tth direction
-    /// * `n_points_azi` - Number of points in azimuthal angle direction
-    pub fn integrate2d_csr(
-        &mut self,
-        frame: &Frame,
-        n_points_tth: usize,
-        n_points_azi: usize,
-    ) -> Vec<f64> {
+    /// * `n_tth` - Number of points in tth direction
+    /// * `n_azi` - Number of points in azimuthal angle direction
+    pub fn integrate_2d_lut(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_csr2d(n_points_tth, n_points_azi);
+        self.update_lut_2d(n_tth, n_azi);
         let intensity = self.correct_intensity(&frame.data);
 
-        csr::integrate2d(&intensity, &self.csr2d)
+        lut::integrate2d(&intensity, &self.lut_2d)
     }
 
-    pub fn integrate2d_csr_ss(
+    // Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
+    /// lookup table (LUT) method with supersampling
+    ///
+    /// # Arguments
+    /// * `frame` - Frame to integrate
+    /// * `n_tth` - Number of points in tth direction
+    /// * `n_azi` - Number of points in azimuthal angle direction
+    /// * `n_ss` - Number of subpixels per pixel (e.g. 2 means 2x2 subpixels per pixel)
+    pub fn integrate2d_lut_ss(
         &mut self,
         frame: &Frame,
-        n_points_tth: usize,
-        n_points_azi: usize,
-        n_subpixels: usize,
+        n_tth: usize,
+        n_azi: usize,
+        n_ss: usize,
     ) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_csr2d_ss(n_points_tth, n_points_azi, n_subpixels);
+        self.update_lut_2d_ss(n_tth, n_azi, n_ss);
         let intensity = self.correct_intensity(&frame.data);
 
-        csr::integrate2d_ss(&intensity, &self.csr2d_ss)
+        lut::integrate2d_ss(&intensity, &self.lut_2d_ss)
     }
 
     /// Integration of the frame using a simple histogram method
@@ -215,16 +234,16 @@ mod tests {
     }
 
     #[test]
-    fn test_integrate_csr() {
+    fn test_integrate_lut() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_csr(&frame, 850);
+        let (tth, int) = integrator.integrate_lut(&frame, 850);
 
-        util::save_vec("pattern_tth_csr.txt", &tth);
-        util::save_vec("pattern_int_csr.txt", &int);
+        util::save_vec("pattern_tth_lut.txt", &tth);
+        util::save_vec("pattern_int_lut.txt", &int);
 
         let tth_pyfai = util::read_vec("pattern_tth_pyFAI.txt").unwrap();
         let int_pyfai = util::read_vec("pattern_int_pyFAI.txt").unwrap();
@@ -242,37 +261,37 @@ mod tests {
     }
 
     #[test]
-    fn test_integrate_supersampled_csr() {
+    fn test_integrate_supersampled_lut() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_csr_supersampled(&frame, 850, 3);
+        let (tth, int) = integrator.integrate_lut_ss(&frame, 850, 3);
 
-        util::save_vec("pattern_tth_csr_ss.txt", &tth);
-        util::save_vec("pattern_int_csr_ss.txt", &int);
+        util::save_vec("pattern_tth_lut_ss.txt", &tth);
+        util::save_vec("pattern_int_lut_ss.txt", &int);
     }
 
     #[test]
-    fn test_integrate2d_csr() {
+    fn test_integrate_2d_lut() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let cake = integrator.integrate2d_csr(&frame, 850, 360);
-        util::save_vec("cake_csr.txt", &cake);
+        let cake = integrator.integrate_2d_lut(&frame, 850, 360);
+        util::save_vec("cake_lut.txt", &cake);
     }
 
     #[test]
-    fn test_integrate2d_csr_ss() {
+    fn test_integrate_2d_lut_ss() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let cake = integrator.integrate2d_csr_ss(&frame, 850, 360, 5);
-        util::save_vec("cake_csr_ss.txt", &cake);
+        let cake = integrator.integrate2d_lut_ss(&frame, 850, 360, 5);
+        util::save_vec("cake_lut_ss.txt", &cake);
     }
 }

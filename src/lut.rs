@@ -66,15 +66,15 @@ pub fn hull_grid(dim1: usize, dim2: usize, n_ss: usize) -> (Vec<f64>, Vec<f64>) 
     return (d1, d2);
 }
 
-/// Calculates a CSR implementation
-/// A CSR is a vector with length n_points (same as the output pattern). Each element of this vector is
+/// Calculates a look up table (LUT) implementation for a given geometry
+/// A LUT is a vector with length n_points (same as the output pattern). Each element of this vector is
 /// a vector of indices of the pixels that contribute to the pattern point.
 ///
 /// Arguments:
 /// * `tth` - two theta values for each pixel
 /// * `n_points` - number of pattern points in ouput pattern
-pub fn csr(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
-    let mut csr: Vec<Vec<usize>> = vec![Vec::new(); n_points];
+pub fn lut(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
+    let mut lut: Vec<Vec<usize>> = vec![Vec::new(); n_points];
 
     let (min, _max, step) = histogram::min_max_step(tth, n_points);
 
@@ -84,25 +84,25 @@ pub fn csr(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
         .collect();
 
     for i in 0..tth.len() {
-        csr[index[i]].push(i);
+        lut[index[i]].push(i);
     }
-    csr
+    lut
 }
 
-/// Calculates a CSR table for a 2D (cake) integration
+/// Calculates a lookup table (LUT) for a 2D (cake) integration
 ///
 /// Arguments:
 /// * `tth` - two theta values for each pixel
 /// * `azi` - azimuthal values for each pixel
 /// * `n_tth` - number of pattern points in ouput pattern in tth direction
 /// * `n_azi` - number of pattern points in ouput pattern in azi direction
-pub fn csr2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec<Vec<Vec<usize>>> {
+pub fn lut_2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec<Vec<Vec<usize>>> {
     // matrix initialization
-    let mut csr_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_tth);
+    let mut lut_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_tth);
     for v in 0..n_tth {
-        csr_2d.push(Vec::with_capacity(n_azi));
+        lut_2d.push(Vec::with_capacity(n_azi));
         for _u in 0..n_azi {
-            csr_2d[v].push(Vec::new());
+            lut_2d[v].push(Vec::new());
         }
     }
 
@@ -121,56 +121,56 @@ pub fn csr2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec<
         .map(|azi| histogram::get_bin(*azi, min_azi, step_azi))
         .collect();
 
-    // build CSR
+    // build LUT
     for (i, (tth_index, azi_index)) in tth_index.iter().zip(&azi_index).enumerate() {
-        csr_2d[*tth_index][*azi_index].push(i);
+        lut_2d[*tth_index][*azi_index].push(i);
     }
-    csr_2d
+    lut_2d
 }
 
-/// Integrates an image using a CSR implementation
+/// Integrates an image using a lookup table implementation implementation
 ///
 /// Arguments:
 /// * `intensity` - image intensity
-/// * `csr` - CSR implementation
+/// * `lut` - lookup table created before by the lut(..) function
 /// * `hist_min` - minimum value of the histogram
 /// * `hist_step` - step size of the histogram
 pub fn integrate(
     intensity: &Vec<f64>,
-    csr: &Vec<Vec<usize>>,
+    lut: &Vec<Vec<usize>>,
     hist_min: f64,
     hist_step: f64,
 ) -> (Vec<f64>, Vec<f64>) {
-    let n_points = csr.len();
+    let n_points = lut.len();
     let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
 
-    // summing all saved pixel indices in the csr for each tth
+    // summing all saved pixel indices in the lookup table for each tth
     pattern_intensity
         .par_iter_mut()
         .enumerate()
         .for_each(|(i, int)| {
-            *int += csr[i].iter().map(|j| intensity[*j]).sum::<f64>();
+            *int += lut[i].iter().map(|j| intensity[*j]).sum::<f64>();
         });
 
-    // obtain the length of each tth vector in the csr
-    let csr_len = csr.par_iter().map(|v| v.len() as f64).collect::<Vec<f64>>();
-    // divide the summed intensity by the length of each tth vector in the csr for normalization
-    let pattern_intensity: Vec<f64> = math::divide(&pattern_intensity, &csr_len);
+    // obtain the length of each tth vector in the lut
+    let lut_len = lut.par_iter().map(|v| v.len() as f64).collect::<Vec<f64>>();
+    // divide the summed intensity by the length of each tth vector in the lut for normalization
+    let pattern_intensity: Vec<f64> = math::divide(&pattern_intensity, &lut_len);
 
     let pattern_tth = histogram::bins(n_points, hist_min, hist_step);
 
     (pattern_tth, pattern_intensity)
 }
 
-/// Integrates a image into a 2d pattern using a CSR implementation
+/// Integrates a image into a 2d pattern using a lookup table implementation
 /// The output cake is a matrix with dimensions n_points_tth x n_points_azi flattened into a vector
 ///
 /// Arguments:
 /// * `intensity` - image intensity
-/// * `csr` - csr2D values
-pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64> {
-    let n_points_tth = csr.len();
-    let n_points_azi = csr[0].len();
+/// * `lut_2d` - lookup table created before by the lut_2d(..) function
+pub fn integrate2d(intensity: &Vec<f64>, lut_2d: &Vec<Vec<Vec<usize>>>) -> Vec<f64> {
+    let n_points_tth = lut_2d.len();
+    let n_points_azi = lut_2d[0].len();
 
     let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
 
@@ -179,7 +179,7 @@ pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64>
         .par_iter_mut()
         .enumerate()
         .for_each(|(i, int)| {
-            *int += csr[i % n_points_tth][i / n_points_tth]
+            *int += lut_2d[i % n_points_tth][i / n_points_tth]
                 .iter()
                 .map(|j| intensity[*j])
                 .sum::<f64>();
@@ -190,7 +190,7 @@ pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64>
         .par_iter_mut()
         .enumerate()
         .for_each(|(i, int)| {
-            let num_points = csr[i % n_points_tth][i / n_points_tth].len() as f64;
+            let num_points = lut_2d[i % n_points_tth][i / n_points_tth].len() as f64;
             if num_points > 0 as f64 {
                 *int /= num_points;
             }
@@ -198,7 +198,7 @@ pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64>
     cake_intensity
 }
 
-/// Calculates a CSR implementation with supersampling
+/// Calculates a lookup table (LUT) implementation with supersampling
 /// This is a vector with length n_points (same as the output pattern). Each element of this vector is
 /// a vector of indices of the pixels that contribute to the pattern point.
 ///
@@ -206,20 +206,20 @@ pub fn integrate2d(intensity: &Vec<f64>, csr: &Vec<Vec<Vec<usize>>>) -> Vec<f64>
 /// * `geometry` - geometry of the detector
 /// * `tth` - 2theta values of the pixels
 /// * `n_points` - number of points in the output pattern
-/// * `n_subpixels` - number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
-pub fn csr_supersampled(
+/// * `n_ss` - super sampling factor, number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
+pub fn lut_ss(
     geometry: &Geometry,
     tth: &Vec<f64>,
     n_points: usize,
-    n_subpixels: usize,
+    n_ss: usize,
 ) -> Vec<HashMap<usize, f64>> {
-    let mut csr: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n_points];
+    let mut lut: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n_points];
 
     // Estimate the 2theta values of the hull of the detector for detemining the min and max of the integrated pattern
-    let (min, _max, step) = histogram::ss_tth_min_max_step(&geometry, &tth, n_points, n_subpixels);
+    let (min, _max, step) = histogram::ss_tth_min_max_step(&geometry, &tth, n_points, n_ss);
 
     for row in 0..geometry.dim1 {
-        let (d1, d2, actual_index) = subgrid(row, geometry.dim2, n_subpixels);
+        let (d1, d2, actual_index) = subgrid(row, geometry.dim2, n_ss);
 
         let tth = geometry.calc_tth(&d1, &d2);
         let tth_bin_indices: Vec<usize> = tth
@@ -228,29 +228,29 @@ pub fn csr_supersampled(
             .collect();
 
         for (i, bin_index) in tth_bin_indices.iter().enumerate() {
-            let count = csr[*bin_index].entry(actual_index[i]).or_insert(1.0);
+            let count = lut[*bin_index].entry(actual_index[i]).or_insert(1.0);
             *count += 1.0;
         }
     }
 
-    // obtain the length of each tth vector in the csr
-    let csr_len = csr
+    // obtain the length of each tth vector in the lookup table
+    let lut_len = lut
         .par_iter()
         .map(|hash| hash.values().map(|v| *v as f64).sum())
         .collect::<Vec<f64>>();
 
-    // divide all values in the csr by the respective length of the tth vector
-    csr.par_iter()
+    // divide all values in the lookup table by the respective length of the tth vector
+    lut.par_iter()
         .enumerate()
         .map(|(i, hash)| {
             hash.par_iter()
-                .map(|(k, v)| (*k, *v as f64 / csr_len[i]))
+                .map(|(k, v)| (*k, *v as f64 / lut_len[i]))
                 .collect()
         })
         .collect()
 }
 
-pub fn csr2d_ss(
+pub fn lut_2d_ss(
     geometry: &Geometry,
     tth: &Vec<f64>,
     azi: &Vec<f64>,
@@ -259,11 +259,11 @@ pub fn csr2d_ss(
     n_ss: usize,
 ) -> Vec<Vec<HashMap<usize, f64>>> {
     // matrix initialization
-    let mut csr_2d: Vec<Vec<HashMap<usize, f64>>> = Vec::with_capacity(n_tth);
+    let mut lut_2d: Vec<Vec<HashMap<usize, f64>>> = Vec::with_capacity(n_tth);
     for v in 0..n_tth {
-        csr_2d.push(Vec::with_capacity(n_azi));
+        lut_2d.push(Vec::with_capacity(n_azi));
         for _u in 0..n_azi {
-            csr_2d[v].push(HashMap::new());
+            lut_2d[v].push(HashMap::new());
         }
     }
 
@@ -288,15 +288,15 @@ pub fn csr2d_ss(
 
         for (i, (tth_index, azi_index)) in tth_indices.iter().zip(&azi_indices).enumerate() {
             let azi_capped = azi_index % n_azi;
-            let count = csr_2d[*tth_index][azi_capped]
+            let count = lut_2d[*tth_index][azi_capped]
                 .entry(actual_index[i])
                 .or_insert(1.0);
             *count += 1.0;
         }
     }
 
-    // obtain the length of each intensity vector in the csr
-    let csr_len = csr_2d
+    // obtain the length of each intensity vector in the lut
+    let lut_len = lut_2d
         .par_iter()
         .map(|v| {
             v.par_iter()
@@ -305,8 +305,8 @@ pub fn csr2d_ss(
         })
         .collect::<Vec<Vec<f64>>>();
 
-    // divide all values in the csr by the respective length of the intensity vector
-    csr_2d
+    // divide all values in the lut by the respective length of the intensity vector
+    lut_2d
         .par_iter()
         .enumerate()
         .map(|(i, v)| {
@@ -314,7 +314,7 @@ pub fn csr2d_ss(
                 .enumerate()
                 .map(|(j, hash)| {
                     hash.par_iter()
-                        .map(|(k, v)| (*k, *v as f64 / csr_len[i][j]))
+                        .map(|(k, v)| (*k, *v as f64 / lut_len[i][j]))
                         .collect()
                 })
                 .collect::<Vec<HashMap<usize, f64>>>()
@@ -322,9 +322,9 @@ pub fn csr2d_ss(
         .collect()
 }
 
-pub fn integrate2d_ss(intensity: &Vec<f64>, csr: &Vec<Vec<HashMap<usize, f64>>>) -> Vec<f64> {
-    let n_points_tth = csr.len();
-    let n_points_azi = csr[0].len();
+pub fn integrate2d_ss(intensity: &Vec<f64>, lut: &Vec<Vec<HashMap<usize, f64>>>) -> Vec<f64> {
+    let n_points_tth = lut.len();
+    let n_points_azi = lut[0].len();
 
     let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
 
@@ -333,7 +333,7 @@ pub fn integrate2d_ss(intensity: &Vec<f64>, csr: &Vec<Vec<HashMap<usize, f64>>>)
         .par_iter_mut()
         .enumerate()
         .for_each(|(i, int)| {
-            *int += csr[i % n_points_tth][i / n_points_tth]
+            *int += lut[i % n_points_tth][i / n_points_tth]
                 .iter()
                 .map(|(j, v)| intensity[*j] * *v)
                 .sum::<f64>();
@@ -342,27 +342,27 @@ pub fn integrate2d_ss(intensity: &Vec<f64>, csr: &Vec<Vec<HashMap<usize, f64>>>)
     cake_intensity
 }
 
-/// Integrates an image using a CSR implementation with supersampling
+/// Integrates an image using a LUT implementation with supersampling
 ///
 /// Arguments:
 /// * `intensity` - image intensity
-/// * `csr` - CSR implementation
+/// * `lut` - lookup table previously generated with the lut_ss(..) function
 /// * `hist_min` - minimum value of the histogram
 /// * `hist_step` - step size of the histogram
 pub fn integrate_ss(
     intensity: &Vec<f64>,
-    csr: &Vec<HashMap<usize, f64>>,
+    lut: &Vec<HashMap<usize, f64>>,
     hist_min: f64,
     hist_step: f64,
 ) -> (Vec<f64>, Vec<f64>) {
-    let n_points = csr.len();
+    let n_points = lut.len();
     let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
 
     pattern_intensity
         .par_iter_mut()
         .enumerate()
         .for_each(|(i, int)| {
-            *int += csr[i].iter().map(|(j, v)| intensity[*j] * *v).sum::<f64>();
+            *int += lut[i].iter().map(|(j, v)| intensity[*j] * *v).sum::<f64>();
         });
 
     let pattern_tth = histogram::bins(n_points, hist_min, hist_step);
