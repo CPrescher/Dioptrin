@@ -195,11 +195,12 @@ impl Geometry {
         let (x_sample, y_sample, z_sample) =
             self.calc_pixel_positions_with_sample_reference(&d1_cart_poni, &d2_cart_poni);
 
-        let mut tth = Vec::with_capacity(d1.len());
-        for i in 0..d1.len() {
-            tth.push(math::f_tth(&x_sample[i], &y_sample[i], &z_sample[i]));
-        }
-        tth
+        x_sample
+            .par_iter()
+            .zip(&y_sample)
+            .zip(&z_sample)
+            .map(|((x, y), z)| math::f_tth(x, y, z))
+            .collect()
     }
 
     /// Calculates the azimuthal angle in radians for each pixel in the detector
@@ -211,6 +212,50 @@ impl Geometry {
             .map(|(x, y)| math::f_chi(x, y))
             .collect();
         chi
+    }
+
+    /// Calculates the azimuthal angle in radians for given pixel coordinates.
+    ///
+    /// Arguments:
+    ///   * `d1` - pixel positions in Y image (|) direction
+    ///   * `d2` - pixel positions in X image (_) direction
+    pub fn calc_chi(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> Vec<f64> {
+        let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
+        let (d1_cart_poni, d2_cart_poni) =
+            self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
+        let (x_sample, y_sample, _z_sample) =
+            self.calc_pixel_positions_with_sample_reference(&d1_cart_poni, &d2_cart_poni);
+
+        x_sample
+            .par_iter()
+            .zip(&y_sample)
+            .map(|(x, y)| math::f_chi(x, y))
+            .collect()
+    }
+
+    /// Calculates two theta and azimuthal angle in radians for each pixel in the detector.
+    /// Combined function to reduce overhead for calculating each time the transform into sample reference geometry.
+    pub fn calc_tth_and_chi(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+        let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
+        let (d1_cart_poni, d2_cart_poni) =
+            self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
+        let (x_sample, y_sample, z_sample) =
+            self.calc_pixel_positions_with_sample_reference(&d1_cart_poni, &d2_cart_poni);
+
+        let tth = x_sample
+            .par_iter()
+            .zip(&y_sample)
+            .zip(&z_sample)
+            .map(|((x, y), z)| math::f_tth(x, y, z))
+            .collect();
+
+        let chi = x_sample
+            .par_iter()
+            .zip(&y_sample)
+            .map(|(x, y)| math::f_chi(x, y))
+            .collect();
+
+        (tth, chi)
     }
 
     /// Calculates Solid Angle for each pixel in the detector
@@ -458,6 +503,49 @@ mod tests {
 
         let chi_ref = util::read_vec("chi_pyFAI.txt").unwrap();
         util::compare_vecs(&chi, &chi_ref, "chi", 1e-6);
+    }
+
+    fn calc_chi() {
+        let poni = Poni::load("test_data/v1.poni").unwrap();
+        let geometry = Geometry::new(DIM1, DIM2, poni);
+
+        let mut d1 = Vec::with_capacity(geometry.size());
+        let mut d2 = Vec::with_capacity(geometry.size());
+
+        for i in 0..DIM1 {
+            for j in 0..DIM2 {
+                d1.push(i as f64 + 0.5);
+                d2.push(j as f64 + 0.5);
+            }
+        }
+
+        let chi = geometry.calc_chi(&d1, &d2);
+        let chi_all = geometry.calc_chi_all();
+        util::compare_vecs(&chi, &chi_all, "tth", 1e-10);
+    }
+
+    #[test]
+    fn calc_tth_and_chi() {
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let geometry = Geometry::new(DIM1, DIM2, poni);
+
+        let mut d1 = Vec::with_capacity(geometry.size());
+        let mut d2 = Vec::with_capacity(geometry.size());
+
+        for i in 0..DIM1 {
+            for j in 0..DIM2 {
+                d1.push(i as f64 + 0.5);
+                d2.push(j as f64 + 0.5);
+            }
+        }
+
+        let (tth, chi) = geometry.calc_tth_and_chi(&d1, &d2);
+
+        let tth_all = geometry.calc_tth_all();
+        let chi_all = geometry.calc_chi_all();
+
+        util::compare_vecs(&tth, &tth_all, "tth", 1e-10);
+        util::compare_vecs(&chi, &chi_all, "chi", 1e-10);
     }
 
     #[test]

@@ -7,19 +7,19 @@ use std::collections::HashMap;
 /// Arguments:
 ///   * `row` - column index for the sub grid
 ///   * `dim2` - number of points in horizontal direction (-)
-///   * `n_subpixels` - number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
-pub fn subgrid(row: usize, dim2: usize, n_subpixels: usize) -> (Vec<f64>, Vec<f64>, Vec<usize>) {
-    let mut d1 = Vec::with_capacity(dim2 * n_subpixels);
-    let mut d2 = Vec::with_capacity(dim2 * n_subpixels);
-    let mut actual_index = Vec::with_capacity(dim2 * n_subpixels);
+///   * `n_ss` - supersampling factor -> number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
+pub fn subgrid(row: usize, dim2: usize, n_ss: usize) -> (Vec<f64>, Vec<f64>, Vec<usize>) {
+    let mut d1 = Vec::with_capacity(dim2 * n_ss);
+    let mut d2 = Vec::with_capacity(dim2 * n_ss);
+    let mut actual_index = Vec::with_capacity(dim2 * n_ss);
 
-    let dim_sub = dim2 * n_subpixels;
+    let dim_sub = dim2 * n_ss;
 
-    for i in 0..n_subpixels {
+    for i in 0..n_ss {
         for j in 0..dim_sub {
-            d1.push(row as f64 + (i as f64 + 0.5) / n_subpixels as f64);
-            d2.push((j as f64 + 0.5) / n_subpixels as f64);
-            actual_index.push(row * dim2 + j / n_subpixels);
+            d1.push(row as f64 + (i as f64 + 0.5) / n_ss as f64);
+            d2.push((j as f64 + 0.5) / n_ss as f64);
+            actual_index.push(row * dim2 + j / n_ss);
         }
     }
 
@@ -31,35 +31,35 @@ pub fn subgrid(row: usize, dim2: usize, n_subpixels: usize) -> (Vec<f64>, Vec<f6
 /// Arguments:
 /// * `dim1` - number of points in vertical direction (-)
 /// * `dim2` - number of points in horizontal direction (-)
-/// * `n_subpixels` - number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
-pub fn hull_grid(dim1: usize, dim2: usize, n_subpixels: usize) -> (Vec<f64>, Vec<f64>) {
-    let size = 2 * (dim1 + dim2 - 2) * n_subpixels;
+/// * `n_ss` - supersampling factor -> number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
+pub fn hull_grid(dim1: usize, dim2: usize, n_ss: usize) -> (Vec<f64>, Vec<f64>) {
+    let size = 2 * (dim1 + dim2 - 2) * n_ss;
     let mut d1 = Vec::with_capacity(size);
     let mut d2 = Vec::with_capacity(size);
 
-    let border_offset = 0.5 / n_subpixels as f64;
-    let step = 1.0 / n_subpixels as f64;
+    let border_offset = 0.5 / n_ss as f64;
+    let step = 1.0 / n_ss as f64;
 
     // left
-    for i in 0..dim1 * n_subpixels {
+    for i in 0..dim1 * n_ss {
         d1.push(border_offset + i as f64 * step);
         d2.push(border_offset);
     }
 
     // right
-    for i in 0..dim1 * n_subpixels {
+    for i in 0..dim1 * n_ss {
         d1.push(border_offset + i as f64 * step);
         d2.push(dim2 as f64 - border_offset);
     }
 
     // bottom
-    for i in 1..(dim2 * n_subpixels) {
+    for i in 1..(dim2 * n_ss) {
         d1.push(border_offset);
         d2.push(border_offset + i as f64 * step);
     }
 
     // top
-    for i in 1..(dim2 * n_subpixels) {
+    for i in 1..(dim2 * n_ss) {
         d1.push(dim1 as f64 - border_offset);
         d2.push(border_offset + i as f64 * step);
     }
@@ -94,26 +94,21 @@ pub fn csr(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
 /// Arguments:
 /// * `tth` - two theta values for each pixel
 /// * `azi` - azimuthal values for each pixel
-/// * `n_points_tth` - number of pattern points in ouput pattern in tth direction
-/// * `n_points_azi` - number of pattern points in ouput pattern in azi direction
-pub fn csr2d(
-    tth: &Vec<f64>,
-    azi: &Vec<f64>,
-    n_points_tth: usize,
-    n_points_azi: usize,
-) -> Vec<Vec<Vec<usize>>> {
+/// * `n_tth` - number of pattern points in ouput pattern in tth direction
+/// * `n_azi` - number of pattern points in ouput pattern in azi direction
+pub fn csr2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec<Vec<Vec<usize>>> {
     // matrix initialization
-    let mut csr_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_points_tth);
-    for v in 0..n_points_tth {
-        csr_2d.push(Vec::with_capacity(n_points_azi));
-        for _u in 0..n_points_azi {
+    let mut csr_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_tth);
+    for v in 0..n_tth {
+        csr_2d.push(Vec::with_capacity(n_azi));
+        for _u in 0..n_azi {
             csr_2d[v].push(Vec::new());
         }
     }
 
     // find the binning for tth and azi
-    let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_points_tth);
-    let (min_azi, _max_azi, step_azi) = histogram::min_max_step(azi, n_points_azi);
+    let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_tth);
+    let (min_azi, _max_azi, step_azi) = histogram::min_max_step(azi, n_azi);
 
     // find the indices for tth and azimuth for each pixel
     let tth_index: Vec<usize> = tth
@@ -127,10 +122,6 @@ pub fn csr2d(
         .collect();
 
     // build CSR
-    for (i, (tth_index, azi_index)) in tth_index.iter().zip(&azi_index).enumerate() {
-        csr_2d[*tth_index][*azi_index].push(i);
-    }
-
     for (i, (tth_index, azi_index)) in tth_index.iter().zip(&azi_index).enumerate() {
         csr_2d[*tth_index][*azi_index].push(i);
     }
@@ -225,19 +216,18 @@ pub fn csr_supersampled(
     let mut csr: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n_points];
 
     // Estimate the 2theta values of the hull of the detector for detemining the min and max of the integrated pattern
-    let (min, _max, step) =
-        histogram::supersampled_min_max_step(&geometry, &tth, n_points, n_subpixels);
+    let (min, _max, step) = histogram::ss_tth_min_max_step(&geometry, &tth, n_points, n_subpixels);
 
     for row in 0..geometry.dim1 {
         let (d1, d2, actual_index) = subgrid(row, geometry.dim2, n_subpixels);
 
         let tth = geometry.calc_tth(&d1, &d2);
-        let bin_indices: Vec<usize> = tth
+        let tth_bin_indices: Vec<usize> = tth
             .par_iter()
             .map(|tth| histogram::get_bin(*tth, min, step))
             .collect();
 
-        for (i, bin_index) in bin_indices.iter().enumerate() {
+        for (i, bin_index) in tth_bin_indices.iter().enumerate() {
             let count = csr[*bin_index].entry(actual_index[i]).or_insert(1.0);
             *count += 1.0;
         }
@@ -260,6 +250,98 @@ pub fn csr_supersampled(
         .collect()
 }
 
+pub fn csr2d_ss(
+    geometry: &Geometry,
+    tth: &Vec<f64>,
+    azi: &Vec<f64>,
+    n_tth: usize,
+    n_azi: usize,
+    n_ss: usize,
+) -> Vec<Vec<HashMap<usize, f64>>> {
+    // matrix initialization
+    let mut csr_2d: Vec<Vec<HashMap<usize, f64>>> = Vec::with_capacity(n_tth);
+    for v in 0..n_tth {
+        csr_2d.push(Vec::with_capacity(n_azi));
+        for _u in 0..n_azi {
+            csr_2d[v].push(HashMap::new());
+        }
+    }
+
+    let (tth_min, _max, tth_step) = histogram::ss_tth_min_max_step(&geometry, &tth, n_tth, n_ss);
+
+    let (azi_min, _max, azi_step) =
+        histogram::supersampled_chi_min_max_step(&geometry, &azi, n_azi, n_ss);
+
+    for row in 0..geometry.dim1 {
+        let (d1, d2, actual_index) = subgrid(row, geometry.dim2, n_ss);
+
+        let (tth, azi) = geometry.calc_tth_and_chi(&d1, &d2);
+        let tth_indices: Vec<usize> = tth
+            .par_iter()
+            .map(|tth| histogram::get_bin(*tth, tth_min, tth_step))
+            .collect();
+
+        let azi_indices: Vec<usize> = azi
+            .par_iter()
+            .map(|azi| histogram::get_bin(*azi, azi_min, azi_step))
+            .collect();
+
+        for (i, (tth_index, azi_index)) in tth_indices.iter().zip(&azi_indices).enumerate() {
+            let azi_capped = azi_index % n_azi;
+            let count = csr_2d[*tth_index][azi_capped]
+                .entry(actual_index[i])
+                .or_insert(1.0);
+            *count += 1.0;
+        }
+    }
+
+    // obtain the length of each intensity vector in the csr
+    let csr_len = csr_2d
+        .par_iter()
+        .map(|v| {
+            v.par_iter()
+                .map(|hash| hash.values().map(|v| *v as f64).sum())
+                .collect::<Vec<f64>>()
+        })
+        .collect::<Vec<Vec<f64>>>();
+
+    // divide all values in the csr by the respective length of the intensity vector
+    csr_2d
+        .par_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.par_iter()
+                .enumerate()
+                .map(|(j, hash)| {
+                    hash.par_iter()
+                        .map(|(k, v)| (*k, *v as f64 / csr_len[i][j]))
+                        .collect()
+                })
+                .collect::<Vec<HashMap<usize, f64>>>()
+        })
+        .collect()
+}
+
+pub fn integrate2d_ss(intensity: &Vec<f64>, csr: &Vec<Vec<HashMap<usize, f64>>>) -> Vec<f64> {
+    let n_points_tth = csr.len();
+    let n_points_azi = csr[0].len();
+
+    let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
+
+    // add all pixel intensities for each tth and azi to the corresponding pixel in the cake
+    cake_intensity
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, int)| {
+            *int += csr[i % n_points_tth][i / n_points_tth]
+                .iter()
+                .map(|(j, v)| intensity[*j] * *v)
+                .sum::<f64>();
+        });
+
+    cake_intensity
+}
+
 /// Integrates an image using a CSR implementation with supersampling
 ///
 /// Arguments:
@@ -267,7 +349,7 @@ pub fn csr_supersampled(
 /// * `csr` - CSR implementation
 /// * `hist_min` - minimum value of the histogram
 /// * `hist_step` - step size of the histogram
-pub fn integrate_supersampled(
+pub fn integrate_ss(
     intensity: &Vec<f64>,
     csr: &Vec<HashMap<usize, f64>>,
     hist_min: f64,

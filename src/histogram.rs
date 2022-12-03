@@ -96,17 +96,32 @@ pub fn get_bin(value: f64, min: f64, step: f64) -> usize {
     ((value - min) / step) as usize
 }
 
-pub fn supersampled_min_max_step(
+pub fn ss_tth_min_max_step(
     geometry: &Geometry,
     tth: &Vec<f64>,
     n_points: usize,
-    n_subpixels: usize,
+    n_ss: usize,
 ) -> (f64, f64, f64) {
-    let (hull_d1, hull_d2) = csr::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
+    let (hull_d1, hull_d2) = csr::hull_grid(geometry.dim1, geometry.dim2, n_ss);
     let hull_tth = geometry.calc_tth(&hull_d1, &hull_d2);
 
     let min = math::min(&tth).min(math::min(&hull_tth));
     let max = math::max(&tth).max(math::max(&hull_tth)) + 3.0 * f64::EPSILON;
+    let step = (max - min) / n_points as f64;
+    (min, max, step)
+}
+
+pub fn supersampled_chi_min_max_step(
+    geometry: &Geometry,
+    chi: &Vec<f64>,
+    n_points: usize,
+    n_subpixels: usize,
+) -> (f64, f64, f64) {
+    let (hull_d1, hull_d2) = csr::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
+    let hull_chi = geometry.calc_chi(&hull_d1, &hull_d2);
+
+    let min = math::min(&chi).min(math::min(&hull_chi));
+    let max = math::max(&chi).max(math::max(&hull_chi)) + 3.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
     (min, max, step)
 }

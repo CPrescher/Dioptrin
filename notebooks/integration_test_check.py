@@ -14,7 +14,7 @@
 # ---
 
 # %%
-# %matplotlib widget
+# %matplotlib notebook
 from pylab import *
 import numpy as np
 import fabio
@@ -52,19 +52,23 @@ np.savetxt("../test_data/test_output/pattern_int_pyFAI.txt", int_pyFAI)
 # %%
 cake_rust = np.loadtxt("../test_data/test_output/cake_csr.txt")
 cake_rust_array = cake_rust.reshape((360, 850))
+
+cake_rust_ss =  np.loadtxt("../test_data/test_output/cake_csr_ss.txt")
+cake_rust_ss_array = cake_rust_ss.reshape((360, 850))
+
 cake_pyfai, _, _ = azi.integrate2d(fabio_data, 850, unit="2th_rad", polarization_factor=0.99)
 
 # %%
-figure(figsize=(10, 3.5))
+figure(figsize=(9.5, 3.5))
 subplot(131)
 title('Dioptrin')
-imshow(cake_rust_array, origin='lower', vmin=0, vmax=5300, aspect='auto')
+imshow(cake_rust_ss_array, origin='lower', vmin=100, vmax=300, aspect='auto')
 subplot(132)
 title('pyFAI')
-imshow(cake_pyfai, origin='lower', vmin=0, vmax=5300, aspect='auto')
+imshow(cake_pyfai, origin='lower', vmin=100, vmax=300, aspect='auto')
 subplot(133)
 title('Difference')
-imshow(cake_pyfai/cake_rust_array, origin='lower', vmin=0.9, vmax=1.1, aspect='auto')
+imshow(cake_pyfai/cake_rust_ss_array, origin='lower', vmin=0.9, vmax=1.1, aspect='auto')
 tight_layout()
 
 
