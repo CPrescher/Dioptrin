@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+pub mod histogram;
+pub mod sparse;
 
 use rayon::prelude::*;
 use std::cmp::PartialOrd;

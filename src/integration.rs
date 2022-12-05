@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 use std::collections::HashMap;
 
-use crate::{histogram, lut};
+use crate::lut;
+use crate::math::histogram;
 
 use super::frame::Frame;
 use super::geometry::Geometry;

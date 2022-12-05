@@ -1,4 +1,4 @@
-use crate::{geometry::Geometry, histogram, math};
+use crate::{geometry::Geometry, math, math::histogram};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
