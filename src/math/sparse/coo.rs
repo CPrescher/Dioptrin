@@ -4,16 +4,37 @@ use std::ops::Mul;
 use rayon::prelude::*;
 
 use crate::math::matrix::Matrix;
+use crate::math::max;
+use crate::math::sparse::csr::CsrMatrix;
 
-pub struct SparseMatrix {
+/// A CooMatrix stores a sparse matrix as three vectors: one for the row indices, one for the column indices and one for the values.
+/// The row and column indices are stored in the same order as the values. The CooMatrix row and column indices are not sorted by default.
+/// But it can be sorted using the sort() method.
+/// The CooMatrix can be converted to a CSR matrix using the to_csr() method.
+/// The CooMatrix can be converted to a dense matrix using the to_dense() method.
+/// This implementation is not optimized for performance (e.g. multiplication), it is rather intended to be used for small matrices
+/// and sparse matrix creation and manipulation. For random access patterns it might be also suitable for computations.
+///
+/// Typical usage:
+/// ```
+/// use dioptrin::math::sparse::coo::CooMatrix;
+///
+/// let mut matrix = CooMatrix::new(vec![0, 2, 2], vec![0, 0, 1], vec![1.0, 3.0, 5.0]);
+///
+/// matrix.add_or_insert(0, 0, 1.0); // adds a value to an existing element
+/// matrix.add_or_insert(1, 0, 1.0); // adds a new element
+/// matrix.set(2, 2, 1.0); // inserts a new element
+/// matrix.set(3, 100, 20.0); // inserts a new element
+///```
+pub struct CooMatrix {
     row_indices: Vec<usize>,
     col_indices: Vec<usize>,
     values: Vec<f64>,
 }
 
-impl SparseMatrix {
-    fn new(row_indices: Vec<usize>, col_indices: Vec<usize>, values: Vec<f64>) -> SparseMatrix {
-        SparseMatrix {
+impl CooMatrix {
+    pub fn new(row_indices: Vec<usize>, col_indices: Vec<usize>, values: Vec<f64>) -> CooMatrix {
+        CooMatrix {
             row_indices,
             col_indices,
             values,
@@ -55,7 +76,7 @@ impl SparseMatrix {
             }
         }
         if !found {
-            self.insert_element(x, y, value)
+            self.insert(x, y, value)
         }
     }
 
@@ -69,54 +90,65 @@ impl SparseMatrix {
         exists
     }
 
-    pub fn to_csr(&self, n: usize) -> (Vec<usize>, Vec<usize>, Vec<f64>) {
-        let mut csr_x_index = vec![0; n + 1];
-        let mut csr_y_index = vec![];
-        let mut csr_values = vec![];
-        for i in 0..n {
-            let mut count = 0;
-            for (j, x_j) in self.row_indices.iter().enumerate() {
-                if *x_j == i {
-                    csr_y_index.push(self.col_indices[j]);
-                    csr_values.push(self.values[j]);
-                    count += 1;
-                }
-            }
-            csr_x_index[i + 1] = csr_x_index[i] + count;
+    pub fn to_csr(&mut self) -> CsrMatrix {
+        let sorted_matrix = self.sort();
+
+        let m = max(&sorted_matrix.row_indices) + 1; // find the maximum row index to get the number of rows
+        let mut csr_row_indices = vec![0; m + 1];
+        for i in 0..sorted_matrix.values.len() {
+            csr_row_indices[sorted_matrix.row_indices[i] + 1] += 1;
         }
-        (csr_x_index, csr_y_index, csr_values)
+        for i in 1..csr_row_indices.len() {
+            csr_row_indices[i] += csr_row_indices[i - 1];
+        }
+
+        CsrMatrix::new(
+            sorted_matrix.col_indices,
+            csr_row_indices,
+            sorted_matrix.values,
+        )
     }
 
-    pub fn sort(&mut self) {
+    pub fn to_dense(&self, m: usize, n: usize) -> Matrix {
+        let mut values = vec![0.0; m * n];
+        for (i, (row, col)) in self.row_indices.iter().zip(&self.col_indices).enumerate() {
+            values[row * n + col] = self.values[i];
+        }
+        Matrix::new(m, n, values)
+    }
+
+    pub fn sort(&self) -> CooMatrix {
         let mut indices = (0..self.row_indices.len()).collect::<Vec<usize>>();
         indices.sort_by(|a, b| {
             self.row_indices[*a]
                 .cmp(&self.row_indices[*b])
                 .then(self.col_indices[*a].cmp(&self.col_indices[*b]))
         });
-        self.row_indices = indices.iter().map(|i| self.row_indices[*i]).collect();
-        self.col_indices = indices.iter().map(|i| self.col_indices[*i]).collect();
-        self.values = indices.iter().map(|i| self.values[*i]).collect();
+        CooMatrix::new(
+            indices.iter().map(|i| self.row_indices[*i]).collect(),
+            indices.iter().map(|i| self.col_indices[*i]).collect(),
+            indices.iter().map(|i| self.values[*i]).collect(),
+        )
     }
 
-    pub fn insert_element(&mut self, x: usize, y: usize, value: f64) {
+    pub fn insert(&mut self, x: usize, y: usize, value: f64) {
         self.row_indices.push(x);
         self.col_indices.push(y);
         self.values.push(value);
     }
 
-    pub fn transpose(&self) -> SparseMatrix {
-        SparseMatrix::new(
+    pub fn transpose(&self) -> CooMatrix {
+        CooMatrix::new(
             self.col_indices.clone(),
             self.row_indices.clone(),
             self.values.clone(),
         )
     }
 
-    /// multiplies the sparse matrix with a dense matrix and sums the results
+    /// multiplies the sparse matrix with a CooMatrix matrix and sums the results
     ///
     /// # Arguments
-    /// `matrix` - the dense matrix to multiply with
+    /// `matrix` - the CooMatrix matrix to multiply with
     pub fn mul_and_sum(&self, other: &Matrix) -> f64 {
         self.row_indices
             .par_iter()
@@ -127,7 +159,7 @@ impl SparseMatrix {
     }
 }
 
-impl Display for SparseMatrix {
+impl Display for CooMatrix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, x_i) in self.row_indices.iter().enumerate() {
             write!(f, "({}, {}) = {}", x_i, self.col_indices[i], self.values[i])?;
@@ -137,10 +169,10 @@ impl Display for SparseMatrix {
     }
 }
 
-impl Mul<&Matrix> for &SparseMatrix {
-    type Output = SparseMatrix;
+impl Mul<&Matrix> for &CooMatrix {
+    type Output = CooMatrix;
 
-    fn mul(self, other: &Matrix) -> SparseMatrix {
+    fn mul(self, other: &Matrix) -> CooMatrix {
         let result_vec = self
             .row_indices
             .iter()
@@ -148,7 +180,7 @@ impl Mul<&Matrix> for &SparseMatrix {
             .zip(self.col_indices.iter())
             .map(|((i, x), y)| other.get(*x, *y) * self.values[i])
             .collect::<Vec<f64>>();
-        SparseMatrix::new(
+        CooMatrix::new(
             self.col_indices.clone(),
             self.row_indices.clone(),
             result_vec,
@@ -162,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_sparse_get() {
-        let sparse = SparseMatrix::new(
+        let sparse = CooMatrix::new(
             vec![0, 0, 1, 2, 2],
             vec![0, 1, 0, 0, 1],
             vec![1.0, 2.0, 3.0, 4.0, 5.0],
@@ -180,32 +212,32 @@ mod tests {
 
     #[test]
     fn test_sparse_add_or_insert() {
-        let mut sparse = SparseMatrix::new(vec![0, 2, 2], vec![0, 0, 1], vec![1.0, 3.0, 5.0]);
+        let mut matrix = CooMatrix::new(vec![0, 2, 2], vec![0, 0, 1], vec![1.0, 3.0, 5.0]);
 
-        sparse.add_or_insert(0, 0, 1.0); // adds a value to an existing element
-        sparse.add_or_insert(1, 0, 1.0); // adds a new element
+        matrix.add_or_insert(0, 0, 1.0); // adds a value to an existing element
+        matrix.add_or_insert(1, 0, 1.0); // adds a new element
 
-        assert_eq!(sparse.get(0, 0), 2.0);
-        assert_eq!(sparse.get(1, 0), 1.0);
+        assert_eq!(matrix.get(0, 0), 2.0);
+        assert_eq!(matrix.get(1, 0), 1.0);
     }
 
     #[test]
     fn test_sparse_sort() {
-        let mut sparse = SparseMatrix::new(
+        let matrix = CooMatrix::new(
             vec![0, 2, 2, 1, 0, 3, 3, 1, 0],
             vec![4, 0, 1, 0, 1, 4, 1, 0, 5],
             vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0, 7.0, 8.0, 9.0],
         );
-        sparse.sort();
-        assert!(is_sorted(&sparse.row_indices));
+        let matrix = matrix.sort();
+        assert!(is_sorted(&matrix.row_indices));
 
         // create a vector of y vectors for each x_index
         let mut y_vecs: Vec<Vec<usize>> = vec![];
-        for i in 0..sparse.row_indices.len() {
-            if i == 0 || sparse.row_indices[i] != sparse.row_indices[i - 1] {
+        for i in 0..matrix.row_indices.len() {
+            if i == 0 || matrix.row_indices[i] != matrix.row_indices[i - 1] {
                 y_vecs.push(vec![]);
             }
-            y_vecs.last_mut().unwrap().push(sparse.col_indices[i]);
+            y_vecs.last_mut().unwrap().push(matrix.col_indices[i]);
         }
 
         y_vecs.iter().for_each(|y_vec| assert!(is_sorted(y_vec)));
@@ -213,11 +245,11 @@ mod tests {
 
     #[test]
     fn test_mul_sparse_by_dense() {
-        let sparse = SparseMatrix::new(vec![0, 1], vec![0, 1], vec![1.0, 3.0]);
+        let coo_matrix = CooMatrix::new(vec![0, 1], vec![0, 1], vec![1.0, 3.0]);
         let dense = Matrix::new(2, 3, vec![4.0, 1.0, 2.0, 3.0, 2.0, 5.0]);
-        let result = &sparse * &dense;
+        let result = &coo_matrix * &dense;
 
-        let expected = SparseMatrix::new(vec![0, 1], vec![0, 1], vec![4.0, 6.0]);
+        let expected = CooMatrix::new(vec![0, 1], vec![0, 1], vec![4.0, 6.0]);
         assert_eq!(result.values, expected.values);
         assert_eq!(result.row_indices, expected.row_indices);
         assert_eq!(result.col_indices, expected.col_indices);
@@ -225,10 +257,23 @@ mod tests {
 
     #[test]
     fn test_mul_sparse_by_dense_and_sum() {
-        let sparse = SparseMatrix::new(vec![0, 1], vec![0, 1], vec![1.0, 3.0]);
+        let sparse = CooMatrix::new(vec![0, 1], vec![0, 1], vec![1.0, 3.0]);
         let dense = Matrix::new(2, 3, vec![4.0, 1.0, 2.0, 3.0, 2.0, 5.0]);
         let result = &sparse.mul_and_sum(&dense);
         assert_eq!(result, &10.0);
+    }
+
+    #[test]
+    fn test_to_csr() {
+        let mut sparse = CooMatrix::new(
+            vec![1, 1, 2, 2, 5, 5],
+            vec![1, 0, 0, 1, 0, 2],
+            vec![2.0, 3.0, 4.0, 5.0, 100., 102.],
+        );
+        let csr = sparse.to_csr();
+        assert_eq!(csr.values, vec![3.0, 2.0, 4.0, 5.0, 100.0, 102.0]);
+        assert_eq!(csr.col_indices, vec![0, 1, 0, 1, 0, 2]);
+        assert_eq!(csr.row_indices, vec![0, 0, 2, 4, 4, 4, 6]);
     }
 
     fn is_sorted<I>(data: &I) -> bool

@@ -128,7 +128,7 @@ pub fn lut_2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec
     lut_2d
 }
 
-/// Integrates an image using a lookup table implementation implementation
+/// Integrates an image using a lookup table implementation
 ///
 /// Arguments:
 /// * `intensity` - image intensity
