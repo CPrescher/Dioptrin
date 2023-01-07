@@ -94,17 +94,21 @@ impl CooMatrix {
         let sorted_matrix = self.sort();
 
         let m = max(&sorted_matrix.row_indices) + 1; // find the maximum row index to get the number of rows
-        let mut csr_row_indices = vec![0; m + 1];
+        let mut csr_row_pointer = vec![0; m + 1];
+
+        // count the number of times each row appears in the row_indices
         for i in 0..sorted_matrix.values.len() {
-            csr_row_indices[sorted_matrix.row_indices[i] + 1] += 1;
+            csr_row_pointer[sorted_matrix.row_indices[i] + 1] += 1;
         }
-        for i in 1..csr_row_indices.len() {
-            csr_row_indices[i] += csr_row_indices[i - 1];
+
+        // sum up the counts by adding the count for the previous row to get the row pointer
+        for i in 1..csr_row_pointer.len() {
+            csr_row_pointer[i] += csr_row_pointer[i - 1];
         }
 
         CsrMatrix::new(
             sorted_matrix.col_indices,
-            csr_row_indices,
+            csr_row_pointer,
             sorted_matrix.values,
         )
     }
@@ -273,7 +277,7 @@ mod tests {
         let csr = sparse.to_csr();
         assert_eq!(csr.values, vec![3.0, 2.0, 4.0, 5.0, 100.0, 102.0]);
         assert_eq!(csr.col_indices, vec![0, 1, 0, 1, 0, 2]);
-        assert_eq!(csr.row_indices, vec![0, 0, 2, 4, 4, 4, 6]);
+        assert_eq!(csr.row_pointer, vec![0, 0, 2, 4, 4, 4, 6]);
     }
 
     fn is_sorted<I>(data: &I) -> bool
