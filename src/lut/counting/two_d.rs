@@ -3,12 +3,6 @@ use rayon::prelude::*;
 use crate::math::histogram;
 
 /// Calculates a lookup table (LUT) for a 2D (cake) integration
-///
-/// Arguments:
-/// * `tth` - two theta values for each pixel
-/// * `azi` - azimuthal values for each pixel
-/// * `n_tth` - number of pattern points in ouput pattern in tth direction
-/// * `n_azi` - number of pattern points in ouput pattern in azi direction
 pub fn lut_2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec<Vec<Vec<usize>>> {
     // matrix initialization - optimized allocation
     let mut lut_2d: Vec<Vec<Vec<usize>>> = vec![vec![Vec::new(); n_azi]; n_tth];
@@ -36,12 +30,8 @@ pub fn lut_2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec
     lut_2d
 }
 
-/// Integrates a image into a 2d pattern using a lookup table implementation
+/// Integrates an image into a 2d pattern using a lookup table implementation
 /// The output cake is a matrix with dimensions n_points_tth x n_points_azi flattened into a vector
-///
-/// Arguments:
-/// * `intensity` - image intensity
-/// * `lut_2d` - lookup table created before by the lut_2d(..) function
 pub fn integrate2d(intensity: &Vec<f64>, lut_2d: &Vec<Vec<Vec<usize>>>) -> Vec<f64> {
     let n_points_tth = lut_2d.len();
     let n_points_azi = lut_2d[0].len();
