@@ -3,6 +3,10 @@ use std::collections::HashMap;
 
 use crate::lut;
 use crate::math::histogram;
+#[cfg(feature = "lut_metrics")]
+use crate::lut::metrics::{
+    analyze_lut2d_locality, analyze_lut2d_ss_locality, analyze_lut_locality, analyze_lut_ss_locality,
+};
 
 use super::frame::Frame;
 use super::geometry::Geometry;
@@ -56,6 +60,14 @@ impl Integrator {
     fn update_lut(&mut self, n_points: usize) {
         if self.lut.len() != n_points {
             self.lut = lut::lut(&self.tth, n_points);
+            #[cfg(feature = "lut_metrics")]
+            {
+                let stats = analyze_lut_locality(&self.lut);
+                println!(
+                    "[lut_metrics] 1D LUT: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
+                );
+            }
         }
     }
 
@@ -69,6 +81,14 @@ impl Integrator {
         if self.lut_ss.len() != n_points || self.lut_ss_sub_pixel != n_ss {
             self.lut_ss = lut::lut_ss(&self.geometry, &self.tth, n_points, n_ss);
             self.lut_ss_sub_pixel = n_ss;
+            #[cfg(feature = "lut_metrics")]
+            {
+                let stats = analyze_lut_ss_locality(&self.lut_ss);
+                println!(
+                    "[lut_metrics] 1D LUT SS: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
+                );
+            }
         }
     }
 
@@ -81,6 +101,14 @@ impl Integrator {
     fn update_lut_2d(&mut self, n_tth: usize, n_azi: usize) {
         if self.lut_2d.len() != n_tth || self.lut_2d[0].len() != n_azi {
             self.lut_2d = lut::lut_2d(&self.tth, &self.chi, n_tth, n_azi);
+            #[cfg(feature = "lut_metrics")]
+            {
+                let stats = analyze_lut2d_locality(&self.lut_2d);
+                println!(
+                    "[lut_metrics] 2D LUT: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
+                );
+            }
         }
     }
 
@@ -99,6 +127,14 @@ impl Integrator {
             self.lut_2d_ss =
                 lut::lut_2d_ss(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
             self.lust_2d_ss_sub_pixel = n_ss;
+            #[cfg(feature = "lut_metrics")]
+            {
+                let stats = analyze_lut2d_ss_locality(&self.lut_2d_ss);
+                println!(
+                    "[lut_metrics] 2D LUT SS: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
+                );
+            }
         }
     }
 

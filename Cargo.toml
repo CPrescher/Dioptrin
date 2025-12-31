@@ -21,3 +21,9 @@ harness = false
 lto = true
 codegen-units = 1
 opt-level = 3
+
+[features]
+# Enable lightweight LUT locality metrics and logging in integration update paths
+# Example with bench 
+# cargo bench --features lut_metrics
+lut_metrics = []
