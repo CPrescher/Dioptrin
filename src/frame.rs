@@ -60,8 +60,7 @@ fn flip_ud(array: &Vec<f64>, dim1: usize, dim2: usize) -> Vec<f64> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    #[path = "../../util.rs"]
-    mod util;
+    use crate::util;
 
     #[test]
     fn frame_from_tiff() {

@@ -374,8 +374,7 @@ mod math {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[path = "../../util.rs"]
-    mod util;
+    use crate::util;
 
     static DIM1: usize = 10;
     static DIM2: usize = 20;

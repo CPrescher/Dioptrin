@@ -203,9 +203,8 @@ mod tests {
 
     use crate::math;
     use crate::poni::Poni;
+    use crate::util;
     use rayon::prelude::*;
-    #[path = "../../util.rs"]
-    mod util;
 
     #[test]
     fn test_integrator() {
