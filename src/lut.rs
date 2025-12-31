@@ -1,4 +1,4 @@
-use crate::{geometry::Geometry, math, math::histogram};
+use crate::{geometry::Geometry, math::histogram};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -74,8 +74,6 @@ pub fn hull_grid(dim1: usize, dim2: usize, n_ss: usize) -> (Vec<f64>, Vec<f64>) 
 /// * `tth` - two theta values for each pixel
 /// * `n_points` - number of pattern points in ouput pattern
 pub fn lut(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
-    let mut lut: Vec<Vec<usize>> = vec![Vec::new(); n_points];
-
     let (min, _max, step) = histogram::min_max_step(tth, n_points);
 
     let index: Vec<usize> = tth
@@ -83,8 +81,20 @@ pub fn lut(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
         .map(|tth| histogram::get_bin(*tth, min, step))
         .collect();
 
-    for i in 0..tth.len() {
-        lut[index[i]].push(i);
+    // Count elements per bin first for better memory allocation
+    let mut counts = vec![0usize; n_points];
+    for &idx in &index {
+        counts[idx] += 1;
+    }
+
+    // Pre-allocate with exact capacity
+    let mut lut: Vec<Vec<usize>> = counts
+        .iter()
+        .map(|&count| Vec::with_capacity(count))
+        .collect();
+
+    for (i, &idx) in index.iter().enumerate() {
+        lut[idx].push(i);
     }
     lut
 }
@@ -97,32 +107,27 @@ pub fn lut(tth: &Vec<f64>, n_points: usize) -> Vec<Vec<usize>> {
 /// * `n_tth` - number of pattern points in ouput pattern in tth direction
 /// * `n_azi` - number of pattern points in ouput pattern in azi direction
 pub fn lut_2d(tth: &Vec<f64>, azi: &Vec<f64>, n_tth: usize, n_azi: usize) -> Vec<Vec<Vec<usize>>> {
-    // matrix initialization
-    let mut lut_2d: Vec<Vec<Vec<usize>>> = Vec::with_capacity(n_tth);
-    for v in 0..n_tth {
-        lut_2d.push(Vec::with_capacity(n_azi));
-        for _u in 0..n_azi {
-            lut_2d[v].push(Vec::new());
-        }
-    }
+    // matrix initialization - optimized allocation
+    let mut lut_2d: Vec<Vec<Vec<usize>>> = vec![vec![Vec::new(); n_azi]; n_tth];
 
     // find the binning for tth and azi
     let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_tth);
     let (min_azi, _max_azi, step_azi) = histogram::min_max_step(azi, n_azi);
 
     // find the indices for tth and azimuth for each pixel
-    let tth_index: Vec<usize> = tth
+    let indices: Vec<(usize, usize)> = tth
         .par_iter()
-        .map(|tth| histogram::get_bin(*tth, min_tth, step_tth))
-        .collect();
-
-    let azi_index: Vec<usize> = azi
-        .par_iter()
-        .map(|azi| histogram::get_bin(*azi, min_azi, step_azi))
+        .zip(azi.par_iter())
+        .map(|(t, a)| {
+            (
+                histogram::get_bin(*t, min_tth, step_tth),
+                histogram::get_bin(*a, min_azi, step_azi),
+            )
+        })
         .collect();
 
     // build LUT
-    for (i, (tth_index, azi_index)) in tth_index.iter().zip(&azi_index).enumerate() {
+    for (i, (tth_index, azi_index)) in indices.iter().enumerate() {
         lut_2d[*tth_index][*azi_index].push(i);
     }
     lut_2d
@@ -142,20 +147,20 @@ pub fn integrate(
     hist_step: f64,
 ) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.len();
-    let mut pattern_intensity: Vec<f64> = vec![0.0; n_points];
 
     // summing all saved pixel indices in the lookup table for each tth
-    pattern_intensity
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, int)| {
-            *int += lut[i].iter().map(|j| intensity[*j]).sum::<f64>();
-        });
-
-    // obtain the length of each tth vector in the lut
-    let lut_len = lut.par_iter().map(|v| v.len() as f64).collect::<Vec<f64>>();
-    // divide the summed intensity by the length of each tth vector in the lut for normalization
-    let pattern_intensity: Vec<f64> = math::divide(&pattern_intensity, &lut_len);
+    let pattern_intensity: Vec<f64> = lut
+        .par_iter()
+        .map(|indices| {
+            let sum: f64 = indices.iter().map(|j| intensity[*j]).sum();
+            let count = indices.len() as f64;
+            if count > 0.0 {
+                sum / count
+            } else {
+                0.0
+            }
+        })
+        .collect();
 
     let pattern_tth = histogram::bins(n_points, hist_min, hist_step);
 
@@ -172,29 +177,26 @@ pub fn integrate2d(intensity: &Vec<f64>, lut_2d: &Vec<Vec<Vec<usize>>>) -> Vec<f
     let n_points_tth = lut_2d.len();
     let n_points_azi = lut_2d[0].len();
 
-    let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
+    // Pre-compute all (tth_idx, azi_idx) pairs to avoid repeated calculations
+    let indices: Vec<(usize, usize)> = (0..n_points_tth * n_points_azi)
+        .map(|i| (i % n_points_tth, i / n_points_tth))
+        .collect();
 
-    // add all pixel intensities for each tth and azi to the corresponding pixel in the cake
-    cake_intensity
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, int)| {
-            *int += lut_2d[i % n_points_tth][i / n_points_tth]
-                .iter()
-                .map(|j| intensity[*j])
-                .sum::<f64>();
-        });
-
-    // normalize the cake based on the number of pixels in each tth and azi bin
-    cake_intensity
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, int)| {
-            let num_points = lut_2d[i % n_points_tth][i / n_points_tth].len() as f64;
-            if num_points > 0 as f64 {
-                *int /= num_points;
+    // add all pixel intensities and normalize in one pass
+    let cake_intensity: Vec<f64> = indices
+        .par_iter()
+        .map(|(tth_idx, azi_idx)| {
+            let pixel_indices = &lut_2d[*tth_idx][*azi_idx];
+            let sum: f64 = pixel_indices.iter().map(|j| intensity[*j]).sum();
+            let num_points = pixel_indices.len() as f64;
+            if num_points > 0.0 {
+                sum / num_points
+            } else {
+                0.0
             }
-        });
+        })
+        .collect();
+
     cake_intensity
 }
 
@@ -228,7 +230,7 @@ pub fn lut_ss(
             .collect();
 
         for (i, bin_index) in tth_bin_indices.iter().enumerate() {
-            let count = lut[*bin_index].entry(actual_index[i]).or_insert(1.0);
+            let count = lut[*bin_index].entry(actual_index[i]).or_insert(0.0);
             *count += 1.0;
         }
     }
@@ -236,7 +238,7 @@ pub fn lut_ss(
     // obtain the length of each tth vector in the lookup table
     let lut_len = lut
         .par_iter()
-        .map(|hash| hash.values().map(|v| *v as f64).sum())
+        .map(|hash| hash.values().sum::<f64>())
         .collect::<Vec<f64>>();
 
     // divide all values in the lookup table by the respective length of the tth vector
@@ -244,7 +246,7 @@ pub fn lut_ss(
         .enumerate()
         .map(|(i, hash)| {
             hash.par_iter()
-                .map(|(k, v)| (*k, *v as f64 / lut_len[i]))
+                .map(|(k, v)| (*k, v / lut_len[i]))
                 .collect()
         })
         .collect()
@@ -258,14 +260,8 @@ pub fn lut_2d_ss(
     n_azi: usize,
     n_ss: usize,
 ) -> Vec<Vec<HashMap<usize, f64>>> {
-    // matrix initialization
-    let mut lut_2d: Vec<Vec<HashMap<usize, f64>>> = Vec::with_capacity(n_tth);
-    for v in 0..n_tth {
-        lut_2d.push(Vec::with_capacity(n_azi));
-        for _u in 0..n_azi {
-            lut_2d[v].push(HashMap::new());
-        }
-    }
+    // matrix initialization - optimized allocation
+    let mut lut_2d: Vec<Vec<HashMap<usize, f64>>> = vec![vec![HashMap::new(); n_azi]; n_tth];
 
     let (tth_min, _max, tth_step) = histogram::ss_tth_min_max_step(&geometry, &tth, n_tth, n_ss);
 
@@ -290,7 +286,7 @@ pub fn lut_2d_ss(
             let azi_capped = azi_index % n_azi;
             let count = lut_2d[*tth_index][azi_capped]
                 .entry(actual_index[i])
-                .or_insert(1.0);
+                .or_insert(0.0);
             *count += 1.0;
         }
     }
@@ -300,7 +296,7 @@ pub fn lut_2d_ss(
         .par_iter()
         .map(|v| {
             v.par_iter()
-                .map(|hash| hash.values().map(|v| *v as f64).sum())
+                .map(|hash| hash.values().sum::<f64>())
                 .collect::<Vec<f64>>()
         })
         .collect::<Vec<Vec<f64>>>();
@@ -314,7 +310,7 @@ pub fn lut_2d_ss(
                 .enumerate()
                 .map(|(j, hash)| {
                     hash.par_iter()
-                        .map(|(k, v)| (*k, *v as f64 / lut_len[i][j]))
+                        .map(|(k, v)| (*k, v / lut_len[i][j]))
                         .collect()
                 })
                 .collect::<Vec<HashMap<usize, f64>>>()
@@ -326,18 +322,21 @@ pub fn integrate2d_ss(intensity: &Vec<f64>, lut: &Vec<Vec<HashMap<usize, f64>>>)
     let n_points_tth = lut.len();
     let n_points_azi = lut[0].len();
 
-    let mut cake_intensity: Vec<f64> = vec![0.0; n_points_tth * n_points_azi];
+    // Pre-compute all (tth_idx, azi_idx) pairs to avoid repeated calculations
+    let indices: Vec<(usize, usize)> = (0..n_points_tth * n_points_azi)
+        .map(|i| (i % n_points_tth, i / n_points_tth))
+        .collect();
 
     // add all pixel intensities for each tth and azi to the corresponding pixel in the cake
-    cake_intensity
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, int)| {
-            *int += lut[i % n_points_tth][i / n_points_tth]
+    let cake_intensity: Vec<f64> = indices
+        .par_iter()
+        .map(|(tth_idx, azi_idx)| {
+            lut[*tth_idx][*azi_idx]
                 .iter()
-                .map(|(j, v)| intensity[*j] * *v)
-                .sum::<f64>();
-        });
+                .map(|(j, v)| intensity[*j] * v)
+                .sum::<f64>()
+        })
+        .collect();
 
     cake_intensity
 }
