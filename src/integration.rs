@@ -4,6 +4,7 @@ use crate::math::histogram;
 
 use super::frame::Frame;
 use super::geometry::Geometry;
+use crate::mask::Mask;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OneDKey {
@@ -46,20 +47,23 @@ impl<K, L> LutCache<K, L> {
 type Lut1dCache = LutCache<OneDKey, lut::Lut1d>;
 type Lut2dCache = LutCache<TwoDKey, lut::Lut2d>;
 
-/// LUT method selection (applies to both 1D and 2D integrations).
+/// Integration method selection (applies to both 1D and 2D integrations).
 ///
 /// Examples
 /// ```no_run
-/// use dioptrin::integration::{Integrator, LutMethod};
+/// use dioptrin::integration::{Integrator, IntegrationMethod};
 /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
 /// # let poni: Poni = unimplemented!();
 /// # let frame: Frame = unimplemented!();
 /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 /// let mut integrator = Integrator::new(geometry);
-/// let (_x, y) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Counting);
+/// integrator.set_method(IntegrationMethod::Counting);
+/// let (_x, y) = integrator.integrate1d(&frame, 1250);
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub enum LutMethod {
+pub enum IntegrationMethod {
+    /// Histogram (unweighted) integration.
+    Histogram,
     /// Average of contributing pixels per bin (unweighted).
     Counting,
     /// Pixel-splitting with fractional/bilinear weights.
@@ -76,6 +80,8 @@ pub struct Integrator {
     polarization: Vec<f64>,
     cache_1d: Lut1dCache,
     cache_2d: Lut2dCache,
+    mask: Option<Mask>,
+    method: IntegrationMethod,
 }
 
 impl Integrator {
@@ -88,71 +94,112 @@ impl Integrator {
             polarization: vec![],
             cache_1d: Lut1dCache::new(),
             cache_2d: Lut2dCache::new(),
+            mask: None,
+            method: IntegrationMethod::PixelSplit,
         }
     }
 
-    /// Integrate a frame to 1D using the selected LUT method
+    pub fn set_method(&mut self, method: IntegrationMethod) {
+        self.method = method;
+    }
+
+    pub fn set_mask(&mut self, mask: Mask) {
+        self.mask = Some(mask);
+    }
+
+    pub fn clear_mask(&mut self) {
+        self.mask = None;
+    }
+
+    /// Integrate a frame to 1D using the configured integration method.
     ///
     /// Examples
     /// ```no_run
-    /// use dioptrin::integration::{Integrator, LutMethod};
+    /// use dioptrin::integration::{Integrator, IntegrationMethod};
     /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
     /// # let poni: Poni = unimplemented!();
     /// # let frame: Frame = unimplemented!();
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
     /// let mut integrator = Integrator::new(geometry);
-    /// let (_x, y_count) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Counting);
-    /// let (_x, y_ps) = integrator.integrate_lut_with(&frame, 1250, LutMethod::PixelSplit);
-    /// let (_x, y_ss) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Supersampled { n_ss: 4 });
+    /// integrator.set_method(IntegrationMethod::Counting);
+    /// let (_x, y_count) = integrator.integrate1d(&frame, 1250);
+    /// integrator.set_method(IntegrationMethod::PixelSplit);
+    /// let (_x, y_ps) = integrator.integrate1d(&frame, 1250);
+    /// integrator.set_method(IntegrationMethod::Supersampled { n_ss: 4 });
+    /// let (_x, y_ss) = integrator.integrate1d(&frame, 1250);
     /// ```
-    pub fn integrate_lut_with(
-        &mut self,
-        frame: &Frame,
-        n_points: usize,
-        method: LutMethod,
-    ) -> (Vec<f64>, Vec<f64>) {
+    pub fn integrate1d(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
-        let lut1d = match method {
-            LutMethod::Counting => self.ensure_lut1d(OneDKey::Counting { n_points }),
-            LutMethod::PixelSplit => self.ensure_lut1d(OneDKey::PixelSplit { n_points }),
-            LutMethod::Supersampled { n_ss } => {
-                self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss })
+        let mask = self.mask.take();
+        let mask_data = mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            mask.data.as_slice()
+        });
+        let result = match self.method {
+            IntegrationMethod::Histogram => match mask_data {
+                Some(mask) => histogram::histogram_masked(&self.tth, &intensity, mask, n_points),
+                None => histogram::histogram(&self.tth, &intensity, n_points),
+            },
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                crate::lut::integrate1d(&intensity, lut1d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                crate::lut::integrate1d(&intensity, lut1d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                crate::lut::integrate1d(&intensity, lut1d, mask_data)
             }
         };
-        crate::lut::integrate_lut1d(&intensity, lut1d)
+        self.mask = mask;
+        result
     }
 
-    /// Integrate a frame to 2D using the selected LUT method
+    /// Integrate a frame to 2D using the configured integration method.
     ///
     /// Example
     /// ```no_run
-    /// use dioptrin::integration::{Integrator, LutMethod};
+    /// use dioptrin::integration::{Integrator, IntegrationMethod};
     /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
     /// # let poni: Poni = unimplemented!();
     /// # let frame: Frame = unimplemented!();
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
     /// let mut integrator = Integrator::new(geometry);
-    /// let y = integrator.integrate2d_lut_with(&frame, 1250, 360, LutMethod::PixelSplit);
+    /// integrator.set_method(IntegrationMethod::PixelSplit);
+    /// let y = integrator.integrate2d(&frame, 1250, 360);
     /// assert_eq!(y.len(), 1250*360);
     /// ```
-    pub fn integrate2d_lut_with(
-        &mut self,
-        frame: &Frame,
-        n_tth: usize,
-        n_azi: usize,
-        method: LutMethod,
-    ) -> Vec<f64> {
+    pub fn integrate2d(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
-        let lut2d = match method {
-            LutMethod::Counting => self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi }),
-            LutMethod::PixelSplit => self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi }),
-            LutMethod::Supersampled { n_ss } => {
-                self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss })
+        let mask = self.mask.take();
+        let mask_data = mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            mask.data.as_slice()
+        });
+        let result = match self.method {
+            IntegrationMethod::Histogram => match mask_data {
+                Some(mask) => histogram::histogram_masked(&self.tth, &intensity, mask, n_tth).1,
+                None => histogram::histogram(&self.tth, &intensity, n_tth).1,
+            },
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
+                crate::lut::integrate2d(&intensity, lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
+                crate::lut::integrate2d(&intensity, lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
+                crate::lut::integrate2d(&intensity, lut2d, mask_data)
             }
         };
-        crate::lut::integrate_lut2d(&intensity, lut2d)
+        self.mask = mask;
+        result
     }
 
     /// checks whether current tth, chi, solid angle and polarization are calculated for the same
@@ -268,7 +315,7 @@ impl Integrator {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
-        lut::integrate_lut1d(&intensity, lut1d)
+        lut::integrate1d(&intensity, lut1d, None)
     }
 
     /// Integrate a frame using lookup table (LUT) method with supersampling
@@ -286,7 +333,7 @@ impl Integrator {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
-        lut::integrate_lut1d(&intensity, lut1d)
+        lut::integrate1d(&intensity, lut1d, None)
     }
 
     /// Integrate a frame using pixel-splitting method (1D)
@@ -294,7 +341,7 @@ impl Integrator {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
-        lut::integrate_lut1d(&intensity, lut1d)
+        lut::integrate1d(&intensity, lut1d, None)
     }
 
     /// Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
@@ -308,7 +355,7 @@ impl Integrator {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
-        lut::integrate_lut2d(&intensity, lut2d)
+        lut::integrate2d(&intensity, lut2d, None)
     }
 
     // Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
@@ -329,7 +376,7 @@ impl Integrator {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
-        lut::integrate_lut2d(&intensity, lut2d)
+        lut::integrate2d(&intensity, lut2d, None)
     }
 
     /// Integrate a frame into a 2D grid using pixel-splitting method
@@ -337,21 +384,10 @@ impl Integrator {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
-        lut::integrate_lut2d(&intensity, lut2d)
+        lut::integrate2d(&intensity, lut2d, None)
     }
 
-    /// Integration of the frame using a simple histogram method
-    ///
-    /// # Arguments
-    /// * `frame` - Frame to integrate
-    /// * `n_points` - the number of points of the resulting pattern
-    pub fn integrate(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        histogram::histogram(&self.tth, &intensity, n_points)
-    }
-
-    /// Apply polarization and solid angle corrections to the intensity
+    /// Apply polarization and solid angle corrections to the intensity.
     fn correct_intensity(&mut self, data: &Vec<f64>) -> Vec<f64> {
         data.iter()
             .enumerate()
@@ -376,7 +412,8 @@ mod tests {
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate(&frame, 850);
+        integrator.set_method(IntegrationMethod::Histogram);
+        let (tth, int) = integrator.integrate1d(&frame, 850);
 
         util::save_vec2("pattern.txt", &tth, &int);
 

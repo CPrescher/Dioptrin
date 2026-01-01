@@ -1,5 +1,5 @@
 //! Pixel-splitting CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
-//! Integrate with `crate::lut::integrate_lut1d` / `integrate_lut2d`.
+//! Integrate with `crate::lut::integrate1d` / `integrate2d`.
 use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -180,7 +180,7 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
-/// use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
+/// use dioptrin::lut::{build_lut1d_ps_csr, integrate1d};
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
 /// poni.pixel2 = 1.0;
@@ -189,7 +189,7 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
 /// let tth = geometry.calc_tth_all();
 /// let intensity = vec![1.0; geometry.size()];
 /// let lut = build_lut1d_ps_csr(&geometry, &tth, 4);
-/// let (_bins, y) = integrate_lut1d(&intensity, &lut);
+/// let (_bins, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 4);
 /// ```
 pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) -> Lut1d {
@@ -357,7 +357,7 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
-/// use dioptrin::lut::{build_lut2d_ps_csr, integrate_lut2d};
+/// use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
 /// poni.pixel2 = 1.0;
@@ -367,7 +367,7 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
 /// let chi = geometry.calc_chi_all();
 /// let intensity = vec![1.0; geometry.size()];
 /// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
-/// let y = integrate_lut2d(&intensity, &lut2d);
+/// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
 pub fn build_lut2d_ps_csr(

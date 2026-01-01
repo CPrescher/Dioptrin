@@ -11,7 +11,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
-/// use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
+/// use dioptrin::lut::{build_lut1d_ps_csr, integrate1d};
 /// // Simple pixel-split (weighted) 1D example
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
@@ -21,10 +21,14 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// let tth = geometry.calc_tth_all();
 /// let intensity = vec![1.0; geometry.size()];
 /// let lut = build_lut1d_ps_csr(&geometry, &tth, 4);
-/// let (_x, y) = integrate_lut1d(&intensity, &lut);
+/// let (_x, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 4);
 /// ```
-pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>) {
+pub fn integrate1d(
+    intensity: &Vec<f64>,
+    lut: &Lut1d,
+    mask: Option<&[u8]>,
+) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
         .into_par_iter()
@@ -40,11 +44,26 @@ pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>
                         let values_ptr = values.as_ptr();
                         let col_ptr = lut.col_idx.as_ptr();
                         let intensity_ptr = intensity.as_ptr();
-                        while k < end {
-                            let w = *values_ptr.add(k);
-                            let j = *col_ptr.add(k) as usize;
-                            sum += w * *intensity_ptr.add(j);
-                            k += 1;
+                        match mask {
+                            Some(mask) => {
+                                let mask_ptr = mask.as_ptr();
+                                while k < end {
+                                    let j = *col_ptr.add(k) as usize;
+                                    if *mask_ptr.add(j) == 0 {
+                                        let w = *values_ptr.add(k);
+                                        sum += w * *intensity_ptr.add(j);
+                                    }
+                                    k += 1;
+                                }
+                            }
+                            None => {
+                                while k < end {
+                                    let w = *values_ptr.add(k);
+                                    let j = *col_ptr.add(k) as usize;
+                                    sum += w * *intensity_ptr.add(j);
+                                    k += 1;
+                                }
+                            }
                         }
                     }
                     sum
@@ -52,17 +71,34 @@ pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>
                 None => {
                     if start == end { 0.0 } else {
                         let mut sum = 0.0;
+                        let mut count = 0usize;
                         let mut k = start;
                         unsafe {
                             let col_ptr = lut.col_idx.as_ptr();
                             let intensity_ptr = intensity.as_ptr();
-                            while k < end {
-                                let j = *col_ptr.add(k) as usize;
-                                sum += *intensity_ptr.add(j);
-                                k += 1;
+                            match mask {
+                                Some(mask) => {
+                                    let mask_ptr = mask.as_ptr();
+                                    while k < end {
+                                        let j = *col_ptr.add(k) as usize;
+                                        if *mask_ptr.add(j) == 0 {
+                                            sum += *intensity_ptr.add(j);
+                                            count += 1;
+                                        }
+                                        k += 1;
+                                    }
+                                }
+                                None => {
+                                    while k < end {
+                                        let j = *col_ptr.add(k) as usize;
+                                        sum += *intensity_ptr.add(j);
+                                        count += 1;
+                                        k += 1;
+                                    }
+                                }
                             }
                         }
-                        sum / (end - start) as f64
+                        if count == 0 { 0.0 } else { sum / count as f64 }
                     }
                 }
             }
@@ -78,7 +114,7 @@ pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
-/// use dioptrin::lut::{build_lut2d_ps_csr, integrate_lut2d};
+/// use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
 /// poni.pixel2 = 1.0;
@@ -88,10 +124,14 @@ pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>
 /// let chi = geometry.calc_chi_all();
 /// let intensity = vec![1.0; geometry.size()];
 /// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
-/// let y = integrate_lut2d(&intensity, &lut2d);
+/// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
-pub fn integrate_lut2d(intensity: &Vec<f64>, lut: &Lut2d) -> Vec<f64> {
+pub fn integrate2d(
+    intensity: &Vec<f64>,
+    lut: &Lut2d,
+    mask: Option<&[u8]>,
+) -> Vec<f64> {
     let rows = lut.row_ptr.len() - 1;
     (0..rows)
         .into_par_iter()
@@ -107,11 +147,26 @@ pub fn integrate_lut2d(intensity: &Vec<f64>, lut: &Lut2d) -> Vec<f64> {
                         let values_ptr = values.as_ptr();
                         let col_ptr = lut.col_idx.as_ptr();
                         let intensity_ptr = intensity.as_ptr();
-                        while k < end {
-                            let w = *values_ptr.add(k);
-                            let j = *col_ptr.add(k) as usize;
-                            sum += w * *intensity_ptr.add(j);
-                            k += 1;
+                        match mask {
+                            Some(mask) => {
+                                let mask_ptr = mask.as_ptr();
+                                while k < end {
+                                    let j = *col_ptr.add(k) as usize;
+                                    if *mask_ptr.add(j) == 0 {
+                                        let w = *values_ptr.add(k);
+                                        sum += w * *intensity_ptr.add(j);
+                                    }
+                                    k += 1;
+                                }
+                            }
+                            None => {
+                                while k < end {
+                                    let w = *values_ptr.add(k);
+                                    let j = *col_ptr.add(k) as usize;
+                                    sum += w * *intensity_ptr.add(j);
+                                    k += 1;
+                                }
+                            }
                         }
                     }
                     sum
@@ -119,17 +174,34 @@ pub fn integrate_lut2d(intensity: &Vec<f64>, lut: &Lut2d) -> Vec<f64> {
                 None => {
                     if start == end { 0.0 } else {
                         let mut sum = 0.0;
+                        let mut count = 0usize;
                         let mut k = start;
                         unsafe {
                             let col_ptr = lut.col_idx.as_ptr();
                             let intensity_ptr = intensity.as_ptr();
-                            while k < end {
-                                let j = *col_ptr.add(k) as usize;
-                                sum += *intensity_ptr.add(j);
-                                k += 1;
+                            match mask {
+                                Some(mask) => {
+                                    let mask_ptr = mask.as_ptr();
+                                    while k < end {
+                                        let j = *col_ptr.add(k) as usize;
+                                        if *mask_ptr.add(j) == 0 {
+                                            sum += *intensity_ptr.add(j);
+                                            count += 1;
+                                        }
+                                        k += 1;
+                                    }
+                                }
+                                None => {
+                                    while k < end {
+                                        let j = *col_ptr.add(k) as usize;
+                                        sum += *intensity_ptr.add(j);
+                                        count += 1;
+                                        k += 1;
+                                    }
+                                }
                             }
                         }
-                        sum / (end - start) as f64
+                        if count == 0 { 0.0 } else { sum / count as f64 }
                     }
                 }
             }

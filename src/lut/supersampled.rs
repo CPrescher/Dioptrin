@@ -1,5 +1,5 @@
 //! Supersampled CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
-//! Integrate with `crate::lut::integrate_lut1d` / `integrate_lut2d`.
+//! Integrate with `crate::lut::integrate1d` / `integrate2d`.
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;
@@ -15,7 +15,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// # let tth: Vec<f64> = unimplemented!();
 /// let lut = dioptrin::lut::build_lut1d_ss_csr(&geometry, &tth, 1024, 4);
 /// # let intensity: Vec<f64> = unimplemented!();
-/// let (_bins, y) = dioptrin::lut::integrate_lut1d(&intensity, &lut);
+/// let (_bins, y) = dioptrin::lut::integrate1d(&intensity, &lut, None);
 /// ```
 pub fn build_lut1d_ss_csr(
     geometry: &Geometry,
@@ -97,7 +97,7 @@ pub fn build_lut1d_ss_csr(
 /// # let chi: Vec<f64> = unimplemented!();
 /// let lut2d = dioptrin::lut::build_lut2d_ss_csr(&geometry, &tth, &chi, 1024, 360, 4);
 /// # let intensity: Vec<f64> = unimplemented!();
-/// let y = dioptrin::lut::integrate_lut2d(&intensity, &lut2d);
+/// let y = dioptrin::lut::integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 1024*360);
 /// ```
 pub fn build_lut2d_ss_csr(

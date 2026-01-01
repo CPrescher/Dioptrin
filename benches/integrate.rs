@@ -29,10 +29,10 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up run
-    let _ = lut::integrate_lut1d(&intensity, &csr);
+    let _ = lut::integrate1d(&intensity, &csr, None);
 
     c.bench_function("bench 1d lut_csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr))
+        b.iter(|| lut::integrate1d(&intensity, &csr, None))
     });
 }
 
@@ -61,10 +61,10 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate_lut1d(&intensity, &csr_ss);
+    let _ = lut::integrate1d(&intensity, &csr_ss, None);
 
     c.bench_function("bench 1d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ss))
+        b.iter(|| lut::integrate1d(&intensity, &csr_ss, None))
     });
 }
 
@@ -92,10 +92,10 @@ pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate_lut2d(&intensity, &csr2d);
+    let _ = lut::integrate2d(&intensity, &csr2d, None);
 
     c.bench_function("bench 2d lut_csr", |b| {
-        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d, None))
     });
 }
 
@@ -124,10 +124,10 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate_lut2d(&intensity, &csr2d_ss);
+    let _ = lut::integrate2d(&intensity, &csr2d_ss, None);
 
     c.bench_function("bench 2d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d_ss))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d_ss, None))
     });
 }
 
@@ -153,10 +153,10 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
 
     // Pixel-split CSR (fractional weights)
     let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points);
-    let _ = lut::integrate_lut1d(&intensity, &csr_ps);
+    let _ = lut::integrate1d(&intensity, &csr_ps, None);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps))
+        b.iter(|| lut::integrate1d(&intensity, &csr_ps, None))
     });
 }
 
@@ -181,10 +181,10 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
-    let _ = lut::integrate_lut1d(&intensity, &csr_ps);
+    let _ = lut::integrate1d(&intensity, &csr_ps, None);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps))
+        b.iter(|| lut::integrate1d(&intensity, &csr_ps, None))
     });
 }
 
@@ -210,10 +210,10 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
 
     // Use unified supersampled CSR instead of HashMap pixel-split
     let csr2d_ps = lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_azi);
-    let _ = lut::integrate_lut2d(&intensity, &csr2d_ps);
+    let _ = lut::integrate2d(&intensity, &csr2d_ps, None);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d_ps))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d_ps, None))
     });
 }
 
@@ -238,10 +238,10 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     let csr2d_ps2 = lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_azi);
-    let _ = lut::integrate_lut2d(&intensity, &csr2d_ps2);
+    let _ = lut::integrate2d(&intensity, &csr2d_ps2, None);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d_ps2))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d_ps2, None))
     });
 }
 

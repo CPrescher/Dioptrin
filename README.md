@@ -15,66 +15,66 @@ unweighted (counting) LUTs have `values: None` and integrate via the mean of con
 ### 1D Counting
 
 ```rust
-use dioptrin::lut::{build_lut1d_csr, integrate_lut1d};
+use dioptrin::lut::{build_lut1d_csr, integrate1d};
 let tth = vec![0.1, 0.2, 0.3, 0.4];
 let intensity = vec![10.0, 20.0, 30.0, 40.0];
 let lut = build_lut1d_csr(&tth, 1024);
-let (_bins, y) = integrate_lut1d(&intensity, &lut);
+let (_bins, y) = integrate1d(&intensity, &lut, None);
 ```
 
 ### 1D Supersampled
 
 ```rust
-use dioptrin::lut::{build_lut1d_ss_csr, integrate_lut1d};
+use dioptrin::lut::{build_lut1d_ss_csr, integrate1d};
 use dioptrin::geometry::Geometry;
 // let geometry: Geometry = ...;
 // let tth: Vec<f64> = geometry.calc_tth_all();
 // let lut = build_lut1d_ss_csr(&geometry, &tth, 1024, 4);
-// let (_bins, y) = integrate_lut1d(&intensity, &lut);
+// let (_bins, y) = integrate1d(&intensity, &lut, None);
 ```
 
 ### 1D Pixel-Split
 
 ```rust
 use dioptrin::geometry::Geometry;
-use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
+use dioptrin::lut::{build_lut1d_ps_csr, integrate1d};
 // let geometry: Geometry = ...;
 let lut = build_lut1d_ps_csr(&geometry, &tth, 1024);
-let (_bins, y) = integrate_lut1d(&intensity, &lut);
+let (_bins, y) = integrate1d(&intensity, &lut, None);
 ```
 
 ### 2D Counting
 
 ```rust
-use dioptrin::lut::{build_lut2d_csr, integrate_lut2d};
+use dioptrin::lut::{build_lut2d_csr, integrate2d};
 let lut2d = build_lut2d_csr(&tth, &chi, 1024, 360);
-let y = integrate_lut2d(&intensity, &lut2d);
+let y = integrate2d(&intensity, &lut2d, None);
 ```
 
 ### 2D Supersampled
 
 ```rust
-use dioptrin::lut::{build_lut2d_ss_csr, integrate_lut2d};
+use dioptrin::lut::{build_lut2d_ss_csr, integrate2d};
 use dioptrin::geometry::Geometry;
 // let lut2d = build_lut2d_ss_csr(&geometry, &tth, &chi, 1024, 360, 4);
-// let y = integrate_lut2d(&intensity, &lut2d);
+// let y = integrate2d(&intensity, &lut2d, None);
 ```
 
 ### 2D Pixel-Split
 
 ```rust
 use dioptrin::geometry::Geometry;
-use dioptrin::lut::{build_lut2d_ps_csr, integrate_lut2d};
+use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
 // let geometry: Geometry = ...;
 let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 1024, 360);
-let y = integrate_lut2d(&intensity, &lut2d);
+let y = integrate2d(&intensity, &lut2d, None);
 ```
 
 ## Migration
 
 - All old `lut_*` builders have been renamed to `build_*` and unified to return CSR-based `Lut1d`/`Lut2d`.
 - HashMap- and Vec-of-Vec-based LUTs are removed from the public API.
-- Use `integrate_lut1d`/`integrate_lut2d` for both weighted and unweighted LUTs.
+- Use `integrate1d`/`integrate2d` for both weighted and unweighted LUTs.
 
 ## Integrator Method Selection
 
@@ -91,7 +91,7 @@ use dioptrin::integration::{Integrator, LutMethod};
 - `src/lut/counting_csr.rs`: unweighted CSR LUT builders (`build_lut1d_csr`, `build_lut2d_csr`) and CSR types.
 - `src/lut/pixel_split.rs`: pixel-splitting CSR LUT builders (`build_lut1d_ps_csr`, `build_lut2d_ps_csr`).
 - `src/lut/supersampled.rs`: supersampled CSR LUT builders (`build_lut1d_ss_csr`, `build_lut2d_ss_csr`).
-- `src/lut/integrate.rs`: shared CSR integrators (`integrate_lut1d`, `integrate_lut2d`) used by any LUT.
+- `src/lut/integrate.rs`: shared CSR integrators (`integrate1d`, `integrate2d`) used by any LUT.
 
 ## Benchmarks
 

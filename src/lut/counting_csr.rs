@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
 // Counting (unweighted) CSR LUT builders and unified CSR types.
-/// Use `crate::lut::integrate_lut1d` / `integrate_lut2d` to integrate any built LUT.
+/// Use `crate::lut::integrate1d` / `integrate2d` to integrate any built LUT.
 use crate::math::histogram;
 
 // Unified CSR LUT types used for both counting and supersampled variants
@@ -42,11 +42,11 @@ pub struct Lut2d {
 ///
 /// Example
 /// ```
-/// use dioptrin::lut::{build_lut1d_csr, integrate_lut1d};
+/// use dioptrin::lut::{build_lut1d_csr, integrate1d};
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let intensity = vec![10.0, 20.0, 30.0, 40.0];
 /// let lut = build_lut1d_csr(&tth, 3);
-/// let (_bins, y) = integrate_lut1d(&intensity, &lut);
+/// let (_bins, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 3);
 /// ```
 pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
@@ -81,18 +81,18 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
 /// Integrate using either unweighted (mean) or weighted 1D CSR LUT.
 ///
 /// See `build_lut1d_csr` for an example.
-// integrate_lut1d moved to src/lut/integrate.rs
+// integrate1d moved to src/lut/integrate.rs
 
 /// Build an unweighted 2D CSR LUT from pixel `tth`/`azi` to `(n_tth, n_azi)` bins.
 ///
 /// Example
 /// ```
-/// use dioptrin::lut::{build_lut2d_csr, integrate_lut2d};
+/// use dioptrin::lut::{build_lut2d_csr, integrate2d};
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let chi = vec![0.0, 0.1, 0.2, 0.3];
 /// let intensity = vec![1.0, 2.0, 3.0, 4.0];
 /// let lut2d = build_lut2d_csr(&tth, &chi, 2, 3);
-/// let y = integrate_lut2d(&intensity, &lut2d);
+/// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 2*3);
 /// ```
 pub fn build_lut2d_csr(

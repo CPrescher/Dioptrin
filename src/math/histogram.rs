@@ -35,6 +35,38 @@ pub fn histogram(data: &Vec<f64>, weights: &Vec<f64>, n_points: usize) -> (Vec<f
     (bins, normed_sum)
 }
 
+/// Calculates a normalized histogram of weights at data values, excluding masked pixels.
+pub fn histogram_masked(
+    data: &Vec<f64>,
+    weights: &Vec<f64>,
+    mask: &[u8],
+    n_points: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let (min, _max, step) = min_max_step(data, n_points);
+
+    let mut sum = vec![0.0; n_points];
+    let mut count = vec![0.0; n_points];
+
+    let index: Vec<usize> = data.par_iter().map(|x| get_bin(*x, min, step)).collect();
+
+    for (i, y) in weights.iter().enumerate() {
+        if mask[i] != 0 {
+            continue;
+        }
+        sum[index[i]] += y;
+        count[index[i]] += 1.0;
+    }
+
+    let normed_sum = sum
+        .iter()
+        .zip(count.iter())
+        .map(|(sum, count)| if *count == 0.0 { 0.0 } else { sum / count })
+        .collect::<Vec<f64>>();
+
+    let bins = bins(n_points, min, step);
+    (bins, normed_sum)
+}
+
 /// Calculates a normalized histogram of weights at data values using a parallel implementation
 pub fn histogram_parallel(
     data: &Vec<f64>,
