@@ -51,15 +51,27 @@ type Lut2dCache = LutCache<TwoDKey, lut::Lut2d>;
 /// Integration method selection (applies to both 1D and 2D integrations).
 ///
 /// Examples
-/// ```no_run
+/// ```
 /// use dioptrin::integration::{Integrator, IntegrationMethod};
-/// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
-/// # let poni: Poni = unimplemented!();
-/// # let frame: Frame = unimplemented!();
+/// use dioptrin::{frame::Frame, geometry::Geometry, poni::Poni};
+///
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 1.0;
+///
+/// let frame = Frame {
+///     name: String::from("demo"),
+///     data: vec![1.0, 2.0, 3.0, 4.0],
+///     dim1: 2,
+///     dim2: 2,
+/// };
+///
 /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 /// let mut integrator = Integrator::new(geometry)
 ///     .with_method(IntegrationMethod::Counting);
-/// let (_x, y) = integrator.integrate1d(&frame, 1250);
+/// let (_x, y) = integrator.integrate1d(&frame, 4);
+/// assert_eq!(y.len(), 4);
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub enum IntegrationMethod {
@@ -185,19 +197,33 @@ impl Integrator {
     /// Integrate a frame to 1D using the configured integration method.
     ///
     /// Examples
-    /// ```no_run
+    /// ```
     /// use dioptrin::integration::{Integrator, IntegrationMethod};
-    /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
-    /// # let poni: Poni = unimplemented!();
-    /// # let frame: Frame = unimplemented!();
+    /// use dioptrin::{frame::Frame, geometry::Geometry, poni::Poni};
+    ///
+    /// let mut poni = Poni::new();
+    /// poni.pixel1 = 1.0;
+    /// poni.pixel2 = 1.0;
+    /// poni.distance = 1.0;
+    ///
+    /// let frame = Frame {
+    ///     name: String::from("demo"),
+    ///     data: vec![1.0, 2.0, 3.0, 4.0],
+    ///     dim1: 2,
+    ///     dim2: 2,
+    /// };
+    ///
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
     /// let mut integrator = Integrator::new(geometry)
     ///     .with_method(IntegrationMethod::Counting);
-    /// let (_x, y_count) = integrator.integrate1d(&frame, 1250);
-    /// integrator = integrator.with_method(IntegrationMethod::PixelSplit);
-    /// let (_x, y_ps) = integrator.integrate1d(&frame, 1250);
-    /// integrator = integrator.with_method(IntegrationMethod::Supersampled { n_ss: 4 });
-    /// let (_x, y_ss) = integrator.integrate1d(&frame, 1250);
+    /// let (_x, y_count) = integrator.integrate1d(&frame, 4);
+    /// integrator.set_method(IntegrationMethod::PixelSplit);
+    /// let (_x, y_ps) = integrator.integrate1d(&frame, 4);
+    /// integrator.set_method(IntegrationMethod::Supersampled { n_ss: 2 });
+    /// let (_x, y_ss) = integrator.integrate1d(&frame, 4);
+    /// assert_eq!(y_count.len(), 4);
+    /// assert_eq!(y_ps.len(), 4);
+    /// assert_eq!(y_ss.len(), 4);
     /// ```
     pub fn integrate1d(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
@@ -265,16 +291,27 @@ impl Integrator {
     /// Integrate a frame to 2D using the configured integration method.
     ///
     /// Example
-    /// ```no_run
+    /// ```
     /// use dioptrin::integration::{Integrator, IntegrationMethod};
-    /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
-    /// # let poni: Poni = unimplemented!();
-    /// # let frame: Frame = unimplemented!();
+    /// use dioptrin::{frame::Frame, geometry::Geometry, poni::Poni};
+    ///
+    /// let mut poni = Poni::new();
+    /// poni.pixel1 = 1.0;
+    /// poni.pixel2 = 1.0;
+    /// poni.distance = 1.0;
+    ///
+    /// let frame = Frame {
+    ///     name: String::from("demo"),
+    ///     data: vec![1.0, 2.0, 3.0, 4.0],
+    ///     dim1: 2,
+    ///     dim2: 2,
+    /// };
+    ///
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
     /// let mut integrator = Integrator::new(geometry)
     ///     .with_method(IntegrationMethod::PixelSplit);
-    /// let y = integrator.integrate2d(&frame, 1250, 360);
-    /// assert_eq!(y.len(), 1250*360);
+    /// let y = integrator.integrate2d(&frame, 2, 2);
+    /// assert_eq!(y.len(), 4);
     /// ```
     pub fn integrate2d(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
