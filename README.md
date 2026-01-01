@@ -1,97 +1,117 @@
-# Dioptrin — Unified LUT API
+# Dioptrin — Fast 1D/2D diffraction integration with CSR LUTs
 
-This repository provides lookup table (LUT) utilities for fast 1D/2D azimuthal integration.
+Dioptrin provides fast 1D/2D diffraction integration using compressed sparse row (CSR) lookup tables.
+It supports counting, pixel-splitting, and supersampled integration methods, and integrates in terms
+of two-theta (tth) and chi (azimuthal) coordinates. The `Integrator` handles geometry updates,
+polarization/solid-angle corrections, and optional masking for each frame.
 
-## Unified CSR LUTs
-
-All LUTs are represented in Compressed Sparse Row (CSR) format and share unified structs:
-
-- `lut::Lut1d` — 1D LUT (rows = histogram bins)
-- `lut::Lut2d` — 2D LUT (rows = `chi * n_tth + tth`)
-
-Weighted variants (supersampled / pixel-split) use the same structs with `values: Some(weights)`;
-unweighted (counting) LUTs have `values: None` and integrate via the mean of contributing pixels.
-
-### 1D Counting
+## 1D integration example
 
 ```rust
-use dioptrin::lut::{build_lut1d_csr, integrate1d};
-let tth = vec![0.1, 0.2, 0.3, 0.4];
-let intensity = vec![10.0, 20.0, 30.0, 40.0];
-let lut = build_lut1d_csr(&tth, 1024);
-let (_bins, y) = integrate1d(&intensity, &lut, None);
-```
-
-### 1D Supersampled
-
-```rust
-use dioptrin::lut::{build_lut1d_ss_csr, integrate1d};
+use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
-// let geometry: Geometry = ...;
-// let tth: Vec<f64> = geometry.calc_tth_all();
-// let lut = build_lut1d_ss_csr(&geometry, &tth, 1024, 4);
-// let (_bins, y) = integrate1d(&intensity, &lut, None);
+use dioptrin::integration::{IntegrationMethod, Integrator};
+use dioptrin::poni::Poni;
+
+fn main() {
+    let poni = Poni::load("test_data/v1.poni").expect("load poni");
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).expect("load frame");
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+
+    let mut integrator = Integrator::new(geometry)
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_polarization_factor(0.99);
+
+    let n_points = 1250;
+    let (tth, intensity) = integrator.integrate1d(&frame, n_points);
+
+    println!("1D bins: {}", tth.len());
+    println!("1D intensity values: {}", intensity.len());
+}
 ```
 
-### 1D Pixel-Split
+## 1D integration with errors
 
 ```rust
+use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
-use dioptrin::lut::{build_lut1d_ps_csr, integrate1d};
-// let geometry: Geometry = ...;
-let lut = build_lut1d_ps_csr(&geometry, &tth, 1024);
-let (_bins, y) = integrate1d(&intensity, &lut, None);
+use dioptrin::integration::{IntegrationMethod, Integrator};
+use dioptrin::poni::Poni;
+
+fn main() {
+    let poni = Poni::load("test_data/v1.poni").expect("load poni");
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).expect("load frame");
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+
+    let mut integrator = Integrator::new(geometry)
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_polarization_factor(0.99);
+
+    let n_points = 1250;
+    let (tth, intensity, sigma) = integrator.integrate1d_with_errors(&frame, n_points);
+
+    println!("1D bins: {}", tth.len());
+    println!("1D intensity values: {}", intensity.len());
+    println!("1D sigma values: {}", sigma.len());
+}
 ```
 
-### 2D Counting
+## 2D integration example (chi range)
 
 ```rust
-use dioptrin::lut::{build_lut2d_csr, integrate2d};
-let lut2d = build_lut2d_csr(&tth, &chi, 1024, 360);
-let y = integrate2d(&intensity, &lut2d, None);
-```
+use std::f64::consts::PI;
 
-### 2D Supersampled
-
-```rust
-use dioptrin::lut::{build_lut2d_ss_csr, integrate2d};
+use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
-// let lut2d = build_lut2d_ss_csr(&geometry, &tth, &chi, 1024, 360, 4);
-// let y = integrate2d(&intensity, &lut2d, None);
+use dioptrin::integration::{IntegrationMethod, Integrator};
+use dioptrin::poni::Poni;
+
+fn main() {
+    let poni = Poni::load("test_data/v1.poni").expect("load poni");
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).expect("load frame");
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+
+    let mut integrator = Integrator::new(geometry)
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_polarization_factor(0.99);
+
+    let n_tth = 1250;
+    let n_chi = 360;
+    let chi_step = 2.0 * PI / n_chi as f64;
+    let chi_start = 0.0;
+
+    let cake = integrator.integrate2d_with_chi_range(&frame, n_tth, n_chi, chi_start, chi_step);
+
+    println!("2D bins: {}", cake.len());
+}
 ```
 
-### 2D Pixel-Split
+## Raw LUT integration example
+
+If you want direct control over LUT building and integration, you can use the LUT APIs directly.
+This is useful when you want to reuse a LUT across multiple frames or manage caching yourself.
 
 ```rust
+use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
 use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
-// let geometry: Geometry = ...;
-let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 1024, 360);
-let y = integrate2d(&intensity, &lut2d, None);
+use dioptrin::poni::Poni;
+
+fn main() {
+    let poni = Poni::load("test_data/v1.poni").expect("load poni");
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).expect("load frame");
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+
+    let tth = geometry.calc_tth_all();
+    let chi = geometry.calc_chi_all();
+    let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 1250, 360);
+
+    let intensity = frame.data.clone();
+    let cake = integrate2d(&intensity, &lut2d, None);
+
+    println!("2D bins: {}", cake.len());
+}
 ```
-
-## Migration
-
-- All old `lut_*` builders have been renamed to `build_*` and unified to return CSR-based `Lut1d`/`Lut2d`.
-- HashMap- and Vec-of-Vec-based LUTs are removed from the public API.
-- Use `integrate1d`/`integrate2d` for both weighted and unweighted LUTs.
-
-## Integrator Method Selection
-
-Use enum-based selection for 1D/2D in `Integrator`:
-
-```rust
-use dioptrin::integration::{Integrator, LutMethod};
-// let (x, y) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Counting);
-// let y2d = integrator.integrate2d_lut_with(&frame, 1250, 360, LutMethod::Supersampled { n_ss: 4 });
-```
-
-## Module Layout
-
-- `src/lut/counting_csr.rs`: unweighted CSR LUT builders (`build_lut1d_csr`, `build_lut2d_csr`) and CSR types.
-- `src/lut/pixel_split.rs`: pixel-splitting CSR LUT builders (`build_lut1d_ps_csr`, `build_lut2d_ps_csr`).
-- `src/lut/supersampled.rs`: supersampled CSR LUT builders (`build_lut1d_ss_csr`, `build_lut2d_ss_csr`).
-- `src/lut/integrate.rs`: shared CSR integrators (`integrate1d`, `integrate2d`) used by any LUT.
 
 ## Benchmarks
 
