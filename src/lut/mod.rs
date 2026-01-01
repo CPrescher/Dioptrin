@@ -7,6 +7,8 @@
 //! - Integrators:
 //!   - `integrate1d(intensity, &Lut1d, hist_min, hist_step)`
 //!   - `integrate2d(intensity, &Lut2d)`
+//!   - `integrate1d_with_errors(intensity, variance, &Lut1d, mask)`
+//!   - `integrate2d_with_errors(intensity, variance, &Lut2d, mask)`
 //!
 //! The `values: Option<Vec<f64>>` field on LUT structs indicates whether the LUT
 //! is weighted (supersampled/pixel-split) or unweighted (counting/mean of contributing pixels).
@@ -31,6 +33,11 @@ pub use counting_csr::{
     build_lut1d_csr,
     build_lut2d_csr,
 };
-pub use integrate::{integrate1d, integrate2d};
+pub use integrate::{
+    integrate1d,
+    integrate1d_with_errors,
+    integrate2d,
+    integrate2d_with_errors,
+};
 pub use supersampled::{build_lut1d_ss_csr, build_lut2d_ss_csr};
 pub use pixel_split::{build_lut1d_ps_csr, build_lut2d_ps_csr};

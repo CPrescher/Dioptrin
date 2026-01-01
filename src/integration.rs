@@ -226,6 +226,42 @@ impl Integrator {
         result
     }
 
+    /// Integrate a frame to 1D and return per-bin errors (standard deviations).
+    pub fn integrate1d_with_errors(
+        &mut self,
+        frame: &Frame,
+        n_points: usize,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            &mask.data
+        });
+        let result = match self.method {
+            IntegrationMethod::Histogram => histogram::histogram_with_errors(
+                &self.tth,
+                &intensity,
+                &variance,
+                n_points,
+                mask_data,
+            ),
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+            }
+        };
+        result
+    }
+
     /// Integrate a frame to 2D using the configured integration method.
     ///
     /// Example
@@ -262,6 +298,46 @@ impl Integrator {
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+            }
+        };
+        result
+    }
+
+    /// Integrate a frame to 2D and return per-bin errors (standard deviations).
+    pub fn integrate2d_with_errors(
+        &mut self,
+        frame: &Frame,
+        n_tth: usize,
+        n_azi: usize,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            &mask.data
+        });
+        let result = match self.method {
+            IntegrationMethod::Histogram => {
+                let (_bins, y, sigma) = histogram::histogram_with_errors(
+                    &self.tth,
+                    &intensity,
+                    &variance,
+                    n_tth,
+                    mask_data,
+                );
+                (y, sigma)
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
         };
         result
@@ -378,6 +454,18 @@ impl Integrator {
             .enumerate()
             .map(|(i, y)| y / self.polarization[i] / self.solid_angle[i])
             .collect::<Vec<f64>>()
+    }
+
+    fn correct_intensity_and_variance(&mut self, data: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+        let mut intensity = Vec::with_capacity(data.len());
+        let mut variance = Vec::with_capacity(data.len());
+        for (i, &y) in data.iter().enumerate() {
+            let corr = self.polarization[i] * self.solid_angle[i];
+            let inv = 1.0 / corr;
+            intensity.push(y * inv);
+            variance.push(y * inv * inv);
+        }
+        (intensity, variance)
     }
 }
 

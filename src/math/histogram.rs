@@ -60,6 +60,61 @@ pub fn histogram(
     (bins, normed_sum)
 }
 
+/// Calculates a normalized histogram of weights with per-bin errors using provided variances.
+pub fn histogram_with_errors(
+    data: &Vec<f64>,
+    weights: &Vec<f64>,
+    variances: &Vec<f64>,
+    n_points: usize,
+    mask: Option<&Vec<u8>>,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let (min, _max, step) = min_max_step(data, n_points);
+
+    let mut sum = vec![0.0; n_points];
+    let mut sum_var = vec![0.0; n_points];
+    let mut count = vec![0usize; n_points];
+
+    let index: Vec<usize> = data.par_iter().map(|x| get_bin(*x, min, step)).collect();
+
+    match mask {
+        Some(mask) => {
+            for (i, y) in weights.iter().enumerate() {
+                if mask[i] != 0 {
+                    continue;
+                }
+                let idx = index[i];
+                sum[idx] += y;
+                sum_var[idx] += variances[i];
+                count[idx] += 1;
+            }
+        }
+        None => {
+            for (i, y) in weights.iter().enumerate() {
+                let idx = index[i];
+                sum[idx] += y;
+                sum_var[idx] += variances[i];
+                count[idx] += 1;
+            }
+        }
+    }
+
+    let mut normed_sum = vec![0.0; n_points];
+    let mut sigma = vec![0.0; n_points];
+    for i in 0..n_points {
+        let c = count[i];
+        if c == 0 {
+            continue;
+        }
+        let c_f = c as f64;
+        normed_sum[i] = sum[i] / c_f;
+        let var = sum_var[i] / (c_f * c_f);
+        sigma[i] = var.max(0.0).sqrt();
+    }
+
+    let bins = bins(n_points, min, step);
+    (bins, normed_sum, sigma)
+}
+
 /// Calculates a normalized histogram of weights at data values using a parallel implementation
 pub fn histogram_parallel(
     data: &Vec<f64>,
