@@ -38,14 +38,17 @@ impl Integrator {
     }
 
     /// Apply polarization and solid angle corrections to the intensity.
-    pub(super) fn correct_intensity(&mut self, data: &Vec<f64>) -> Vec<f64> {
+    pub(super) fn correct_intensity(&mut self, data: &[f64]) -> Vec<f64> {
         data.iter()
             .enumerate()
             .map(|(i, y)| y / self.polarization[i] / self.solid_angle[i])
             .collect::<Vec<f64>>()
     }
 
-    pub(super) fn correct_intensity_and_variance(&mut self, data: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+    pub(super) fn correct_intensity_and_variance(
+        &mut self,
+        data: &[f64],
+    ) -> (Vec<f64>, Vec<f64>) {
         let mut intensity = Vec::with_capacity(data.len());
         let mut variance = Vec::with_capacity(data.len());
         for (i, &y) in data.iter().enumerate() {

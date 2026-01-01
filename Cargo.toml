@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 tiff = "0.8"
 rayon = "1.5"
+pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
+numpy = { version = "0.27", optional = true }
 
 [dev-dependencies]
 criterion = "0.5.1"
@@ -27,3 +29,8 @@ codegen-units = 1
 opt-level = 3
 
 # No optional features
+[features]
+python = ["numpy", "pyo3", "pyo3/extension-module"]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
