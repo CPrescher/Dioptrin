@@ -1,10 +1,10 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+use std::time::Duration;
 
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
-use dioptrin::poni::Poni;
 use dioptrin::lut;
-
+use dioptrin::poni::Poni;
 
 pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
@@ -35,7 +35,6 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
         b.iter(|| lut::integrate1d(&intensity, &csr, None))
     });
 }
-
 
 pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
@@ -245,7 +244,6 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
     });
 }
 
-
 pub fn read_frame_benchmark(c: &mut Criterion) {
     c.bench_function("bench", |b| {
         b.iter(|| Frame::from_tiff(String::from("test_data/image_001.tif")).unwrap())
@@ -254,7 +252,7 @@ pub fn read_frame_benchmark(c: &mut Criterion) {
 
 criterion_group! {
     name = benches;
-    config = Criterion::default().sample_size(10);
+    config = Criterion::default().warm_up_time(Duration::from_secs(1)).measurement_time(Duration::from_secs(3));
     targets = integrate_lut_csr_benchmark,
         integrate_lut_ss_csr_benchmark,
         integrate2d_lut_csr_benchmark,
