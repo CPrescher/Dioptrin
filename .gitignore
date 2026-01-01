@@ -1,7 +1,10 @@
+.vscode
+
 /target
 /Cargo.lock
 
 test_data/*.tif
+test_data/test_output/*.png
 test_data/test_output/*.txt
 
 *.ipynb

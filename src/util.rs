@@ -28,6 +28,27 @@ pub fn save_vec(path: &str, vec: &Vec<f64>) {
     }
 }
 
+/// Saves two vectors as a plain text file with two columns into the test_data/test_output directory
+pub fn save_vec2(path: &str, x: &Vec<f64>, y: &Vec<f64>) {
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "save_vec2 length mismatch: x = {}, y = {}",
+        x.len(),
+        y.len()
+    );
+    let dir_str: String = "test_data/test_output/".to_owned();
+    fs::create_dir(&dir_str).unwrap_or_default();
+
+    let path_str = dir_str + path;
+    let path: &Path = Path::new(path_str.as_str());
+    let mut file = fs::File::create(path).unwrap();
+    for (xv, yv) in x.iter().zip(y.iter()) {
+        file.write_all(format!("{} {}\n", xv, yv).as_bytes())
+            .unwrap();
+    }
+}
+
 /// Reads a vector of floats from a plain text file in the test_data/test_reference directory
 pub fn read_vec(path: &str) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     let path_str = "test_data/test_reference/".to_owned() + path;

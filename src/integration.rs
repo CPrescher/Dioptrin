@@ -378,8 +378,7 @@ mod tests {
         let mut integrator = Integrator::new(geometry);
         let (tth, int) = integrator.integrate(&frame, 850);
 
-        util::save_vec("pattern_tth.txt", &tth);
-        util::save_vec("pattern_int.txt", &int);
+        util::save_vec2("pattern.txt", &tth, &int);
 
         let tth_pyfai = util::read_vec("pattern_tth_pyFAI.txt").unwrap();
         let int_pyfai = util::read_vec("pattern_int_pyFAI.txt").unwrap();
@@ -405,8 +404,7 @@ mod tests {
         let mut integrator = Integrator::new(geometry);
         let (tth, int) = integrator.integrate_lut(&frame, 850);
 
-        util::save_vec("pattern_tth_lut.txt", &tth);
-        util::save_vec("pattern_int_lut.txt", &int);
+        util::save_vec2("pattern_lut.txt", &tth, &int);
 
         let tth_pyfai = util::read_vec("pattern_tth_pyFAI.txt").unwrap();
         let int_pyfai = util::read_vec("pattern_int_pyFAI.txt").unwrap();
@@ -431,8 +429,7 @@ mod tests {
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
         let (tth, int) = integrator.integrate_lut_ps(&frame, 850);
-        util::save_vec("pattern_tth_lut_ps.txt", &tth);
-        util::save_vec("pattern_int_lut_ps.txt", &int);
+        util::save_vec2("pattern_lut_ps.txt", &tth, &int);
     }
 
     #[test]
@@ -442,10 +439,9 @@ mod tests {
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_lut_ss(&frame, 850, 3);
+        let (tth, int) = integrator.integrate_lut_ss(&frame, 850, 5);
 
-        util::save_vec("pattern_tth_lut_ss.txt", &tth);
-        util::save_vec("pattern_int_lut_ss.txt", &int);
+        util::save_vec2("pattern_lut_ss.txt", &tth, &int);
     }
 
     #[test]

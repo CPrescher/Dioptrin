@@ -195,7 +195,8 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
     assert_eq!(tth.len(), geometry.size());
 
     let (d1, d2) = geometry.corner_grid();
-    let tth_corners = geometry.calc_tth(&d1, &d2);
+    let (tth_corners, chi_corners) = geometry.calc_tth_and_chi(&d1, &d2);
+    let chi = geometry.calc_chi_all();
 
     let min = math::min(&tth_corners);
     let mut max = math::max(&tth_corners);
@@ -217,23 +218,15 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
         let t10 = tth_corners[base + width];
         let t11 = tth_corners[base + width + 1];
 
-        let mut tmin = t00;
-        let mut tmax = t00;
-        for v in [t01, t10, t11] {
-            if v < tmin {
-                tmin = v;
-            }
-            if v > tmax {
-                tmax = v;
-            }
-        }
+        let center_chi = chi[idx];
+        let a00 = unwrap_angle(chi_corners[base], center_chi);
+        let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
+        let a10 = unwrap_angle(chi_corners[base + width], center_chi);
+        let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
-        if tmax <= min || tmin >= max {
-            continue;
-        }
-
-        let span = tmax - tmin;
-        if span <= 0.0 {
+        let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+        let area_total = polygon_area(&poly).abs();
+        if area_total <= 0.0 {
             let pos = (center_tth - min) / step;
             if pos < 0.0 {
                 continue;
@@ -243,6 +236,17 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
                 counts[bin as usize] += 1;
             }
             continue;
+        }
+
+        let mut tmin = t00;
+        let mut tmax = t00;
+        for v in [t01, t10, t11] {
+            if v < tmin {
+                tmin = v;
+            }
+            if v > tmax {
+                tmax = v;
+            }
         }
 
         let mut start = ((tmin - min) / step).floor() as isize;
@@ -257,11 +261,23 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
             end = n_points as isize - 1;
         }
 
+        let mut amin = a00;
+        let mut amax = a00;
+        for v in [a01, a10, a11] {
+            if v < amin {
+                amin = v;
+            }
+            if v > amax {
+                amax = v;
+            }
+        }
+
         for b in start..=end {
             let bin_min = min + b as f64 * step;
             let bin_max = bin_min + step;
-            let overlap = (tmax.min(bin_max) - tmin.max(bin_min)).max(0.0);
-            if overlap > 0.0 {
+            let clipped = clip_polygon_rect(&poly, bin_min, bin_max, amin, amax);
+            let area = polygon_area(&clipped).abs();
+            if area > 0.0 {
                 counts[b as usize] += 1;
             }
         }
@@ -277,7 +293,7 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
     let mut values = vec![0.0f64; total];
     let mut next = row_ptr.clone();
 
-    // Second pass: fill indices and overlap lengths
+    // Second pass: fill indices and overlap areas
     for (idx, &center_tth) in tth.iter().enumerate() {
         let row = idx / dim2;
         let col = idx - row * dim2;
@@ -288,23 +304,15 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
         let t10 = tth_corners[base + width];
         let t11 = tth_corners[base + width + 1];
 
-        let mut tmin = t00;
-        let mut tmax = t00;
-        for v in [t01, t10, t11] {
-            if v < tmin {
-                tmin = v;
-            }
-            if v > tmax {
-                tmax = v;
-            }
-        }
+        let center_chi = chi[idx];
+        let a00 = unwrap_angle(chi_corners[base], center_chi);
+        let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
+        let a10 = unwrap_angle(chi_corners[base + width], center_chi);
+        let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
-        if tmax <= min || tmin >= max {
-            continue;
-        }
-
-        let span = tmax - tmin;
-        if span <= 0.0 {
+        let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+        let area_total = polygon_area(&poly).abs();
+        if area_total <= 0.0 {
             let pos = (center_tth - min) / step;
             if pos < 0.0 {
                 continue;
@@ -320,6 +328,17 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
             continue;
         }
 
+        let mut tmin = t00;
+        let mut tmax = t00;
+        for v in [t01, t10, t11] {
+            if v < tmin {
+                tmin = v;
+            }
+            if v > tmax {
+                tmax = v;
+            }
+        }
+
         let mut start = ((tmin - min) / step).floor() as isize;
         let mut end = ((tmax - min) / step).floor() as isize;
         if end < 0 || start >= n_points as isize {
@@ -332,17 +351,29 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
             end = n_points as isize - 1;
         }
 
+        let mut amin = a00;
+        let mut amax = a00;
+        for v in [a01, a10, a11] {
+            if v < amin {
+                amin = v;
+            }
+            if v > amax {
+                amax = v;
+            }
+        }
+
         for b in start..=end {
             let bin_min = min + b as f64 * step;
             let bin_max = bin_min + step;
-            let overlap = (tmax.min(bin_max) - tmin.max(bin_min)).max(0.0);
-            if overlap <= 0.0 {
+            let clipped = clip_polygon_rect(&poly, bin_min, bin_max, amin, amax);
+            let area = polygon_area(&clipped).abs();
+            if area <= 0.0 {
                 continue;
             }
             let row = b as usize;
             let p = next[row];
             col_idx[p] = idx;
-            values[p] = overlap;
+            values[p] = area;
             next[row] += 1;
         }
     }
