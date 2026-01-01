@@ -236,21 +236,6 @@ impl Integrator {
         self.cache_1d.lut.as_ref().unwrap()
     }
 
-    /// checks whether current supersampled lookup table (LUT) was calculated for the same number of points (n_points), if not,
-    /// it is recalculated
-    ///
-    /// # Arguments
-    /// * `n_points` - number of points for the 1d integration
-    /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
-    fn update_lut_ss(&mut self, n_points: usize, n_ss: usize) {
-        let _ = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
-    }
-
-    /// checks whether current pixel-split lut was calculated for the same number of points
-    fn update_lut_ps(&mut self, n_points: usize) {
-        let _ = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
-    }
-
     /// checks whether current lut_2d was calculated for the same number of points in tth and azimuth, if not,
     /// it is recalculated
     ///
@@ -283,106 +268,6 @@ impl Integrator {
             self.cache_2d.lut = Some(lut2d);
         }
         self.cache_2d.lut.as_ref().unwrap()
-    }
-
-    /// checks whether current supersampled lut_2d was calculated for the same number of points in tth and azimuth, if not,
-    /// it is recalculated
-    ///
-    /// # Arguments
-    /// * `n_tth` - number of points in tth for the 2d integration
-    /// * `n_azimuth` - number of points in azimuth for the 2d integration
-    /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
-    fn update_lut_2d(&mut self, n_tth: usize, n_azi: usize) {
-        let _ = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
-    }
-    fn update_lut_2d_ss(&mut self, n_tth: usize, n_azi: usize, n_ss: usize) {
-        let _ = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
-    }
-
-    /// checks whether current pixel-split 2d lut was calculated for the same points
-    fn update_lut_2d_ps(&mut self, n_tth: usize, n_azi: usize) {
-        let _ = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
-    }
-
-    /// Integrate a frame using look up table method
-    ///
-    /// # Arguments
-    /// * `frame` - The frame to integrate
-    /// * `n_points` - the number of points of the resulting pattern
-    pub fn integrate_lut(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
-        lut::integrate1d(&intensity, lut1d, None)
-    }
-
-    /// Integrate a frame using lookup table (LUT) method with supersampling
-    ///
-    /// # Arguments
-    /// * `frame` - Frame to integrate
-    /// * `n_points` - the number of points of the resulting pattern
-    /// * `n_ss` - Number of subpixels per pixel (e.g. 2 means 2x2 subpixels per pixel)
-    pub fn integrate_lut_ss(
-        &mut self,
-        frame: &Frame,
-        n_points: usize,
-        n_ss: usize,
-    ) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
-        lut::integrate1d(&intensity, lut1d, None)
-    }
-
-    /// Integrate a frame using pixel-splitting method (1D)
-    pub fn integrate_lut_ps(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
-        lut::integrate1d(&intensity, lut1d, None)
-    }
-
-    /// Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
-    /// lookup table (LUT) method
-    ///
-    /// # Arguments
-    /// * `frame` - Frame to integrate
-    /// * `n_tth` - Number of points in tth direction
-    /// * `n_azi` - Number of points in azimuthal angle direction
-    pub fn integrate_2d_lut(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
-        lut::integrate2d(&intensity, lut2d, None)
-    }
-
-    // Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
-    /// lookup table (LUT) method with supersampling
-    ///
-    /// # Arguments
-    /// * `frame` - Frame to integrate
-    /// * `n_tth` - Number of points in tth direction
-    /// * `n_azi` - Number of points in azimuthal angle direction
-    /// * `n_ss` - Number of subpixels per pixel (e.g. 2 means 2x2 subpixels per pixel)
-    pub fn integrate2d_lut_ss(
-        &mut self,
-        frame: &Frame,
-        n_tth: usize,
-        n_azi: usize,
-        n_ss: usize,
-    ) -> Vec<f64> {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
-        lut::integrate2d(&intensity, lut2d, None)
-    }
-
-    /// Integrate a frame into a 2D grid using pixel-splitting method
-    pub fn integrate2d_lut_ps(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
-        let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
-        lut::integrate2d(&intensity, lut2d, None)
     }
 
     /// Apply polarization and solid angle corrections to the intensity.
@@ -431,13 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn test_integrate_lut() {
+    fn test_integrate_counting_1d() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_lut(&frame, 850);
+        integrator.set_method(IntegrationMethod::Counting);
+        let (tth, int) = integrator.integrate1d(&frame, 850);
 
         util::save_vec2("pattern_lut.txt", &tth, &int);
 
@@ -457,47 +343,51 @@ mod tests {
     }
 
     #[test]
-    fn test_integrate_pixel_split_lut() {
+    fn test_integrate_pixel_split_1d() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_lut_ps(&frame, 850);
+        integrator.set_method(IntegrationMethod::PixelSplit);
+        let (tth, int) = integrator.integrate1d(&frame, 850);
         util::save_vec2("pattern_lut_ps.txt", &tth, &int);
     }
 
     #[test]
-    fn test_integrate_supersampled_lut() {
+    fn test_integrate_supersampled_1d() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let (tth, int) = integrator.integrate_lut_ss(&frame, 850, 5);
+        integrator.set_method(IntegrationMethod::Supersampled { n_ss: 5 });
+        let (tth, int) = integrator.integrate1d(&frame, 850);
 
         util::save_vec2("pattern_lut_ss.txt", &tth, &int);
     }
 
     #[test]
-    fn test_integrate_2d_lut() {
+    fn test_integrate_counting_2d() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let cake = integrator.integrate_2d_lut(&frame, 850, 360);
+        integrator.set_method(IntegrationMethod::Counting);
+        let cake = integrator.integrate2d(&frame, 850, 360);
         util::save_vec("cake_lut.txt", &cake);
     }
 
     #[test]
-    fn test_integrate_2d_lut_ss() {
+    fn test_integrate_supersampled_2d() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry);
-        let cake = integrator.integrate2d_lut_ss(&frame, 850, 360, 5);
+        integrator.set_method(IntegrationMethod::Supersampled { n_ss: 5 });
+        let cake = integrator.integrate2d(&frame, 850, 360);
         util::save_vec("cake_lut_ss.txt", &cake);
     }
 }
