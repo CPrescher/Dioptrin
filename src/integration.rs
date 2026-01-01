@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 use crate::lut;
 use crate::math::histogram;
-#[cfg(feature = "lut_metrics")]
-use crate::lut::metrics::analyze_csr_locality;
 
 use super::frame::Frame;
 use super::geometry::Geometry;
@@ -60,14 +58,6 @@ impl Integrator {
         };
         if need_rebuild {
             let csr = lut::build_lut1d_csr(&self.tth, n_points);
-            #[cfg(feature = "lut_metrics")]
-            {
-                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
-                println!(
-                    "[lut_metrics] 1D LUT CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
-                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
-                );
-            }
             self.lut = Some(csr);
         }
     }
@@ -85,14 +75,6 @@ impl Integrator {
         };
         if need_rebuild {
             let csr = lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss);
-            #[cfg(feature = "lut_metrics")]
-            {
-                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
-                println!(
-                    "[lut_metrics] 1D LUT SS CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
-                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
-                );
-            }
             self.lut_ss = Some(csr);
             self.lut_ss_sub_pixel = n_ss;
         }
@@ -111,14 +93,6 @@ impl Integrator {
         };
         if need_rebuild {
             let csr = lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_azi);
-            #[cfg(feature = "lut_metrics")]
-            {
-                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
-                println!(
-                    "[lut_metrics] 2D LUT CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
-                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
-                );
-            }
             self.lut_2d = Some(csr);
         }
     }
@@ -137,14 +111,6 @@ impl Integrator {
         };
         if need_rebuild {
             let csr = lut::build_lut2d_ss_csr(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
-            #[cfg(feature = "lut_metrics")]
-            {
-                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
-                println!(
-                    "[lut_metrics] 2D LUT SS CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
-                    stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
-                );
-            }
             self.lut_2d_ss = Some(csr);
             self.lust_2d_ss_sub_pixel = n_ss;
         }

@@ -4,15 +4,12 @@ use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
 use dioptrin::poni::Poni;
 use dioptrin::lut;
-use dioptrin::math::histogram;
 
 
 pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_points = 1250;
 
@@ -43,9 +40,7 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
 pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_points = 1250;
     let n_subpixels = 4;
@@ -76,9 +71,7 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
 pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
     let n_azi = 360;
@@ -109,9 +102,7 @@ pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
 pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
     let n_azi = 360;
@@ -143,9 +134,7 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
 pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_points = 1250;
     let tth = geometry.calc_tth_all();
@@ -174,9 +163,7 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
 pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_points = 1250;
     let tth = geometry.calc_tth_all();
@@ -204,9 +191,7 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
 pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
     let n_azi = 360;
@@ -235,9 +220,7 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
 pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let mut geometry = Geometry::new(0, 0, poni);
-    geometry.dim1 = frame.dim1;
-    geometry.dim2 = frame.dim2;
+    let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
     let n_azi = 360;
@@ -271,7 +254,6 @@ pub fn read_frame_benchmark(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    // CSR-only benches
     integrate_lut_csr_benchmark,
     integrate_lut_ss_csr_benchmark,
     integrate2d_lut_csr_benchmark,

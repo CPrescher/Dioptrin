@@ -16,8 +16,6 @@ pub mod common;
 mod counting_csr;
 mod pixel_split;
 mod supersampled;
-#[cfg(feature = "lut_metrics")]
-pub mod metrics;
 
 // Re-export unified public API
 pub use common::hull_grid;
@@ -29,5 +27,3 @@ pub use counting_csr::{
 };
 pub use supersampled::{build_lut1d_ss_csr, build_lut2d_ss_csr};
 pub use pixel_split::{build_lut1d_ps_csr, build_lut2d_ps_csr};
-#[cfg(feature = "lut_metrics")]
-pub use metrics::{analyze_csr_locality, LutLocalityStats};
