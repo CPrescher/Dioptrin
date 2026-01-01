@@ -27,7 +27,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 pub fn integrate1d(
     intensity: &Vec<f64>,
     lut: &Lut1d,
-    mask: Option<&[u8]>,
+    mask: Option<&Vec<u8>>,
 ) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
@@ -130,7 +130,7 @@ pub fn integrate1d(
 pub fn integrate2d(
     intensity: &Vec<f64>,
     lut: &Lut2d,
-    mask: Option<&[u8]>,
+    mask: Option<&Vec<u8>>,
 ) -> Vec<f64> {
     let rows = lut.row_ptr.len() - 1;
     (0..rows)

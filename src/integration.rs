@@ -134,13 +134,12 @@ impl Integrator {
         let mask = self.mask.take();
         let mask_data = mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            mask.data.as_slice()
+            &mask.data
         });
         let result = match self.method {
-            IntegrationMethod::Histogram => match mask_data {
-                Some(mask) => histogram::histogram_masked(&self.tth, &intensity, mask, n_points),
-                None => histogram::histogram(&self.tth, &intensity, n_points),
-            },
+            IntegrationMethod::Histogram => {
+                histogram::histogram(&self.tth, &intensity, n_points, mask_data)
+            }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
                 crate::lut::integrate1d(&intensity, lut1d, mask_data)
@@ -178,13 +177,12 @@ impl Integrator {
         let mask = self.mask.take();
         let mask_data = mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            mask.data.as_slice()
+            &mask.data
         });
         let result = match self.method {
-            IntegrationMethod::Histogram => match mask_data {
-                Some(mask) => histogram::histogram_masked(&self.tth, &intensity, mask, n_tth).1,
-                None => histogram::histogram(&self.tth, &intensity, n_tth).1,
-            },
+            IntegrationMethod::Histogram => {
+                histogram::histogram(&self.tth, &intensity, n_tth, mask_data).1
+            }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
                 crate::lut::integrate2d(&intensity, lut2d, mask_data)

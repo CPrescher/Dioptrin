@@ -8,8 +8,13 @@ use rayon::prelude::*;
 use crate::geometry::Geometry;
 use crate::{lut, math};
 
-/// Calculates a normalized histogram of weights at data values
-pub fn histogram(data: &Vec<f64>, weights: &Vec<f64>, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+/// Calculates a normalized histogram of weights at data values, optionally excluding masked pixels.
+pub fn histogram(
+    data: &Vec<f64>,
+    weights: &Vec<f64>,
+    n_points: usize,
+    mask: Option<&Vec<u8>>,
+) -> (Vec<f64>, Vec<f64>) {
     let (min, _max, step) = min_max_step(data, n_points);
 
     let mut sum = vec![0.0; n_points];
@@ -19,49 +24,37 @@ pub fn histogram(data: &Vec<f64>, weights: &Vec<f64>, n_points: usize) -> (Vec<f
     let index: Vec<usize> = data.par_iter().map(|x| get_bin(*x, min, step)).collect();
 
     // Calulate the histogram
-    for (i, y) in weights.iter().enumerate() {
-        sum[index[i]] += y;
-        count[index[i]] += 1.0;
+    match mask {
+        Some(mask) => {
+            for (i, y) in weights.iter().enumerate() {
+                if mask[i] != 0 {
+                    continue;
+                }
+                sum[index[i]] += y;
+                count[index[i]] += 1.0;
+            }
+        }
+        None => {
+            for (i, y) in weights.iter().enumerate() {
+                sum[index[i]] += y;
+                count[index[i]] += 1.0;
+            }
+        }
     }
 
     // normalize to amount of points
-    let normed_sum = sum
-        .iter()
-        .zip(count.iter())
-        .map(|(sum, count)| sum / count)
-        .collect::<Vec<f64>>();
-
-    let bins = bins(n_points, min, step);
-    (bins, normed_sum)
-}
-
-/// Calculates a normalized histogram of weights at data values, excluding masked pixels.
-pub fn histogram_masked(
-    data: &Vec<f64>,
-    weights: &Vec<f64>,
-    mask: &[u8],
-    n_points: usize,
-) -> (Vec<f64>, Vec<f64>) {
-    let (min, _max, step) = min_max_step(data, n_points);
-
-    let mut sum = vec![0.0; n_points];
-    let mut count = vec![0.0; n_points];
-
-    let index: Vec<usize> = data.par_iter().map(|x| get_bin(*x, min, step)).collect();
-
-    for (i, y) in weights.iter().enumerate() {
-        if mask[i] != 0 {
-            continue;
-        }
-        sum[index[i]] += y;
-        count[index[i]] += 1.0;
-    }
-
-    let normed_sum = sum
-        .iter()
-        .zip(count.iter())
-        .map(|(sum, count)| if *count == 0.0 { 0.0 } else { sum / count })
-        .collect::<Vec<f64>>();
+    let normed_sum = match mask {
+        Some(_) => sum
+            .iter()
+            .zip(count.iter())
+            .map(|(sum, count)| if *count == 0.0 { 0.0 } else { sum / count })
+            .collect::<Vec<f64>>(),
+        None => sum
+            .iter()
+            .zip(count.iter())
+            .map(|(sum, count)| sum / count)
+            .collect::<Vec<f64>>(),
+    };
 
     let bins = bins(n_points, min, step);
     (bins, normed_sum)
@@ -72,6 +65,7 @@ pub fn histogram_parallel(
     data: &Vec<f64>,
     weights: &Vec<f64>,
     n_points: usize,
+    mask: Option<&Vec<u8>>,
 ) -> (Vec<f64>, Vec<f64>) {
     let (min, _max, step) = min_max_step(data, n_points);
 
@@ -87,15 +81,30 @@ pub fn histogram_parallel(
         let tx_thread = mpsc::Sender::clone(&tx);
         let data_thread = data[i * chunk_size..(i + 1) * chunk_size].to_vec();
         let weights_thread = weights[i * chunk_size..(i + 1) * chunk_size].to_vec();
+        let mask_thread = mask.map(|mask| mask[i * chunk_size..(i + 1) * chunk_size].to_vec());
 
         thread::spawn(move || {
             let mut sum_thread = vec![0.0; n_points];
             let mut count_thread = vec![0.0; n_points];
 
-            for (i, y) in data_thread.iter().enumerate() {
-                let index = get_bin(*y, min, step);
-                sum_thread[index] += weights_thread[i];
-                count_thread[index] += 1.0;
+            match mask_thread.as_ref() {
+                Some(mask_thread) => {
+                    for (i, y) in data_thread.iter().enumerate() {
+                        if mask_thread[i] != 0 {
+                            continue;
+                        }
+                        let index = get_bin(*y, min, step);
+                        sum_thread[index] += weights_thread[i];
+                        count_thread[index] += 1.0;
+                    }
+                }
+                None => {
+                    for (i, y) in data_thread.iter().enumerate() {
+                        let index = get_bin(*y, min, step);
+                        sum_thread[index] += weights_thread[i];
+                        count_thread[index] += 1.0;
+                    }
+                }
             }
 
             tx_thread.send((sum_thread, count_thread)).unwrap();
@@ -111,11 +120,18 @@ pub fn histogram_parallel(
     }
 
     // normalize to amount of points
-    let normed_sum = sum
-        .iter()
-        .zip(count.iter())
-        .map(|(sum, count)| sum / count)
-        .collect::<Vec<f64>>();
+    let normed_sum = match mask {
+        Some(_) => sum
+            .iter()
+            .zip(count.iter())
+            .map(|(sum, count)| if *count == 0.0 { 0.0 } else { sum / count })
+            .collect::<Vec<f64>>(),
+        None => sum
+            .iter()
+            .zip(count.iter())
+            .map(|(sum, count)| sum / count)
+            .collect::<Vec<f64>>(),
+    };
 
     // create tth values for bin centers
     let bin = bins(n_points, min, step);
