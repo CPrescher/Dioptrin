@@ -24,16 +24,6 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// let (_x, y) = integrate_lut1d(&intensity, &lut);
 /// assert_eq!(y.len(), 4);
 /// ```
-/// ```no_run
-/// // Supersampled example (requires Geometry)
-/// use dioptrin::lut::{build_lut1d_ss_csr, integrate_lut1d};
-/// # use dioptrin::geometry::Geometry;
-/// # let geometry: Geometry = unimplemented!();
-/// # let tth: Vec<f64> = unimplemented!();
-/// # let intensity: Vec<f64> = unimplemented!();
-/// let lut = build_lut1d_ss_csr(&geometry, &tth, 1024, 4);
-/// let (_x, y) = integrate_lut1d(&intensity, &lut);
-/// ```
 pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
@@ -42,17 +32,36 @@ pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
             match &lut.values {
-                Some(values) => values[start..end]
-                    .iter()
-                    .zip(lut.col_idx[start..end].iter())
-                    .map(|(w, &j)| w * intensity[j])
-                    .sum::<f64>(),
+                Some(values) => {
+                    let mut sum = 0.0;
+                    let mut k = start;
+                    // Safety: row_ptr bounds ensure k < values/col_idx length; col_idx values index intensity.
+                    unsafe {
+                        let values_ptr = values.as_ptr();
+                        let col_ptr = lut.col_idx.as_ptr();
+                        let intensity_ptr = intensity.as_ptr();
+                        while k < end {
+                            let w = *values_ptr.add(k);
+                            let j = *col_ptr.add(k) as usize;
+                            sum += w * *intensity_ptr.add(j);
+                            k += 1;
+                        }
+                    }
+                    sum
+                }
                 None => {
                     if start == end { 0.0 } else {
-                        let sum: f64 = lut.col_idx[start..end]
-                            .iter()
-                            .map(|&j| intensity[j])
-                            .sum();
+                        let mut sum = 0.0;
+                        let mut k = start;
+                        unsafe {
+                            let col_ptr = lut.col_idx.as_ptr();
+                            let intensity_ptr = intensity.as_ptr();
+                            while k < end {
+                                let j = *col_ptr.add(k) as usize;
+                                sum += *intensity_ptr.add(j);
+                                k += 1;
+                            }
+                        }
                         sum / (end - start) as f64
                     }
                 }
@@ -90,17 +99,36 @@ pub fn integrate_lut2d(intensity: &Vec<f64>, lut: &Lut2d) -> Vec<f64> {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
             match &lut.values {
-                Some(values) => values[start..end]
-                    .iter()
-                    .zip(lut.col_idx[start..end].iter())
-                    .map(|(w, &j)| w * intensity[j])
-                    .sum::<f64>(),
+                Some(values) => {
+                    let mut sum = 0.0;
+                    let mut k = start;
+                    // Safety: row_ptr bounds ensure k < values/col_idx length; col_idx values index intensity.
+                    unsafe {
+                        let values_ptr = values.as_ptr();
+                        let col_ptr = lut.col_idx.as_ptr();
+                        let intensity_ptr = intensity.as_ptr();
+                        while k < end {
+                            let w = *values_ptr.add(k);
+                            let j = *col_ptr.add(k) as usize;
+                            sum += w * *intensity_ptr.add(j);
+                            k += 1;
+                        }
+                    }
+                    sum
+                }
                 None => {
                     if start == end { 0.0 } else {
-                        let sum: f64 = lut.col_idx[start..end]
-                            .iter()
-                            .map(|&j| intensity[j])
-                            .sum();
+                        let mut sum = 0.0;
+                        let mut k = start;
+                        unsafe {
+                            let col_ptr = lut.col_idx.as_ptr();
+                            let intensity_ptr = intensity.as_ptr();
+                            while k < end {
+                                let j = *col_ptr.add(k) as usize;
+                                sum += *intensity_ptr.add(j);
+                                k += 1;
+                            }
+                        }
                         sum / (end - start) as f64
                     }
                 }
