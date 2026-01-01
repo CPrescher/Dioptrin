@@ -1,12 +1,8 @@
 #![allow(dead_code)]
-use std::collections::HashMap;
-
 use crate::lut;
 use crate::math::histogram;
 #[cfg(feature = "lut_metrics")]
-use crate::lut::metrics::{
-    analyze_lut2d_locality, analyze_lut2d_ss_locality, analyze_lut_locality, analyze_lut_ss_locality,
-};
+use crate::lut::metrics::analyze_csr_locality;
 
 use super::frame::Frame;
 use super::geometry::Geometry;
@@ -17,11 +13,15 @@ pub struct Integrator {
     chi: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
-    lut: Vec<Vec<usize>>,                     // lookup table for 1d integration
-    lut_ss: Vec<HashMap<usize, f64>>,         // supersampled lookup table for 1d integration
+    lut: Option<lut::Lut1d>,                   // CSR LUT for 1d integration
+    lut_hist_min: f64,
+    lut_hist_step: f64,
+    lut_ss: Option<lut::Lut1d>,               // supersampled CSR LUT for 1d integration
+    lut_ss_hist_min: f64,
+    lut_ss_hist_step: f64,
     lut_ss_sub_pixel: usize, // number of subpixels for supersampling for 1d integration
-    lut_2d: Vec<Vec<Vec<usize>>>, // lookup table for 2d integration
-    lut_2d_ss: Vec<Vec<HashMap<usize, f64>>>, // supersampled lookup table for 2d integration
+    lut_2d: Option<lut::Lut2d>,               // CSR LUT for 2d integration
+    lut_2d_ss: Option<lut::Lut2d>,            // supersampled CSR LUT for 2d integration
     lust_2d_ss_sub_pixel: usize, // number of subpixels for supersampling for 2d integraion
 }
 
@@ -33,11 +33,15 @@ impl Integrator {
             chi: vec![],
             solid_angle: vec![],
             polarization: vec![],
-            lut: vec![],
-            lut_ss: vec![],
+            lut: None,
+            lut_hist_min: 0.0,
+            lut_hist_step: 0.0,
+            lut_ss: None,
+            lut_ss_hist_min: 0.0,
+            lut_ss_hist_step: 0.0,
             lut_ss_sub_pixel: 0,
-            lut_2d: vec![],
-            lut_2d_ss: vec![],
+            lut_2d: None,
+            lut_2d_ss: None,
             lust_2d_ss_sub_pixel: 0,
         }
     }
@@ -58,16 +62,23 @@ impl Integrator {
     /// checks whether current lut was calculated for the same number of points (n_points), if not,
     /// it is recalculated
     fn update_lut(&mut self, n_points: usize) {
-        if self.lut.len() != n_points {
-            self.lut = lut::lut(&self.tth, n_points);
+        let need_rebuild = match &self.lut {
+            None => true,
+            Some(l) => l.row_ptr.len() - 1 != n_points,
+        };
+        if need_rebuild {
+            let (csr, min, step) = lut::build_lut1d_csr(&self.tth, n_points);
             #[cfg(feature = "lut_metrics")]
             {
-                let stats = analyze_lut_locality(&self.lut);
+                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
                 println!(
-                    "[lut_metrics] 1D LUT: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    "[lut_metrics] 1D LUT CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
                     stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
                 );
             }
+            self.lut = Some(csr);
+            self.lut_hist_min = min;
+            self.lut_hist_step = step;
         }
     }
 
@@ -78,17 +89,24 @@ impl Integrator {
     /// * `n_points` - number of points for the 1d integration
     /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
     fn update_lut_ss(&mut self, n_points: usize, n_ss: usize) {
-        if self.lut_ss.len() != n_points || self.lut_ss_sub_pixel != n_ss {
-            self.lut_ss = lut::lut_ss(&self.geometry, &self.tth, n_points, n_ss);
-            self.lut_ss_sub_pixel = n_ss;
+        let need_rebuild = match &self.lut_ss {
+            None => true,
+            Some(l) => l.row_ptr.len() - 1 != n_points || self.lut_ss_sub_pixel != n_ss,
+        };
+        if need_rebuild {
+            let (csr, min, step) = lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss);
             #[cfg(feature = "lut_metrics")]
             {
-                let stats = analyze_lut_ss_locality(&self.lut_ss);
+                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
                 println!(
-                    "[lut_metrics] 1D LUT SS: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    "[lut_metrics] 1D LUT SS CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
                     stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
                 );
             }
+            self.lut_ss = Some(csr);
+            self.lut_ss_hist_min = min;
+            self.lut_ss_hist_step = step;
+            self.lut_ss_sub_pixel = n_ss;
         }
     }
 
@@ -99,16 +117,21 @@ impl Integrator {
     /// * `n_tth` - number of points in tth for the 2d integration
     /// * `n_azimuth` - number of points in azimuth for the 2d integration
     fn update_lut_2d(&mut self, n_tth: usize, n_azi: usize) {
-        if self.lut_2d.len() != n_tth || self.lut_2d[0].len() != n_azi {
-            self.lut_2d = lut::lut_2d(&self.tth, &self.chi, n_tth, n_azi);
+        let need_rebuild = match &self.lut_2d {
+            None => true,
+            Some(l) => l.n_tth != n_tth || l.n_azi != n_azi,
+        };
+        if need_rebuild {
+            let csr = lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_azi);
             #[cfg(feature = "lut_metrics")]
             {
-                let stats = analyze_lut2d_locality(&self.lut_2d);
+                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
                 println!(
-                    "[lut_metrics] 2D LUT: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    "[lut_metrics] 2D LUT CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
                     stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
                 );
             }
+            self.lut_2d = Some(csr);
         }
     }
 
@@ -120,21 +143,22 @@ impl Integrator {
     /// * `n_azimuth` - number of points in azimuth for the 2d integration
     /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
     fn update_lut_2d_ss(&mut self, n_tth: usize, n_azi: usize, n_ss: usize) {
-        if self.lut_2d_ss.len() != n_tth
-            || self.lut_2d_ss[0].len() != n_azi
-            || self.lust_2d_ss_sub_pixel != n_ss
-        {
-            self.lut_2d_ss =
-                lut::lut_2d_ss(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
-            self.lust_2d_ss_sub_pixel = n_ss;
+        let need_rebuild = match &self.lut_2d_ss {
+            None => true,
+            Some(l) => l.n_tth != n_tth || l.n_azi != n_azi || self.lust_2d_ss_sub_pixel != n_ss,
+        };
+        if need_rebuild {
+            let csr = lut::build_lut2d_ss_csr(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
             #[cfg(feature = "lut_metrics")]
             {
-                let stats = analyze_lut2d_ss_locality(&self.lut_2d_ss);
+                let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
                 println!(
-                    "[lut_metrics] 2D LUT SS: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
+                    "[lut_metrics] 2D LUT SS CSR: bins={} empty={} avg_stride={:.2} avg_cache_lines={:.2}",
                     stats.total_bins, stats.empty_bins, stats.avg_stride, stats.avg_cache_lines
                 );
             }
+            self.lut_2d_ss = Some(csr);
+            self.lust_2d_ss_sub_pixel = n_ss;
         }
     }
 
@@ -149,9 +173,8 @@ impl Integrator {
 
         let intensity = self.correct_intensity(&frame.data);
 
-        let (hist_min, _max, hist_step) = histogram::min_max_step(&self.tth, n_points);
-
-        lut::integrate(&intensity, &self.lut, hist_min, hist_step)
+        let lut1d = self.lut.as_ref().unwrap();
+        lut::integrate_lut1d(&intensity, lut1d, self.lut_hist_min, self.lut_hist_step)
     }
 
     /// Integrate a frame using lookup table (LUT) method with supersampling
@@ -170,10 +193,8 @@ impl Integrator {
         self.update_lut_ss(n_points, n_ss);
         let intensity = self.correct_intensity(&frame.data);
 
-        let (hist_min, _hist_max, hist_step) =
-            histogram::ss_tth_min_max_step(&self.geometry, &self.tth, n_points, n_ss);
-
-        lut::integrate_ss(&intensity, &self.lut_ss, hist_min, hist_step)
+        let lut1d = self.lut_ss.as_ref().unwrap();
+        lut::integrate_lut1d(&intensity, lut1d, self.lut_ss_hist_min, self.lut_ss_hist_step)
     }
 
     /// Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
@@ -188,7 +209,8 @@ impl Integrator {
         self.update_lut_2d(n_tth, n_azi);
         let intensity = self.correct_intensity(&frame.data);
 
-        lut::integrate2d(&intensity, &self.lut_2d)
+        let lut2d = self.lut_2d.as_ref().unwrap();
+        lut::integrate_lut2d(&intensity, lut2d)
     }
 
     // Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using
@@ -210,7 +232,8 @@ impl Integrator {
         self.update_lut_2d_ss(n_tth, n_azi, n_ss);
         let intensity = self.correct_intensity(&frame.data);
 
-        lut::integrate2d_ss(&intensity, &self.lut_2d_ss)
+        let lut2d = self.lut_2d_ss.as_ref().unwrap();
+        lut::integrate_lut2d(&intensity, lut2d)
     }
 
     /// Integration of the frame using a simple histogram method

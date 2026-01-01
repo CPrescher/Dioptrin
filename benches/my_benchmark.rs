@@ -2,21 +2,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
-use dioptrin::integration::Integrator;
 use dioptrin::poni::Poni;
 use dioptrin::lut;
+use dioptrin::math::histogram;
 
-pub fn integrate_lut_benchmark(c: &mut Criterion) {
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry);
-    integrator.integrate_lut(&frame, 1250);
-
-    c.bench_function("bench 1d lut", |b| {
-        b.iter(|| integrator.integrate_lut(&frame, 1250))
-    });
-}
 
 pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
@@ -29,7 +18,7 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
 
     // Precompute tth and CSR LUT
     let tth = geometry.calc_tth_all();
-    let (csr, hist_min, hist_step) = lut::lut_csr_from_tth(&tth, n_points);
+    let (csr, hist_min, hist_step) = lut::build_lut1d_csr(&tth, n_points);
 
     // Correct intensity (same correction as used by Integrator)
     let chi = geometry.calc_chi_all();
@@ -43,29 +32,13 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up run
-    let _ = lut::integrate_csr(&intensity, &csr, hist_min, hist_step);
+    let _ = lut::integrate_lut1d(&intensity, &csr, hist_min, hist_step);
 
     c.bench_function("bench 1d lut_csr", |b| {
-        b.iter(|| lut::integrate_csr(&intensity, &csr, hist_min, hist_step))
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr, hist_min, hist_step))
     });
 }
 
-pub fn integrate_lut_supersample_benchmark(c: &mut Criterion) {
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry);
-
-    let n_subpixels = 4;
-    let n_points = 1250;
-
-    // generate all the geometric calculations before benchmarking
-    integrator.integrate_lut_ss(&frame, n_points, n_subpixels);
-
-    c.bench_function("bench 1d lut supersampled", |b| {
-        b.iter(|| integrator.integrate_lut_ss(&frame, n_points, n_subpixels))
-    });
-}
 
 pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
@@ -79,7 +52,7 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
 
     // Precompute tth and CSR-SS LUT
     let tth = geometry.calc_tth_all();
-    let (csr_ss, hist_min, hist_step) = lut::lut_ss_csr(&geometry, &tth, n_points, n_subpixels);
+    let (csr_ss, hist_min, hist_step) = lut::build_lut1d_ss_csr(&geometry, &tth, n_points, n_subpixels);
 
     // Correct intensity
     let chi = geometry.calc_chi_all();
@@ -93,10 +66,10 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate_ss_csr(&intensity, &csr_ss, hist_min, hist_step);
+    let _ = lut::integrate_lut1d(&intensity, &csr_ss, hist_min, hist_step);
 
     c.bench_function("bench 1d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate_ss_csr(&intensity, &csr_ss, hist_min, hist_step))
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ss, hist_min, hist_step))
     });
 }
 
@@ -113,7 +86,7 @@ pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
     // Precompute tth, chi and CSR 2d LUT
     let tth = geometry.calc_tth_all();
     let chi = geometry.calc_chi_all();
-    let csr2d = lut::lut2d_csr_from_tth_azi(&tth, &chi, n_tth, n_azi);
+    let csr2d = lut::build_lut2d_csr(&tth, &chi, n_tth, n_azi);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
@@ -126,10 +99,10 @@ pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate2d_csr(&intensity, &csr2d);
+    let _ = lut::integrate_lut2d(&intensity, &csr2d);
 
     c.bench_function("bench 2d lut_csr", |b| {
-        b.iter(|| lut::integrate2d_csr(&intensity, &csr2d))
+        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d))
     });
 }
 
@@ -147,7 +120,7 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
     // Precompute tth, chi and CSR 2d SS LUT
     let tth = geometry.calc_tth_all();
     let chi = geometry.calc_chi_all();
-    let csr2d_ss = lut::lut2d_ss_csr(&geometry, &tth, &chi, n_tth, n_azi, n_subpixels);
+    let csr2d_ss = lut::build_lut2d_ss_csr(&geometry, &tth, &chi, n_tth, n_azi, n_subpixels);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
@@ -160,47 +133,135 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate2d_ss_csr(&intensity, &csr2d_ss);
+    let _ = lut::integrate_lut2d(&intensity, &csr2d_ss);
 
     c.bench_function("bench 2d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate2d_ss_csr(&intensity, &csr2d_ss))
+        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d_ss))
     });
 }
 
-pub fn integrate2d_lut_benchmark(c: &mut Criterion) {
+pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry);
+    let mut geometry = Geometry::new(0, 0, poni);
+    geometry.dim1 = frame.dim1;
+    geometry.dim2 = frame.dim2;
+
+    let n_points = 1250;
+    let tth = geometry.calc_tth_all();
+    let chi = geometry.calc_chi_all();
+    // Note: pixel-split CSR builder returns histogram params
+
+    // Correct intensity
+    let solid_angle = geometry.calc_solid_angle();
+    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let intensity: Vec<f64> = frame
+        .data
+        .iter()
+        .enumerate()
+        .map(|(i, y)| y / polarization[i] / solid_angle[i])
+        .collect();
+
+    // Pixel-split CSR (fractional weights)
+    let (csr_ps, min2, step2) = lut::build_lut1d_ps_csr(&tth, n_points);
+    let _ = lut::integrate_lut1d(&intensity, &csr_ps, min2, step2);
+
+    c.bench_function("bench 1d lut pixel-split csr", |b| {
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps, min2, step2))
+    });
+}
+
+pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
+    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let mut geometry = Geometry::new(0, 0, poni);
+    geometry.dim1 = frame.dim1;
+    geometry.dim2 = frame.dim2;
+
+    let n_points = 1250;
+    let tth = geometry.calc_tth_all();
+    let chi = geometry.calc_chi_all();
+
+    let (csr_ps, min, step) = lut::build_lut1d_ps_csr(&tth, n_points);
+
+    // Correct intensity
+    let solid_angle = geometry.calc_solid_angle();
+    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let intensity: Vec<f64> = frame
+        .data
+        .iter()
+        .enumerate()
+        .map(|(i, y)| y / polarization[i] / solid_angle[i])
+        .collect();
+
+    let _ = lut::integrate_lut1d(&intensity, &csr_ps, min, step);
+
+    c.bench_function("bench 1d lut pixel-split csr", |b| {
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps, min, step))
+    });
+}
+
+pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
+    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let mut geometry = Geometry::new(0, 0, poni);
+    geometry.dim1 = frame.dim1;
+    geometry.dim2 = frame.dim2;
 
     let n_tth = 1250;
     let n_azi = 360;
+    let tth = geometry.calc_tth_all();
+    let chi = geometry.calc_chi_all();
 
-    // generate all the geometric calculations before benchmarking
-    integrator.integrate_2d_lut(&frame, n_tth, n_azi);
+    // Correct intensity
+    let solid_angle = geometry.calc_solid_angle();
+    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let intensity: Vec<f64> = frame
+        .data
+        .iter()
+        .enumerate()
+        .map(|(i, y)| y / polarization[i] / solid_angle[i])
+        .collect();
 
-    c.bench_function("bench 2d lut", |b| {
-        b.iter(|| integrator.integrate_2d_lut(&frame, n_tth, n_azi))
+    // Use unified supersampled CSR instead of HashMap pixel-split
+    let csr2d_ps = lut::build_lut2d_ps_csr(&tth, &chi, n_tth, n_azi);
+    let _ = lut::integrate_lut2d(&intensity, &csr2d_ps);
+
+    c.bench_function("bench 2d lut pixel-split csr", |b| {
+        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d_ps))
     });
 }
 
-pub fn integrate2d_lut_ss_benchmark(c: &mut Criterion) {
+pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
-    let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry);
+    let mut geometry = Geometry::new(0, 0, poni);
+    geometry.dim1 = frame.dim1;
+    geometry.dim2 = frame.dim2;
 
     let n_tth = 1250;
     let n_azi = 360;
-    let n_subpixels = 5;
+    let tth = geometry.calc_tth_all();
+    let chi = geometry.calc_chi_all();
 
-    // generate all the geometric calculations before benchmarking
-    integrator.integrate2d_lut_ss(&frame, n_tth, n_azi, n_subpixels);
+    // Correct intensity
+    let solid_angle = geometry.calc_solid_angle();
+    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let intensity: Vec<f64> = frame
+        .data
+        .iter()
+        .enumerate()
+        .map(|(i, y)| y / polarization[i] / solid_angle[i])
+        .collect();
 
-    c.bench_function("bench 2d lut with supersampling", |b| {
-        b.iter(|| integrator.integrate2d_lut_ss(&frame, n_tth, n_azi, n_subpixels))
+    let csr2d_ps2 = lut::build_lut2d_ps_csr(&tth, &chi, n_tth, n_azi);
+    let _ = lut::integrate_lut2d(&intensity, &csr2d_ps2);
+
+    c.bench_function("bench 2d lut pixel-split csr", |b| {
+        b.iter(|| lut::integrate_lut2d(&intensity, &csr2d_ps2))
     });
 }
+
 
 pub fn read_frame_benchmark(c: &mut Criterion) {
     c.bench_function("bench", |b| {
@@ -210,13 +271,14 @@ pub fn read_frame_benchmark(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    integrate_lut_benchmark,
+    // CSR-only benches
     integrate_lut_csr_benchmark,
-    integrate_lut_supersample_benchmark,
     integrate_lut_ss_csr_benchmark,
     integrate2d_lut_csr_benchmark,
     integrate2d_lut_ss_csr_benchmark,
-    integrate2d_lut_benchmark,
-    integrate2d_lut_ss_benchmark
+    integrate_lut_ps_benchmark,
+    integrate_lut_ps_csr_benchmark,
+    integrate2d_lut_ps_csr_benchmark,
+    integrate2d_lut_ps_benchmark,
 );
 criterion_main!(benches);
