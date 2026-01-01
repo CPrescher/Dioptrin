@@ -141,6 +141,7 @@ impl Integrator {
     // builder pattern for polarization factor
     pub fn with_polarization_factor(mut self, polarization_factor: f64) -> Self {
         self.polarization_factor = Some(polarization_factor);
+        self.update_polarization();
         self
     }
 
@@ -152,6 +153,7 @@ impl Integrator {
     // setter for polarization factor
     pub fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
         self.polarization_factor = polarization_factor;
+        self.update_polarization();
     }
 
     // getter for solid angle correction for each pixel as a flattened vector
@@ -266,19 +268,34 @@ impl Integrator {
     /// checks whether current tth, chi, solid angle and polarization are calculated for the same
     /// image dimension as dim1 x dim2, if not, they are recalculated
     fn update_geometry_arrays(&mut self, dim1: usize, dim2: usize) {
-        if self.geometry.dim1 != dim1 || self.geometry.dim2 != dim2 {
+        let size = dim1 * dim2;
+        let stale = self.geometry.dim1 != dim1
+            || self.geometry.dim2 != dim2
+            || self.tth.len() != size
+            || self.chi.len() != size
+            || self.solid_angle.len() != size
+            || self.polarization.len() != size;
+        if stale {
             self.geometry.dim1 = dim1;
             self.geometry.dim2 = dim2;
             self.tth = self.geometry.calc_tth_all();
             self.chi = self.geometry.calc_chi_all();
             self.solid_angle = self.geometry.calc_solid_angle();
-            self.polarization = match self.polarization_factor {
-                Some(factor) => self
-                    .geometry
-                    .calc_polarization(factor, &self.tth, &self.chi),
-                None => vec![1.0; self.geometry.size()],
-            };
+            self.update_polarization();
+            self.cache_1d.key = None;
+            self.cache_1d.lut = None;
+            self.cache_2d.key = None;
+            self.cache_2d.lut = None;
         }
+    }
+
+    fn update_polarization(&mut self) {
+        self.polarization = match self.polarization_factor {
+            Some(factor) => self
+                .geometry
+                .calc_polarization(factor, &self.tth, &self.chi),
+            None => vec![1.0; self.geometry.size()],
+        };
     }
 
     /// checks whether current lut was calculated for the same number of points (n_points), if not,
@@ -457,12 +474,60 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator =
-            Integrator::new(geometry)
-                .with_method(IntegrationMethod::Supersampled { n_ss: 5 })
-                .with_polarization_factor(0.99);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::Supersampled { n_ss: 5 })
+            .with_polarization_factor(0.99);
         let cake = integrator.integrate2d(&frame, 850, 360);
         util::save_vec("cake_lut_ss.txt", &cake);
+    }
+
+    #[test]
+    fn test_lut_cache_cleared_on_geometry_change() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1.0;
+        poni.pixel2 = 1.0;
+        poni.distance = 1.0;
+        let geometry = Geometry::new(2, 2, poni);
+        let mut integrator = Integrator::new(geometry).with_method(IntegrationMethod::Counting);
+
+        integrator.update_geometry_arrays(2, 2);
+        let _ = integrator.ensure_lut1d(OneDKey::Counting { n_points: 4 });
+        let _ = integrator.ensure_lut2d(TwoDKey::Counting { n_tth: 4, n_azi: 4 });
+
+        assert!(integrator.cache_1d.key.is_some());
+        assert!(integrator.cache_1d.lut.is_some());
+        assert!(integrator.cache_2d.key.is_some());
+        assert!(integrator.cache_2d.lut.is_some());
+
+        integrator.update_geometry_arrays(3, 3);
+
+        assert!(integrator.cache_1d.key.is_none());
+        assert!(integrator.cache_1d.lut.is_none());
+        assert!(integrator.cache_2d.key.is_none());
+        assert!(integrator.cache_2d.lut.is_none());
+    }
+
+    #[test]
+    fn test_integrate_with_different_dimension() {
+        util::download_pilatus_test_file();
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let frame1 = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+        let dim1 = frame1.dim1 / 2;
+        let dim2 = frame1.dim2 / 2;
+        let size = dim1 * dim2;
+        let frame2 = Frame {
+            name: String::from("test_data/CeO2_Pilatus1M.tif"),
+            data: frame1.data[0..size].to_vec(),
+            dim1,
+            dim2,
+        };
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::Counting)
+            .with_polarization_factor(0.99);
+
+        integrator.integrate1d(&frame1, 850);
+        integrator.integrate1d(&frame2, 850);
     }
 
     #[test]
