@@ -14,11 +14,7 @@ pub struct Integrator {
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
     lut: Option<lut::Lut1d>,                   // CSR LUT for 1d integration
-    lut_hist_min: f64,
-    lut_hist_step: f64,
     lut_ss: Option<lut::Lut1d>,               // supersampled CSR LUT for 1d integration
-    lut_ss_hist_min: f64,
-    lut_ss_hist_step: f64,
     lut_ss_sub_pixel: usize, // number of subpixels for supersampling for 1d integration
     lut_2d: Option<lut::Lut2d>,               // CSR LUT for 2d integration
     lut_2d_ss: Option<lut::Lut2d>,            // supersampled CSR LUT for 2d integration
@@ -34,11 +30,7 @@ impl Integrator {
             solid_angle: vec![],
             polarization: vec![],
             lut: None,
-            lut_hist_min: 0.0,
-            lut_hist_step: 0.0,
             lut_ss: None,
-            lut_ss_hist_min: 0.0,
-            lut_ss_hist_step: 0.0,
             lut_ss_sub_pixel: 0,
             lut_2d: None,
             lut_2d_ss: None,
@@ -67,7 +59,7 @@ impl Integrator {
             Some(l) => l.row_ptr.len() - 1 != n_points,
         };
         if need_rebuild {
-            let (csr, min, step) = lut::build_lut1d_csr(&self.tth, n_points);
+            let csr = lut::build_lut1d_csr(&self.tth, n_points);
             #[cfg(feature = "lut_metrics")]
             {
                 let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
@@ -77,8 +69,6 @@ impl Integrator {
                 );
             }
             self.lut = Some(csr);
-            self.lut_hist_min = min;
-            self.lut_hist_step = step;
         }
     }
 
@@ -94,7 +84,7 @@ impl Integrator {
             Some(l) => l.row_ptr.len() - 1 != n_points || self.lut_ss_sub_pixel != n_ss,
         };
         if need_rebuild {
-            let (csr, min, step) = lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss);
+            let csr = lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss);
             #[cfg(feature = "lut_metrics")]
             {
                 let stats = analyze_csr_locality(&csr.col_idx, &csr.row_ptr);
@@ -104,8 +94,6 @@ impl Integrator {
                 );
             }
             self.lut_ss = Some(csr);
-            self.lut_ss_hist_min = min;
-            self.lut_ss_hist_step = step;
             self.lut_ss_sub_pixel = n_ss;
         }
     }
@@ -174,7 +162,7 @@ impl Integrator {
         let intensity = self.correct_intensity(&frame.data);
 
         let lut1d = self.lut.as_ref().unwrap();
-        lut::integrate_lut1d(&intensity, lut1d, self.lut_hist_min, self.lut_hist_step)
+        lut::integrate_lut1d(&intensity, lut1d)
     }
 
     /// Integrate a frame using lookup table (LUT) method with supersampling
@@ -194,7 +182,7 @@ impl Integrator {
         let intensity = self.correct_intensity(&frame.data);
 
         let lut1d = self.lut_ss.as_ref().unwrap();
-        lut::integrate_lut1d(&intensity, lut1d, self.lut_ss_hist_min, self.lut_ss_hist_step)
+        lut::integrate_lut1d(&intensity, lut1d)
     }
 
     /// Ingrating a frame into a 2D grid (cake) with tth and azimuthal angle as axes using

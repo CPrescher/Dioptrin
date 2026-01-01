@@ -18,7 +18,7 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
 
     // Precompute tth and CSR LUT
     let tth = geometry.calc_tth_all();
-    let (csr, hist_min, hist_step) = lut::build_lut1d_csr(&tth, n_points);
+    let csr = lut::build_lut1d_csr(&tth, n_points);
 
     // Correct intensity (same correction as used by Integrator)
     let chi = geometry.calc_chi_all();
@@ -32,10 +32,10 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up run
-    let _ = lut::integrate_lut1d(&intensity, &csr, hist_min, hist_step);
+    let _ = lut::integrate_lut1d(&intensity, &csr);
 
     c.bench_function("bench 1d lut_csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr, hist_min, hist_step))
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr))
     });
 }
 
@@ -52,7 +52,7 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
 
     // Precompute tth and CSR-SS LUT
     let tth = geometry.calc_tth_all();
-    let (csr_ss, hist_min, hist_step) = lut::build_lut1d_ss_csr(&geometry, &tth, n_points, n_subpixels);
+    let csr_ss = lut::build_lut1d_ss_csr(&geometry, &tth, n_points, n_subpixels);
 
     // Correct intensity
     let chi = geometry.calc_chi_all();
@@ -66,10 +66,10 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
         .collect();
 
     // Warm-up
-    let _ = lut::integrate_lut1d(&intensity, &csr_ss, hist_min, hist_step);
+    let _ = lut::integrate_lut1d(&intensity, &csr_ss);
 
     c.bench_function("bench 1d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ss, hist_min, hist_step))
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ss))
     });
 }
 
@@ -163,11 +163,11 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
         .collect();
 
     // Pixel-split CSR (fractional weights)
-    let (csr_ps, min2, step2) = lut::build_lut1d_ps_csr(&tth, n_points);
-    let _ = lut::integrate_lut1d(&intensity, &csr_ps, min2, step2);
+    let csr_ps = lut::build_lut1d_ps_csr(&tth, n_points);
+    let _ = lut::integrate_lut1d(&intensity, &csr_ps);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps, min2, step2))
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps))
     });
 }
 
@@ -182,7 +182,7 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
     let tth = geometry.calc_tth_all();
     let chi = geometry.calc_chi_all();
 
-    let (csr_ps, min, step) = lut::build_lut1d_ps_csr(&tth, n_points);
+    let csr_ps = lut::build_lut1d_ps_csr(&tth, n_points);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
@@ -194,10 +194,10 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
-    let _ = lut::integrate_lut1d(&intensity, &csr_ps, min, step);
+    let _ = lut::integrate_lut1d(&intensity, &csr_ps);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps, min, step))
+        b.iter(|| lut::integrate_lut1d(&intensity, &csr_ps))
     });
 }
 

@@ -11,6 +11,20 @@ pub struct Lut1d {
     pub row_ptr: Vec<usize>,
     pub col_idx: Vec<usize>,
     pub values: Option<Vec<f64>>, // optional weights per entry
+    pub hist_min: f64,
+    pub hist_step: f64,
+}
+
+impl Lut1d {
+    /// Number of bins in the 1D LUT.
+    pub fn n_points(&self) -> usize {
+        self.row_ptr.len() - 1
+    }
+
+    /// Compute the histogram bin centers for this LUT.
+    pub fn bins(&self) -> Vec<f64> {
+        histogram::bins(self.n_points(), self.hist_min, self.hist_step)
+    }
 }
 
 /// CSR-based 2D LUT (rows flattened as `azi * n_tth + tth`). Same weighting rules as `Lut1d`.
@@ -29,11 +43,11 @@ pub struct Lut2d {
 /// use dioptrin::lut::{build_lut1d_csr, integrate_lut1d};
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let intensity = vec![10.0, 20.0, 30.0, 40.0];
-/// let (lut, min, step) = build_lut1d_csr(&tth, 3);
-/// let (_bins, y) = integrate_lut1d(&intensity, &lut, min, step);
+/// let lut = build_lut1d_csr(&tth, 3);
+/// let (_bins, y) = integrate_lut1d(&intensity, &lut);
 /// assert_eq!(y.len(), 3);
 /// ```
-pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> (Lut1d, f64, f64) {
+pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
     let (min, _max, step) = histogram::min_max_step(tth, n_points);
 
     let index: Vec<usize> = tth
@@ -59,26 +73,13 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> (Lut1d, f64, f64) {
         next[bin] += 1;
     }
 
-    (
-        Lut1d {
-            row_ptr,
-            col_idx,
-            values: None,
-        },
-        min,
-        step,
-    )
+    Lut1d { row_ptr, col_idx, values: None, hist_min: min, hist_step: step }
 }
 
 /// Integrate using either unweighted (mean) or weighted 1D CSR LUT.
 ///
 /// See `build_lut1d_csr` for an example.
-pub fn integrate_lut1d(
-    intensity: &Vec<f64>,
-    lut: &Lut1d,
-    hist_min: f64,
-    hist_step: f64,
-) -> (Vec<f64>, Vec<f64>) {
+pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
         .into_par_iter()
@@ -103,7 +104,7 @@ pub fn integrate_lut1d(
             }
         })
         .collect();
-    let pattern_tth = histogram::bins(n_points, hist_min, hist_step);
+    let pattern_tth = histogram::bins(n_points, lut.hist_min, lut.hist_step);
     (pattern_tth, pattern_intensity)
 }
 

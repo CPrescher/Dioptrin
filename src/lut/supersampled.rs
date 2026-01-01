@@ -11,16 +11,16 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// # use dioptrin::geometry::Geometry;
 /// # let geometry: Geometry = unimplemented!();
 /// # let tth: Vec<f64> = unimplemented!();
-/// let (lut, min, step) = dioptrin::lut::build_lut1d_ss_csr(&geometry, &tth, 1024, 4);
+/// let lut = dioptrin::lut::build_lut1d_ss_csr(&geometry, &tth, 1024, 4);
 /// # let intensity: Vec<f64> = unimplemented!();
-/// let (_bins, y) = dioptrin::lut::integrate_lut1d(&intensity, &lut, min, step);
+/// let (_bins, y) = dioptrin::lut::integrate_lut1d(&intensity, &lut);
 /// ```
 pub fn build_lut1d_ss_csr(
     geometry: &Geometry,
     tth: &Vec<f64>,
     n_points: usize,
     n_ss: usize,
-) -> (Lut1d, f64, f64) {
+) -> Lut1d {
     let (hist_min, _hist_max, hist_step) =
         histogram::ss_tth_min_max_step(geometry, tth, n_points, n_ss);
 
@@ -74,11 +74,7 @@ pub fn build_lut1d_ss_csr(
 
     while row_ptr.len() < n_points + 1 { row_ptr.push(col_idx.len()); }
 
-    (
-        Lut1d { row_ptr, col_idx, values: Some(values) },
-        hist_min,
-        hist_step,
-    )
+    Lut1d { row_ptr, col_idx, values: Some(values), hist_min, hist_step }
 }
 
 /// Build a supersampled 2D CSR LUT directly (no HashMap in the public type).

@@ -8,11 +8,11 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let intensity = vec![10.0, 20.0, 30.0, 40.0];
-/// let (lut, min, step) = build_lut1d_ps_csr(&tth, 3);
-/// let (_bins, y) = integrate_lut1d(&intensity, &lut, min, step);
+/// let lut = build_lut1d_ps_csr(&tth, 3);
+/// let (_bins, y) = integrate_lut1d(&intensity, &lut);
 /// assert_eq!(y.len(), 3);
 /// ```
-pub fn build_lut1d_ps_csr(tth: &Vec<f64>, n_points: usize) -> (Lut1d, f64, f64) {
+pub fn build_lut1d_ps_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
     let (min, _max, step) = histogram::min_max_step(tth, n_points);
 
     // First pass: count per row (each pixel contributes up to two rows)
@@ -65,11 +65,7 @@ pub fn build_lut1d_ps_csr(tth: &Vec<f64>, n_points: usize) -> (Lut1d, f64, f64) 
         if ssum > 0.0 { for v in &mut values[s..e] { *v /= ssum; } }
     }
 
-    (
-        Lut1d { row_ptr, col_idx, values: Some(values) },
-        min,
-        step,
-    )
+    Lut1d { row_ptr, col_idx, values: Some(values), hist_min: min, hist_step: step }
 }
 
 /// Build a 2D pixel-split LUT with bilinear weights over `tth`/`azi` bins.
