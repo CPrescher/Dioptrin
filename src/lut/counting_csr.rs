@@ -1,5 +1,7 @@
 use rayon::prelude::*;
 
+// Counting (unweighted) CSR LUT builders and unified CSR types.
+/// Use `crate::lut::integrate_lut1d` / `integrate_lut2d` to integrate any built LUT.
 use crate::math::histogram;
 
 // Unified CSR LUT types used for both counting and supersampled variants
@@ -79,34 +81,7 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
 /// Integrate using either unweighted (mean) or weighted 1D CSR LUT.
 ///
 /// See `build_lut1d_csr` for an example.
-pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>) {
-    let n_points = lut.row_ptr.len() - 1;
-    let pattern_intensity: Vec<f64> = (0..n_points)
-        .into_par_iter()
-        .map(|i| {
-            let start = lut.row_ptr[i];
-            let end = lut.row_ptr[i + 1];
-            match &lut.values {
-                Some(values) => values[start..end]
-                    .iter()
-                    .zip(lut.col_idx[start..end].iter())
-                    .map(|(w, &j)| w * intensity[j])
-                    .sum::<f64>(),
-                None => {
-                    if start == end { 0.0 } else {
-                        let sum: f64 = lut.col_idx[start..end]
-                            .iter()
-                            .map(|&j| intensity[j])
-                            .sum();
-                        sum / (end - start) as f64
-                    }
-                }
-            }
-        })
-        .collect();
-    let pattern_tth = histogram::bins(n_points, lut.hist_min, lut.hist_step);
-    (pattern_tth, pattern_intensity)
-}
+// integrate_lut1d moved to src/lut/integrate.rs
 
 /// Build an unweighted 2D CSR LUT from pixel `tth`/`azi` to `(n_tth, n_azi)` bins.
 ///
@@ -165,34 +140,4 @@ pub fn build_lut2d_csr(
         n_tth,
         n_azi,
     }
-}
-
-/// Integrate using either unweighted (mean) or weighted 2D CSR LUT.
-///
-/// See `build_lut2d_csr` for an example.
-pub fn integrate_lut2d(intensity: &Vec<f64>, lut: &Lut2d) -> Vec<f64> {
-    let rows = lut.row_ptr.len() - 1;
-    (0..rows)
-        .into_par_iter()
-        .map(|row| {
-            let start = lut.row_ptr[row];
-            let end = lut.row_ptr[row + 1];
-            match &lut.values {
-                Some(values) => values[start..end]
-                    .iter()
-                    .zip(lut.col_idx[start..end].iter())
-                    .map(|(w, &j)| w * intensity[j])
-                    .sum::<f64>(),
-                None => {
-                    if start == end { 0.0 } else {
-                        let sum: f64 = lut.col_idx[start..end]
-                            .iter()
-                            .map(|&j| intensity[j])
-                            .sum();
-                        sum / (end - start) as f64
-                    }
-                }
-            }
-        })
-        .collect()
 }

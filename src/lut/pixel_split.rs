@@ -1,3 +1,5 @@
+//! Pixel-splitting CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
+//! Integrate with `crate::lut::integrate_lut1d` / `integrate_lut2d`.
 use crate::math::histogram;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
 

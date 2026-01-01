@@ -5,18 +5,77 @@ use crate::math::histogram;
 use super::frame::Frame;
 use super::geometry::Geometry;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OneDKey {
+    Counting { n_points: usize },
+    PixelSplit { n_points: usize },
+    Supersampled { n_points: usize, n_ss: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TwoDKey {
+    Counting {
+        n_tth: usize,
+        n_azi: usize,
+    },
+    PixelSplit {
+        n_tth: usize,
+        n_azi: usize,
+    },
+    Supersampled {
+        n_tth: usize,
+        n_azi: usize,
+        n_ss: usize,
+    },
+}
+
+struct LutCache<K, L> {
+    key: Option<K>,
+    lut: Option<L>,
+}
+
+impl<K, L> LutCache<K, L> {
+    fn new() -> Self {
+        Self {
+            key: None,
+            lut: None,
+        }
+    }
+}
+
+type Lut1dCache = LutCache<OneDKey, lut::Lut1d>;
+type Lut2dCache = LutCache<TwoDKey, lut::Lut2d>;
+
+/// LUT method selection (applies to both 1D and 2D integrations).
+///
+/// Examples
+/// ```no_run
+/// use dioptrin::integration::{Integrator, LutMethod};
+/// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
+/// # let poni: Poni = unimplemented!();
+/// # let frame: Frame = unimplemented!();
+/// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+/// let mut integrator = Integrator::new(geometry);
+/// let (_x, y) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Counting);
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum LutMethod {
+    /// Average of contributing pixels per bin (unweighted).
+    Counting,
+    /// Pixel-splitting with fractional/bilinear weights.
+    PixelSplit,
+    /// Supersampling with `n_ss x n_ss` subpixels per pixel.
+    Supersampled { n_ss: usize },
+}
+
 pub struct Integrator {
     pub geometry: Geometry,
     tth: Vec<f64>,
     chi: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
-    lut: Option<lut::Lut1d>,                   // CSR LUT for 1d integration
-    lut_ss: Option<lut::Lut1d>,               // supersampled CSR LUT for 1d integration
-    lut_ss_sub_pixel: usize, // number of subpixels for supersampling for 1d integration
-    lut_2d: Option<lut::Lut2d>,               // CSR LUT for 2d integration
-    lut_2d_ss: Option<lut::Lut2d>,            // supersampled CSR LUT for 2d integration
-    lust_2d_ss_sub_pixel: usize, // number of subpixels for supersampling for 2d integraion
+    cache_1d: Lut1dCache,
+    cache_2d: Lut2dCache,
 }
 
 impl Integrator {
@@ -27,13 +86,73 @@ impl Integrator {
             chi: vec![],
             solid_angle: vec![],
             polarization: vec![],
-            lut: None,
-            lut_ss: None,
-            lut_ss_sub_pixel: 0,
-            lut_2d: None,
-            lut_2d_ss: None,
-            lust_2d_ss_sub_pixel: 0,
+            cache_1d: Lut1dCache::new(),
+            cache_2d: Lut2dCache::new(),
         }
+    }
+
+    /// Integrate a frame to 1D using the selected LUT method
+    ///
+    /// Examples
+    /// ```no_run
+    /// use dioptrin::integration::{Integrator, LutMethod};
+    /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
+    /// # let poni: Poni = unimplemented!();
+    /// # let frame: Frame = unimplemented!();
+    /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+    /// let mut integrator = Integrator::new(geometry);
+    /// let (_x, y_count) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Counting);
+    /// let (_x, y_ps) = integrator.integrate_lut_with(&frame, 1250, LutMethod::PixelSplit);
+    /// let (_x, y_ss) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Supersampled { n_ss: 4 });
+    /// ```
+    pub fn integrate_lut_with(
+        &mut self,
+        frame: &Frame,
+        n_points: usize,
+        method: LutMethod,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let intensity = self.correct_intensity(&frame.data);
+        let lut1d = match method {
+            LutMethod::Counting => self.ensure_lut1d(OneDKey::Counting { n_points }),
+            LutMethod::PixelSplit => self.ensure_lut1d(OneDKey::PixelSplit { n_points }),
+            LutMethod::Supersampled { n_ss } => {
+                self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss })
+            }
+        };
+        crate::lut::integrate_lut1d(&intensity, lut1d)
+    }
+
+    /// Integrate a frame to 2D using the selected LUT method
+    ///
+    /// Example
+    /// ```no_run
+    /// use dioptrin::integration::{Integrator, LutMethod};
+    /// # use dioptrin::{geometry::Geometry, frame::Frame, poni::Poni};
+    /// # let poni: Poni = unimplemented!();
+    /// # let frame: Frame = unimplemented!();
+    /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
+    /// let mut integrator = Integrator::new(geometry);
+    /// let y = integrator.integrate2d_lut_with(&frame, 1250, 360, LutMethod::PixelSplit);
+    /// assert_eq!(y.len(), 1250*360);
+    /// ```
+    pub fn integrate2d_lut_with(
+        &mut self,
+        frame: &Frame,
+        n_tth: usize,
+        n_azi: usize,
+        method: LutMethod,
+    ) -> Vec<f64> {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let intensity = self.correct_intensity(&frame.data);
+        let lut2d = match method {
+            LutMethod::Counting => self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi }),
+            LutMethod::PixelSplit => self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi }),
+            LutMethod::Supersampled { n_ss } => {
+                self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss })
+            }
+        };
+        crate::lut::integrate_lut2d(&intensity, lut2d)
     }
 
     /// checks whether current tth, chi, solid angle and polarization are calculated for the same
@@ -51,15 +170,23 @@ impl Integrator {
 
     /// checks whether current lut was calculated for the same number of points (n_points), if not,
     /// it is recalculated
-    fn update_lut(&mut self, n_points: usize) {
-        let need_rebuild = match &self.lut {
+    fn ensure_lut1d(&mut self, key: OneDKey) -> &lut::Lut1d {
+        let rebuild = match &self.cache_1d.key {
             None => true,
-            Some(l) => l.row_ptr.len() - 1 != n_points,
+            Some(k) => k != &key,
         };
-        if need_rebuild {
-            let csr = lut::build_lut1d_csr(&self.tth, n_points);
-            self.lut = Some(csr);
+        if rebuild {
+            let lut1d = match key {
+                OneDKey::Counting { n_points } => lut::build_lut1d_csr(&self.tth, n_points),
+                OneDKey::PixelSplit { n_points } => lut::build_lut1d_ps_csr(&self.tth, n_points),
+                OneDKey::Supersampled { n_points, n_ss } => {
+                    lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss)
+                }
+            };
+            self.cache_1d.key = Some(key);
+            self.cache_1d.lut = Some(lut1d);
         }
+        self.cache_1d.lut.as_ref().unwrap()
     }
 
     /// checks whether current supersampled lookup table (LUT) was calculated for the same number of points (n_points), if not,
@@ -69,15 +196,12 @@ impl Integrator {
     /// * `n_points` - number of points for the 1d integration
     /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
     fn update_lut_ss(&mut self, n_points: usize, n_ss: usize) {
-        let need_rebuild = match &self.lut_ss {
-            None => true,
-            Some(l) => l.row_ptr.len() - 1 != n_points || self.lut_ss_sub_pixel != n_ss,
-        };
-        if need_rebuild {
-            let csr = lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss);
-            self.lut_ss = Some(csr);
-            self.lut_ss_sub_pixel = n_ss;
-        }
+        let _ = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+    }
+
+    /// checks whether current pixel-split lut was calculated for the same number of points
+    fn update_lut_ps(&mut self, n_points: usize) {
+        let _ = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
     }
 
     /// checks whether current lut_2d was calculated for the same number of points in tth and azimuth, if not,
@@ -86,15 +210,32 @@ impl Integrator {
     /// # Arguments
     /// * `n_tth` - number of points in tth for the 2d integration
     /// * `n_azimuth` - number of points in azimuth for the 2d integration
-    fn update_lut_2d(&mut self, n_tth: usize, n_azi: usize) {
-        let need_rebuild = match &self.lut_2d {
+    fn ensure_lut2d(&mut self, key: TwoDKey) -> &lut::Lut2d {
+        let rebuild = match &self.cache_2d.key {
             None => true,
-            Some(l) => l.n_tth != n_tth || l.n_azi != n_azi,
+            Some(k) => k != &key,
         };
-        if need_rebuild {
-            let csr = lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_azi);
-            self.lut_2d = Some(csr);
+        if rebuild {
+            let lut2d = match key {
+                TwoDKey::Counting { n_tth, n_azi } => {
+                    lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_azi)
+                }
+                TwoDKey::PixelSplit { n_tth, n_azi } => {
+                    lut::build_lut2d_ps_csr(&self.tth, &self.chi, n_tth, n_azi)
+                }
+                TwoDKey::Supersampled { n_tth, n_azi, n_ss } => lut::build_lut2d_ss_csr(
+                    &self.geometry,
+                    &self.tth,
+                    &self.chi,
+                    n_tth,
+                    n_azi,
+                    n_ss,
+                ),
+            };
+            self.cache_2d.key = Some(key);
+            self.cache_2d.lut = Some(lut2d);
         }
+        self.cache_2d.lut.as_ref().unwrap()
     }
 
     /// checks whether current supersampled lut_2d was calculated for the same number of points in tth and azimuth, if not,
@@ -104,16 +245,16 @@ impl Integrator {
     /// * `n_tth` - number of points in tth for the 2d integration
     /// * `n_azimuth` - number of points in azimuth for the 2d integration
     /// * `n_ss` - super samplling factor,  number of subpixels in each direction for a pixel
+    fn update_lut_2d(&mut self, n_tth: usize, n_azi: usize) {
+        let _ = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
+    }
     fn update_lut_2d_ss(&mut self, n_tth: usize, n_azi: usize, n_ss: usize) {
-        let need_rebuild = match &self.lut_2d_ss {
-            None => true,
-            Some(l) => l.n_tth != n_tth || l.n_azi != n_azi || self.lust_2d_ss_sub_pixel != n_ss,
-        };
-        if need_rebuild {
-            let csr = lut::build_lut2d_ss_csr(&self.geometry, &self.tth, &self.chi, n_tth, n_azi, n_ss);
-            self.lut_2d_ss = Some(csr);
-            self.lust_2d_ss_sub_pixel = n_ss;
-        }
+        let _ = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
+    }
+
+    /// checks whether current pixel-split 2d lut was calculated for the same points
+    fn update_lut_2d_ps(&mut self, n_tth: usize, n_azi: usize) {
+        let _ = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
     }
 
     /// Integrate a frame using look up table method
@@ -123,11 +264,8 @@ impl Integrator {
     /// * `n_points` - the number of points of the resulting pattern
     pub fn integrate_lut(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_lut(n_points);
-
         let intensity = self.correct_intensity(&frame.data);
-
-        let lut1d = self.lut.as_ref().unwrap();
+        let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
         lut::integrate_lut1d(&intensity, lut1d)
     }
 
@@ -144,10 +282,16 @@ impl Integrator {
         n_ss: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_lut_ss(n_points, n_ss);
         let intensity = self.correct_intensity(&frame.data);
+        let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+        lut::integrate_lut1d(&intensity, lut1d)
+    }
 
-        let lut1d = self.lut_ss.as_ref().unwrap();
+    /// Integrate a frame using pixel-splitting method (1D)
+    pub fn integrate_lut_ps(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let intensity = self.correct_intensity(&frame.data);
+        let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
         lut::integrate_lut1d(&intensity, lut1d)
     }
 
@@ -160,10 +304,8 @@ impl Integrator {
     /// * `n_azi` - Number of points in azimuthal angle direction
     pub fn integrate_2d_lut(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_lut_2d(n_tth, n_azi);
         let intensity = self.correct_intensity(&frame.data);
-
-        let lut2d = self.lut_2d.as_ref().unwrap();
+        let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
         lut::integrate_lut2d(&intensity, lut2d)
     }
 
@@ -183,10 +325,16 @@ impl Integrator {
         n_ss: usize,
     ) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        self.update_lut_2d_ss(n_tth, n_azi, n_ss);
         let intensity = self.correct_intensity(&frame.data);
+        let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
+        lut::integrate_lut2d(&intensity, lut2d)
+    }
 
-        let lut2d = self.lut_2d_ss.as_ref().unwrap();
+    /// Integrate a frame into a 2D grid using pixel-splitting method
+    pub fn integrate2d_lut_ps(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let intensity = self.correct_intensity(&frame.data);
+        let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
         lut::integrate_lut2d(&intensity, lut2d)
     }
 

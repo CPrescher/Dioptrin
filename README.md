@@ -71,3 +71,20 @@ let y = integrate_lut2d(&intensity, &lut2d);
 - All old `lut_*` builders have been renamed to `build_*` and unified to return CSR-based `Lut1d`/`Lut2d`.
 - HashMap- and Vec-of-Vec-based LUTs are removed from the public API.
 - Use `integrate_lut1d`/`integrate_lut2d` for both weighted and unweighted LUTs.
+
+## Integrator Method Selection
+
+Use enum-based selection for 1D/2D in `Integrator`:
+
+```rust
+use dioptrin::integration::{Integrator, LutMethod};
+// let (x, y) = integrator.integrate_lut_with(&frame, 1250, LutMethod::Counting);
+// let y2d = integrator.integrate2d_lut_with(&frame, 1250, 360, LutMethod::Supersampled { n_ss: 4 });
+```
+
+## Module Layout
+
+- `src/lut/counting_csr.rs`: unweighted CSR LUT builders (`build_lut1d_csr`, `build_lut2d_csr`) and CSR types.
+- `src/lut/pixel_split.rs`: pixel-splitting CSR LUT builders (`build_lut1d_ps_csr`, `build_lut2d_ps_csr`).
+- `src/lut/supersampled.rs`: supersampled CSR LUT builders (`build_lut1d_ss_csr`, `build_lut2d_ss_csr`).
+- `src/lut/integrate.rs`: shared CSR integrators (`integrate_lut1d`, `integrate_lut2d`) used by any LUT.

@@ -1,3 +1,5 @@
+//! Supersampled CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
+//! Integrate with `crate::lut::integrate_lut1d` / `integrate_lut2d`.
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;
