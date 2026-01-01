@@ -20,6 +20,22 @@ impl Geometry {
         self.dim1 * self.dim2
     }
 
+    /// Returns pixel corner coordinates (d1, d2) for the full detector grid.
+    pub fn corner_grid(&self) -> (Vec<f64>, Vec<f64>) {
+        let count = (self.dim1 + 1) * (self.dim2 + 1);
+        let mut d1 = Vec::with_capacity(count);
+        let mut d2 = Vec::with_capacity(count);
+
+        for i in 0..=self.dim1 {
+            for j in 0..=self.dim2 {
+                d1.push(i as f64);
+                d2.push(j as f64);
+            }
+        }
+
+        (d1, d2)
+    }
+
     /// Calculates the pixel positions in the detector reference coordinate system
     /// whereby the lower left corner of the detector is (0, 0). return coordinates
     /// are in cartesian coordinates. Be aware that y and x are swapped in this framework.

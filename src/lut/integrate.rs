@@ -9,11 +9,13 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 ///
 /// Examples
 /// ```
+/// use dioptrin::geometry::Geometry;
 /// use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
 /// // Simple pixel-split (weighted) 1D example
+/// # let geometry: Geometry = unimplemented!();
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let intensity = vec![10.0, 20.0, 30.0, 40.0];
-/// let lut = build_lut1d_ps_csr(&tth, 3);
+/// let lut = build_lut1d_ps_csr(&geometry, &tth, 3);
 /// let (_x, y) = integrate_lut1d(&intensity, &lut);
 /// assert_eq!(y.len(), 3);
 /// ```
@@ -60,11 +62,13 @@ pub fn integrate_lut1d(intensity: &Vec<f64>, lut: &Lut1d) -> (Vec<f64>, Vec<f64>
 ///
 /// Example
 /// ```
+/// use dioptrin::geometry::Geometry;
 /// use dioptrin::lut::{build_lut2d_ps_csr, integrate_lut2d};
+/// # let geometry: Geometry = unimplemented!();
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let chi = vec![0.0, 0.1, 0.2, 0.3];
 /// let intensity = vec![1.0, 2.0, 3.0, 4.0];
-/// let lut2d = build_lut2d_ps_csr(&tth, &chi, 2, 3);
+/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 2, 3);
 /// let y = integrate_lut2d(&intensity, &lut2d);
 /// assert_eq!(y.len(), 2*3);
 /// ```

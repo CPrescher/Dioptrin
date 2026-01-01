@@ -36,8 +36,10 @@ use dioptrin::geometry::Geometry;
 ### 1D Pixel-Split
 
 ```rust
+use dioptrin::geometry::Geometry;
 use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
-let lut = build_lut1d_ps_csr(&tth, 1024);
+// let geometry: Geometry = ...;
+let lut = build_lut1d_ps_csr(&geometry, &tth, 1024);
 let (_bins, y) = integrate_lut1d(&intensity, &lut);
 ```
 
@@ -61,8 +63,10 @@ use dioptrin::geometry::Geometry;
 ### 2D Pixel-Split
 
 ```rust
+use dioptrin::geometry::Geometry;
 use dioptrin::lut::{build_lut2d_ps_csr, integrate_lut2d};
-let lut2d = build_lut2d_ps_csr(&tth, &chi, 1024, 360);
+// let geometry: Geometry = ...;
+let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 1024, 360);
 let y = integrate_lut2d(&intensity, &lut2d);
 ```
 
@@ -88,3 +92,15 @@ use dioptrin::integration::{Integrator, LutMethod};
 - `src/lut/pixel_split.rs`: pixel-splitting CSR LUT builders (`build_lut1d_ps_csr`, `build_lut2d_ps_csr`).
 - `src/lut/supersampled.rs`: supersampled CSR LUT builders (`build_lut1d_ss_csr`, `build_lut2d_ss_csr`).
 - `src/lut/integrate.rs`: shared CSR integrators (`integrate_lut1d`, `integrate_lut2d`) used by any LUT.
+
+## Benchmarks
+
+Run integration benchmarks:
+```
+cargo bench --bench integrate
+```
+
+Run LUT build benchmarks:
+```
+cargo bench --bench build
+```

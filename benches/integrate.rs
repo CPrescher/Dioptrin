@@ -152,7 +152,7 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
         .collect();
 
     // Pixel-split CSR (fractional weights)
-    let csr_ps = lut::build_lut1d_ps_csr(&tth, n_points);
+    let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points);
     let _ = lut::integrate_lut1d(&intensity, &csr_ps);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
@@ -169,7 +169,7 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
     let tth = geometry.calc_tth_all();
     let chi = geometry.calc_chi_all();
 
-    let csr_ps = lut::build_lut1d_ps_csr(&tth, n_points);
+    let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
@@ -209,7 +209,7 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
         .collect();
 
     // Use unified supersampled CSR instead of HashMap pixel-split
-    let csr2d_ps = lut::build_lut2d_ps_csr(&tth, &chi, n_tth, n_azi);
+    let csr2d_ps = lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_azi);
     let _ = lut::integrate_lut2d(&intensity, &csr2d_ps);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
@@ -237,7 +237,7 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
-    let csr2d_ps2 = lut::build_lut2d_ps_csr(&tth, &chi, n_tth, n_azi);
+    let csr2d_ps2 = lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_azi);
     let _ = lut::integrate_lut2d(&intensity, &csr2d_ps2);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
@@ -252,15 +252,16 @@ pub fn read_frame_benchmark(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    integrate_lut_csr_benchmark,
-    integrate_lut_ss_csr_benchmark,
-    integrate2d_lut_csr_benchmark,
-    integrate2d_lut_ss_csr_benchmark,
-    integrate_lut_ps_benchmark,
-    integrate_lut_ps_csr_benchmark,
-    integrate2d_lut_ps_csr_benchmark,
-    integrate2d_lut_ps_benchmark,
-);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().sample_size(10);
+    targets = integrate_lut_csr_benchmark,
+        integrate_lut_ss_csr_benchmark,
+        integrate2d_lut_csr_benchmark,
+        integrate2d_lut_ss_csr_benchmark,
+        integrate_lut_ps_benchmark,
+        integrate_lut_ps_csr_benchmark,
+        integrate2d_lut_ps_csr_benchmark,
+        integrate2d_lut_ps_benchmark,
+}
 criterion_main!(benches);

@@ -178,7 +178,9 @@ impl Integrator {
         if rebuild {
             let lut1d = match key {
                 OneDKey::Counting { n_points } => lut::build_lut1d_csr(&self.tth, n_points),
-                OneDKey::PixelSplit { n_points } => lut::build_lut1d_ps_csr(&self.tth, n_points),
+                OneDKey::PixelSplit { n_points } => {
+                    lut::build_lut1d_ps_csr(&self.geometry, &self.tth, n_points)
+                }
                 OneDKey::Supersampled { n_points, n_ss } => {
                     lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss)
                 }
@@ -221,7 +223,7 @@ impl Integrator {
                     lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_azi)
                 }
                 TwoDKey::PixelSplit { n_tth, n_azi } => {
-                    lut::build_lut2d_ps_csr(&self.tth, &self.chi, n_tth, n_azi)
+                    lut::build_lut2d_ps_csr(&self.geometry, &self.tth, &self.chi, n_tth, n_azi)
                 }
                 TwoDKey::Supersampled { n_tth, n_azi, n_ss } => lut::build_lut2d_ss_csr(
                     &self.geometry,
@@ -419,6 +421,18 @@ mod tests {
 
         let int_diff = int_diff / int.len() as f64;
         assert!(int_diff < math::max(&int) * 1e-4); // 0.001 difference in total
+    }
+
+    #[test]
+    fn test_integrate_pixel_split_lut() {
+        util::download_pilatus_test_file();
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry);
+        let (tth, int) = integrator.integrate_lut_ps(&frame, 850);
+        util::save_vec("pattern_tth_lut_ps.txt", &tth);
+        util::save_vec("pattern_int_lut_ps.txt", &int);
     }
 
     #[test]
