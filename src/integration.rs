@@ -56,8 +56,8 @@ type Lut2dCache = LutCache<TwoDKey, lut::Lut2d>;
 /// # let poni: Poni = unimplemented!();
 /// # let frame: Frame = unimplemented!();
 /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-/// let mut integrator = Integrator::new(geometry);
-/// integrator.set_method(IntegrationMethod::Counting);
+/// let mut integrator = Integrator::new(geometry)
+///     .with_method(IntegrationMethod::Counting);
 /// let (_x, y) = integrator.integrate1d(&frame, 1250);
 /// ```
 #[derive(Clone, Copy, Debug)]
@@ -82,6 +82,7 @@ pub struct Integrator {
     cache_2d: Lut2dCache,
     mask: Option<Mask>,
     method: IntegrationMethod,
+    polarization_factor: Option<f64>,
 }
 
 impl Integrator {
@@ -96,19 +97,81 @@ impl Integrator {
             cache_2d: Lut2dCache::new(),
             mask: None,
             method: IntegrationMethod::PixelSplit,
+            polarization_factor: None,
         }
     }
 
+    // builder pattern for method
+    pub fn with_method(mut self, method: IntegrationMethod) -> Self {
+        self.method = method;
+        self
+    }
+
+    // getter for method
+    pub fn method(&self) -> IntegrationMethod {
+        self.method
+    }
+
+    // setter for method
     pub fn set_method(&mut self, method: IntegrationMethod) {
         self.method = method;
     }
 
+    // builder pattern for mask
+    pub fn with_mask(mut self, mask: Mask) -> Self {
+        self.mask = Some(mask);
+        self
+    }
+
+    // clearing current mask
+    pub fn clear_mask(&mut self) {
+        self.mask = None;
+    }
+
+    // getter for mask
+    pub fn mask(&self) -> Option<&Mask> {
+        self.mask.as_ref()
+    }
+
+    // setter for mask
     pub fn set_mask(&mut self, mask: Mask) {
         self.mask = Some(mask);
     }
 
-    pub fn clear_mask(&mut self) {
-        self.mask = None;
+    // builder pattern for polarization factor
+    pub fn with_polarization_factor(mut self, polarization_factor: f64) -> Self {
+        self.polarization_factor = Some(polarization_factor);
+        self
+    }
+
+    // getter for polarization factor
+    pub fn polarization_factor(&self) -> Option<f64> {
+        self.polarization_factor
+    }
+
+    // setter for polarization factor
+    pub fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
+        self.polarization_factor = polarization_factor;
+    }
+
+    // getter for solid angle correction for each pixel as a flattened vector
+    pub fn solid_angle(&self) -> &Vec<f64> {
+        &self.solid_angle
+    }
+
+    // getter for polarization correction for each pixel as a flattened vector
+    pub fn polarization(&self) -> &Vec<f64> {
+        &self.polarization
+    }
+
+    // getter for tth vector for each pixel as a flattened vector
+    pub fn tth(&self) -> &Vec<f64> {
+        &self.tth
+    }
+
+    // getter for chi vector for each pixel as a flattened vector
+    pub fn chi(&self) -> &Vec<f64> {
+        &self.chi
     }
 
     /// Integrate a frame to 1D using the configured integration method.
@@ -120,12 +183,12 @@ impl Integrator {
     /// # let poni: Poni = unimplemented!();
     /// # let frame: Frame = unimplemented!();
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-    /// let mut integrator = Integrator::new(geometry);
-    /// integrator.set_method(IntegrationMethod::Counting);
+    /// let mut integrator = Integrator::new(geometry)
+    ///     .with_method(IntegrationMethod::Counting);
     /// let (_x, y_count) = integrator.integrate1d(&frame, 1250);
-    /// integrator.set_method(IntegrationMethod::PixelSplit);
+    /// integrator = integrator.with_method(IntegrationMethod::PixelSplit);
     /// let (_x, y_ps) = integrator.integrate1d(&frame, 1250);
-    /// integrator.set_method(IntegrationMethod::Supersampled { n_ss: 4 });
+    /// integrator = integrator.with_method(IntegrationMethod::Supersampled { n_ss: 4 });
     /// let (_x, y_ss) = integrator.integrate1d(&frame, 1250);
     /// ```
     pub fn integrate1d(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
@@ -166,8 +229,8 @@ impl Integrator {
     /// # let poni: Poni = unimplemented!();
     /// # let frame: Frame = unimplemented!();
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-    /// let mut integrator = Integrator::new(geometry);
-    /// integrator.set_method(IntegrationMethod::PixelSplit);
+    /// let mut integrator = Integrator::new(geometry)
+    ///     .with_method(IntegrationMethod::PixelSplit);
     /// let y = integrator.integrate2d(&frame, 1250, 360);
     /// assert_eq!(y.len(), 1250*360);
     /// ```
@@ -209,7 +272,12 @@ impl Integrator {
             self.tth = self.geometry.calc_tth_all();
             self.chi = self.geometry.calc_chi_all();
             self.solid_angle = self.geometry.calc_solid_angle();
-            self.polarization = self.geometry.calc_polarization(0.99, &self.tth, &self.chi);
+            self.polarization = match self.polarization_factor {
+                Some(factor) => self
+                    .geometry
+                    .calc_polarization(factor, &self.tth, &self.chi),
+                None => vec![1.0; self.geometry.size()],
+            };
         }
     }
 
@@ -294,8 +362,9 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry);
-        integrator.set_method(IntegrationMethod::Histogram);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::Histogram)
+            .with_polarization_factor(0.99);
         let (tth, int) = integrator.integrate1d(&frame, 850);
 
         util::save_vec2("pattern.txt", &tth, &int);
@@ -321,8 +390,9 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry);
-        integrator.set_method(IntegrationMethod::Counting);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::Counting)
+            .with_polarization_factor(0.99);
         let (tth, int) = integrator.integrate1d(&frame, 850);
 
         util::save_vec2("pattern_lut.txt", &tth, &int);
@@ -348,8 +418,9 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry);
-        integrator.set_method(IntegrationMethod::PixelSplit);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::PixelSplit)
+            .with_polarization_factor(0.99);
         let (tth, int) = integrator.integrate1d(&frame, 850);
         util::save_vec2("pattern_lut_ps.txt", &tth, &int);
     }
@@ -360,8 +431,8 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry);
-        integrator.set_method(IntegrationMethod::Supersampled { n_ss: 5 });
+        let mut integrator =
+            Integrator::new(geometry).with_method(IntegrationMethod::Supersampled { n_ss: 5 });
         let (tth, int) = integrator.integrate1d(&frame, 850);
 
         util::save_vec2("pattern_lut_ss.txt", &tth, &int);
@@ -373,8 +444,9 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry);
-        integrator.set_method(IntegrationMethod::Counting);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::Counting)
+            .with_polarization_factor(0.99);
         let cake = integrator.integrate2d(&frame, 850, 360);
         util::save_vec("cake_lut.txt", &cake);
     }
@@ -385,9 +457,41 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry);
-        integrator.set_method(IntegrationMethod::Supersampled { n_ss: 5 });
+        let mut integrator =
+            Integrator::new(geometry)
+                .with_method(IntegrationMethod::Supersampled { n_ss: 5 })
+                .with_polarization_factor(0.99);
         let cake = integrator.integrate2d(&frame, 850, 360);
         util::save_vec("cake_lut_ss.txt", &cake);
+    }
+
+    #[test]
+    fn test_set_and_clear_mask() {
+        let poni = Poni::new();
+        let geometry = Geometry::new(2, 2, poni);
+        let mut integrator = Integrator::new(geometry);
+        assert!(integrator.mask().is_none());
+
+        let mask = Mask::from_vec(vec![0, 1, 0, 1], 2, 2).unwrap();
+        integrator.set_mask(mask);
+        assert!(integrator.mask().is_some());
+
+        integrator.clear_mask();
+        assert!(integrator.mask().is_none());
+    }
+
+    #[test]
+    fn test_with_mask_chain() {
+        let poni = Poni::new();
+        let geometry = Geometry::new(2, 2, poni);
+        let mask_data = vec![1, 0, 0, 1];
+        let mask = Mask::from_vec(mask_data.clone(), 2, 2).unwrap();
+
+        let mut integrator = Integrator::new(geometry).with_mask(mask);
+        let stored = integrator.mask().unwrap();
+        assert_eq!(stored.data, mask_data);
+
+        integrator.clear_mask();
+        assert!(integrator.mask().is_none());
     }
 }
