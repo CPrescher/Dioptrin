@@ -103,16 +103,16 @@ pub fn build_lut1d_ss_csr(
 pub fn build_lut2d_ss_csr(
     geometry: &Geometry,
     tth: &Vec<f64>,
-    azi: &Vec<f64>,
+    chi: &Vec<f64>,
     n_tth: usize,
-    n_azi: usize,
+    n_chi: usize,
     n_ss: usize,
 ) -> Lut2d {
     let (tth_min, _tth_max, tth_step) = histogram::ss_tth_min_max_step(geometry, tth, n_tth, n_ss);
-    let (azi_min, _azi_max, azi_step) =
-        histogram::supersampled_chi_min_max_step(geometry, azi, n_azi, n_ss);
+    let (chi_min, _chi_max, chi_step) =
+        histogram::supersampled_chi_min_max_step(geometry, chi, n_chi, n_ss);
 
-    let rows = n_tth * n_azi;
+    let rows = n_tth * n_chi;
     let per_row = geometry.dim2 * n_ss * n_ss;
     let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
         .into_par_iter()
@@ -120,10 +120,10 @@ pub fn build_lut2d_ss_csr(
             || Vec::with_capacity(per_row),
             |mut acc, r| {
                 let (d1, d2, actual_index) = crate::lut::common::subgrid(r, geometry.dim2, n_ss);
-                let (tth_ss, azi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
+                let (tth_ss, chi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
                 for i in 0..tth_ss.len() {
                     let tb = histogram::get_bin(tth_ss[i], tth_min, tth_step);
-                    let ab = histogram::get_bin(azi_ss[i], azi_min, azi_step) % n_azi;
+                    let ab = histogram::get_bin(chi_ss[i], chi_min, chi_step) % n_chi;
                     let row = ab * n_tth + tb;
                     acc.push((row, actual_index[i]));
                 }
@@ -169,5 +169,84 @@ pub fn build_lut2d_ss_csr(
 
     while row_ptr.len() < rows + 1 { row_ptr.push(col_idx.len()); }
 
-    Lut2d { row_ptr, col_idx, values: Some(values), n_tth, n_azi }
+    Lut2d { row_ptr, col_idx, values: Some(values), n_tth, n_chi }
+}
+
+/// Build a supersampled 2D CSR LUT using an explicit chi binning definition.
+///
+/// `chi_start` is the center of the first chi bin; the effective start edge is
+/// `chi_start - chi_step / 2`. Binning wraps periodically so angles outside the
+/// total range fold back into `0..n_chi`.
+pub fn build_lut2d_ss_csr_with_chi_range(
+    geometry: &Geometry,
+    tth: &Vec<f64>,
+    _chi: &Vec<f64>,
+    n_tth: usize,
+    n_chi: usize,
+    n_ss: usize,
+    chi_start: f64,
+    chi_step: f64,
+) -> Lut2d {
+    assert!(chi_step > 0.0, "chi_step must be positive");
+    let (tth_min, _tth_max, tth_step) = histogram::ss_tth_min_max_step(geometry, tth, n_tth, n_ss);
+    let min_chi = chi_start - 0.5 * chi_step;
+
+    let rows = n_tth * n_chi;
+    let per_row = geometry.dim2 * n_ss * n_ss;
+    let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
+        .into_par_iter()
+        .fold(
+            || Vec::with_capacity(per_row),
+            |mut acc, r| {
+                let (d1, d2, actual_index) = crate::lut::common::subgrid(r, geometry.dim2, n_ss);
+                let (tth_ss, chi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
+                for i in 0..tth_ss.len() {
+                    let tb = histogram::get_bin(tth_ss[i], tth_min, tth_step);
+                    let ab = histogram::get_bin_wrapped(chi_ss[i], min_chi, chi_step, n_chi);
+                    let row = ab * n_tth + tb;
+                    acc.push((row, actual_index[i]));
+                }
+                acc
+            },
+        )
+        .reduce(
+            || Vec::new(),
+            |mut a, mut b| {
+                a.append(&mut b);
+                a
+            },
+        );
+
+    pairs.par_sort_unstable();
+
+    let mut row_ptr = Vec::with_capacity(rows + 1);
+    let mut col_idx: Vec<usize> = Vec::new();
+    let mut values: Vec<f64> = Vec::new();
+    row_ptr.push(0);
+
+    let mut i = 0usize;
+    while i < pairs.len() {
+        let current_row = pairs[i].0;
+        while row_ptr.len() - 1 < current_row { row_ptr.push(col_idx.len()); }
+        let bin_start = col_idx.len();
+        let mut bin_total = 0usize;
+        while i < pairs.len() && pairs[i].0 == current_row {
+            let pixel = pairs[i].1;
+            let mut cnt = 1usize;
+            i += 1;
+            while i < pairs.len() && pairs[i].0 == current_row && pairs[i].1 == pixel {
+                cnt += 1;
+                i += 1;
+            }
+            col_idx.push(pixel);
+            values.push(cnt as f64);
+            bin_total += cnt;
+        }
+        if bin_total > 0 { let denom = bin_total as f64; for w in &mut values[bin_start..] { *w /= denom; } }
+        row_ptr.push(col_idx.len());
+    }
+
+    while row_ptr.len() < rows + 1 { row_ptr.push(col_idx.len()); }
+
+    Lut2d { row_ptr, col_idx, values: Some(values), n_tth, n_chi }
 }

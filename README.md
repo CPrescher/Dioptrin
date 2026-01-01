@@ -7,7 +7,7 @@ This repository provides lookup table (LUT) utilities for fast 1D/2D azimuthal i
 All LUTs are represented in Compressed Sparse Row (CSR) format and share unified structs:
 
 - `lut::Lut1d` — 1D LUT (rows = histogram bins)
-- `lut::Lut2d` — 2D LUT (rows = `azi * n_tth + tth`)
+- `lut::Lut2d` — 2D LUT (rows = `chi * n_tth + tth`)
 
 Weighted variants (supersampled / pixel-split) use the same structs with `values: Some(weights)`;
 unweighted (counting) LUTs have `values: None` and integrate via the mean of contributing pixels.

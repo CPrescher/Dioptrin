@@ -348,52 +348,40 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
     }
 }
 
-/// Build a 2D pixel-split LUT with full polygon splitting over `tth`/`azi` bins.
-///
-/// This clips each pixel quad in (tth, azi) space against bin rectangles and
-/// accumulates area-based weights.
-///
-/// Example (2D)
-/// ```
-/// use dioptrin::geometry::Geometry;
-/// use dioptrin::poni::Poni;
-/// use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
-/// let mut poni = Poni::new();
-/// poni.pixel1 = 1.0;
-/// poni.pixel2 = 1.0;
-/// poni.distance = 100.0;
-/// let geometry = Geometry::new(2, 2, poni);
-/// let tth = geometry.calc_tth_all();
-/// let chi = geometry.calc_chi_all();
-/// let intensity = vec![1.0; geometry.size()];
-/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
-/// let y = integrate2d(&intensity, &lut2d, None);
-/// assert_eq!(y.len(), 4 * 4);
-/// ```
-pub fn build_lut2d_ps_csr(
+fn build_lut2d_ps_csr_with_chi(
     geometry: &Geometry,
     tth: &Vec<f64>,
-    azi: &Vec<f64>,
+    chi: &Vec<f64>,
     n_tth: usize,
-    n_azi: usize,
+    n_chi: usize,
+    chi_range: Option<(f64, f64)>,
 ) -> Lut2d {
     assert_eq!(tth.len(), geometry.size());
-    assert_eq!(azi.len(), geometry.size());
+    assert_eq!(chi.len(), geometry.size());
 
     let (d1, d2) = geometry.corner_grid();
-    let (tth_corners, azi_corners) = geometry.calc_tth_and_chi(&d1, &d2);
+    let (tth_corners, chi_corners) = geometry.calc_tth_and_chi(&d1, &d2);
 
     let min_tth = math::min(&tth_corners);
     let mut max_tth = math::max(&tth_corners);
     max_tth += 10.0 * f64::EPSILON;
     let step_tth = (max_tth - min_tth) / n_tth as f64;
 
-    let min_azi = math::min(&azi_corners);
-    let mut max_azi = math::max(&azi_corners);
-    max_azi += 10.0 * f64::EPSILON;
-    let step_azi = (max_azi - min_azi) / n_azi as f64;
+    let (min_chi, step_chi) = match chi_range {
+        Some((start, step)) => {
+            assert!(step > 0.0, "chi_step must be positive");
+            (start - 0.5 * step, step)
+        }
+        None => {
+            let min_chi = math::min(&chi_corners);
+            let mut max_chi = math::max(&chi_corners);
+            max_chi += 10.0 * f64::EPSILON;
+            let step_chi = (max_chi - min_chi) / n_chi as f64;
+            (min_chi, step_chi)
+        }
+    };
 
-    let rows = n_tth * n_azi;
+    let rows = n_tth * n_chi;
     let dim2 = geometry.dim2;
     let width = dim2 + 1;
 
@@ -410,17 +398,17 @@ pub fn build_lut2d_ps_csr(
             let t10 = tth_corners[base + width];
             let t11 = tth_corners[base + width + 1];
 
-            let center_azi = azi[idx];
-            let a00 = unwrap_angle(azi_corners[base], center_azi);
-            let a01 = unwrap_angle(azi_corners[base + 1], center_azi);
-            let a10 = unwrap_angle(azi_corners[base + width], center_azi);
-            let a11 = unwrap_angle(azi_corners[base + width + 1], center_azi);
+            let center_chi = chi[idx];
+            let a00 = unwrap_angle(chi_corners[base], center_chi);
+            let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
+            let a10 = unwrap_angle(chi_corners[base + width], center_chi);
+            let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
             let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
                 let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
-                let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
+                let ab = histogram::get_bin_wrapped(center_chi, min_chi, step_chi, n_chi);
                 counts[ab * n_tth + tb].fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -458,8 +446,8 @@ pub fn build_lut2d_ps_csr(
                 t_end = n_tth as isize - 1;
             }
 
-            let a_start = ((amin - min_azi) / step_azi).floor() as isize;
-            let a_end = ((amax - min_azi) / step_azi).floor() as isize;
+            let a_start = ((amin - min_chi) / step_chi).floor() as isize;
+            let a_end = ((amax - min_chi) / step_chi).floor() as isize;
             if a_start > a_end {
                 return;
             }
@@ -468,15 +456,15 @@ pub fn build_lut2d_ps_csr(
                 let t0 = min_tth + bt as f64 * step_tth;
                 let t1 = t0 + step_tth;
                 for ba in a_start..=a_end {
-                    let a0 = min_azi + ba as f64 * step_azi;
-                    let a1 = a0 + step_azi;
+                    let a0 = min_chi + ba as f64 * step_chi;
+                    let a1 = a0 + step_chi;
                     let clipped = clip_polygon_rect_scratch(&poly, t0, t1, a0, a1, buf1, buf2);
                     let area = polygon_area(&clipped).abs();
                     if area <= 0.0 {
                         continue;
                     }
-                    let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
-                    let row = row_azi as usize * n_tth + bt as usize;
+                    let row_chi = ((ba % n_chi as isize) + n_chi as isize) % n_chi as isize;
+                    let row = row_chi as usize * n_tth + bt as usize;
                     counts[row].fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -504,17 +492,17 @@ pub fn build_lut2d_ps_csr(
             let t10 = tth_corners[base + width];
             let t11 = tth_corners[base + width + 1];
 
-            let center_azi = azi[idx];
-            let a00 = unwrap_angle(azi_corners[base], center_azi);
-            let a01 = unwrap_angle(azi_corners[base + 1], center_azi);
-            let a10 = unwrap_angle(azi_corners[base + width], center_azi);
-            let a11 = unwrap_angle(azi_corners[base + width + 1], center_azi);
+            let center_chi = chi[idx];
+            let a00 = unwrap_angle(chi_corners[base], center_chi);
+            let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
+            let a10 = unwrap_angle(chi_corners[base + width], center_chi);
+            let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
             let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
                 let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
-                let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
+                let ab = histogram::get_bin_wrapped(center_chi, min_chi, step_chi, n_chi);
                 let row = ab * n_tth + tb;
                 let p = next[row].fetch_add(1, Ordering::Relaxed);
                 col_idx[p].store(idx, Ordering::Relaxed);
@@ -555,8 +543,8 @@ pub fn build_lut2d_ps_csr(
                 t_end = n_tth as isize - 1;
             }
 
-            let a_start = ((amin - min_azi) / step_azi).floor() as isize;
-            let a_end = ((amax - min_azi) / step_azi).floor() as isize;
+            let a_start = ((amin - min_chi) / step_chi).floor() as isize;
+            let a_end = ((amax - min_chi) / step_chi).floor() as isize;
             if a_start > a_end {
                 return;
             }
@@ -565,15 +553,15 @@ pub fn build_lut2d_ps_csr(
                 let t0 = min_tth + bt as f64 * step_tth;
                 let t1 = t0 + step_tth;
                 for ba in a_start..=a_end {
-                    let a0 = min_azi + ba as f64 * step_azi;
-                    let a1 = a0 + step_azi;
+                    let a0 = min_chi + ba as f64 * step_chi;
+                    let a1 = a0 + step_chi;
                     let clipped = clip_polygon_rect_scratch(&poly, t0, t1, a0, a1, buf1, buf2);
                     let area = polygon_area(&clipped).abs();
                     if area <= 0.0 {
                         continue;
                     }
-                    let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
-                    let row = row_azi as usize * n_tth + bt as usize;
+                    let row_chi = ((ba % n_chi as isize) + n_chi as isize) % n_chi as isize;
+                    let row = row_chi as usize * n_tth + bt as usize;
                     let p = next[row].fetch_add(1, Ordering::Relaxed);
                     col_idx[p].store(idx, Ordering::Relaxed);
                     values[p].store(area.to_bits(), Ordering::Relaxed);
@@ -607,6 +595,55 @@ pub fn build_lut2d_ps_csr(
         col_idx,
         values: Some(values),
         n_tth,
-        n_azi,
+        n_chi,
     }
+}
+
+/// Build a 2D pixel-split LUT with full polygon splitting over `tth`/`chi` bins.
+///
+/// This clips each pixel quad in (tth, chi) space against bin rectangles and
+/// accumulates area-based weights.
+///
+/// Example (2D)
+/// ```
+/// use dioptrin::geometry::Geometry;
+/// use dioptrin::poni::Poni;
+/// use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 100.0;
+/// let geometry = Geometry::new(2, 2, poni);
+/// let tth = geometry.calc_tth_all();
+/// let chi = geometry.calc_chi_all();
+/// let intensity = vec![1.0; geometry.size()];
+/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
+/// let y = integrate2d(&intensity, &lut2d, None);
+/// assert_eq!(y.len(), 4 * 4);
+/// ```
+pub fn build_lut2d_ps_csr(
+    geometry: &Geometry,
+    tth: &Vec<f64>,
+    chi: &Vec<f64>,
+    n_tth: usize,
+    n_chi: usize,
+) -> Lut2d {
+    build_lut2d_ps_csr_with_chi(geometry, tth, chi, n_tth, n_chi, None)
+}
+
+/// Build a 2D pixel-split LUT using an explicit chi binning definition.
+///
+/// `chi_start` is the center of the first chi bin; the effective start edge is
+/// `chi_start - chi_step / 2`. Binning wraps periodically so angles outside the
+/// total range fold back into `0..n_chi`.
+pub fn build_lut2d_ps_csr_with_chi_range(
+    geometry: &Geometry,
+    tth: &Vec<f64>,
+    chi: &Vec<f64>,
+    n_tth: usize,
+    n_chi: usize,
+    chi_start: f64,
+    chi_step: f64,
+) -> Lut2d {
+    build_lut2d_ps_csr_with_chi(geometry, tth, chi, n_tth, n_chi, Some((chi_start, chi_step)))
 }

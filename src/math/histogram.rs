@@ -199,6 +199,14 @@ pub fn get_bin(value: f64, min: f64, step: f64) -> usize {
     ((value - min) / step) as usize
 }
 
+/// Calculates a wrapped bin index for a value in a periodic histogram.
+///
+/// The returned index is in `0..n_bins` using Euclidean wrapping.
+pub fn get_bin_wrapped(value: f64, min: f64, step: f64, n_bins: usize) -> usize {
+    let raw = ((value - min) / step).floor() as isize;
+    raw.rem_euclid(n_bins as isize) as usize
+}
+
 pub fn ss_tth_min_max_step(
     geometry: &Geometry,
     tth: &Vec<f64>,

@@ -29,13 +29,13 @@ impl Lut1d {
     }
 }
 
-/// CSR-based 2D LUT (rows flattened as `azi * n_tth + tth`). Same weighting rules as `Lut1d`.
+/// CSR-based 2D LUT (rows flattened as `chi * n_tth + tth`). Same weighting rules as `Lut1d`.
 pub struct Lut2d {
     pub row_ptr: Vec<usize>,
     pub col_idx: Vec<usize>,
     pub values: Option<Vec<f64>>, // optional weights per entry
     pub n_tth: usize,
-    pub n_azi: usize,
+    pub n_chi: usize,
 }
 
 /// Build an unweighted 1D CSR LUT from pixel `tth` to `n_points` bins.
@@ -83,7 +83,7 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
 /// See `build_lut1d_csr` for an example.
 // integrate1d moved to src/lut/integrate.rs
 
-/// Build an unweighted 2D CSR LUT from pixel `tth`/`azi` to `(n_tth, n_azi)` bins.
+/// Build an unweighted 2D CSR LUT from pixel `tth`/`chi` to `(n_tth, n_chi)` bins.
 ///
 /// Example
 /// ```
@@ -97,22 +97,22 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
 /// ```
 pub fn build_lut2d_csr(
     tth: &Vec<f64>,
-    azi: &Vec<f64>,
+    chi: &Vec<f64>,
     n_tth: usize,
-    n_azi: usize,
+    n_chi: usize,
 ) -> Lut2d {
     let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_tth);
-    let (min_azi, _max_azi, step_azi) = histogram::min_max_step(azi, n_azi);
+    let (min_chi, _max_chi, step_chi) = histogram::min_max_step(chi, n_chi);
 
-    let rows = n_tth * n_azi;
+    let rows = n_tth * n_chi;
     let mut counts = vec![0usize; rows];
 
     let row_index: Vec<usize> = tth
         .par_iter()
-        .zip(azi.par_iter())
+        .zip(chi.par_iter())
         .map(|(t, a)| {
             let tb = histogram::get_bin(*t, min_tth, step_tth);
-            let ab = histogram::get_bin(*a, min_azi, step_azi) % n_azi;
+            let ab = histogram::get_bin(*a, min_chi, step_chi) % n_chi;
             ab * n_tth + tb
         })
         .collect();
@@ -138,6 +138,62 @@ pub fn build_lut2d_csr(
         col_idx,
         values: None,
         n_tth,
-        n_azi,
+        n_chi,
+    }
+}
+
+/// Build an unweighted 2D CSR LUT from pixel `tth`/`chi` to `(n_tth, n_chi)` bins
+/// using an explicit chi binning definition.
+///
+/// `chi_start` is the center of the first chi bin; the effective start edge is
+/// `chi_start - chi_step / 2`. Binning wraps periodically so angles outside the
+/// total range fold back into `0..n_chi`.
+pub fn build_lut2d_csr_with_chi_range(
+    tth: &Vec<f64>,
+    chi: &Vec<f64>,
+    n_tth: usize,
+    n_chi: usize,
+    chi_start: f64,
+    chi_step: f64,
+) -> Lut2d {
+    assert!(chi_step > 0.0, "chi_step must be positive");
+    let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_tth);
+    let min_chi = chi_start - 0.5 * chi_step;
+
+    let rows = n_tth * n_chi;
+    let mut counts = vec![0usize; rows];
+
+    let row_index: Vec<usize> = tth
+        .par_iter()
+        .zip(chi.par_iter())
+        .map(|(t, a)| {
+            let tb = histogram::get_bin(*t, min_tth, step_tth);
+            let ab = histogram::get_bin_wrapped(*a, min_chi, chi_step, n_chi);
+            ab * n_tth + tb
+        })
+        .collect();
+    for &row in &row_index {
+        counts[row] += 1;
+    }
+
+    let mut row_ptr = vec![0usize; rows + 1];
+    for i in 0..rows {
+        row_ptr[i + 1] = row_ptr[i] + counts[i];
+    }
+
+    let mut next = row_ptr.clone();
+    let mut col_idx = vec![0usize; tth.len()];
+    for (i, &row) in row_index.iter().enumerate() {
+        let pos = next[row];
+        col_idx[pos] = i;
+        next[row] += 1;
+    }
+
+    Lut2d {
+        row_ptr,
+        col_idx,
+        values: None,
+        n_tth,
+        n_chi,
     }
 }

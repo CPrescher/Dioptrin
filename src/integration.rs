@@ -18,17 +18,45 @@ enum OneDKey {
 enum TwoDKey {
     Counting {
         n_tth: usize,
-        n_azi: usize,
+        n_chi: usize,
     },
     PixelSplit {
         n_tth: usize,
-        n_azi: usize,
+        n_chi: usize,
     },
     Supersampled {
         n_tth: usize,
-        n_azi: usize,
+        n_chi: usize,
         n_ss: usize,
     },
+    CountingChi {
+        n_tth: usize,
+        n_chi: usize,
+        chi: ChiRangeKey,
+    },
+    PixelSplitChi {
+        n_tth: usize,
+        n_chi: usize,
+        chi: ChiRangeKey,
+    },
+    SupersampledChi {
+        n_tth: usize,
+        n_chi: usize,
+        n_ss: usize,
+        chi: ChiRangeKey,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ChiRangeKey {
+    start_bits: u64,
+    step_bits: u64,
+}
+
+impl ChiRangeKey {
+    fn new(start: f64, step: f64) -> Self {
+        Self { start_bits: start.to_bits(), step_bits: step.to_bits() }
+    }
 }
 
 struct LutCache<K, L> {
@@ -309,7 +337,7 @@ impl Integrator {
     /// let y = integrator.integrate2d(&frame, 2, 2);
     /// assert_eq!(y.len(), 4);
     /// ```
-    pub fn integrate2d(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
+    pub fn integrate2d(&mut self, frame: &Frame, n_tth: usize, n_chi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
@@ -321,15 +349,57 @@ impl Integrator {
                 histogram::histogram(&self.tth, &intensity, n_tth, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_chi });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_chi });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_chi, n_ss });
+                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+            }
+        };
+        result
+    }
+
+    /// Integrate a frame to 2D using an explicit chi start and step.
+    ///
+    /// For a full-circle chi range, use `chi_step = 2*pi / n_chi` and a
+    /// `chi_start` that defines the center of the first bin (e.g. `0.0` for 0..2*pi).
+    /// Chi bins wrap periodically, so angles outside the total range fold into
+    /// `0..n_chi`.
+    /// Note: `IntegrationMethod::Histogram` ignores chi binning.
+    pub fn integrate2d_with_chi_range(
+        &mut self,
+        frame: &Frame,
+        n_tth: usize,
+        n_chi: usize,
+        chi_start: f64,
+        chi_step: f64,
+    ) -> Vec<f64> {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let intensity = self.correct_intensity(&frame.data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            &mask.data
+        });
+        let chi = ChiRangeKey::new(chi_start, chi_step);
+        let result = match self.method {
+            IntegrationMethod::Histogram => {
+                histogram::histogram(&self.tth, &intensity, n_tth, mask_data).1
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::CountingChi { n_tth, n_chi, chi });
+                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitChi { n_tth, n_chi, chi });
+                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledChi { n_tth, n_chi, n_ss, chi });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
         };
@@ -341,7 +411,7 @@ impl Integrator {
         &mut self,
         frame: &Frame,
         n_tth: usize,
-        n_azi: usize,
+        n_chi: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
@@ -357,15 +427,59 @@ impl Integrator {
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_chi });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_chi });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_chi, n_ss });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+            }
+        };
+        result
+    }
+
+    /// Integrate a frame to 2D with errors using an explicit chi binning definition.
+    ///
+    /// `chi_start` is the center of the first chi bin; the effective start edge is
+    /// `chi_start - chi_step / 2`. Chi bins wrap periodically, so angles outside
+    /// the total range fold into `0..n_chi`.
+    /// Note: `IntegrationMethod::Histogram` ignores chi binning.
+    pub fn integrate2d_with_chi_range_and_errors(
+        &mut self,
+        frame: &Frame,
+        n_tth: usize,
+        n_chi: usize,
+        chi_start: f64,
+        chi_step: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            &mask.data
+        });
+        let chi = ChiRangeKey::new(chi_start, chi_step);
+        let result = match self.method {
+            IntegrationMethod::Histogram => {
+                let (_bins, y, sigma) = histogram::histogram_with_errors(
+                    &self.tth, &intensity, &variance, n_tth, mask_data,
+                );
+                (y, sigma)
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::CountingChi { n_tth, n_chi, chi });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitChi { n_tth, n_chi, chi });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledChi { n_tth, n_chi, n_ss, chi });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
         };
@@ -435,12 +549,12 @@ impl Integrator {
         std::cell::Ref::map(self.cache_1d.borrow(), |cache| cache.lut.as_ref().unwrap())
     }
 
-    /// checks whether current lut_2d was calculated for the same number of points in tth and azimuth, if not,
+    /// checks whether current lut_2d was calculated for the same number of points in tth and chi, if not,
     /// it is recalculated
     ///
     /// # Arguments
     /// * `n_tth` - number of points in tth for the 2d integration
-    /// * `n_azimuth` - number of points in azimuth for the 2d integration
+    /// * `n_chi` - number of points in chi for the 2d integration
     fn ensure_lut2d(&self, key: TwoDKey) -> std::cell::Ref<'_, lut::Lut2d> {
         let rebuild = {
             let cache = self.cache_2d.borrow();
@@ -451,20 +565,53 @@ impl Integrator {
         };
         if rebuild {
             let lut2d = match key {
-                TwoDKey::Counting { n_tth, n_azi } => {
-                    lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_azi)
+                TwoDKey::Counting { n_tth, n_chi } => {
+                    lut::build_lut2d_csr(&self.tth, &self.chi, n_tth, n_chi)
                 }
-                TwoDKey::PixelSplit { n_tth, n_azi } => {
-                    lut::build_lut2d_ps_csr(&self.geometry, &self.tth, &self.chi, n_tth, n_azi)
+                TwoDKey::PixelSplit { n_tth, n_chi } => {
+                    lut::build_lut2d_ps_csr(&self.geometry, &self.tth, &self.chi, n_tth, n_chi)
                 }
-                TwoDKey::Supersampled { n_tth, n_azi, n_ss } => lut::build_lut2d_ss_csr(
+                TwoDKey::Supersampled { n_tth, n_chi, n_ss } => lut::build_lut2d_ss_csr(
                     &self.geometry,
                     &self.tth,
                     &self.chi,
                     n_tth,
-                    n_azi,
+                    n_chi,
                     n_ss,
                 ),
+                TwoDKey::CountingChi { n_tth, n_chi, chi } => {
+                    lut::build_lut2d_csr_with_chi_range(
+                        &self.tth,
+                        &self.chi,
+                        n_tth,
+                        n_chi,
+                        f64::from_bits(chi.start_bits),
+                        f64::from_bits(chi.step_bits),
+                    )
+                }
+                TwoDKey::PixelSplitChi { n_tth, n_chi, chi } => {
+                    lut::build_lut2d_ps_csr_with_chi_range(
+                        &self.geometry,
+                        &self.tth,
+                        &self.chi,
+                        n_tth,
+                        n_chi,
+                        f64::from_bits(chi.start_bits),
+                        f64::from_bits(chi.step_bits),
+                    )
+                }
+                TwoDKey::SupersampledChi { n_tth, n_chi, n_ss, chi } => {
+                    lut::build_lut2d_ss_csr_with_chi_range(
+                        &self.geometry,
+                        &self.tth,
+                        &self.chi,
+                        n_tth,
+                        n_chi,
+                        n_ss,
+                        f64::from_bits(chi.start_bits),
+                        f64::from_bits(chi.step_bits),
+                    )
+                }
             };
             let mut cache = self.cache_2d.borrow_mut();
             cache.key = Some(key);
@@ -650,7 +797,7 @@ mod tests {
 
         integrator.update_geometry_arrays(2, 2);
         let _ = integrator.ensure_lut1d(OneDKey::Counting { n_points: 4 });
-        let _ = integrator.ensure_lut2d(TwoDKey::Counting { n_tth: 4, n_azi: 4 });
+        let _ = integrator.ensure_lut2d(TwoDKey::Counting { n_tth: 4, n_chi: 4 });
 
         let cache_1d = integrator.cache_1d.borrow();
         assert!(cache_1d.key.is_some());

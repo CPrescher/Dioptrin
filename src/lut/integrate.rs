@@ -481,7 +481,7 @@ mod tests {
             col_idx: vec![0, 1, 2, 3],
             values: Some(vec![0.5, 0.5, 0.25, 0.75]),
             n_tth: 2,
-            n_azi: 1,
+            n_chi: 1,
         };
         let y = integrate2d(&intensity, &lut, None);
         let (y_err, _sigma) = integrate2d_with_errors(&intensity, &variance, &lut, None);
@@ -538,7 +538,7 @@ mod tests {
             col_idx: vec![0, 1],
             values: Some(vec![0.25, 0.75]),
             n_tth: 1,
-            n_azi: 1,
+            n_chi: 1,
         };
         let (_y, sigma) = integrate2d_with_errors(&intensity, &variance, &lut, None);
         assert_eq!(sigma.len(), 1);

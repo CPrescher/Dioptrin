@@ -219,7 +219,7 @@ impl Geometry {
             .collect()
     }
 
-    /// Calculates the azimuthal angle in radians for each pixel in the detector
+    /// Calculates the chi (azimuthal) angle in radians for each pixel in the detector
     pub fn calc_chi_all(&self) -> Vec<f64> {
         let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference_all();
         let chi = x_sample
@@ -230,7 +230,7 @@ impl Geometry {
         chi
     }
 
-    /// Calculates the azimuthal angle in radians for given pixel coordinates.
+    /// Calculates the chi (azimuthal) angle in radians for given pixel coordinates.
     ///
     /// Arguments:
     ///   * `d1` - pixel positions in Y image (|) direction
@@ -249,7 +249,7 @@ impl Geometry {
             .collect()
     }
 
-    /// Calculates two theta and azimuthal angle in radians for each pixel in the detector.
+    /// Calculates two theta and chi (azimuthal) angle in radians for each pixel in the detector.
     /// Combined function to reduce overhead for calculating each time the transform into sample reference geometry.
     pub fn calc_tth_and_chi(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
@@ -355,7 +355,7 @@ mod math {
         (y * y + x * x).sqrt().atan2(*z)
     }
 
-    /// Calculates the azimuthal angle for a pixel position in the sample reference coordinate system
+    /// Calculates the chi (azimuthal) angle for a pixel position in the sample reference coordinate system
     /// Parameters are the x and y values of the pixel position
     pub fn f_chi(x: &f64, y: &f64) -> f64 {
         x.atan2(*y)
@@ -381,7 +381,7 @@ mod math {
     /// Arguments:
     ///   * `factor` - polarization factor (value between -1 and 1)
     ///   * `cos2_tth` - cosine squared of the 2theta angle in radians
-    ///   * `chi` - azimuthal angle in radians
+    ///   * `chi` - chi (azimuthal) angle in radians
     pub fn f_polarization(factor: &f64, cos2_tth: &f64, chi: &f64) -> f64 {
         0.5 * (1.0 + cos2_tth - factor * (2.0 * chi).cos() * (1.0 - cos2_tth))
     }
