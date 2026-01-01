@@ -180,7 +180,6 @@ pub fn build_lut2d_ss_csr(
 pub fn build_lut2d_ss_csr_with_chi_range(
     geometry: &Geometry,
     tth: &Vec<f64>,
-    _chi: &Vec<f64>,
     n_tth: usize,
     n_chi: usize,
     n_ss: usize,

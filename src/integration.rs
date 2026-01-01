@@ -604,7 +604,6 @@ impl Integrator {
                     lut::build_lut2d_ss_csr_with_chi_range(
                         &self.geometry,
                         &self.tth,
-                        &self.chi,
                         n_tth,
                         n_chi,
                         n_ss,
