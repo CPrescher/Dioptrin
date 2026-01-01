@@ -171,20 +171,25 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
     a
 }
 
-/// Pixel-split CSR builders using full pixel splitting with unified LUT types.
+/// Pixel-split CSR builders using full pixel splitting  with unified LUT types.
 ///
 /// Uses pixel corner coordinates from `Geometry` to compute bin overlaps.
 ///
 /// Example (1D)
 /// ```
 /// use dioptrin::geometry::Geometry;
+/// use dioptrin::poni::Poni;
 /// use dioptrin::lut::{build_lut1d_ps_csr, integrate_lut1d};
-/// # let geometry: Geometry = unimplemented!();
-/// let tth = vec![0.1, 0.2, 0.3, 0.4];
-/// let intensity = vec![10.0, 20.0, 30.0, 40.0];
-/// let lut = build_lut1d_ps_csr(&geometry, &tth, 3);
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 100.0;
+/// let geometry = Geometry::new(2, 2, poni);
+/// let tth = geometry.calc_tth_all();
+/// let intensity = vec![1.0; geometry.size()];
+/// let lut = build_lut1d_ps_csr(&geometry, &tth, 4);
 /// let (_bins, y) = integrate_lut1d(&intensity, &lut);
-/// assert_eq!(y.len(), 3);
+/// assert_eq!(y.len(), 4);
 /// ```
 pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) -> Lut1d {
     assert_eq!(tth.len(), geometry.size());
@@ -370,14 +375,19 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
 /// Example (2D)
 /// ```
 /// use dioptrin::geometry::Geometry;
+/// use dioptrin::poni::Poni;
 /// use dioptrin::lut::{build_lut2d_ps_csr, integrate_lut2d};
-/// # let geometry: Geometry = unimplemented!();
-/// let tth = vec![0.1, 0.2, 0.3, 0.4];
-/// let chi = vec![0.0, 0.1, 0.2, 0.3];
-/// let intensity = vec![1.0, 2.0, 3.0, 4.0];
-/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 2, 3);
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 100.0;
+/// let geometry = Geometry::new(2, 2, poni);
+/// let tth = geometry.calc_tth_all();
+/// let chi = geometry.calc_chi_all();
+/// let intensity = vec![1.0; geometry.size()];
+/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
 /// let y = integrate_lut2d(&intensity, &lut2d);
-/// assert_eq!(y.len(), 2*3);
+/// assert_eq!(y.len(), 4 * 4);
 /// ```
 pub fn build_lut2d_ps_csr(
     geometry: &Geometry,
