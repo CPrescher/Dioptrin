@@ -32,6 +32,16 @@ def main() -> None:
     tth_rust_ps = pattern_rust_ps[:, 0]
     int_rust_ps = pattern_rust_ps[:, 1]
 
+    pattern_rust_lut_err = np.loadtxt("../test_data/test_output/pattern_lut_err.txt")
+    tth_rust_lut_err = pattern_rust_lut_err[:, 0]
+    int_rust_lut_err = pattern_rust_lut_err[:, 1]
+    err_rust_lut_err = pattern_rust_lut_err[:, 2]
+
+    pattern_rust_lut_ps_err = np.loadtxt("../test_data/test_output/pattern_lut_ps_err.txt")
+    tth_rust_lut_ps_err = pattern_rust_lut_ps_err[:, 0]
+    int_rust_lut_ps_err = pattern_rust_lut_ps_err[:, 1]
+    err_rust_lut_ps_err = pattern_rust_lut_ps_err[:, 2]
+
     azi = AzimuthalIntegrator()
     azi.load("../test_data/v1.poni")
     fabio_data = fabio.open("../test_data/CeO2_Pilatus1M.tif").data[::-1]
@@ -131,12 +141,14 @@ def main() -> None:
     plt.plot(tth_rust_lut, int_rust_lut, label="rust_lut")
     plt.plot(tth_pyfai_hist, int_pyfai_hist, label="pyFAI_hist")
     plt.plot(tth_pyfai_lut, int_pyfai_lut, label="pyFAI lut")
+    plt.errorbar(tth_rust_lut_err, int_rust_lut_err, yerr=err_rust_lut_err, label="rust_lut_err")
     plt.legend()
     plt.xlabel("2theta")
     plt.ylabel("Intensity")
     plt.title("Histogram and LUT methods")
 
     plt.subplot(122)
+    plt.errorbar(tth_rust_lut_ps_err, int_rust_lut_ps_err, yerr=err_rust_lut_ps_err, label="rust_lut_ps_err")
     plt.plot(tth_pyfai_ps_bbox, int_pyfai_ps_bbox, label="pyFAI ps_bbox")
     plt.plot(tth_pyfai_ps_full, int_pyfai_ps_full, label="pyFAI ps_full")
     plt.plot(tth_rust_lut_ss, int_rust_lut_ss, label="rust_lut_ss")

@@ -49,6 +49,21 @@ pub fn save_vec2(path: &str, x: &Vec<f64>, y: &Vec<f64>) {
     }
 }
 
+pub fn save_vec3(path: &str, x: &Vec<f64>, y: &Vec<f64>, z: &Vec<f64>) {
+    assert_eq!(x.len(), y.len());
+    assert_eq!(x.len(), z.len());
+    let dir_str: String = "test_data/test_output/".to_owned();
+    fs::create_dir(&dir_str).unwrap_or_default();
+
+    let path_str = dir_str + path;
+    let path: &Path = Path::new(path_str.as_str());
+    let mut file = fs::File::create(path).unwrap();
+    for ((xv, yv), zv) in x.iter().zip(y.iter()).zip(z.iter()) {
+        file.write_all(format!("{} {} {}\n", xv, yv, zv).as_bytes())
+            .unwrap();
+    }
+}
+
 /// Reads a vector of floats from a plain text file in the test_data/test_reference directory
 pub fn read_vec(path: &str) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     let path_str = "test_data/test_reference/".to_owned() + path;

@@ -266,11 +266,7 @@ impl Integrator {
         });
         let result = match self.method {
             IntegrationMethod::Histogram => histogram::histogram_with_errors(
-                &self.tth,
-                &intensity,
-                &variance,
-                n_points,
-                mask_data,
+                &self.tth, &intensity, &variance, n_points, mask_data,
             ),
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
@@ -356,11 +352,7 @@ impl Integrator {
         let result = match self.method {
             IntegrationMethod::Histogram => {
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &self.tth,
-                    &intensity,
-                    &variance,
-                    n_tth,
-                    mask_data,
+                    &self.tth, &intensity, &variance, n_tth, mask_data,
                 );
                 (y, sigma)
             }
@@ -440,9 +432,7 @@ impl Integrator {
             cache.key = Some(key);
             cache.lut = Some(lut1d);
         }
-        std::cell::Ref::map(self.cache_1d.borrow(), |cache| {
-            cache.lut.as_ref().unwrap()
-        })
+        std::cell::Ref::map(self.cache_1d.borrow(), |cache| cache.lut.as_ref().unwrap())
     }
 
     /// checks whether current lut_2d was calculated for the same number of points in tth and azimuth, if not,
@@ -480,9 +470,7 @@ impl Integrator {
             cache.key = Some(key);
             cache.lut = Some(lut2d);
         }
-        std::cell::Ref::map(self.cache_2d.borrow(), |cache| {
-            cache.lut.as_ref().unwrap()
-        })
+        std::cell::Ref::map(self.cache_2d.borrow(), |cache| cache.lut.as_ref().unwrap())
     }
 
     /// Apply polarization and solid angle corrections to the intensity.
@@ -572,6 +560,20 @@ mod tests {
     }
 
     #[test]
+    fn test_integrate_counting_1d_with_errors() {
+        util::download_pilatus_test_file();
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::Counting)
+            .with_polarization_factor(0.99);
+
+        let (tth, int, err) = integrator.integrate1d_with_errors(&frame, 850);
+        util::save_vec3("pattern_lut_err.txt", &tth, &int, &err);
+    }
+
+    #[test]
     fn test_integrate_pixel_split_1d() {
         util::download_pilatus_test_file();
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
@@ -582,6 +584,20 @@ mod tests {
             .with_polarization_factor(0.99);
         let (tth, int) = integrator.integrate1d(&frame, 850);
         util::save_vec2("pattern_lut_ps.txt", &tth, &int);
+    }
+
+    #[test]
+    fn test_integrate_pixel_split_1d_with_errors() {
+        util::download_pilatus_test_file();
+        let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+        let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(IntegrationMethod::PixelSplit)
+            .with_polarization_factor(0.99);
+
+        let (tth, int, err) = integrator.integrate1d_with_errors(&frame, 850);
+        util::save_vec3("pattern_lut_ps_err.txt", &tth, &int, &err);
     }
 
     #[test]
