@@ -1,6 +1,8 @@
 //! Pixel-splitting CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
 //! Integrate with `crate::lut::integrate_lut1d` / `integrate_lut2d`.
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use rayon::prelude::*;
 
 use crate::geometry::Geometry;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
@@ -206,9 +208,13 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
     let dim2 = geometry.dim2;
     let width = dim2 + 1;
 
-    // First pass: count per row (each pixel contributes to all bins it spans)
-    let mut counts = vec![0usize; n_points];
-    for (idx, &center_tth) in tth.iter().enumerate() {
+    // Single pass: build per-row buckets in parallel, then flatten to CSR.
+    let buckets: Vec<Vec<(usize, f64)>> = tth
+        .par_iter()
+        .enumerate()
+        .fold(
+            || vec![Vec::<(usize, f64)>::new(); n_points],
+            |mut acc, (idx, &center_tth)| {
         let row = idx / dim2;
         let col = idx - row * dim2;
         let base = row * width + col;
@@ -229,13 +235,13 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
         if area_total <= 0.0 {
             let pos = (center_tth - min) / step;
             if pos < 0.0 {
-                continue;
+                return acc;
             }
             let bin = pos.floor() as isize;
             if bin >= 0 && (bin as usize) < n_points {
-                counts[bin as usize] += 1;
+                acc[bin as usize].push((idx, 1.0));
             }
-            continue;
+            return acc;
         }
 
         let mut tmin = t00;
@@ -252,7 +258,7 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
         let mut start = ((tmin - min) / step).floor() as isize;
         let mut end = ((tmax - min) / step).floor() as isize;
         if end < 0 || start >= n_points as isize {
-            continue;
+            return acc;
         }
         if start < 0 {
             start = 0;
@@ -278,103 +284,34 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
             let clipped = clip_polygon_rect(&poly, bin_min, bin_max, amin, amax);
             let area = polygon_area(&clipped).abs();
             if area > 0.0 {
-                counts[b as usize] += 1;
+                acc[b as usize].push((idx, area));
             }
         }
-    }
+                acc
+            },
+        )
+        .reduce(
+            || vec![Vec::<(usize, f64)>::new(); n_points],
+            |mut a, b| {
+                for (row, mut v) in b.into_iter().enumerate() {
+                    a[row].append(&mut v);
+                }
+                a
+            },
+        );
 
     // Prefix sum
     let mut row_ptr = vec![0usize; n_points + 1];
     for i in 0..n_points {
-        row_ptr[i + 1] = row_ptr[i] + counts[i];
+        row_ptr[i + 1] = row_ptr[i] + buckets[i].len();
     }
     let total = *row_ptr.last().unwrap();
-    let mut col_idx = vec![0usize; total];
-    let mut values = vec![0.0f64; total];
-    let mut next = row_ptr.clone();
-
-    // Second pass: fill indices and overlap areas
-    for (idx, &center_tth) in tth.iter().enumerate() {
-        let row = idx / dim2;
-        let col = idx - row * dim2;
-        let base = row * width + col;
-
-        let t00 = tth_corners[base];
-        let t01 = tth_corners[base + 1];
-        let t10 = tth_corners[base + width];
-        let t11 = tth_corners[base + width + 1];
-
-        let center_chi = chi[idx];
-        let a00 = unwrap_angle(chi_corners[base], center_chi);
-        let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
-        let a10 = unwrap_angle(chi_corners[base + width], center_chi);
-        let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
-
-        let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
-        let area_total = polygon_area(&poly).abs();
-        if area_total <= 0.0 {
-            let pos = (center_tth - min) / step;
-            if pos < 0.0 {
-                continue;
-            }
-            let bin = pos.floor() as isize;
-            if bin >= 0 && (bin as usize) < n_points {
-                let row = bin as usize;
-                let p = next[row];
-                col_idx[p] = idx;
-                values[p] = 1.0;
-                next[row] += 1;
-            }
-            continue;
-        }
-
-        let mut tmin = t00;
-        let mut tmax = t00;
-        for v in [t01, t10, t11] {
-            if v < tmin {
-                tmin = v;
-            }
-            if v > tmax {
-                tmax = v;
-            }
-        }
-
-        let mut start = ((tmin - min) / step).floor() as isize;
-        let mut end = ((tmax - min) / step).floor() as isize;
-        if end < 0 || start >= n_points as isize {
-            continue;
-        }
-        if start < 0 {
-            start = 0;
-        }
-        if end >= n_points as isize {
-            end = n_points as isize - 1;
-        }
-
-        let mut amin = a00;
-        let mut amax = a00;
-        for v in [a01, a10, a11] {
-            if v < amin {
-                amin = v;
-            }
-            if v > amax {
-                amax = v;
-            }
-        }
-
-        for b in start..=end {
-            let bin_min = min + b as f64 * step;
-            let bin_max = bin_min + step;
-            let clipped = clip_polygon_rect(&poly, bin_min, bin_max, amin, amax);
-            let area = polygon_area(&clipped).abs();
-            if area <= 0.0 {
-                continue;
-            }
-            let row = b as usize;
-            let p = next[row];
-            col_idx[p] = idx;
-            values[p] = area;
-            next[row] += 1;
+    let mut col_idx = Vec::with_capacity(total);
+    let mut values = Vec::with_capacity(total);
+    for row in 0..n_points {
+        for (idx, val) in &buckets[row] {
+            col_idx.push(*idx);
+            values.push(*val);
         }
     }
 
@@ -444,11 +381,11 @@ pub fn build_lut2d_ps_csr(
     let step_azi = (max_azi - min_azi) / n_azi as f64;
 
     let rows = n_tth * n_azi;
-    let mut counts = vec![0usize; rows];
     let dim2 = geometry.dim2;
     let width = dim2 + 1;
 
-    for idx in 0..tth.len() {
+    let counts: Vec<AtomicUsize> = (0..rows).map(|_| AtomicUsize::new(0)).collect();
+    (0..tth.len()).into_par_iter().for_each(|idx| {
         let row = idx / dim2;
         let col = idx - row * dim2;
         let base = row * width + col;
@@ -469,8 +406,8 @@ pub fn build_lut2d_ps_csr(
         if area_total <= 0.0 {
             let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
             let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
-            counts[ab * n_tth + tb] += 1;
-            continue;
+            counts[ab * n_tth + tb].fetch_add(1, Ordering::Relaxed);
+            return;
         }
 
         let mut tmin = t00;
@@ -497,7 +434,7 @@ pub fn build_lut2d_ps_csr(
         let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
         let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
         if t_end < 0 || t_start >= n_tth as isize {
-            continue;
+            return;
         }
         if t_start < 0 {
             t_start = 0;
@@ -509,7 +446,7 @@ pub fn build_lut2d_ps_csr(
         let a_start = ((amin - min_azi) / step_azi).floor() as isize;
         let a_end = ((amax - min_azi) / step_azi).floor() as isize;
         if a_start > a_end {
-            continue;
+            return;
         }
 
         for bt in t_start..=t_end {
@@ -525,19 +462,21 @@ pub fn build_lut2d_ps_csr(
                 }
                 let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
                 let row = row_azi as usize * n_tth + bt as usize;
-                counts[row] += 1;
+                counts[row].fetch_add(1, Ordering::Relaxed);
             }
         }
-    }
+    });
 
     let mut row_ptr = vec![0usize; rows + 1];
-    for r in 0..rows { row_ptr[r + 1] = row_ptr[r] + counts[r]; }
+    for r in 0..rows {
+        row_ptr[r + 1] = row_ptr[r] + counts[r].load(Ordering::Relaxed);
+    }
     let total = *row_ptr.last().unwrap();
-    let mut col_idx = vec![0usize; total];
-    let mut values = vec![0.0f64; total];
-    let mut next = row_ptr.clone();
+    let col_idx: Vec<AtomicUsize> = (0..total).map(|_| AtomicUsize::new(0)).collect();
+    let values: Vec<AtomicU64> = (0..total).map(|_| AtomicU64::new(0)).collect();
+    let next: Vec<AtomicUsize> = row_ptr.iter().map(|&v| AtomicUsize::new(v)).collect();
 
-    for idx in 0..tth.len() {
+    (0..tth.len()).into_par_iter().for_each(|idx| {
         let row = idx / dim2;
         let col = idx - row * dim2;
         let base = row * width + col;
@@ -559,11 +498,10 @@ pub fn build_lut2d_ps_csr(
             let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
             let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
             let row = ab * n_tth + tb;
-            let p = next[row];
-            col_idx[p] = idx;
-            values[p] = 1.0;
-            next[row] += 1;
-            continue;
+            let p = next[row].fetch_add(1, Ordering::Relaxed);
+            col_idx[p].store(idx, Ordering::Relaxed);
+            values[p].store(1.0f64.to_bits(), Ordering::Relaxed);
+            return;
         }
 
         let mut tmin = t00;
@@ -590,7 +528,7 @@ pub fn build_lut2d_ps_csr(
         let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
         let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
         if t_end < 0 || t_start >= n_tth as isize {
-            continue;
+            return;
         }
         if t_start < 0 {
             t_start = 0;
@@ -602,7 +540,7 @@ pub fn build_lut2d_ps_csr(
         let a_start = ((amin - min_azi) / step_azi).floor() as isize;
         let a_end = ((amax - min_azi) / step_azi).floor() as isize;
         if a_start > a_end {
-            continue;
+            return;
         }
 
         for bt in t_start..=t_end {
@@ -618,13 +556,21 @@ pub fn build_lut2d_ps_csr(
                 }
                 let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
                 let row = row_azi as usize * n_tth + bt as usize;
-                let p = next[row];
-                col_idx[p] = idx;
-                values[p] = area;
-                next[row] += 1;
+                let p = next[row].fetch_add(1, Ordering::Relaxed);
+                col_idx[p].store(idx, Ordering::Relaxed);
+                values[p].store(area.to_bits(), Ordering::Relaxed);
             }
         }
-    }
+    });
+
+    let col_idx: Vec<usize> = col_idx
+        .into_iter()
+        .map(|v| v.load(Ordering::Relaxed))
+        .collect();
+    let mut values: Vec<f64> = values
+        .into_iter()
+        .map(|v| f64::from_bits(v.load(Ordering::Relaxed)))
+        .collect();
 
     // Normalize per row
     for r in 0..rows {
