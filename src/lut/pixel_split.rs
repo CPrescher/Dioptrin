@@ -1,8 +1,8 @@
 //! Pixel-splitting CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
 //! Integrate with `crate::lut::integrate_lut1d` / `integrate_lut2d`.
+use rayon::prelude::*;
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use rayon::prelude::*;
 
 use crate::geometry::Geometry;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
@@ -43,10 +43,10 @@ fn intersect_with_y(p0: (f64, f64), p1: (f64, f64), y_edge: f64) -> (f64, f64) {
 }
 
 /// Clip polygon against x >= x_min.
-fn clip_left(poly: &[(f64, f64)], x_min: f64) -> Vec<(f64, f64)> {
-    let mut out = Vec::with_capacity(poly.len() + 1);
+fn clip_left_into(poly: &[(f64, f64)], x_min: f64, out: &mut Vec<(f64, f64)>) {
+    out.clear();
     if poly.is_empty() {
-        return out;
+        return;
     }
     let mut prev = poly[poly.len() - 1];
     let mut prev_inside = prev.0 >= x_min;
@@ -63,14 +63,13 @@ fn clip_left(poly: &[(f64, f64)], x_min: f64) -> Vec<(f64, f64)> {
         prev = curr;
         prev_inside = curr_inside;
     }
-    out
 }
 
 /// Clip polygon against x <= x_max.
-fn clip_right(poly: &[(f64, f64)], x_max: f64) -> Vec<(f64, f64)> {
-    let mut out = Vec::with_capacity(poly.len() + 1);
+fn clip_right_into(poly: &[(f64, f64)], x_max: f64, out: &mut Vec<(f64, f64)>) {
+    out.clear();
     if poly.is_empty() {
-        return out;
+        return;
     }
     let mut prev = poly[poly.len() - 1];
     let mut prev_inside = prev.0 <= x_max;
@@ -87,14 +86,13 @@ fn clip_right(poly: &[(f64, f64)], x_max: f64) -> Vec<(f64, f64)> {
         prev = curr;
         prev_inside = curr_inside;
     }
-    out
 }
 
 /// Clip polygon against y >= y_min.
-fn clip_bottom(poly: &[(f64, f64)], y_min: f64) -> Vec<(f64, f64)> {
-    let mut out = Vec::with_capacity(poly.len() + 1);
+fn clip_bottom_into(poly: &[(f64, f64)], y_min: f64, out: &mut Vec<(f64, f64)>) {
+    out.clear();
     if poly.is_empty() {
-        return out;
+        return;
     }
     let mut prev = poly[poly.len() - 1];
     let mut prev_inside = prev.1 >= y_min;
@@ -111,14 +109,13 @@ fn clip_bottom(poly: &[(f64, f64)], y_min: f64) -> Vec<(f64, f64)> {
         prev = curr;
         prev_inside = curr_inside;
     }
-    out
 }
 
 /// Clip polygon against y <= y_max.
-fn clip_top(poly: &[(f64, f64)], y_max: f64) -> Vec<(f64, f64)> {
-    let mut out = Vec::with_capacity(poly.len() + 1);
+fn clip_top_into(poly: &[(f64, f64)], y_max: f64, out: &mut Vec<(f64, f64)>) {
+    out.clear();
     if poly.is_empty() {
-        return out;
+        return;
     }
     let mut prev = poly[poly.len() - 1];
     let mut prev_inside = prev.1 <= y_max;
@@ -135,30 +132,32 @@ fn clip_top(poly: &[(f64, f64)], y_max: f64) -> Vec<(f64, f64)> {
         prev = curr;
         prev_inside = curr_inside;
     }
-    out
 }
 
 /// Clip polygon against an axis-aligned rectangle.
-fn clip_polygon_rect(
+fn clip_polygon_rect_scratch<'a>(
     poly: &[(f64, f64)],
     x_min: f64,
     x_max: f64,
     y_min: f64,
     y_max: f64,
-) -> Vec<(f64, f64)> {
-    let mut out = clip_left(poly, x_min);
-    if out.is_empty() {
-        return out;
+    buf1: &'a mut Vec<(f64, f64)>,
+    buf2: &'a mut Vec<(f64, f64)>,
+) -> &'a [(f64, f64)] {
+    clip_left_into(poly, x_min, buf1);
+    if buf1.is_empty() {
+        return &buf1[..];
     }
-    out = clip_right(&out, x_max);
-    if out.is_empty() {
-        return out;
+    clip_right_into(buf1, x_max, buf2);
+    if buf2.is_empty() {
+        return &buf2[..];
     }
-    out = clip_bottom(&out, y_min);
-    if out.is_empty() {
-        return out;
+    clip_bottom_into(buf2, y_min, buf1);
+    if buf1.is_empty() {
+        return &buf1[..];
     }
-    clip_top(&out, y_max)
+    clip_top_into(buf1, y_max, buf2);
+    &buf2[..]
 }
 
 /// Unwrap an angle to stay within +/- PI of a reference value.
@@ -209,94 +208,108 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
     let width = dim2 + 1;
 
     // Single pass: build per-row buckets in parallel, then flatten to CSR.
-    let buckets: Vec<Vec<(usize, f64)>> = tth
+    let (buckets, _, _) = tth
         .par_iter()
         .enumerate()
         .fold(
-            || vec![Vec::<(usize, f64)>::new(); n_points],
-            |mut acc, (idx, &center_tth)| {
-        let row = idx / dim2;
-        let col = idx - row * dim2;
-        let base = row * width + col;
+            || {
+                (
+                    vec![Vec::<(usize, f64)>::new(); n_points],
+                    Vec::with_capacity(8),
+                    Vec::with_capacity(8),
+                )
+            },
+            |(mut acc, mut buf1, mut buf2), (idx, &center_tth)| {
+                let row = idx / dim2;
+                let col = idx - row * dim2;
+                let base = row * width + col;
 
-        let t00 = tth_corners[base];
-        let t01 = tth_corners[base + 1];
-        let t10 = tth_corners[base + width];
-        let t11 = tth_corners[base + width + 1];
+                let t00 = tth_corners[base];
+                let t01 = tth_corners[base + 1];
+                let t10 = tth_corners[base + width];
+                let t11 = tth_corners[base + width + 1];
 
-        let center_chi = chi[idx];
-        let a00 = unwrap_angle(chi_corners[base], center_chi);
-        let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
-        let a10 = unwrap_angle(chi_corners[base + width], center_chi);
-        let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
+                let center_chi = chi[idx];
+                let a00 = unwrap_angle(chi_corners[base], center_chi);
+                let a01 = unwrap_angle(chi_corners[base + 1], center_chi);
+                let a10 = unwrap_angle(chi_corners[base + width], center_chi);
+                let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
-        let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
-        let area_total = polygon_area(&poly).abs();
-        if area_total <= 0.0 {
-            let pos = (center_tth - min) / step;
-            if pos < 0.0 {
-                return acc;
-            }
-            let bin = pos.floor() as isize;
-            if bin >= 0 && (bin as usize) < n_points {
-                acc[bin as usize].push((idx, 1.0));
-            }
-            return acc;
-        }
+                let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+                let area_total = polygon_area(&poly).abs();
+                if area_total <= 0.0 {
+                    let pos = (center_tth - min) / step;
+                    if pos < 0.0 {
+                        return (acc, buf1, buf2);
+                    }
+                    let bin = pos.floor() as isize;
+                    if bin >= 0 && (bin as usize) < n_points {
+                        acc[bin as usize].push((idx, 1.0));
+                    }
+                    return (acc, buf1, buf2);
+                }
 
-        let mut tmin = t00;
-        let mut tmax = t00;
-        for v in [t01, t10, t11] {
-            if v < tmin {
-                tmin = v;
-            }
-            if v > tmax {
-                tmax = v;
-            }
-        }
+                let mut tmin = t00;
+                let mut tmax = t00;
+                for v in [t01, t10, t11] {
+                    if v < tmin {
+                        tmin = v;
+                    }
+                    if v > tmax {
+                        tmax = v;
+                    }
+                }
 
-        let mut start = ((tmin - min) / step).floor() as isize;
-        let mut end = ((tmax - min) / step).floor() as isize;
-        if end < 0 || start >= n_points as isize {
-            return acc;
-        }
-        if start < 0 {
-            start = 0;
-        }
-        if end >= n_points as isize {
-            end = n_points as isize - 1;
-        }
+                let mut start = ((tmin - min) / step).floor() as isize;
+                let mut end = ((tmax - min) / step).floor() as isize;
+                if end < 0 || start >= n_points as isize {
+                    return (acc, buf1, buf2);
+                }
+                if start < 0 {
+                    start = 0;
+                }
+                if end >= n_points as isize {
+                    end = n_points as isize - 1;
+                }
 
-        let mut amin = a00;
-        let mut amax = a00;
-        for v in [a01, a10, a11] {
-            if v < amin {
-                amin = v;
-            }
-            if v > amax {
-                amax = v;
-            }
-        }
+                let mut amin = a00;
+                let mut amax = a00;
+                for v in [a01, a10, a11] {
+                    if v < amin {
+                        amin = v;
+                    }
+                    if v > amax {
+                        amax = v;
+                    }
+                }
 
-        for b in start..=end {
-            let bin_min = min + b as f64 * step;
-            let bin_max = bin_min + step;
-            let clipped = clip_polygon_rect(&poly, bin_min, bin_max, amin, amax);
-            let area = polygon_area(&clipped).abs();
-            if area > 0.0 {
-                acc[b as usize].push((idx, area));
-            }
-        }
-                acc
+                for b in start..=end {
+                    let bin_min = min + b as f64 * step;
+                    let bin_max = bin_min + step;
+                    let clipped = clip_polygon_rect_scratch(
+                        &poly, bin_min, bin_max, amin, amax, &mut buf1, &mut buf2,
+                    );
+                    let area = polygon_area(&clipped).abs();
+                    if area > 0.0 {
+                        acc[b as usize].push((idx, area));
+                    }
+                }
+                (acc, buf1, buf2)
             },
         )
         .reduce(
-            || vec![Vec::<(usize, f64)>::new(); n_points],
-            |mut a, b| {
+            || {
+                (
+                    vec![Vec::<(usize, f64)>::new(); n_points],
+                    Vec::new(),
+                    Vec::new(),
+                )
+            },
+            |(mut a, _, _), (b, _, _)| {
                 for (row, mut v) in b.into_iter().enumerate() {
                     a[row].append(&mut v);
                 }
-                a
+                (a, Vec::new(), Vec::new())
             },
         );
 
@@ -385,87 +398,90 @@ pub fn build_lut2d_ps_csr(
     let width = dim2 + 1;
 
     let counts: Vec<AtomicUsize> = (0..rows).map(|_| AtomicUsize::new(0)).collect();
-    (0..tth.len()).into_par_iter().for_each(|idx| {
-        let row = idx / dim2;
-        let col = idx - row * dim2;
-        let base = row * width + col;
+    (0..tth.len()).into_par_iter().for_each_init(
+        || (Vec::with_capacity(8), Vec::with_capacity(8)),
+        |(buf1, buf2), idx| {
+            let row = idx / dim2;
+            let col = idx - row * dim2;
+            let base = row * width + col;
 
-        let t00 = tth_corners[base];
-        let t01 = tth_corners[base + 1];
-        let t10 = tth_corners[base + width];
-        let t11 = tth_corners[base + width + 1];
+            let t00 = tth_corners[base];
+            let t01 = tth_corners[base + 1];
+            let t10 = tth_corners[base + width];
+            let t11 = tth_corners[base + width + 1];
 
-        let center_azi = azi[idx];
-        let a00 = unwrap_angle(azi_corners[base], center_azi);
-        let a01 = unwrap_angle(azi_corners[base + 1], center_azi);
-        let a10 = unwrap_angle(azi_corners[base + width], center_azi);
-        let a11 = unwrap_angle(azi_corners[base + width + 1], center_azi);
+            let center_azi = azi[idx];
+            let a00 = unwrap_angle(azi_corners[base], center_azi);
+            let a01 = unwrap_angle(azi_corners[base + 1], center_azi);
+            let a10 = unwrap_angle(azi_corners[base + width], center_azi);
+            let a11 = unwrap_angle(azi_corners[base + width + 1], center_azi);
 
-        let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
-        let area_total = polygon_area(&poly).abs();
-        if area_total <= 0.0 {
-            let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
-            let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
-            counts[ab * n_tth + tb].fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-
-        let mut tmin = t00;
-        let mut tmax = t00;
-        for v in [t01, t10, t11] {
-            if v < tmin {
-                tmin = v;
+            let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+            let area_total = polygon_area(&poly).abs();
+            if area_total <= 0.0 {
+                let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
+                let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
+                counts[ab * n_tth + tb].fetch_add(1, Ordering::Relaxed);
+                return;
             }
-            if v > tmax {
-                tmax = v;
-            }
-        }
-        let mut amin = a00;
-        let mut amax = a00;
-        for v in [a01, a10, a11] {
-            if v < amin {
-                amin = v;
-            }
-            if v > amax {
-                amax = v;
-            }
-        }
 
-        let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
-        let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
-        if t_end < 0 || t_start >= n_tth as isize {
-            return;
-        }
-        if t_start < 0 {
-            t_start = 0;
-        }
-        if t_end >= n_tth as isize {
-            t_end = n_tth as isize - 1;
-        }
-
-        let a_start = ((amin - min_azi) / step_azi).floor() as isize;
-        let a_end = ((amax - min_azi) / step_azi).floor() as isize;
-        if a_start > a_end {
-            return;
-        }
-
-        for bt in t_start..=t_end {
-            let t0 = min_tth + bt as f64 * step_tth;
-            let t1 = t0 + step_tth;
-            for ba in a_start..=a_end {
-                let a0 = min_azi + ba as f64 * step_azi;
-                let a1 = a0 + step_azi;
-                let clipped = clip_polygon_rect(&poly, t0, t1, a0, a1);
-                let area = polygon_area(&clipped).abs();
-                if area <= 0.0 {
-                    continue;
+            let mut tmin = t00;
+            let mut tmax = t00;
+            for v in [t01, t10, t11] {
+                if v < tmin {
+                    tmin = v;
                 }
-                let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
-                let row = row_azi as usize * n_tth + bt as usize;
-                counts[row].fetch_add(1, Ordering::Relaxed);
+                if v > tmax {
+                    tmax = v;
+                }
             }
-        }
-    });
+            let mut amin = a00;
+            let mut amax = a00;
+            for v in [a01, a10, a11] {
+                if v < amin {
+                    amin = v;
+                }
+                if v > amax {
+                    amax = v;
+                }
+            }
+
+            let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
+            let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
+            if t_end < 0 || t_start >= n_tth as isize {
+                return;
+            }
+            if t_start < 0 {
+                t_start = 0;
+            }
+            if t_end >= n_tth as isize {
+                t_end = n_tth as isize - 1;
+            }
+
+            let a_start = ((amin - min_azi) / step_azi).floor() as isize;
+            let a_end = ((amax - min_azi) / step_azi).floor() as isize;
+            if a_start > a_end {
+                return;
+            }
+
+            for bt in t_start..=t_end {
+                let t0 = min_tth + bt as f64 * step_tth;
+                let t1 = t0 + step_tth;
+                for ba in a_start..=a_end {
+                    let a0 = min_azi + ba as f64 * step_azi;
+                    let a1 = a0 + step_azi;
+                    let clipped = clip_polygon_rect_scratch(&poly, t0, t1, a0, a1, buf1, buf2);
+                    let area = polygon_area(&clipped).abs();
+                    if area <= 0.0 {
+                        continue;
+                    }
+                    let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
+                    let row = row_azi as usize * n_tth + bt as usize;
+                    counts[row].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        },
+    );
 
     let mut row_ptr = vec![0usize; rows + 1];
     for r in 0..rows {
@@ -476,92 +492,95 @@ pub fn build_lut2d_ps_csr(
     let values: Vec<AtomicU64> = (0..total).map(|_| AtomicU64::new(0)).collect();
     let next: Vec<AtomicUsize> = row_ptr.iter().map(|&v| AtomicUsize::new(v)).collect();
 
-    (0..tth.len()).into_par_iter().for_each(|idx| {
-        let row = idx / dim2;
-        let col = idx - row * dim2;
-        let base = row * width + col;
+    (0..tth.len()).into_par_iter().for_each_init(
+        || (Vec::with_capacity(8), Vec::with_capacity(8)),
+        |(buf1, buf2), idx| {
+            let row = idx / dim2;
+            let col = idx - row * dim2;
+            let base = row * width + col;
 
-        let t00 = tth_corners[base];
-        let t01 = tth_corners[base + 1];
-        let t10 = tth_corners[base + width];
-        let t11 = tth_corners[base + width + 1];
+            let t00 = tth_corners[base];
+            let t01 = tth_corners[base + 1];
+            let t10 = tth_corners[base + width];
+            let t11 = tth_corners[base + width + 1];
 
-        let center_azi = azi[idx];
-        let a00 = unwrap_angle(azi_corners[base], center_azi);
-        let a01 = unwrap_angle(azi_corners[base + 1], center_azi);
-        let a10 = unwrap_angle(azi_corners[base + width], center_azi);
-        let a11 = unwrap_angle(azi_corners[base + width + 1], center_azi);
+            let center_azi = azi[idx];
+            let a00 = unwrap_angle(azi_corners[base], center_azi);
+            let a01 = unwrap_angle(azi_corners[base + 1], center_azi);
+            let a10 = unwrap_angle(azi_corners[base + width], center_azi);
+            let a11 = unwrap_angle(azi_corners[base + width + 1], center_azi);
 
-        let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
-        let area_total = polygon_area(&poly).abs();
-        if area_total <= 0.0 {
-            let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
-            let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
-            let row = ab * n_tth + tb;
-            let p = next[row].fetch_add(1, Ordering::Relaxed);
-            col_idx[p].store(idx, Ordering::Relaxed);
-            values[p].store(1.0f64.to_bits(), Ordering::Relaxed);
-            return;
-        }
-
-        let mut tmin = t00;
-        let mut tmax = t00;
-        for v in [t01, t10, t11] {
-            if v < tmin {
-                tmin = v;
-            }
-            if v > tmax {
-                tmax = v;
-            }
-        }
-        let mut amin = a00;
-        let mut amax = a00;
-        for v in [a01, a10, a11] {
-            if v < amin {
-                amin = v;
-            }
-            if v > amax {
-                amax = v;
-            }
-        }
-
-        let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
-        let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
-        if t_end < 0 || t_start >= n_tth as isize {
-            return;
-        }
-        if t_start < 0 {
-            t_start = 0;
-        }
-        if t_end >= n_tth as isize {
-            t_end = n_tth as isize - 1;
-        }
-
-        let a_start = ((amin - min_azi) / step_azi).floor() as isize;
-        let a_end = ((amax - min_azi) / step_azi).floor() as isize;
-        if a_start > a_end {
-            return;
-        }
-
-        for bt in t_start..=t_end {
-            let t0 = min_tth + bt as f64 * step_tth;
-            let t1 = t0 + step_tth;
-            for ba in a_start..=a_end {
-                let a0 = min_azi + ba as f64 * step_azi;
-                let a1 = a0 + step_azi;
-                let clipped = clip_polygon_rect(&poly, t0, t1, a0, a1);
-                let area = polygon_area(&clipped).abs();
-                if area <= 0.0 {
-                    continue;
-                }
-                let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
-                let row = row_azi as usize * n_tth + bt as usize;
+            let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+            let area_total = polygon_area(&poly).abs();
+            if area_total <= 0.0 {
+                let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
+                let ab = histogram::get_bin(center_azi, min_azi, step_azi) % n_azi;
+                let row = ab * n_tth + tb;
                 let p = next[row].fetch_add(1, Ordering::Relaxed);
                 col_idx[p].store(idx, Ordering::Relaxed);
-                values[p].store(area.to_bits(), Ordering::Relaxed);
+                values[p].store(1.0f64.to_bits(), Ordering::Relaxed);
+                return;
             }
-        }
-    });
+
+            let mut tmin = t00;
+            let mut tmax = t00;
+            for v in [t01, t10, t11] {
+                if v < tmin {
+                    tmin = v;
+                }
+                if v > tmax {
+                    tmax = v;
+                }
+            }
+            let mut amin = a00;
+            let mut amax = a00;
+            for v in [a01, a10, a11] {
+                if v < amin {
+                    amin = v;
+                }
+                if v > amax {
+                    amax = v;
+                }
+            }
+
+            let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
+            let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
+            if t_end < 0 || t_start >= n_tth as isize {
+                return;
+            }
+            if t_start < 0 {
+                t_start = 0;
+            }
+            if t_end >= n_tth as isize {
+                t_end = n_tth as isize - 1;
+            }
+
+            let a_start = ((amin - min_azi) / step_azi).floor() as isize;
+            let a_end = ((amax - min_azi) / step_azi).floor() as isize;
+            if a_start > a_end {
+                return;
+            }
+
+            for bt in t_start..=t_end {
+                let t0 = min_tth + bt as f64 * step_tth;
+                let t1 = t0 + step_tth;
+                for ba in a_start..=a_end {
+                    let a0 = min_azi + ba as f64 * step_azi;
+                    let a1 = a0 + step_azi;
+                    let clipped = clip_polygon_rect_scratch(&poly, t0, t1, a0, a1, buf1, buf2);
+                    let area = polygon_area(&clipped).abs();
+                    if area <= 0.0 {
+                        continue;
+                    }
+                    let row_azi = ((ba % n_azi as isize) + n_azi as isize) % n_azi as isize;
+                    let row = row_azi as usize * n_tth + bt as usize;
+                    let p = next[row].fetch_add(1, Ordering::Relaxed);
+                    col_idx[p].store(idx, Ordering::Relaxed);
+                    values[p].store(area.to_bits(), Ordering::Relaxed);
+                }
+            }
+        },
+    );
 
     let col_idx: Vec<usize> = col_idx
         .into_iter()
@@ -576,8 +595,18 @@ pub fn build_lut2d_ps_csr(
     for r in 0..rows {
         let (s, e) = (row_ptr[r], row_ptr[r + 1]);
         let ssum: f64 = values[s..e].iter().sum();
-        if ssum > 0.0 { for v in &mut values[s..e] { *v /= ssum; } }
+        if ssum > 0.0 {
+            for v in &mut values[s..e] {
+                *v /= ssum;
+            }
+        }
     }
 
-    Lut2d { row_ptr, col_idx, values: Some(values), n_tth, n_azi }
+    Lut2d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        n_tth,
+        n_azi,
+    }
 }
