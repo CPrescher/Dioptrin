@@ -73,7 +73,7 @@ pub enum IntegrationMethod {
 }
 
 pub struct Integrator {
-    pub geometry: Geometry,
+    geometry: Geometry,
     tth: Vec<f64>,
     chi: Vec<f64>,
     solid_angle: Vec<f64>,
@@ -154,6 +154,11 @@ impl Integrator {
     pub fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
         self.polarization_factor = polarization_factor;
         self.update_polarization();
+    }
+
+    // getter for geometry
+    pub fn geometry(&self) -> &Geometry {
+        &self.geometry
     }
 
     // getter for solid angle correction for each pixel as a flattened vector
