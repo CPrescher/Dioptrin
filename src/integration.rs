@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use crate::lut;
 use crate::math::histogram;
+use std::cell::RefCell;
 
 use super::frame::Frame;
 use super::geometry::Geometry;
@@ -78,8 +79,8 @@ pub struct Integrator {
     chi: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
-    cache_1d: Lut1dCache,
-    cache_2d: Lut2dCache,
+    cache_1d: RefCell<Lut1dCache>,
+    cache_2d: RefCell<Lut2dCache>,
     mask: Option<Mask>,
     method: IntegrationMethod,
     polarization_factor: Option<f64>,
@@ -93,8 +94,8 @@ impl Integrator {
             chi: vec![],
             solid_angle: vec![],
             polarization: vec![],
-            cache_1d: Lut1dCache::new(),
-            cache_2d: Lut2dCache::new(),
+            cache_1d: RefCell::new(Lut1dCache::new()),
+            cache_2d: RefCell::new(Lut2dCache::new()),
             mask: None,
             method: IntegrationMethod::PixelSplit,
             polarization_factor: None,
@@ -201,8 +202,7 @@ impl Integrator {
     pub fn integrate1d(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
-        let mask = self.mask.take();
-        let mask_data = mask.as_ref().map(|mask| {
+        let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             &mask.data
         });
@@ -212,18 +212,17 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
-                crate::lut::integrate1d(&intensity, lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
-                crate::lut::integrate1d(&intensity, lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
-                crate::lut::integrate1d(&intensity, lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
         };
-        self.mask = mask;
         result
     }
 
@@ -244,8 +243,7 @@ impl Integrator {
     pub fn integrate2d(&mut self, frame: &Frame, n_tth: usize, n_azi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
-        let mask = self.mask.take();
-        let mask_data = mask.as_ref().map(|mask| {
+        let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             &mask.data
         });
@@ -255,18 +253,17 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_azi });
-                crate::lut::integrate2d(&intensity, lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_azi });
-                crate::lut::integrate2d(&intensity, lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_azi, n_ss });
-                crate::lut::integrate2d(&intensity, lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
         };
-        self.mask = mask;
         result
     }
 
@@ -287,10 +284,13 @@ impl Integrator {
             self.chi = self.geometry.calc_chi_all();
             self.solid_angle = self.geometry.calc_solid_angle();
             self.update_polarization();
-            self.cache_1d.key = None;
-            self.cache_1d.lut = None;
-            self.cache_2d.key = None;
-            self.cache_2d.lut = None;
+            let mut cache_1d = self.cache_1d.borrow_mut();
+            cache_1d.key = None;
+            cache_1d.lut = None;
+            drop(cache_1d);
+            let mut cache_2d = self.cache_2d.borrow_mut();
+            cache_2d.key = None;
+            cache_2d.lut = None;
         }
     }
 
@@ -305,10 +305,13 @@ impl Integrator {
 
     /// checks whether current lut was calculated for the same number of points (n_points), if not,
     /// it is recalculated
-    fn ensure_lut1d(&mut self, key: OneDKey) -> &lut::Lut1d {
-        let rebuild = match &self.cache_1d.key {
-            None => true,
-            Some(k) => k != &key,
+    fn ensure_lut1d(&self, key: OneDKey) -> std::cell::Ref<'_, lut::Lut1d> {
+        let rebuild = {
+            let cache = self.cache_1d.borrow();
+            match &cache.key {
+                None => true,
+                Some(k) => k != &key,
+            }
         };
         if rebuild {
             let lut1d = match key {
@@ -320,10 +323,13 @@ impl Integrator {
                     lut::build_lut1d_ss_csr(&self.geometry, &self.tth, n_points, n_ss)
                 }
             };
-            self.cache_1d.key = Some(key);
-            self.cache_1d.lut = Some(lut1d);
+            let mut cache = self.cache_1d.borrow_mut();
+            cache.key = Some(key);
+            cache.lut = Some(lut1d);
         }
-        self.cache_1d.lut.as_ref().unwrap()
+        std::cell::Ref::map(self.cache_1d.borrow(), |cache| {
+            cache.lut.as_ref().unwrap()
+        })
     }
 
     /// checks whether current lut_2d was calculated for the same number of points in tth and azimuth, if not,
@@ -332,10 +338,13 @@ impl Integrator {
     /// # Arguments
     /// * `n_tth` - number of points in tth for the 2d integration
     /// * `n_azimuth` - number of points in azimuth for the 2d integration
-    fn ensure_lut2d(&mut self, key: TwoDKey) -> &lut::Lut2d {
-        let rebuild = match &self.cache_2d.key {
-            None => true,
-            Some(k) => k != &key,
+    fn ensure_lut2d(&self, key: TwoDKey) -> std::cell::Ref<'_, lut::Lut2d> {
+        let rebuild = {
+            let cache = self.cache_2d.borrow();
+            match &cache.key {
+                None => true,
+                Some(k) => k != &key,
+            }
         };
         if rebuild {
             let lut2d = match key {
@@ -354,10 +363,13 @@ impl Integrator {
                     n_ss,
                 ),
             };
-            self.cache_2d.key = Some(key);
-            self.cache_2d.lut = Some(lut2d);
+            let mut cache = self.cache_2d.borrow_mut();
+            cache.key = Some(key);
+            cache.lut = Some(lut2d);
         }
-        self.cache_2d.lut.as_ref().unwrap()
+        std::cell::Ref::map(self.cache_2d.borrow(), |cache| {
+            cache.lut.as_ref().unwrap()
+        })
     }
 
     /// Apply polarization and solid angle corrections to the intensity.
@@ -499,17 +511,24 @@ mod tests {
         let _ = integrator.ensure_lut1d(OneDKey::Counting { n_points: 4 });
         let _ = integrator.ensure_lut2d(TwoDKey::Counting { n_tth: 4, n_azi: 4 });
 
-        assert!(integrator.cache_1d.key.is_some());
-        assert!(integrator.cache_1d.lut.is_some());
-        assert!(integrator.cache_2d.key.is_some());
-        assert!(integrator.cache_2d.lut.is_some());
+        let cache_1d = integrator.cache_1d.borrow();
+        assert!(cache_1d.key.is_some());
+        assert!(cache_1d.lut.is_some());
+        drop(cache_1d);
+        let cache_2d = integrator.cache_2d.borrow();
+        assert!(cache_2d.key.is_some());
+        assert!(cache_2d.lut.is_some());
+        drop(cache_2d);
 
         integrator.update_geometry_arrays(3, 3);
 
-        assert!(integrator.cache_1d.key.is_none());
-        assert!(integrator.cache_1d.lut.is_none());
-        assert!(integrator.cache_2d.key.is_none());
-        assert!(integrator.cache_2d.lut.is_none());
+        let cache_1d = integrator.cache_1d.borrow();
+        assert!(cache_1d.key.is_none());
+        assert!(cache_1d.lut.is_none());
+        drop(cache_1d);
+        let cache_2d = integrator.cache_2d.borrow();
+        assert!(cache_2d.key.is_none());
+        assert!(cache_2d.lut.is_none());
     }
 
     #[test]
