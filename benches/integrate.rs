@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
+use dioptrin::integration::RadialUnit;
 use dioptrin::lut;
 use dioptrin::poni::Poni;
 
@@ -46,7 +47,7 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
 
     // Precompute tth and CSR-SS LUT
     let tth = geometry.calc_tth_all();
-    let csr_ss = lut::build_lut1d_ss_csr(&geometry, &tth, n_points, n_subpixels);
+    let csr_ss = lut::build_lut1d_ss_csr(&geometry, &tth, n_points, n_subpixels, RadialUnit::TthRad);
 
     // Correct intensity
     let azimuthal = geometry.calc_azimuth_all();
@@ -110,7 +111,8 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
     // Precompute tth, azimuthal and CSR 2d SS LUT
     let tth = geometry.calc_tth_all();
     let azimuthal = geometry.calc_azimuth_all();
-    let csr2d_ss = lut::build_lut2d_ss_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, n_subpixels);
+    let csr2d_ss =
+        lut::build_lut2d_ss_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, n_subpixels, RadialUnit::TthRad);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
@@ -151,7 +153,7 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
         .collect();
 
     // Pixel-split CSR (fractional weights)
-    let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points);
+    let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points, RadialUnit::TthRad);
     let _ = lut::integrate1d(&intensity, &csr_ps, None);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
@@ -168,7 +170,7 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
     let tth = geometry.calc_tth_all();
     let azimuthal = geometry.calc_azimuth_all();
 
-    let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points);
+    let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points, RadialUnit::TthRad);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
@@ -208,7 +210,7 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
         .collect();
 
     // Use unified supersampled CSR instead of HashMap pixel-split
-    let csr2d_ps = lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal);
+    let csr2d_ps = lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, RadialUnit::TthRad);
     let _ = lut::integrate2d(&intensity, &csr2d_ps, None);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
@@ -236,7 +238,14 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
-    let csr2d_ps2 = lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal);
+    let csr2d_ps2 = lut::build_lut2d_ps_csr(
+        &geometry,
+        &tth,
+        &azimuthal,
+        n_tth,
+        n_azimuthal,
+        RadialUnit::TthRad,
+    );
     let _ = lut::integrate2d(&intensity, &csr2d_ps2, None);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
