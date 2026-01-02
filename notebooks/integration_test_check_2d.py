@@ -11,11 +11,11 @@ def main() -> None:
     cake_rust_ss = np.loadtxt("../test_data/test_output/cake_lut_ss.txt")
     cake_rust_ss_array = cake_rust_ss.reshape((360, 850))
 
-    chi_integrator = AzimuthalIntegrator()
-    chi_integrator.load("../test_data/v1.poni")
+    azimuthal_integrator = AzimuthalIntegrator()
+    azimuthal_integrator.load("../test_data/v1.poni")
     fabio_data = fabio.open("../test_data/CeO2_Pilatus1M.tif").data[::-1]
 
-    cake_pyfai, _, _ = chi_integrator.integrate2d(
+    cake_pyfai, _, _ = azimuthal_integrator.integrate2d(
         fabio_data, 850, unit="2th_rad", polarization_factor=0.99
     )
 

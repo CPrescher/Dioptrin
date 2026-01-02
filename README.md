@@ -2,7 +2,7 @@
 
 Dioptrin provides fast 1D/2D diffraction integration using compressed sparse row (CSR) lookup tables.
 It supports counting, pixel-splitting, and supersampled integration methods, and integrates in terms
-of two-theta (tth) and chi (azimuthal) coordinates. The `Integrator` handles geometry updates,
+of two-theta (tth) and azimuthal coordinates. The `Integrator` handles geometry updates,
 polarization/solid-angle corrections, and optional masking for each frame.
 
 ## 1D integration example
@@ -56,7 +56,7 @@ fn main() {
 }
 ```
 
-## 2D integration example (chi range)
+## 2D integration example (azimuthal range)
 
 ```rust
 use std::f64::consts::PI;
@@ -76,11 +76,11 @@ fn main() {
         .with_polarization_factor(0.99);
 
     let n_tth = 1250;
-    let n_chi = 360;
-    let chi_step = 2.0 * PI / n_chi as f64;
-    let chi_start = 0.0;
+    let n_azimuthal = 360;
+    let azimuthal_step = 2.0 * PI / n_azimuthal as f64;
+    let azimuthal_start = 0.0;
 
-    let cake = integrator.integrate2d_with_chi_range(&frame, n_tth, n_chi, chi_start, chi_step);
+    let cake = integrator.integrate2d_with_azimuthal_range(&frame, n_tth, n_azimuthal, azimuthal_start, azimuthal_step);
 
     println!("2D bins: {}", cake.len());
 }
@@ -103,8 +103,8 @@ fn main() {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
-    let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 1250, 360);
+    let azimuthal = geometry.calc_azimuth_all();
+    let lut2d = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 1250, 360);
 
     let intensity = frame.data.clone();
     let cake = integrate2d(&intensity, &lut2d, None);

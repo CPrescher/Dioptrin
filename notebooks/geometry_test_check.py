@@ -154,26 +154,26 @@ tight_layout()
 np.savetxt("../test_data/test_output/tth_pyFAI.txt", tth.flatten())
 
 # %% [markdown]
-# ## Azimuth Chi angle
+# ## Azimuthal angle
 
 # %%
-chi_rust = np.loadtxt("../test_data/test_output/chi.txt").reshape(shape)
-chi = geometry.chiArray()
+azimuth_rust = np.loadtxt("../test_data/test_output/azimuth.txt").reshape(shape)
+azimuth = geometry.chiArray()
 figure(figsize=(8, 3))
 suptitle("Azimuthal Angle")
 subplot(1, 3, 1)
 title("pyFAI"); axis("off")
-imshow(chi, origin="lower", aspect="auto")
+imshow(azimuth, origin="lower", aspect="auto")
 subplot(1, 3, 2)
 title("rust"); axis("off")
-imshow(chi_rust, origin="lower", aspect="auto")
+imshow(azimuth_rust, origin="lower", aspect="auto")
 subplot(1, 3, 3)
 title("diff"); axis("off")
-imshow(chi_rust-chi, origin="lower", aspect="auto")
+imshow(azimuth_rust-azimuth, origin="lower", aspect="auto")
 tight_layout()
 
 # %%
-np.savetxt("../test_data/test_output/chi_pyFAI.txt", chi.flatten())
+np.savetxt("../test_data/test_output/azimuth_pyFAI.txt", azimuth.flatten())
 
 # %% [markdown]
 # # Solid Angle

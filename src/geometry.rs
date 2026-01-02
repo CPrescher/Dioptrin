@@ -219,23 +219,23 @@ impl Geometry {
             .collect()
     }
 
-    /// Calculates the chi (azimuthal) angle in radians for each pixel in the detector
-    pub fn calc_chi_all(&self) -> Vec<f64> {
+    /// Calculates the azimuthal angle in radians for each pixel in the detector
+    pub fn calc_azimuth_all(&self) -> Vec<f64> {
         let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference_all();
-        let chi = x_sample
+        let azimuth = x_sample
             .par_iter()
             .zip(&y_sample)
-            .map(|(x, y)| math::f_chi(x, y))
+            .map(|(x, y)| math::f_azimuth(x, y))
             .collect();
-        chi
+        azimuth
     }
 
-    /// Calculates the chi (azimuthal) angle in radians for given pixel coordinates.
+    /// Calculates the azimuthal angle in radians for given pixel coordinates.
     ///
     /// Arguments:
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
-    pub fn calc_chi(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> Vec<f64> {
+    pub fn calc_azimuth(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> Vec<f64> {
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -245,13 +245,13 @@ impl Geometry {
         x_sample
             .par_iter()
             .zip(&y_sample)
-            .map(|(x, y)| math::f_chi(x, y))
+            .map(|(x, y)| math::f_azimuth(x, y))
             .collect()
     }
 
-    /// Calculates two theta and chi (azimuthal) angle in radians for each pixel in the detector.
+    /// Calculates two theta and azimuthal angle in radians for each pixel in the detector.
     /// Combined function to reduce overhead for calculating each time the transform into sample reference geometry.
-    pub fn calc_tth_and_chi(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+    pub fn calc_tth_and_azimuth(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -265,13 +265,13 @@ impl Geometry {
             .map(|((x, y), z)| math::f_tth(x, y, z))
             .collect();
 
-        let chi = x_sample
+        let azimuth = x_sample
             .par_iter()
             .zip(&y_sample)
-            .map(|(x, y)| math::f_chi(x, y))
+            .map(|(x, y)| math::f_azimuth(x, y))
             .collect();
 
-        (tth, chi)
+        (tth, azimuth)
     }
 
     /// Calculates Solid Angle for each pixel in the detector
@@ -290,8 +290,8 @@ impl Geometry {
     /// Arguments:
     ///  * `factor` - polarization factor (value between -1 and 1)
     ///  * `tth` - two theta array in radians
-    ///  * `chi` - chi array in radians
-    pub fn calc_polarization(&self, factor: f64, tth: &Vec<f64>, chi: &Vec<f64>) -> Vec<f64> {
+    ///  * `azimuth` - azimuth array in radians
+    pub fn calc_polarization(&self, factor: f64, tth: &Vec<f64>, azimuth: &Vec<f64>) -> Vec<f64> {
         let cos2_tth = tth
             .par_iter()
             .map(|x| x.cos().powi(2))
@@ -299,8 +299,8 @@ impl Geometry {
 
         let polarization = cos2_tth
             .par_iter()
-            .zip(chi)
-            .map(|(cos2_tth, chi)| math::f_polarization(&factor, &cos2_tth, &chi))
+            .zip(azimuth)
+            .map(|(cos2_tth, azimuth)| math::f_polarization(&factor, &cos2_tth, &azimuth))
             .collect();
         polarization
     }
@@ -355,9 +355,9 @@ mod math {
         (y * y + x * x).sqrt().atan2(*z)
     }
 
-    /// Calculates the chi (azimuthal) angle for a pixel position in the sample reference coordinate system
+    /// Calculates the azimuthal angle for a pixel position in the sample reference coordinate system
     /// Parameters are the x and y values of the pixel position
-    pub fn f_chi(x: &f64, y: &f64) -> f64 {
+    pub fn f_azimuth(x: &f64, y: &f64) -> f64 {
         x.atan2(*y)
     }
 
@@ -381,9 +381,9 @@ mod math {
     /// Arguments:
     ///   * `factor` - polarization factor (value between -1 and 1)
     ///   * `cos2_tth` - cosine squared of the 2theta angle in radians
-    ///   * `chi` - chi (azimuthal) angle in radians
-    pub fn f_polarization(factor: &f64, cos2_tth: &f64, chi: &f64) -> f64 {
-        0.5 * (1.0 + cos2_tth - factor * (2.0 * chi).cos() * (1.0 - cos2_tth))
+    ///   * `azimuth` - azimuthal angle in radians
+    pub fn f_polarization(factor: &f64, cos2_tth: &f64, azimuth: &f64) -> f64 {
+        0.5 * (1.0 + cos2_tth - factor * (2.0 * azimuth).cos() * (1.0 - cos2_tth))
     }
 }
 
@@ -509,18 +509,19 @@ mod tests {
     }
 
     #[test]
-    fn calc_chi_all() {
+    fn calc_azimuth_all() {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let geometry = Geometry::new(DIM1, DIM2, poni);
-        let chi = geometry.calc_chi_all();
+        let azimuth = geometry.calc_azimuth_all();
 
-        util::save_vec("chi.txt", &chi);
+        util::save_vec("azimuth.txt", &azimuth);
 
-        let chi_ref = util::read_vec("chi_pyFAI.txt").unwrap();
-        util::compare_vecs(&chi, &chi_ref, "chi", 1e-6);
+        let azimuth_ref = util::read_vec("azimuth_pyFAI.txt").unwrap();
+        util::compare_vecs(&azimuth, &azimuth_ref, "azimuth", 1e-6);
     }
 
-    fn calc_chi() {
+    #[test]
+    fn calc_azimuth() {
         let poni = Poni::load("test_data/v1.poni").unwrap();
         let geometry = Geometry::new(DIM1, DIM2, poni);
 
@@ -534,13 +535,13 @@ mod tests {
             }
         }
 
-        let chi = geometry.calc_chi(&d1, &d2);
-        let chi_all = geometry.calc_chi_all();
-        util::compare_vecs(&chi, &chi_all, "tth", 1e-10);
+        let azimuth = geometry.calc_azimuth(&d1, &d2);
+        let azimuth_all = geometry.calc_azimuth_all();
+        util::compare_vecs(&azimuth, &azimuth_all, "tth", 1e-10);
     }
 
     #[test]
-    fn calc_tth_and_chi() {
+    fn calc_tth_and_azimuth() {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let geometry = Geometry::new(DIM1, DIM2, poni);
 
@@ -554,13 +555,13 @@ mod tests {
             }
         }
 
-        let (tth, chi) = geometry.calc_tth_and_chi(&d1, &d2);
+        let (tth, azimuth) = geometry.calc_tth_and_azimuth(&d1, &d2);
 
         let tth_all = geometry.calc_tth_all();
-        let chi_all = geometry.calc_chi_all();
+        let azimuth_all = geometry.calc_azimuth_all();
 
         util::compare_vecs(&tth, &tth_all, "tth", 1e-10);
-        util::compare_vecs(&chi, &chi_all, "chi", 1e-10);
+        util::compare_vecs(&azimuth, &azimuth_all, "azimuth", 1e-10);
     }
 
     #[test]
@@ -580,8 +581,8 @@ mod tests {
         let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
         let geometry = Geometry::new(DIM1, DIM2, poni);
         let tth = geometry.calc_tth_all();
-        let chi = geometry.calc_chi_all();
-        let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+        let azimuth = geometry.calc_azimuth_all();
+        let polarization = geometry.calc_polarization(0.99, &tth, &azimuth);
 
         util::save_vec("polarization.txt", &polarization);
 

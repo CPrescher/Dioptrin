@@ -29,13 +29,13 @@ impl Lut1d {
     }
 }
 
-/// CSR-based 2D LUT (rows flattened as `chi * n_tth + tth`). Same weighting rules as `Lut1d`.
+/// CSR-based 2D LUT (rows flattened as `azimuthal * n_tth + tth`). Same weighting rules as `Lut1d`.
 pub struct Lut2d {
     pub row_ptr: Vec<usize>,
     pub col_idx: Vec<usize>,
     pub values: Option<Vec<f64>>, // optional weights per entry
     pub n_tth: usize,
-    pub n_chi: usize,
+    pub n_azimuthal: usize,
 }
 
 /// Build an unweighted 1D CSR LUT from pixel `tth` to `n_points` bins.
@@ -83,36 +83,36 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
 /// See `build_lut1d_csr` for an example.
 // integrate1d moved to src/lut/integrate.rs
 
-/// Build an unweighted 2D CSR LUT from pixel `tth`/`chi` to `(n_tth, n_chi)` bins.
+/// Build an unweighted 2D CSR LUT from pixel `tth`/`azimuthal` to `(n_tth, n_azimuthal)` bins.
 ///
 /// Example
 /// ```
 /// use dioptrin::lut::{build_lut2d_csr, integrate2d};
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
-/// let chi = vec![0.0, 0.1, 0.2, 0.3];
+/// let azimuthal = vec![0.0, 0.1, 0.2, 0.3];
 /// let intensity = vec![1.0, 2.0, 3.0, 4.0];
-/// let lut2d = build_lut2d_csr(&tth, &chi, 2, 3);
+/// let lut2d = build_lut2d_csr(&tth, &azimuthal, 2, 3);
 /// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 2*3);
 /// ```
 pub fn build_lut2d_csr(
     radial: &Vec<f64>,
-    chi: &Vec<f64>,
+    azimuthal: &Vec<f64>,
     n_radial: usize,
-    n_chi: usize,
+    n_azimuthal: usize,
 ) -> Lut2d {
     let (min_radial, _max_radial, step_radial) = histogram::min_max_step(radial, n_radial);
-    let (min_chi, _max_chi, step_chi) = histogram::min_max_step(chi, n_chi);
+    let (min_azimuthal, _max_azimuthal, step_azimuthal) = histogram::min_max_step(azimuthal, n_azimuthal);
 
-    let rows = n_radial * n_chi;
+    let rows = n_radial * n_azimuthal;
     let mut counts = vec![0usize; rows];
 
     let row_index: Vec<usize> = radial
         .par_iter()
-        .zip(chi.par_iter())
+        .zip(azimuthal.par_iter())
         .map(|(r, a)| {
             let rb = histogram::get_bin_clamped(*r, min_radial, step_radial, n_radial);
-            let ab = histogram::get_bin(*a, min_chi, step_chi) % n_chi;
+            let ab = histogram::get_bin(*a, min_azimuthal, step_azimuthal) % n_azimuthal;
             ab * n_radial + rb
         })
         .collect();
@@ -138,37 +138,37 @@ pub fn build_lut2d_csr(
         col_idx,
         values: None,
         n_tth: n_radial,
-        n_chi,
+        n_azimuthal,
     }
 }
 
-/// Build an unweighted 2D CSR LUT from pixel `radial`/`chi` to `(n_radial, n_chi)` bins
-/// using an explicit chi binning definition.
+/// Build an unweighted 2D CSR LUT from pixel `radial`/`azimuthal` to `(n_radial, n_azimuthal)` bins
+/// using an explicit azimuthal binning definition.
 ///
-/// `chi_start` is the center of the first chi bin; the effective start edge is
-/// `chi_start - chi_step / 2`. Binning wraps periodically so angles outside the
-/// total range fold back into `0..n_chi`.
-pub fn build_lut2d_csr_with_chi_range(
+/// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
+/// `azimuthal_start - azimuthal_step / 2`. Binning wraps periodically so angles outside the
+/// total range fold back into `0..n_azimuthal`.
+pub fn build_lut2d_csr_with_azimuthal_range(
     radial: &Vec<f64>,
-    chi: &Vec<f64>,
+    azimuthal: &Vec<f64>,
     n_radial: usize,
-    n_chi: usize,
-    chi_start: f64,
-    chi_step: f64,
+    n_azimuthal: usize,
+    azimuthal_start: f64,
+    azimuthal_step: f64,
 ) -> Lut2d {
-    assert!(chi_step > 0.0, "chi_step must be positive");
+    assert!(azimuthal_step > 0.0, "azimuthal_step must be positive");
     let (min_radial, _max_radial, step_radial) = histogram::min_max_step(radial, n_radial);
-    let min_chi = chi_start - 0.5 * chi_step;
+    let min_azimuthal = azimuthal_start - 0.5 * azimuthal_step;
 
-    let rows = n_radial * n_chi;
+    let rows = n_radial * n_azimuthal;
     let mut counts = vec![0usize; rows];
 
     let row_index: Vec<usize> = radial
         .par_iter()
-        .zip(chi.par_iter())
+        .zip(azimuthal.par_iter())
         .map(|(r, a)| {
             let rb = histogram::get_bin_clamped(*r, min_radial, step_radial, n_radial);
-            let ab = histogram::get_bin_wrapped(*a, min_chi, chi_step, n_chi);
+            let ab = histogram::get_bin_wrapped(*a, min_azimuthal, azimuthal_step, n_azimuthal);
             ab * n_radial + rb
         })
         .collect();
@@ -194,6 +194,6 @@ pub fn build_lut2d_csr_with_chi_range(
         col_idx,
         values: None,
         n_tth: n_radial,
-        n_chi,
+        n_azimuthal,
     }
 }

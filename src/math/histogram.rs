@@ -232,17 +232,17 @@ pub fn ss_tth_min_max_step(
     (min, max, step)
 }
 
-pub fn supersampled_chi_min_max_step(
+pub fn supersampled_azimuthal_min_max_step(
     geometry: &Geometry,
-    chi: &[f64],
+    azimuthal: &[f64],
     n_points: usize,
     n_subpixels: usize,
 ) -> (f64, f64, f64) {
     let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
-    let hull_chi = geometry.calc_chi(&hull_d1, &hull_d2);
+    let hull_azimuthal = geometry.calc_azimuth(&hull_d1, &hull_d2);
 
-    let min = math::min_slice(chi).min(math::min(&hull_chi));
-    let max = math::max_slice(chi).max(math::max(&hull_chi)) + 3.0 * f64::EPSILON;
+    let min = math::min_slice(azimuthal).min(math::min(&hull_azimuthal));
+    let max = math::max_slice(azimuthal).max(math::max(&hull_azimuthal)) + 3.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
     (min, max, step)
 }

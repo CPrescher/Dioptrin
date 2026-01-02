@@ -24,12 +24,12 @@ pub fn build_lut_ss_2d_benchmark(c: &mut Criterion) {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
-    let n_chi = 360;
+    let n_azimuthal = 360;
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
 
     c.bench_function("bench build 2d lut supersampled", |b| {
-        b.iter(|| lut::build_lut2d_ss_csr(&geometry, &tth, &chi, n_tth, n_chi, 5))
+        b.iter(|| lut::build_lut2d_ss_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, 5))
     });
 }
 
@@ -52,12 +52,12 @@ pub fn build_lut_ps_2d_benchmark(c: &mut Criterion) {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
-    let n_chi = 360;
+    let n_azimuthal = 360;
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
 
     c.bench_function("bench build 2d lut pixel-split", |b| {
-        b.iter(|| lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_chi))
+        b.iter(|| lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal))
     });
 }
 

@@ -35,7 +35,7 @@ pub use counting_csr::{
     Lut1d, Lut2d,
     build_lut1d_csr,
     build_lut2d_csr,
-    build_lut2d_csr_with_chi_range,
+    build_lut2d_csr_with_azimuthal_range,
 };
 pub use integrate::{
     integrate1d,
@@ -44,5 +44,5 @@ pub use integrate::{
     integrate2d_with_errors,
 };
 pub use supersampled::{build_lut1d_ss_csr, build_lut2d_ss_csr};
-pub use supersampled::build_lut2d_ss_csr_with_chi_range;
-pub use pixel_split::{build_lut1d_ps_csr, build_lut2d_ps_csr, build_lut2d_ps_csr_with_chi_range};
+pub use supersampled::build_lut2d_ss_csr_with_azimuthal_range;
+pub use pixel_split::{build_lut1d_ps_csr, build_lut2d_ps_csr, build_lut2d_ps_csr_with_azimuthal_range};

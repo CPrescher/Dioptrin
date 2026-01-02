@@ -1,7 +1,7 @@
 use super::Integrator;
 
 impl Integrator {
-    /// checks whether current tth, radial, chi, solid angle and polarization are calculated for the same
+    /// checks whether current tth, radial, azimuth, solid angle and polarization are calculated for the same
     /// image dimension as dim1 x dim2, if not, they are recalculated
     pub(super) fn update_geometry_arrays(&mut self, dim1: usize, dim2: usize) {
         let size = dim1 * dim2;
@@ -9,7 +9,7 @@ impl Integrator {
             || self.geometry.dim2 != dim2
             || self.tth.len() != size
             || self.radial.len() != size
-            || self.chi.len() != size
+            || self.azimuth.len() != size
             || self.solid_angle.len() != size
             || self.polarization.len() != size;
         if stale {
@@ -19,7 +19,7 @@ impl Integrator {
             self.radial = self
                 .radial_unit
                 .convert_from_tth(&self.tth, self.geometry.poni.wavelength);
-            self.chi = self.geometry.calc_chi_all();
+            self.azimuth = self.geometry.calc_azimuth_all();
             self.solid_angle = self.geometry.calc_solid_angle();
             self.update_polarization();
             self.invalidate_caches();
@@ -30,7 +30,7 @@ impl Integrator {
         self.polarization = match self.polarization_factor {
             Some(factor) => self
                 .geometry
-                .calc_polarization(factor, &self.tth, &self.chi),
+                .calc_polarization(factor, &self.tth, &self.azimuth),
             None => vec![1.0; self.geometry.size()],
         };
     }

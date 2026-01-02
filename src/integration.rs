@@ -114,7 +114,7 @@ pub struct Integrator {
     tth: Vec<f64>,
     /// Radial values in the selected unit (computed from tth)
     radial: Vec<f64>,
-    chi: Vec<f64>,
+    azimuth: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
     cache_1d: RefCell<Lut1dCache>,
@@ -131,7 +131,7 @@ impl Integrator {
             geometry,
             tth: vec![],
             radial: vec![],
-            chi: vec![],
+            azimuth: vec![],
             solid_angle: vec![],
             polarization: vec![],
             cache_1d: RefCell::new(Lut1dCache::new()),
@@ -249,9 +249,9 @@ impl Integrator {
         &self.radial
     }
 
-    // getter for chi vector for each pixel as a flattened vector
-    pub fn chi(&self) -> &Vec<f64> {
-        &self.chi
+    // getter for azimuth vector for each pixel as a flattened vector
+    pub fn azimuth(&self) -> &Vec<f64> {
+        &self.azimuth
     }
 
     // helper to invalidate LUT caches

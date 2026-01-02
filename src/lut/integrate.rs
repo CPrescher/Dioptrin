@@ -230,9 +230,9 @@ pub fn integrate1d_with_errors(
 /// poni.distance = 100.0;
 /// let geometry = Geometry::new(2, 2, poni);
 /// let tth = geometry.calc_tth_all();
-/// let chi = geometry.calc_chi_all();
+/// let azimuthal = geometry.calc_azimuth_all();
 /// let intensity = vec![1.0; geometry.size()];
-/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4, RadialUnit::TthRad);
+/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 4, 4, RadialUnit::TthRad);
 /// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
@@ -465,10 +465,10 @@ mod tests {
     #[test]
     fn test_integrate2d_with_errors_matches_unweighted() {
         let tth = vec![0.1, 0.2, 0.3, 0.4];
-        let chi = vec![0.0, 0.1, 0.2, 0.3];
+        let azimuthal = vec![0.0, 0.1, 0.2, 0.3];
         let intensity = vec![1.0, 2.0, 3.0, 4.0];
         let variance = intensity.clone();
-        let lut = crate::lut::build_lut2d_csr(&tth, &chi, 2, 2);
+        let lut = crate::lut::build_lut2d_csr(&tth, &azimuthal, 2, 2);
         let y = integrate2d(&intensity, &lut, None);
         let (y_err, _sigma) = integrate2d_with_errors(&intensity, &variance, &lut, None);
         assert_vec_close(&y, &y_err);
@@ -483,7 +483,7 @@ mod tests {
             col_idx: vec![0, 1, 2, 3],
             values: Some(vec![0.5, 0.5, 0.25, 0.75]),
             n_tth: 2,
-            n_chi: 1,
+            n_azimuthal: 1,
         };
         let y = integrate2d(&intensity, &lut, None);
         let (y_err, _sigma) = integrate2d_with_errors(&intensity, &variance, &lut, None);
@@ -522,10 +522,10 @@ mod tests {
     #[test]
     fn test_integrate2d_with_errors_sigma_unweighted() {
         let tth = vec![0.1, 0.2];
-        let chi = vec![0.0, 0.1];
+        let azimuthal = vec![0.0, 0.1];
         let intensity = vec![1.0, 3.0];
         let variance = intensity.clone();
-        let lut = crate::lut::build_lut2d_csr(&tth, &chi, 1, 1);
+        let lut = crate::lut::build_lut2d_csr(&tth, &azimuthal, 1, 1);
         let (_y, sigma) = integrate2d_with_errors(&intensity, &variance, &lut, None);
         assert_eq!(sigma.len(), 1);
         assert!((sigma[0] - 1.0).abs() < 1e-12);
@@ -540,7 +540,7 @@ mod tests {
             col_idx: vec![0, 1],
             values: Some(vec![0.25, 0.75]),
             n_tth: 1,
-            n_chi: 1,
+            n_azimuthal: 1,
         };
         let (_y, sigma) = integrate2d_with_errors(&intensity, &variance, &lut, None);
         assert_eq!(sigma.len(), 1);

@@ -18,9 +18,9 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
     let csr = lut::build_lut1d_csr(&tth, n_points);
 
     // Correct intensity (same correction as used by Integrator)
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -49,9 +49,9 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
     let csr_ss = lut::build_lut1d_ss_csr(&geometry, &tth, n_points, n_subpixels);
 
     // Correct intensity
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -73,16 +73,16 @@ pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
-    let n_chi = 360;
+    let n_azimuthal = 360;
 
-    // Precompute tth, chi and CSR 2d LUT
+    // Precompute tth, azimuthal and CSR 2d LUT
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
-    let csr2d = lut::build_lut2d_csr(&tth, &chi, n_tth, n_chi);
+    let azimuthal = geometry.calc_azimuth_all();
+    let csr2d = lut::build_lut2d_csr(&tth, &azimuthal, n_tth, n_azimuthal);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -104,17 +104,17 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
-    let n_chi = 360;
+    let n_azimuthal = 360;
     let n_subpixels = 5;
 
-    // Precompute tth, chi and CSR 2d SS LUT
+    // Precompute tth, azimuthal and CSR 2d SS LUT
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
-    let csr2d_ss = lut::build_lut2d_ss_csr(&geometry, &tth, &chi, n_tth, n_chi, n_subpixels);
+    let azimuthal = geometry.calc_azimuth_all();
+    let csr2d_ss = lut::build_lut2d_ss_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, n_subpixels);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -137,12 +137,12 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
 
     let n_points = 1250;
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
     // Note: pixel-split CSR builder returns histogram params
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -166,13 +166,13 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
 
     let n_points = 1250;
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
 
     let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points);
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -193,13 +193,13 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
-    let n_chi = 360;
+    let n_azimuthal = 360;
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -208,7 +208,7 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
         .collect();
 
     // Use unified supersampled CSR instead of HashMap pixel-split
-    let csr2d_ps = lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_chi);
+    let csr2d_ps = lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal);
     let _ = lut::integrate2d(&intensity, &csr2d_ps, None);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
@@ -222,13 +222,13 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     let n_tth = 1250;
-    let n_chi = 360;
+    let n_azimuthal = 360;
     let tth = geometry.calc_tth_all();
-    let chi = geometry.calc_chi_all();
+    let azimuthal = geometry.calc_azimuth_all();
 
     // Correct intensity
     let solid_angle = geometry.calc_solid_angle();
-    let polarization = geometry.calc_polarization(0.99, &tth, &chi);
+    let polarization = geometry.calc_polarization(0.99, &tth, &azimuthal);
     let intensity: Vec<f64> = frame
         .data
         .iter()
@@ -236,7 +236,7 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
-    let csr2d_ps2 = lut::build_lut2d_ps_csr(&geometry, &tth, &chi, n_tth, n_chi);
+    let csr2d_ps2 = lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal);
     let _ = lut::integrate2d(&intensity, &csr2d_ps2, None);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {

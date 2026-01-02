@@ -107,8 +107,8 @@ pub fn build_lut1d_ss_csr(
 /// # use dioptrin::integration::RadialUnit;
 /// # let geometry: Geometry = unimplemented!();
 /// # let radial: Vec<f64> = unimplemented!();
-/// # let chi: Vec<f64> = unimplemented!();
-/// let lut2d = dioptrin::lut::build_lut2d_ss_csr(&geometry, &radial, &chi, 1024, 360, 4, RadialUnit::TthRad);
+/// # let azimuthal: Vec<f64> = unimplemented!();
+/// let lut2d = dioptrin::lut::build_lut2d_ss_csr(&geometry, &radial, &azimuthal, 1024, 360, 4, RadialUnit::TthRad);
 /// # let intensity: Vec<f64> = unimplemented!();
 /// let y = dioptrin::lut::integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 1024*360);
@@ -116,20 +116,20 @@ pub fn build_lut1d_ss_csr(
 pub fn build_lut2d_ss_csr(
     geometry: &Geometry,
     radial: &Vec<f64>,
-    chi: &Vec<f64>,
+    azimuthal: &Vec<f64>,
     n_radial: usize,
-    n_chi: usize,
+    n_azimuthal: usize,
     n_ss: usize,
     unit: RadialUnit,
 ) -> Lut2d {
     let (radial_min, _radial_max, radial_step) =
         histogram::ss_tth_min_max_step(geometry, radial, n_radial, n_ss, unit);
-    let (chi_min, _chi_max, chi_step) =
-        histogram::supersampled_chi_min_max_step(geometry, chi, n_chi, n_ss);
+    let (azimuthal_min, _azimuthal_max, azimuthal_step) =
+        histogram::supersampled_azimuthal_min_max_step(geometry, azimuthal, n_azimuthal, n_ss);
 
     let wavelength = geometry.poni.wavelength;
 
-    let rows = n_radial * n_chi;
+    let rows = n_radial * n_azimuthal;
     let per_row = geometry.dim2 * n_ss * n_ss;
     let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
         .into_par_iter()
@@ -137,11 +137,11 @@ pub fn build_lut2d_ss_csr(
             || Vec::with_capacity(per_row),
             |mut acc, r| {
                 let (d1, d2, actual_index) = crate::lut::common::subgrid(r, geometry.dim2, n_ss);
-                let (tth_ss, chi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
+                let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for i in 0..radial_ss.len() {
                     let rb = histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
-                    let ab = histogram::get_bin(chi_ss[i], chi_min, chi_step) % n_chi;
+                    let ab = histogram::get_bin(azimuthal_ss[i], azimuthal_min, azimuthal_step) % n_azimuthal;
                     let row = ab * n_radial + rb;
                     acc.push((row, actual_index[i]));
                 }
@@ -187,7 +187,7 @@ pub fn build_lut2d_ss_csr(
 
     while row_ptr.len() < rows + 1 { row_ptr.push(col_idx.len()); }
 
-    Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_chi }
+    Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_azimuthal }
 }
 
 #[cfg(test)]
@@ -257,24 +257,24 @@ mod tests {
     fn test_build_lut2d_ss_csr_with_q_unit() {
         let geometry = create_test_geometry();
         let tth = geometry.calc_tth_all();
-        let chi = geometry.calc_chi_all();
+        let azimuthal = geometry.calc_azimuth_all();
         let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
 
-        let lut = build_lut2d_ss_csr(&geometry, &radial_q, &chi, 5, 4, 2, RadialUnit::QAngstrom);
+        let lut = build_lut2d_ss_csr(&geometry, &radial_q, &azimuthal, 5, 4, 2, RadialUnit::QAngstrom);
 
         assert_eq!(lut.n_tth, 5);
-        assert_eq!(lut.n_chi, 4);
+        assert_eq!(lut.n_azimuthal, 4);
         assert_eq!(lut.row_ptr.len(), 5 * 4 + 1);
         assert!(lut.values.is_some());
     }
 
     #[test]
-    fn test_build_lut2d_ss_csr_with_chi_range_q_unit() {
+    fn test_build_lut2d_ss_csr_with_azimuthal_range_q_unit() {
         let geometry = create_test_geometry();
         let tth = geometry.calc_tth_all();
         let radial_q = RadialUnit::QNm.convert_from_tth(&tth, geometry.poni.wavelength);
 
-        let lut = build_lut2d_ss_csr_with_chi_range(
+        let lut = build_lut2d_ss_csr_with_azimuthal_range(
             &geometry,
             &radial_q,
             5,
@@ -286,7 +286,7 @@ mod tests {
         );
 
         assert_eq!(lut.n_tth, 5);
-        assert_eq!(lut.n_chi, 4);
+        assert_eq!(lut.n_azimuthal, 4);
     }
 
     #[test]
@@ -372,29 +372,29 @@ mod tests {
     }
 }
 
-/// Build a supersampled 2D CSR LUT using an explicit chi binning definition.
+/// Build a supersampled 2D CSR LUT using an explicit azimuthal binning definition.
 ///
-/// `chi_start` is the center of the first chi bin; the effective start edge is
-/// `chi_start - chi_step / 2`. Binning wraps periodically so angles outside the
-/// total range fold back into `0..n_chi`.
-pub fn build_lut2d_ss_csr_with_chi_range(
+/// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
+/// `azimuthal_start - azimuthal_step / 2`. Binning wraps periodically so angles outside the
+/// total range fold back into `0..n_azimuthal`.
+pub fn build_lut2d_ss_csr_with_azimuthal_range(
     geometry: &Geometry,
     radial: &Vec<f64>,
     n_radial: usize,
-    n_chi: usize,
+    n_azimuthal: usize,
     n_ss: usize,
-    chi_start: f64,
-    chi_step: f64,
+    azimuthal_start: f64,
+    azimuthal_step: f64,
     unit: RadialUnit,
 ) -> Lut2d {
-    assert!(chi_step > 0.0, "chi_step must be positive");
+    assert!(azimuthal_step > 0.0, "azimuthal_step must be positive");
     let (radial_min, _radial_max, radial_step) =
         histogram::ss_tth_min_max_step(geometry, radial, n_radial, n_ss, unit);
-    let min_chi = chi_start - 0.5 * chi_step;
+    let min_azimuthal = azimuthal_start - 0.5 * azimuthal_step;
 
     let wavelength = geometry.poni.wavelength;
 
-    let rows = n_radial * n_chi;
+    let rows = n_radial * n_azimuthal;
     let per_row = geometry.dim2 * n_ss * n_ss;
     let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
         .into_par_iter()
@@ -402,11 +402,11 @@ pub fn build_lut2d_ss_csr_with_chi_range(
             || Vec::with_capacity(per_row),
             |mut acc, r| {
                 let (d1, d2, actual_index) = crate::lut::common::subgrid(r, geometry.dim2, n_ss);
-                let (tth_ss, chi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
+                let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for i in 0..radial_ss.len() {
                     let rb = histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
-                    let ab = histogram::get_bin_wrapped(chi_ss[i], min_chi, chi_step, n_chi);
+                    let ab = histogram::get_bin_wrapped(azimuthal_ss[i], min_azimuthal, azimuthal_step, n_azimuthal);
                     let row = ab * n_radial + rb;
                     acc.push((row, actual_index[i]));
                 }
@@ -452,5 +452,5 @@ pub fn build_lut2d_ss_csr_with_chi_range(
 
     while row_ptr.len() < rows + 1 { row_ptr.push(col_idx.len()); }
 
-    Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_chi }
+    Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_azimuthal }
 }

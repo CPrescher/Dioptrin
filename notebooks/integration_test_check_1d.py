@@ -42,11 +42,11 @@ def main() -> None:
     int_rust_lut_ps_err = pattern_rust_lut_ps_err[:, 1]
     err_rust_lut_ps_err = pattern_rust_lut_ps_err[:, 2]
 
-    chi_integrator = AzimuthalIntegrator()
-    chi_integrator.load("../test_data/v1.poni")
+    azimuthal_integrator = AzimuthalIntegrator()
+    azimuthal_integrator.load("../test_data/v1.poni")
     fabio_data = fabio.open("../test_data/CeO2_Pilatus1M.tif").data[::-1]
 
-    tth_pyfai_hist, int_pyfai_hist = chi_integrator.integrate1d(
+    tth_pyfai_hist, int_pyfai_hist = azimuthal_integrator.integrate1d(
         fabio_data,
         len(int_rust_hist),
         unit="2th_rad",
@@ -55,7 +55,7 @@ def main() -> None:
     )
     time_method(
         "pyFAI hist",
-        lambda: chi_integrator.integrate1d(
+        lambda: azimuthal_integrator.integrate1d(
             fabio_data,
             len(int_rust_hist),
             unit="2th_rad",
@@ -63,7 +63,7 @@ def main() -> None:
             polarization_factor=0.99,
         ),
     )
-    tth_pyfai_lut, int_pyfai_lut = chi_integrator.integrate1d(
+    tth_pyfai_lut, int_pyfai_lut = azimuthal_integrator.integrate1d(
         fabio_data,
         len(int_rust_lut),
         unit="2th_rad",
@@ -73,7 +73,7 @@ def main() -> None:
 
     time_method(
         "pyFAI lut",
-        lambda: chi_integrator.integrate1d(
+        lambda: azimuthal_integrator.integrate1d(
             fabio_data,
             len(int_rust_lut),
             unit="2th_rad",
@@ -82,7 +82,7 @@ def main() -> None:
         ),
     )
 
-    tth_pyfai_ps_bbox, int_pyfai_ps_bbox = chi_integrator.integrate1d(
+    tth_pyfai_ps_bbox, int_pyfai_ps_bbox = azimuthal_integrator.integrate1d(
         fabio_data,
         len(int_rust_lut_ss),
         unit="2th_rad",
@@ -92,7 +92,7 @@ def main() -> None:
 
     time_method(
         "pyFAI ps_bbox",
-        lambda: chi_integrator.integrate1d(
+        lambda: azimuthal_integrator.integrate1d(
             fabio_data,
             len(int_rust_lut_ss),
             unit="2th_rad",
@@ -101,7 +101,7 @@ def main() -> None:
         ),
     )
 
-    tth_pyfai_ps_full, int_pyfai_ps_full = chi_integrator.integrate1d(
+    tth_pyfai_ps_full, int_pyfai_ps_full = azimuthal_integrator.integrate1d(
         fabio_data,
         len(int_rust_lut_ss),
         unit="2th_rad",
@@ -111,7 +111,7 @@ def main() -> None:
 
     time_method(
         "pyFAI ps_full",
-        lambda: chi_integrator.integrate1d(
+        lambda: azimuthal_integrator.integrate1d(
             fabio_data,
             len(int_rust_lut_ss),
             unit="2th_rad",
