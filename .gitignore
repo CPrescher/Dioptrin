@@ -4,6 +4,8 @@
 /Cargo.lock
 
 test_data/*.tif
+test_data/*.tiff
+test_data/*.h5
 test_data/test_output/*.png
 test_data/test_output/*.txt
 
