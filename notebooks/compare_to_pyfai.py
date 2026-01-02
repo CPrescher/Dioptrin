@@ -3,7 +3,7 @@ import numpy as np
 import pyFAI
 import dioptrin
 
-dioptrin.set_rayon_threads(1)
+dioptrin.set_rayon_threads(12)
 
 
 def time_function(lambda_func, repetition, name=""):
@@ -25,12 +25,19 @@ image = fabio.open(image_path).data[::-1]
 image_c = np.ascontiguousarray(image, dtype=np.float64)
 
 ai = pyFAI.load(poni_path)
-ai.integrate1d(image, 1000, unit="2th_deg")  # Warm-up
 
-integrator = dioptrin.Integrator.from_tiff(
-    poni_path, image_path, "pixel_split", 0.99, 1
+time_function(
+    lambda: ai.integrate1d(image, 1000, unit="2th_deg"),  # Warm-up
+    1,
+    "pyFAI integrate1d warm-up",
 )
-integrator.integrate1d_array(image_c, 1000)  # Warm-up
+
+integrator = dioptrin.Integrator.from_poni_file(poni_path, "ss", 0.99, 5)
+time_function(
+    lambda: integrator.integrate1d_array(image_c, 1000),  # Warm-up
+    1,
+    "dioptrin integrate1d_array warm-up",
+)
 
 time_function(
     lambda: ai.integrate1d(image, 1000, unit="2th_deg"),

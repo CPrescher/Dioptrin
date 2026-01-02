@@ -11,7 +11,7 @@ use crate::poni::Poni;
 
 fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
     match method.unwrap_or("pixel_split").to_lowercase().as_str() {
-        "pixel_split" | "pixelsplit" | "ps" => Ok(IntegrationMethod::PixelSplit),
+        "pixel_split" | "pixelsplit" | "ps" | "pixelsplitting" => Ok(IntegrationMethod::PixelSplit),
         "counting" | "count" => Ok(IntegrationMethod::Counting),
         "histogram" | "hist" => Ok(IntegrationMethod::Histogram),
         "supersampled" | "supersample" | "ss" => {
@@ -94,8 +94,6 @@ fn set_rayon_threads(threads: usize) -> PyResult<()> {
 #[pyclass(name = "Integrator", unsendable)]
 struct PyIntegrator {
     integrator: Integrator,
-    dim1: usize,
-    dim2: usize,
 }
 
 #[pymethods]
@@ -118,11 +116,7 @@ impl PyIntegrator {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
 
-        Ok(Self {
-            integrator,
-            dim1,
-            dim2,
-        })
+        Ok(Self { integrator })
     }
 
     #[classmethod]
@@ -145,35 +139,39 @@ impl PyIntegrator {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
 
-        Ok(Self {
-            integrator,
-            dim1: frame.dim1,
-            dim2: frame.dim2,
-        })
+        Ok(Self { integrator })
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None))]
+    fn from_poni_file(
+        _cls: &Bound<'_, PyType>,
+        poni_path: &str,
+        method: Option<&str>,
+        polarization_factor: Option<f64>,
+        n_ss: Option<usize>,
+    ) -> PyResult<Self> {
+        let poni = Poni::load(poni_path)
+            .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+        if let Some(polarization_factor) = polarization_factor {
+            integrator = integrator.with_polarization_factor(polarization_factor);
+        }
+
+        Ok(Self { integrator })
     }
 
     #[pyo3(signature = (tiff_path, n_points))]
-    fn integrate1d(
-        &mut self,
-        py: Python<'_>,
-        tiff_path: &str,
-        n_points: usize,
-    ) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    fn integrate1d(&mut self, tiff_path: &str, n_points: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
         let frame = Frame::from_tiff(tiff_path.to_string())
             .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
-        if frame.dim1 != self.dim1 || frame.dim2 != self.dim2 {
-            return Err(PyValueError::new_err(format!(
-                "Frame dimensions {}x{} do not match integrator dimensions {}x{}",
-                frame.dim1, frame.dim2, self.dim1, self.dim2
-            )));
-        }
-        Ok(py.allow_threads(|| self.integrator.integrate1d(&frame, n_points)))
+        Ok(self.integrator.integrate1d(&frame, n_points))
     }
 
     #[pyo3(signature = (array, n_points))]
     fn integrate1d_array(
         &mut self,
-        py: Python<'_>,
         array: PyReadonlyArray2<f64>,
         n_points: usize,
     ) -> PyResult<(Vec<f64>, Vec<f64>)> {
@@ -187,26 +185,17 @@ impl PyIntegrator {
         let dim1 = shape[0];
         let dim2 = shape[1];
 
-        if dim1 != self.dim1 || dim2 != self.dim2 {
-            return Err(PyValueError::new_err(format!(
-                "Array dimensions {}x{} do not match integrator dimensions {}x{}",
-                dim1, dim2, self.dim1, self.dim2
-            )));
-        }
-
-        let slice = array.as_slice().map_err(|err| {
-            PyValueError::new_err(format!("Array must be contiguous: {}", err))
-        })?;
-        Ok(py.allow_threads(|| {
-            self.integrator
-                .integrate1d_from_slice(slice, dim1, dim2, n_points)
-        }))
+        let slice = array
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
+        Ok(self
+            .integrator
+            .integrate1d_from_slice(slice, dim1, dim2, n_points))
     }
 
     #[pyo3(signature = (array, n_points))]
     fn integrate1d_array_with_errors(
         &mut self,
-        py: Python<'_>,
         array: PyReadonlyArray2<f64>,
         n_points: usize,
     ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
@@ -220,40 +209,23 @@ impl PyIntegrator {
         let dim1 = shape[0];
         let dim2 = shape[1];
 
-        if dim1 != self.dim1 || dim2 != self.dim2 {
-            return Err(PyValueError::new_err(format!(
-                "Array dimensions {}x{} do not match integrator dimensions {}x{}",
-                dim1, dim2, self.dim1, self.dim2
-            )));
-        }
-
-        let slice = array.as_slice().map_err(|err| {
-            PyValueError::new_err(format!("Array must be contiguous: {}", err))
-        })?;
-        Ok(py.allow_threads(|| {
-            self.integrator
-                .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points)
-        }))
+        let slice = array
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
+        Ok(self
+            .integrator
+            .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points))
     }
 
     #[pyo3(signature = (tiff_path, n_points))]
     fn integrate1d_with_errors(
         &mut self,
-        py: Python<'_>,
         tiff_path: &str,
         n_points: usize,
     ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
         let frame = Frame::from_tiff(tiff_path.to_string())
             .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
-        if frame.dim1 != self.dim1 || frame.dim2 != self.dim2 {
-            return Err(PyValueError::new_err(format!(
-                "Frame dimensions {}x{} do not match integrator dimensions {}x{}",
-                frame.dim1, frame.dim2, self.dim1, self.dim2
-            )));
-        }
-        Ok(py.allow_threads(|| {
-            self.integrator.integrate1d_with_errors(&frame, n_points)
-        }))
+        Ok(self.integrator.integrate1d_with_errors(&frame, n_points))
     }
 
     #[pyo3(signature = (method, n_ss=None))]
@@ -264,12 +236,7 @@ impl PyIntegrator {
     }
 
     fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
-        self.integrator
-            .set_polarization_factor(polarization_factor);
-    }
-
-    fn dimensions(&self) -> (usize, usize) {
-        (self.dim1, self.dim2)
+        self.integrator.set_polarization_factor(polarization_factor);
     }
 }
 
