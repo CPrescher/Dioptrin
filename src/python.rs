@@ -203,6 +203,39 @@ impl PyIntegrator {
         }))
     }
 
+    #[pyo3(signature = (array, n_points))]
+    fn integrate1d_array_with_errors(
+        &mut self,
+        py: Python<'_>,
+        array: PyReadonlyArray2<f64>,
+        n_points: usize,
+    ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+        let view = array.as_array();
+        if !view.is_standard_layout() {
+            return Err(PyValueError::new_err(
+                "Array must be C-contiguous (row-major) and float64",
+            ));
+        }
+        let shape = view.shape();
+        let dim1 = shape[0];
+        let dim2 = shape[1];
+
+        if dim1 != self.dim1 || dim2 != self.dim2 {
+            return Err(PyValueError::new_err(format!(
+                "Array dimensions {}x{} do not match integrator dimensions {}x{}",
+                dim1, dim2, self.dim1, self.dim2
+            )));
+        }
+
+        let slice = array.as_slice().map_err(|err| {
+            PyValueError::new_err(format!("Array must be contiguous: {}", err))
+        })?;
+        Ok(py.allow_threads(|| {
+            self.integrator
+                .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points)
+        }))
+    }
+
     #[pyo3(signature = (tiff_path, n_points))]
     fn integrate1d_with_errors(
         &mut self,

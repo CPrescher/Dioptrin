@@ -127,6 +127,38 @@ impl Integrator {
         }
     }
 
+    pub fn integrate1d_with_errors_from_slice(
+        &mut self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(dim1, dim2);
+        let (intensity, variance) = self.correct_intensity_and_variance(data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            &mask.data
+        });
+        match self.method {
+            IntegrationMethod::Histogram => histogram::histogram_with_errors(
+                &self.tth, &intensity, &variance, n_points, mask_data,
+            ),
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+            }
+        }
+    }
+
     /// Integrate a frame to 2D using the configured integration method.
     ///
     /// Example
