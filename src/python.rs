@@ -1,7 +1,7 @@
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyType;
+use pyo3::types::{PyDict, PyType};
 use rayon::ThreadPoolBuilder;
 
 use crate::frame::Frame;
@@ -120,29 +120,6 @@ impl PyIntegrator {
     }
 
     #[classmethod]
-    #[pyo3(signature = (poni_path, tiff_path, method=None, polarization_factor=None, n_ss=None))]
-    fn from_tiff(
-        _cls: &Bound<'_, PyType>,
-        poni_path: &str,
-        tiff_path: &str,
-        method: Option<&str>,
-        polarization_factor: Option<f64>,
-        n_ss: Option<usize>,
-    ) -> PyResult<Self> {
-        let poni = Poni::load(poni_path)
-            .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
-        let frame = Frame::from_tiff(tiff_path.to_string())
-            .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
-        let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-        let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
-        if let Some(polarization_factor) = polarization_factor {
-            integrator = integrator.with_polarization_factor(polarization_factor);
-        }
-
-        Ok(Self { integrator })
-    }
-
-    #[classmethod]
     #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None))]
     fn from_poni_file(
         _cls: &Bound<'_, PyType>,
@@ -153,6 +130,25 @@ impl PyIntegrator {
     ) -> PyResult<Self> {
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+        if let Some(polarization_factor) = polarization_factor {
+            integrator = integrator.with_polarization_factor(polarization_factor);
+        }
+
+        Ok(Self { integrator })
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None))]
+    fn from_poni_dict(
+        _cls: &Bound<'_, PyType>,
+        poni_dict: &Bound<'_, PyDict>,
+        method: Option<&str>,
+        polarization_factor: Option<f64>,
+        n_ss: Option<usize>,
+    ) -> PyResult<Self> {
+        let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
         if let Some(polarization_factor) = polarization_factor {
