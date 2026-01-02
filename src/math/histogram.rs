@@ -195,8 +195,16 @@ pub fn histogram_parallel(
 
 /// Calculates the bin index for a value in a histogram
 /// min is the min value of the data, step is the bin width
+/// Note: This can return an index >= n_bins if value >= max; caller should clamp if needed
 pub fn get_bin(value: f64, min: f64, step: f64) -> usize {
     ((value - min) / step) as usize
+}
+
+/// Calculates the bin index for a value in a histogram, clamped to valid range
+/// min is the min value of the data, step is the bin width, n_bins is the total number of bins
+pub fn get_bin_clamped(value: f64, min: f64, step: f64, n_bins: usize) -> usize {
+    let bin = ((value - min) / step) as usize;
+    bin.min(n_bins - 1)
 }
 
 /// Calculates a wrapped bin index for a value in a periodic histogram.

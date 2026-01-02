@@ -45,7 +45,7 @@ pub fn build_lut1d_ss_csr(
                 let tth_ss = geometry.calc_tth(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for (i, &v) in radial_ss.iter().enumerate() {
-                    let b = histogram::get_bin(v, hist_min, hist_step);
+                    let b = histogram::get_bin_clamped(v, hist_min, hist_step, n_points);
                     acc.push((b, actual_index[i]));
                 }
                 acc
@@ -140,7 +140,7 @@ pub fn build_lut2d_ss_csr(
                 let (tth_ss, chi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for i in 0..radial_ss.len() {
-                    let rb = histogram::get_bin(radial_ss[i], radial_min, radial_step);
+                    let rb = histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
                     let ab = histogram::get_bin(chi_ss[i], chi_min, chi_step) % n_chi;
                     let row = ab * n_radial + rb;
                     acc.push((row, actual_index[i]));
@@ -190,6 +190,188 @@ pub fn build_lut2d_ss_csr(
     Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_chi }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::Geometry;
+    use crate::poni::Poni;
+
+    fn create_test_geometry() -> Geometry {
+        let mut poni = Poni::new();
+        poni.pixel1 = 0.0001; // 100 µm
+        poni.pixel2 = 0.0001;
+        poni.distance = 0.1; // 10 cm
+        poni.wavelength = 1e-10; // 1 Angstrom
+        Geometry::new(10, 10, poni)
+    }
+
+    #[test]
+    fn test_build_lut1d_ss_csr_tth_rad() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let lut = build_lut1d_ss_csr(&geometry, &tth, 5, 2, RadialUnit::TthRad);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0);
+        assert!(lut.hist_step > 0.0);
+        assert!(lut.values.is_some());
+    }
+
+    #[test]
+    fn test_build_lut1d_ss_csr_tth_deg() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_deg = RadialUnit::TthDeg.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut1d_ss_csr(&geometry, &radial_deg, 5, 2, RadialUnit::TthDeg);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0);
+    }
+
+    #[test]
+    fn test_build_lut1d_ss_csr_q_angstrom() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut1d_ss_csr(&geometry, &radial_q, 5, 2, RadialUnit::QAngstrom);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0, "q should be non-negative");
+    }
+
+    #[test]
+    fn test_build_lut1d_ss_csr_q_nm() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_q = RadialUnit::QNm.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut1d_ss_csr(&geometry, &radial_q, 5, 2, RadialUnit::QNm);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0, "q should be non-negative");
+    }
+
+    #[test]
+    fn test_build_lut2d_ss_csr_with_q_unit() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let chi = geometry.calc_chi_all();
+        let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut2d_ss_csr(&geometry, &radial_q, &chi, 5, 4, 2, RadialUnit::QAngstrom);
+
+        assert_eq!(lut.n_tth, 5);
+        assert_eq!(lut.n_chi, 4);
+        assert_eq!(lut.row_ptr.len(), 5 * 4 + 1);
+        assert!(lut.values.is_some());
+    }
+
+    #[test]
+    fn test_build_lut2d_ss_csr_with_chi_range_q_unit() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_q = RadialUnit::QNm.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut2d_ss_csr_with_chi_range(
+            &geometry,
+            &radial_q,
+            5,
+            4,
+            2,
+            0.0,
+            std::f64::consts::PI / 2.0,
+            RadialUnit::QNm,
+        );
+
+        assert_eq!(lut.n_tth, 5);
+        assert_eq!(lut.n_chi, 4);
+    }
+
+    #[test]
+    fn test_supersampled_different_units_different_bins() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+
+        // Build LUT in radians
+        let lut_rad = build_lut1d_ss_csr(&geometry, &tth, 5, 2, RadialUnit::TthRad);
+
+        // Build LUT in degrees
+        let radial_deg = RadialUnit::TthDeg.convert_from_tth(&tth, geometry.poni.wavelength);
+        let lut_deg = build_lut1d_ss_csr(&geometry, &radial_deg, 5, 2, RadialUnit::TthDeg);
+
+        // The bin centers should differ by factor of 180/π
+        let ratio = lut_deg.hist_min / lut_rad.hist_min;
+        let expected_ratio = 180.0 / std::f64::consts::PI;
+        assert!(
+            (ratio - expected_ratio).abs() / expected_ratio < 0.01,
+            "Degree bins should be 180/π times radian bins, got ratio {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_supersampled_q_angstrom_vs_q_nm_ratio() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+
+        // Build LUT in q (Å⁻¹)
+        let radial_qa = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
+        let lut_qa = build_lut1d_ss_csr(&geometry, &radial_qa, 5, 2, RadialUnit::QAngstrom);
+
+        // Build LUT in q (nm⁻¹)
+        let radial_qn = RadialUnit::QNm.convert_from_tth(&tth, geometry.poni.wavelength);
+        let lut_qn = build_lut1d_ss_csr(&geometry, &radial_qn, 5, 2, RadialUnit::QNm);
+
+        // q in nm⁻¹ should be 10x q in Å⁻¹
+        let ratio = lut_qn.hist_min / lut_qa.hist_min;
+        assert!(
+            (ratio - 10.0).abs() < 0.01,
+            "q_nm bins should be 10x q_angstrom bins, got ratio {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_supersampled_integration_with_different_units() {
+        use crate::lut::integrate1d;
+
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let intensity: Vec<f64> = (0..geometry.size()).map(|i| (i + 1) as f64).collect();
+
+        // Build and integrate in radians
+        let lut_rad = build_lut1d_ss_csr(&geometry, &tth, 5, 2, RadialUnit::TthRad);
+        let (bins_rad, int_rad) = integrate1d(&intensity, &lut_rad, None);
+
+        // Build and integrate in degrees
+        let radial_deg = RadialUnit::TthDeg.convert_from_tth(&tth, geometry.poni.wavelength);
+        let lut_deg = build_lut1d_ss_csr(&geometry, &radial_deg, 5, 2, RadialUnit::TthDeg);
+        let (bins_deg, int_deg) = integrate1d(&intensity, &lut_deg, None);
+
+        // Bin centers should differ by 180/π
+        for (r, d) in bins_rad.iter().zip(bins_deg.iter()) {
+            let ratio = d / r;
+            let expected = 180.0 / std::f64::consts::PI;
+            assert!(
+                (ratio - expected).abs() / expected < 0.01,
+                "Bin centers should differ by 180/π"
+            );
+        }
+
+        // Intensities should be the same since it's the same data
+        for (ir, id) in int_rad.iter().zip(int_deg.iter()) {
+            assert!(
+                (ir - id).abs() < 1e-10,
+                "Intensities should match: {} vs {}",
+                ir,
+                id
+            );
+        }
+    }
+}
+
 /// Build a supersampled 2D CSR LUT using an explicit chi binning definition.
 ///
 /// `chi_start` is the center of the first chi bin; the effective start edge is
@@ -223,7 +405,7 @@ pub fn build_lut2d_ss_csr_with_chi_range(
                 let (tth_ss, chi_ss) = geometry.calc_tth_and_chi(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for i in 0..radial_ss.len() {
-                    let rb = histogram::get_bin(radial_ss[i], radial_min, radial_step);
+                    let rb = histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
                     let ab = histogram::get_bin_wrapped(chi_ss[i], min_chi, chi_step, n_chi);
                     let row = ab * n_radial + rb;
                     acc.push((row, actual_index[i]));

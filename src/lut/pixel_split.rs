@@ -423,7 +423,7 @@ fn build_lut2d_ps_csr_with_chi(
             let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
-                let rb = histogram::get_bin(radial[idx], min_radial, step_radial);
+                let rb = histogram::get_bin_clamped(radial[idx], min_radial, step_radial, n_radial);
                 let ab = histogram::get_bin_wrapped(center_chi, min_chi, step_chi, n_chi);
                 counts[ab * n_radial + rb].fetch_add(1, Ordering::Relaxed);
                 return;
@@ -517,7 +517,7 @@ fn build_lut2d_ps_csr_with_chi(
             let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
-                let rb = histogram::get_bin(radial[idx], min_radial, step_radial);
+                let rb = histogram::get_bin_clamped(radial[idx], min_radial, step_radial, n_radial);
                 let ab = histogram::get_bin_wrapped(center_chi, min_chi, step_chi, n_chi);
                 let row = ab * n_radial + rb;
                 let p = next[row].fetch_add(1, Ordering::Relaxed);
@@ -676,4 +676,136 @@ pub fn build_lut2d_ps_csr_with_chi_range(
         Some((chi_start, chi_step)),
         unit,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::Geometry;
+    use crate::poni::Poni;
+
+    fn create_test_geometry() -> Geometry {
+        let mut poni = Poni::new();
+        poni.pixel1 = 0.0001; // 100 µm
+        poni.pixel2 = 0.0001;
+        poni.distance = 0.1; // 10 cm
+        poni.wavelength = 1e-10; // 1 Angstrom
+        Geometry::new(10, 10, poni)
+    }
+
+    #[test]
+    fn test_build_lut1d_ps_csr_tth_rad() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let lut = build_lut1d_ps_csr(&geometry, &tth, 5, RadialUnit::TthRad);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0);
+        assert!(lut.hist_step > 0.0);
+    }
+
+    #[test]
+    fn test_build_lut1d_ps_csr_tth_deg() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_deg = RadialUnit::TthDeg.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut1d_ps_csr(&geometry, &radial_deg, 5, RadialUnit::TthDeg);
+
+        assert_eq!(lut.n_points(), 5);
+        // Degrees should be larger than radians
+        assert!(lut.hist_min >= 0.0);
+        // hist_min in degrees should be roughly 57x larger than radians (180/π)
+    }
+
+    #[test]
+    fn test_build_lut1d_ps_csr_q_angstrom() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut1d_ps_csr(&geometry, &radial_q, 5, RadialUnit::QAngstrom);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0, "q should be non-negative");
+    }
+
+    #[test]
+    fn test_build_lut1d_ps_csr_q_nm() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let radial_q = RadialUnit::QNm.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut1d_ps_csr(&geometry, &radial_q, 5, RadialUnit::QNm);
+
+        assert_eq!(lut.n_points(), 5);
+        assert!(lut.hist_min >= 0.0, "q should be non-negative");
+    }
+
+    #[test]
+    fn test_build_lut1d_ps_csr_different_units_different_bins() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+
+        // Build LUT in radians
+        let lut_rad = build_lut1d_ps_csr(&geometry, &tth, 5, RadialUnit::TthRad);
+
+        // Build LUT in degrees
+        let radial_deg = RadialUnit::TthDeg.convert_from_tth(&tth, geometry.poni.wavelength);
+        let lut_deg = build_lut1d_ps_csr(&geometry, &radial_deg, 5, RadialUnit::TthDeg);
+
+        // The hist_step should differ by factor of 180/π
+        // (hist_min might be very close to zero, so compare steps instead)
+        let ratio = lut_deg.hist_step / lut_rad.hist_step;
+        let expected_ratio = 180.0 / std::f64::consts::PI;
+        assert!(
+            (ratio - expected_ratio).abs() / expected_ratio < 0.01,
+            "Degree step should be 180/π times radian step, got ratio {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_build_lut2d_ps_csr_with_q_unit() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let chi = geometry.calc_chi_all();
+        let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
+
+        let lut = build_lut2d_ps_csr(&geometry, &radial_q, &chi, 5, 4, RadialUnit::QAngstrom);
+
+        assert_eq!(lut.n_tth, 5);
+        assert_eq!(lut.n_chi, 4);
+        assert_eq!(lut.row_ptr.len(), 5 * 4 + 1);
+    }
+
+    #[test]
+    fn test_lut_integration_same_total_intensity_different_units() {
+        use crate::lut::integrate1d;
+
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let intensity: Vec<f64> = (0..geometry.size()).map(|i| (i + 1) as f64).collect();
+
+        // Build and integrate in radians
+        let lut_rad = build_lut1d_ps_csr(&geometry, &tth, 5, RadialUnit::TthRad);
+        let (_, int_rad) = integrate1d(&intensity, &lut_rad, None);
+
+        // Build and integrate in q
+        let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
+        let lut_q = build_lut1d_ps_csr(&geometry, &radial_q, 5, RadialUnit::QAngstrom);
+        let (_, int_q) = integrate1d(&intensity, &lut_q, None);
+
+        // Total integrated intensity should be similar (not exactly equal due to different binning)
+        let total_rad: f64 = int_rad.iter().sum();
+        let total_q: f64 = int_q.iter().sum();
+
+        // They should be in the same ballpark (within 20%)
+        let rel_diff = (total_rad - total_q).abs() / total_rad;
+        assert!(
+            rel_diff < 0.2,
+            "Total intensity should be similar across units, got {}% difference",
+            rel_diff * 100.0
+        );
+    }
 }

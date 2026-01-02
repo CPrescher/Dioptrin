@@ -49,12 +49,12 @@ pub struct Lut2d {
 /// let (_bins, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 3);
 /// ```
-pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
-    let (min, _max, step) = histogram::min_max_step(tth, n_points);
+pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
+    let (min, _max, step) = histogram::min_max_step(radial, n_points);
 
-    let index: Vec<usize> = tth
+    let index: Vec<usize> = radial
         .par_iter()
-        .map(|tth| histogram::get_bin(*tth, min, step))
+        .map(|r| histogram::get_bin_clamped(*r, min, step, n_points))
         .collect();
 
     let mut counts = vec![0usize; n_points];
@@ -68,7 +68,7 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
     }
 
     let mut next = row_ptr.clone();
-    let mut col_idx = vec![0usize; tth.len()];
+    let mut col_idx = vec![0usize; radial.len()];
     for (i, &bin) in index.iter().enumerate() {
         let pos = next[bin];
         col_idx[pos] = i;
@@ -96,24 +96,24 @@ pub fn build_lut1d_csr(tth: &Vec<f64>, n_points: usize) -> Lut1d {
 /// assert_eq!(y.len(), 2*3);
 /// ```
 pub fn build_lut2d_csr(
-    tth: &Vec<f64>,
+    radial: &Vec<f64>,
     chi: &Vec<f64>,
-    n_tth: usize,
+    n_radial: usize,
     n_chi: usize,
 ) -> Lut2d {
-    let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_tth);
+    let (min_radial, _max_radial, step_radial) = histogram::min_max_step(radial, n_radial);
     let (min_chi, _max_chi, step_chi) = histogram::min_max_step(chi, n_chi);
 
-    let rows = n_tth * n_chi;
+    let rows = n_radial * n_chi;
     let mut counts = vec![0usize; rows];
 
-    let row_index: Vec<usize> = tth
+    let row_index: Vec<usize> = radial
         .par_iter()
         .zip(chi.par_iter())
-        .map(|(t, a)| {
-            let tb = histogram::get_bin(*t, min_tth, step_tth);
+        .map(|(r, a)| {
+            let rb = histogram::get_bin_clamped(*r, min_radial, step_radial, n_radial);
             let ab = histogram::get_bin(*a, min_chi, step_chi) % n_chi;
-            ab * n_tth + tb
+            ab * n_radial + rb
         })
         .collect();
     for &row in &row_index {
@@ -126,7 +126,7 @@ pub fn build_lut2d_csr(
     }
 
     let mut next = row_ptr.clone();
-    let mut col_idx = vec![0usize; tth.len()];
+    let mut col_idx = vec![0usize; radial.len()];
     for (i, &row) in row_index.iter().enumerate() {
         let pos = next[row];
         col_idx[pos] = i;
@@ -137,39 +137,39 @@ pub fn build_lut2d_csr(
         row_ptr,
         col_idx,
         values: None,
-        n_tth,
+        n_tth: n_radial,
         n_chi,
     }
 }
 
-/// Build an unweighted 2D CSR LUT from pixel `tth`/`chi` to `(n_tth, n_chi)` bins
+/// Build an unweighted 2D CSR LUT from pixel `radial`/`chi` to `(n_radial, n_chi)` bins
 /// using an explicit chi binning definition.
 ///
 /// `chi_start` is the center of the first chi bin; the effective start edge is
 /// `chi_start - chi_step / 2`. Binning wraps periodically so angles outside the
 /// total range fold back into `0..n_chi`.
 pub fn build_lut2d_csr_with_chi_range(
-    tth: &Vec<f64>,
+    radial: &Vec<f64>,
     chi: &Vec<f64>,
-    n_tth: usize,
+    n_radial: usize,
     n_chi: usize,
     chi_start: f64,
     chi_step: f64,
 ) -> Lut2d {
     assert!(chi_step > 0.0, "chi_step must be positive");
-    let (min_tth, _max_tth, step_tth) = histogram::min_max_step(tth, n_tth);
+    let (min_radial, _max_radial, step_radial) = histogram::min_max_step(radial, n_radial);
     let min_chi = chi_start - 0.5 * chi_step;
 
-    let rows = n_tth * n_chi;
+    let rows = n_radial * n_chi;
     let mut counts = vec![0usize; rows];
 
-    let row_index: Vec<usize> = tth
+    let row_index: Vec<usize> = radial
         .par_iter()
         .zip(chi.par_iter())
-        .map(|(t, a)| {
-            let tb = histogram::get_bin(*t, min_tth, step_tth);
+        .map(|(r, a)| {
+            let rb = histogram::get_bin_clamped(*r, min_radial, step_radial, n_radial);
             let ab = histogram::get_bin_wrapped(*a, min_chi, chi_step, n_chi);
-            ab * n_tth + tb
+            ab * n_radial + rb
         })
         .collect();
     for &row in &row_index {
@@ -182,7 +182,7 @@ pub fn build_lut2d_csr_with_chi_range(
     }
 
     let mut next = row_ptr.clone();
-    let mut col_idx = vec![0usize; tth.len()];
+    let mut col_idx = vec![0usize; radial.len()];
     for (i, &row) in row_index.iter().enumerate() {
         let pos = next[row];
         col_idx[pos] = i;
@@ -193,7 +193,7 @@ pub fn build_lut2d_csr_with_chi_range(
         row_ptr,
         col_idx,
         values: None,
-        n_tth,
+        n_tth: n_radial,
         n_chi,
     }
 }
