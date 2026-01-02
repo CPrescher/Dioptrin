@@ -5,6 +5,7 @@ use std::f64::consts::PI;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::geometry::Geometry;
+use crate::integration::RadialUnit;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
 use crate::math::{self, histogram};
 
@@ -172,14 +173,17 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
     a
 }
 
-/// Pixel-split CSR builders using full pixel splitting  with unified LUT types.
+/// Pixel-split CSR builders using full pixel splitting with unified LUT types.
 ///
 /// Uses pixel corner coordinates from `Geometry` to compute bin overlaps.
+/// The `radial` array contains pixel center values in the selected radial unit.
+/// The `unit` parameter specifies the radial unit for proper corner conversion.
 ///
 /// Example (1D)
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
+/// use dioptrin::integration::RadialUnit;
 /// use dioptrin::lut::{build_lut1d_ps_csr, integrate1d};
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
@@ -188,19 +192,27 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
 /// let geometry = Geometry::new(2, 2, poni);
 /// let tth = geometry.calc_tth_all();
 /// let intensity = vec![1.0; geometry.size()];
-/// let lut = build_lut1d_ps_csr(&geometry, &tth, 4);
+/// let lut = build_lut1d_ps_csr(&geometry, &tth, 4, RadialUnit::TthRad);
 /// let (_bins, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 4);
 /// ```
-pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) -> Lut1d {
-    assert_eq!(tth.len(), geometry.size());
+pub fn build_lut1d_ps_csr(
+    geometry: &Geometry,
+    radial: &Vec<f64>,
+    n_points: usize,
+    unit: RadialUnit,
+) -> Lut1d {
+    assert_eq!(radial.len(), geometry.size());
+
+    let wavelength = geometry.poni.wavelength;
 
     let (d1, d2) = geometry.corner_grid();
     let (tth_corners, chi_corners) = geometry.calc_tth_and_chi(&d1, &d2);
+    let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
     let chi = geometry.calc_chi_all();
 
-    let min = math::min(&tth_corners);
-    let mut max = math::max(&tth_corners);
+    let min = math::min(&radial_corners);
+    let mut max = math::max(&radial_corners);
     max += 10.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
 
@@ -208,7 +220,7 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
     let width = dim2 + 1;
 
     // Single pass: build per-row buckets in parallel, then flatten to CSR.
-    let (buckets, _, _) = tth
+    let (buckets, _, _) = radial
         .par_iter()
         .enumerate()
         .fold(
@@ -219,15 +231,15 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
                     Vec::with_capacity(8),
                 )
             },
-            |(mut acc, mut buf1, mut buf2), (idx, &center_tth)| {
+            |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
                 let row = idx / dim2;
                 let col = idx - row * dim2;
                 let base = row * width + col;
 
-                let t00 = tth_corners[base];
-                let t01 = tth_corners[base + 1];
-                let t10 = tth_corners[base + width];
-                let t11 = tth_corners[base + width + 1];
+                let r00 = radial_corners[base];
+                let r01 = radial_corners[base + 1];
+                let r10 = radial_corners[base + width];
+                let r11 = radial_corners[base + width + 1];
 
                 let center_chi = chi[idx];
                 let a00 = unwrap_angle(chi_corners[base], center_chi);
@@ -235,10 +247,10 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
                 let a10 = unwrap_angle(chi_corners[base + width], center_chi);
                 let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
-                let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+                let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
                 let area_total = polygon_area(&poly).abs();
                 if area_total <= 0.0 {
-                    let pos = (center_tth - min) / step;
+                    let pos = (center_radial - min) / step;
                     if pos < 0.0 {
                         return (acc, buf1, buf2);
                     }
@@ -249,19 +261,19 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
                     return (acc, buf1, buf2);
                 }
 
-                let mut tmin = t00;
-                let mut tmax = t00;
-                for v in [t01, t10, t11] {
-                    if v < tmin {
-                        tmin = v;
+                let mut rmin = r00;
+                let mut rmax = r00;
+                for v in [r01, r10, r11] {
+                    if v < rmin {
+                        rmin = v;
                     }
-                    if v > tmax {
-                        tmax = v;
+                    if v > rmax {
+                        rmax = v;
                     }
                 }
 
-                let mut start = ((tmin - min) / step).floor() as isize;
-                let mut end = ((tmax - min) / step).floor() as isize;
+                let mut start = ((rmin - min) / step).floor() as isize;
+                let mut end = ((rmax - min) / step).floor() as isize;
                 if end < 0 || start >= n_points as isize {
                     return (acc, buf1, buf2);
                 }
@@ -350,22 +362,26 @@ pub fn build_lut1d_ps_csr(geometry: &Geometry, tth: &Vec<f64>, n_points: usize) 
 
 fn build_lut2d_ps_csr_with_chi(
     geometry: &Geometry,
-    tth: &Vec<f64>,
+    radial: &Vec<f64>,
     chi: &Vec<f64>,
-    n_tth: usize,
+    n_radial: usize,
     n_chi: usize,
     chi_range: Option<(f64, f64)>,
+    unit: RadialUnit,
 ) -> Lut2d {
-    assert_eq!(tth.len(), geometry.size());
+    assert_eq!(radial.len(), geometry.size());
     assert_eq!(chi.len(), geometry.size());
+
+    let wavelength = geometry.poni.wavelength;
 
     let (d1, d2) = geometry.corner_grid();
     let (tth_corners, chi_corners) = geometry.calc_tth_and_chi(&d1, &d2);
+    let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
 
-    let min_tth = math::min(&tth_corners);
-    let mut max_tth = math::max(&tth_corners);
-    max_tth += 10.0 * f64::EPSILON;
-    let step_tth = (max_tth - min_tth) / n_tth as f64;
+    let min_radial = math::min(&radial_corners);
+    let mut max_radial = math::max(&radial_corners);
+    max_radial += 10.0 * f64::EPSILON;
+    let step_radial = (max_radial - min_radial) / n_radial as f64;
 
     let (min_chi, step_chi) = match chi_range {
         Some((start, step)) => {
@@ -381,22 +397,22 @@ fn build_lut2d_ps_csr_with_chi(
         }
     };
 
-    let rows = n_tth * n_chi;
+    let rows = n_radial * n_chi;
     let dim2 = geometry.dim2;
     let width = dim2 + 1;
 
     let counts: Vec<AtomicUsize> = (0..rows).map(|_| AtomicUsize::new(0)).collect();
-    (0..tth.len()).into_par_iter().for_each_init(
+    (0..radial.len()).into_par_iter().for_each_init(
         || (Vec::with_capacity(8), Vec::with_capacity(8)),
         |(buf1, buf2), idx| {
             let row = idx / dim2;
             let col = idx - row * dim2;
             let base = row * width + col;
 
-            let t00 = tth_corners[base];
-            let t01 = tth_corners[base + 1];
-            let t10 = tth_corners[base + width];
-            let t11 = tth_corners[base + width + 1];
+            let r00 = radial_corners[base];
+            let r01 = radial_corners[base + 1];
+            let r10 = radial_corners[base + width];
+            let r11 = radial_corners[base + width + 1];
 
             let center_chi = chi[idx];
             let a00 = unwrap_angle(chi_corners[base], center_chi);
@@ -404,23 +420,23 @@ fn build_lut2d_ps_csr_with_chi(
             let a10 = unwrap_angle(chi_corners[base + width], center_chi);
             let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
-            let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+            let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
-                let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
+                let rb = histogram::get_bin(radial[idx], min_radial, step_radial);
                 let ab = histogram::get_bin_wrapped(center_chi, min_chi, step_chi, n_chi);
-                counts[ab * n_tth + tb].fetch_add(1, Ordering::Relaxed);
+                counts[ab * n_radial + rb].fetch_add(1, Ordering::Relaxed);
                 return;
             }
 
-            let mut tmin = t00;
-            let mut tmax = t00;
-            for v in [t01, t10, t11] {
-                if v < tmin {
-                    tmin = v;
+            let mut rmin = r00;
+            let mut rmax = r00;
+            for v in [r01, r10, r11] {
+                if v < rmin {
+                    rmin = v;
                 }
-                if v > tmax {
-                    tmax = v;
+                if v > rmax {
+                    rmax = v;
                 }
             }
             let mut amin = a00;
@@ -434,16 +450,16 @@ fn build_lut2d_ps_csr_with_chi(
                 }
             }
 
-            let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
-            let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
-            if t_end < 0 || t_start >= n_tth as isize {
+            let mut r_start = ((rmin - min_radial) / step_radial).floor() as isize;
+            let mut r_end = ((rmax - min_radial) / step_radial).floor() as isize;
+            if r_end < 0 || r_start >= n_radial as isize {
                 return;
             }
-            if t_start < 0 {
-                t_start = 0;
+            if r_start < 0 {
+                r_start = 0;
             }
-            if t_end >= n_tth as isize {
-                t_end = n_tth as isize - 1;
+            if r_end >= n_radial as isize {
+                r_end = n_radial as isize - 1;
             }
 
             let a_start = ((amin - min_chi) / step_chi).floor() as isize;
@@ -452,19 +468,19 @@ fn build_lut2d_ps_csr_with_chi(
                 return;
             }
 
-            for bt in t_start..=t_end {
-                let t0 = min_tth + bt as f64 * step_tth;
-                let t1 = t0 + step_tth;
+            for br in r_start..=r_end {
+                let r0 = min_radial + br as f64 * step_radial;
+                let r1 = r0 + step_radial;
                 for ba in a_start..=a_end {
                     let a0 = min_chi + ba as f64 * step_chi;
                     let a1 = a0 + step_chi;
-                    let clipped = clip_polygon_rect_scratch(&poly, t0, t1, a0, a1, buf1, buf2);
+                    let clipped = clip_polygon_rect_scratch(&poly, r0, r1, a0, a1, buf1, buf2);
                     let area = polygon_area(&clipped).abs();
                     if area <= 0.0 {
                         continue;
                     }
                     let row_chi = ((ba % n_chi as isize) + n_chi as isize) % n_chi as isize;
-                    let row = row_chi as usize * n_tth + bt as usize;
+                    let row = row_chi as usize * n_radial + br as usize;
                     counts[row].fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -480,17 +496,17 @@ fn build_lut2d_ps_csr_with_chi(
     let values: Vec<AtomicU64> = (0..total).map(|_| AtomicU64::new(0)).collect();
     let next: Vec<AtomicUsize> = row_ptr.iter().map(|&v| AtomicUsize::new(v)).collect();
 
-    (0..tth.len()).into_par_iter().for_each_init(
+    (0..radial.len()).into_par_iter().for_each_init(
         || (Vec::with_capacity(8), Vec::with_capacity(8)),
         |(buf1, buf2), idx| {
             let row = idx / dim2;
             let col = idx - row * dim2;
             let base = row * width + col;
 
-            let t00 = tth_corners[base];
-            let t01 = tth_corners[base + 1];
-            let t10 = tth_corners[base + width];
-            let t11 = tth_corners[base + width + 1];
+            let r00 = radial_corners[base];
+            let r01 = radial_corners[base + 1];
+            let r10 = radial_corners[base + width];
+            let r11 = radial_corners[base + width + 1];
 
             let center_chi = chi[idx];
             let a00 = unwrap_angle(chi_corners[base], center_chi);
@@ -498,26 +514,26 @@ fn build_lut2d_ps_csr_with_chi(
             let a10 = unwrap_angle(chi_corners[base + width], center_chi);
             let a11 = unwrap_angle(chi_corners[base + width + 1], center_chi);
 
-            let poly = [(t00, a00), (t01, a01), (t11, a11), (t10, a10)];
+            let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
-                let tb = histogram::get_bin(tth[idx], min_tth, step_tth);
+                let rb = histogram::get_bin(radial[idx], min_radial, step_radial);
                 let ab = histogram::get_bin_wrapped(center_chi, min_chi, step_chi, n_chi);
-                let row = ab * n_tth + tb;
+                let row = ab * n_radial + rb;
                 let p = next[row].fetch_add(1, Ordering::Relaxed);
                 col_idx[p].store(idx, Ordering::Relaxed);
                 values[p].store(1.0f64.to_bits(), Ordering::Relaxed);
                 return;
             }
 
-            let mut tmin = t00;
-            let mut tmax = t00;
-            for v in [t01, t10, t11] {
-                if v < tmin {
-                    tmin = v;
+            let mut rmin = r00;
+            let mut rmax = r00;
+            for v in [r01, r10, r11] {
+                if v < rmin {
+                    rmin = v;
                 }
-                if v > tmax {
-                    tmax = v;
+                if v > rmax {
+                    rmax = v;
                 }
             }
             let mut amin = a00;
@@ -531,16 +547,16 @@ fn build_lut2d_ps_csr_with_chi(
                 }
             }
 
-            let mut t_start = ((tmin - min_tth) / step_tth).floor() as isize;
-            let mut t_end = ((tmax - min_tth) / step_tth).floor() as isize;
-            if t_end < 0 || t_start >= n_tth as isize {
+            let mut r_start = ((rmin - min_radial) / step_radial).floor() as isize;
+            let mut r_end = ((rmax - min_radial) / step_radial).floor() as isize;
+            if r_end < 0 || r_start >= n_radial as isize {
                 return;
             }
-            if t_start < 0 {
-                t_start = 0;
+            if r_start < 0 {
+                r_start = 0;
             }
-            if t_end >= n_tth as isize {
-                t_end = n_tth as isize - 1;
+            if r_end >= n_radial as isize {
+                r_end = n_radial as isize - 1;
             }
 
             let a_start = ((amin - min_chi) / step_chi).floor() as isize;
@@ -549,19 +565,19 @@ fn build_lut2d_ps_csr_with_chi(
                 return;
             }
 
-            for bt in t_start..=t_end {
-                let t0 = min_tth + bt as f64 * step_tth;
-                let t1 = t0 + step_tth;
+            for br in r_start..=r_end {
+                let r0 = min_radial + br as f64 * step_radial;
+                let r1 = r0 + step_radial;
                 for ba in a_start..=a_end {
                     let a0 = min_chi + ba as f64 * step_chi;
                     let a1 = a0 + step_chi;
-                    let clipped = clip_polygon_rect_scratch(&poly, t0, t1, a0, a1, buf1, buf2);
+                    let clipped = clip_polygon_rect_scratch(&poly, r0, r1, a0, a1, buf1, buf2);
                     let area = polygon_area(&clipped).abs();
                     if area <= 0.0 {
                         continue;
                     }
                     let row_chi = ((ba % n_chi as isize) + n_chi as isize) % n_chi as isize;
-                    let row = row_chi as usize * n_tth + bt as usize;
+                    let row = row_chi as usize * n_radial + br as usize;
                     let p = next[row].fetch_add(1, Ordering::Relaxed);
                     col_idx[p].store(idx, Ordering::Relaxed);
                     values[p].store(area.to_bits(), Ordering::Relaxed);
@@ -594,20 +610,24 @@ fn build_lut2d_ps_csr_with_chi(
         row_ptr,
         col_idx,
         values: Some(values),
-        n_tth,
+        n_tth: n_radial,
         n_chi,
     }
 }
 
-/// Build a 2D pixel-split LUT with full polygon splitting over `tth`/`chi` bins.
+/// Build a 2D pixel-split LUT with full polygon splitting over radial/chi bins.
 ///
-/// This clips each pixel quad in (tth, chi) space against bin rectangles and
+/// This clips each pixel quad in (radial, chi) space against bin rectangles and
 /// accumulates area-based weights.
+///
+/// The `radial` array contains pixel center values in the selected radial unit.
+/// The `unit` parameter specifies the radial unit for proper corner conversion.
 ///
 /// Example (2D)
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
+/// use dioptrin::integration::RadialUnit;
 /// use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
@@ -617,18 +637,19 @@ fn build_lut2d_ps_csr_with_chi(
 /// let tth = geometry.calc_tth_all();
 /// let chi = geometry.calc_chi_all();
 /// let intensity = vec![1.0; geometry.size()];
-/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
+/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4, RadialUnit::TthRad);
 /// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
 pub fn build_lut2d_ps_csr(
     geometry: &Geometry,
-    tth: &Vec<f64>,
+    radial: &Vec<f64>,
     chi: &Vec<f64>,
-    n_tth: usize,
+    n_radial: usize,
     n_chi: usize,
+    unit: RadialUnit,
 ) -> Lut2d {
-    build_lut2d_ps_csr_with_chi(geometry, tth, chi, n_tth, n_chi, None)
+    build_lut2d_ps_csr_with_chi(geometry, radial, chi, n_radial, n_chi, None, unit)
 }
 
 /// Build a 2D pixel-split LUT using an explicit chi binning definition.
@@ -638,12 +659,21 @@ pub fn build_lut2d_ps_csr(
 /// total range fold back into `0..n_chi`.
 pub fn build_lut2d_ps_csr_with_chi_range(
     geometry: &Geometry,
-    tth: &Vec<f64>,
+    radial: &Vec<f64>,
     chi: &Vec<f64>,
-    n_tth: usize,
+    n_radial: usize,
     n_chi: usize,
     chi_start: f64,
     chi_step: f64,
+    unit: RadialUnit,
 ) -> Lut2d {
-    build_lut2d_ps_csr_with_chi(geometry, tth, chi, n_tth, n_chi, Some((chi_start, chi_step)))
+    build_lut2d_ps_csr_with_chi(
+        geometry,
+        radial,
+        chi,
+        n_radial,
+        n_chi,
+        Some((chi_start, chi_step)),
+        unit,
+    )
 }

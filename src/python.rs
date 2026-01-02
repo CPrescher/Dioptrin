@@ -6,7 +6,7 @@ use rayon::ThreadPoolBuilder;
 
 use crate::frame::Frame;
 use crate::geometry::Geometry;
-use crate::integration::{IntegrationMethod, Integrator};
+use crate::integration::{IntegrationMethod, Integrator, RadialUnit};
 use crate::poni::Poni;
 
 fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
@@ -25,9 +25,56 @@ fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<Integration
     }
 }
 
+fn parse_unit(unit: Option<&str>) -> Result<RadialUnit, PyErr> {
+    match unit.unwrap_or("2th_rad").to_lowercase().as_str() {
+        "2th_rad" | "tth_rad" | "2theta_rad" => Ok(RadialUnit::TthRad),
+        "2th_deg" | "tth_deg" | "2theta_deg" => Ok(RadialUnit::TthDeg),
+        "q_a^-1" | "q_angstrom" | "q_a" => Ok(RadialUnit::QAngstrom),
+        "q_nm^-1" | "q_nm" => Ok(RadialUnit::QNm),
+        other => Err(PyValueError::new_err(format!(
+            "Unknown radial unit: {}. Valid options: 2th_rad, 2th_deg, q_A^-1, q_nm^-1",
+            other
+        ))),
+    }
+}
+
+fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
+    let mut poni = Poni::new();
+
+    if let Some(val) = poni_dict.get_item("pixel1")? {
+        poni.pixel1 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("pixel2")? {
+        poni.pixel2 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("distance")? {
+        poni.distance = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("poni1")? {
+        poni.poni1 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("poni2")? {
+        poni.poni2 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("rot1")? {
+        poni.rot1 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("rot2")? {
+        poni.rot2 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("rot3")? {
+        poni.rot3 = val.extract()?;
+    }
+    if let Some(val) = poni_dict.get_item("wavelength")? {
+        poni.wavelength = val.extract()?;
+    }
+
+    Ok(poni)
+}
+
 #[pyfunction]
 #[pyo3(
-    text_signature = "(poni_path, tiff_path, n_points, method=None, polarization_factor=None, n_ss=None)"
+    text_signature = "(poni_path, tiff_path, n_points, method=None, polarization_factor=None, n_ss=None, unit=None)"
 )]
 fn integrate1d(
     poni_path: &str,
@@ -36,6 +83,7 @@ fn integrate1d(
     method: Option<&str>,
     polarization_factor: Option<f64>,
     n_ss: Option<usize>,
+    unit: Option<&str>,
 ) -> PyResult<(Vec<f64>, Vec<f64>)> {
     let poni = Poni::load(poni_path)
         .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
@@ -43,7 +91,9 @@ fn integrate1d(
         .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
-    let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+    let mut integrator = Integrator::new(geometry)
+        .with_method(parse_method(method, n_ss)?)
+        .with_radial_unit(parse_unit(unit)?);
     if let Some(polarization_factor) = polarization_factor {
         integrator = integrator.with_polarization_factor(polarization_factor);
     }
@@ -53,7 +103,7 @@ fn integrate1d(
 
 #[pyfunction]
 #[pyo3(
-    text_signature = "(poni_path, tiff_path, n_points, method=None, polarization_factor=None, n_ss=None)"
+    text_signature = "(poni_path, tiff_path, n_points, method=None, polarization_factor=None, n_ss=None, unit=None)"
 )]
 fn integrate1d_with_errors(
     poni_path: &str,
@@ -62,6 +112,7 @@ fn integrate1d_with_errors(
     method: Option<&str>,
     polarization_factor: Option<f64>,
     n_ss: Option<usize>,
+    unit: Option<&str>,
 ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
     let poni = Poni::load(poni_path)
         .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
@@ -69,7 +120,9 @@ fn integrate1d_with_errors(
         .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
-    let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+    let mut integrator = Integrator::new(geometry)
+        .with_method(parse_method(method, n_ss)?)
+        .with_radial_unit(parse_unit(unit)?);
     if let Some(polarization_factor) = polarization_factor {
         integrator = integrator.with_polarization_factor(polarization_factor);
     }
@@ -99,7 +152,7 @@ struct PyIntegrator {
 #[pymethods]
 impl PyIntegrator {
     #[new]
-    #[pyo3(signature = (poni_path, dim1, dim2, method=None, polarization_factor=None, n_ss=None))]
+    #[pyo3(signature = (poni_path, dim1, dim2, method=None, polarization_factor=None, n_ss=None, unit=None))]
     fn new(
         poni_path: &str,
         dim1: usize,
@@ -107,11 +160,14 @@ impl PyIntegrator {
         method: Option<&str>,
         polarization_factor: Option<f64>,
         n_ss: Option<usize>,
+        unit: Option<&str>,
     ) -> PyResult<Self> {
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
         let geometry = Geometry::new(dim1, dim2, poni);
-        let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(parse_method(method, n_ss)?)
+            .with_radial_unit(parse_unit(unit)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -120,18 +176,21 @@ impl PyIntegrator {
     }
 
     #[classmethod]
-    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None))]
+    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None))]
     fn from_poni_file(
         _cls: &Bound<'_, PyType>,
         poni_path: &str,
         method: Option<&str>,
         polarization_factor: Option<f64>,
         n_ss: Option<usize>,
+        unit: Option<&str>,
     ) -> PyResult<Self> {
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(parse_method(method, n_ss)?)
+            .with_radial_unit(parse_unit(unit)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -140,17 +199,20 @@ impl PyIntegrator {
     }
 
     #[classmethod]
-    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None))]
+    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None))]
     fn from_poni_dict(
         _cls: &Bound<'_, PyType>,
         poni_dict: &Bound<'_, PyDict>,
         method: Option<&str>,
         polarization_factor: Option<f64>,
         n_ss: Option<usize>,
+        unit: Option<&str>,
     ) -> PyResult<Self> {
         let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry).with_method(parse_method(method, n_ss)?);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(parse_method(method, n_ss)?)
+            .with_radial_unit(parse_unit(unit)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -233,6 +295,24 @@ impl PyIntegrator {
 
     fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
         self.integrator.set_polarization_factor(polarization_factor);
+    }
+
+    /// Set the radial unit for integration output.
+    ///
+    /// Valid options: "2th_rad", "2th_deg", "q_A^-1", "q_nm^-1"
+    fn set_unit(&mut self, unit: &str) -> PyResult<()> {
+        self.integrator.set_radial_unit(parse_unit(Some(unit))?);
+        Ok(())
+    }
+
+    /// Get the current radial unit as a string.
+    fn get_unit(&self) -> &'static str {
+        match self.integrator.radial_unit() {
+            RadialUnit::TthRad => "2th_rad",
+            RadialUnit::TthDeg => "2th_deg",
+            RadialUnit::QAngstrom => "q_A^-1",
+            RadialUnit::QNm => "q_nm^-1",
+        }
     }
 }
 

@@ -43,20 +43,21 @@ impl Integrator {
             mask.assert_compatible(frame.dim1, frame.dim2);
             &mask.data
         });
+        let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.tth, &intensity, n_points, mask_data)
+                histogram::histogram(&self.radial, &intensity, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
                 crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
                 crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
                 crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
         };
@@ -75,20 +76,21 @@ impl Integrator {
             mask.assert_compatible(frame.dim1, frame.dim2);
             &mask.data
         });
+        let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => histogram::histogram_with_errors(
-                &self.tth, &intensity, &variance, n_points, mask_data,
+                &self.radial, &intensity, &variance, n_points, mask_data,
             ),
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
             }
         };
@@ -108,20 +110,21 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
             &mask.data
         });
+        let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.tth, &intensity, n_points, mask_data)
+                histogram::histogram(&self.radial, &intensity, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
                 crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
                 crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
                 crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
             }
         }
@@ -140,20 +143,21 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
             &mask.data
         });
+        let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => histogram::histogram_with_errors(
-                &self.tth, &intensity, &variance, n_points, mask_data,
+                &self.radial, &intensity, &variance, n_points, mask_data,
             ),
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss });
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
             }
         }
@@ -184,27 +188,28 @@ impl Integrator {
     /// let y = integrator.integrate2d(&frame, 2, 2);
     /// assert_eq!(y.len(), 4);
     /// ```
-    pub fn integrate2d(&mut self, frame: &Frame, n_tth: usize, n_chi: usize) -> Vec<f64> {
+    pub fn integrate2d(&mut self, frame: &Frame, n_radial: usize, n_chi: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             &mask.data
         });
+        let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.tth, &intensity, n_tth, mask_data).1
+                histogram::histogram(&self.radial, &intensity, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_radial, n_chi, unit });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_radial, n_chi, unit });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_chi, n_ss });
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_radial, n_chi, n_ss, unit });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
         };
@@ -221,7 +226,7 @@ impl Integrator {
     pub fn integrate2d_with_chi_range(
         &mut self,
         frame: &Frame,
-        n_tth: usize,
+        n_radial: usize,
         n_chi: usize,
         chi_start: f64,
         chi_step: f64,
@@ -233,20 +238,21 @@ impl Integrator {
             &mask.data
         });
         let chi = ChiRangeKey::new(chi_start, chi_step);
+        let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.tth, &intensity, n_tth, mask_data).1
+                histogram::histogram(&self.radial, &intensity, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::CountingChi { n_tth, n_chi, chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::CountingChi { n_radial, n_chi, chi, unit });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitChi { n_tth, n_chi, chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitChi { n_radial, n_chi, chi, unit });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledChi { n_tth, n_chi, n_ss, chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledChi { n_radial, n_chi, n_ss, chi, unit });
                 crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
             }
         };
@@ -257,7 +263,7 @@ impl Integrator {
     pub fn integrate2d_with_errors(
         &mut self,
         frame: &Frame,
-        n_tth: usize,
+        n_radial: usize,
         n_chi: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
@@ -266,23 +272,24 @@ impl Integrator {
             mask.assert_compatible(frame.dim1, frame.dim2);
             &mask.data
         });
+        let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &self.tth, &intensity, &variance, n_tth, mask_data,
+                    &self.radial, &intensity, &variance, n_radial, mask_data,
                 );
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_tth, n_chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_radial, n_chi, unit });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_tth, n_chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_radial, n_chi, unit });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_tth, n_chi, n_ss });
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_radial, n_chi, n_ss, unit });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
         };
@@ -298,7 +305,7 @@ impl Integrator {
     pub fn integrate2d_with_chi_range_and_errors(
         &mut self,
         frame: &Frame,
-        n_tth: usize,
+        n_radial: usize,
         n_chi: usize,
         chi_start: f64,
         chi_step: f64,
@@ -310,23 +317,24 @@ impl Integrator {
             &mask.data
         });
         let chi = ChiRangeKey::new(chi_start, chi_step);
+        let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &self.tth, &intensity, &variance, n_tth, mask_data,
+                    &self.radial, &intensity, &variance, n_radial, mask_data,
                 );
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::CountingChi { n_tth, n_chi, chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::CountingChi { n_radial, n_chi, chi, unit });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitChi { n_tth, n_chi, chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitChi { n_radial, n_chi, chi, unit });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledChi { n_tth, n_chi, n_ss, chi });
+                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledChi { n_radial, n_chi, n_ss, chi, unit });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
             }
         };

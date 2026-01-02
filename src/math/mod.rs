@@ -18,8 +18,30 @@ pub fn min<T: PartialOrd + Copy>(v: &Vec<T>) -> T {
     min
 }
 
+/// Estimates the minimum value of a slice
+pub fn min_slice<T: PartialOrd + Copy>(v: &[T]) -> T {
+    let mut min = v[0];
+    for i in 1..v.len() {
+        if v[i] < min {
+            min = v[i];
+        }
+    }
+    min
+}
+
 /// Estimates the maximum value of a vector
 pub fn max<T: PartialOrd + Copy>(v: &Vec<T>) -> T {
+    let mut max = v[0];
+    for i in 1..v.len() {
+        if v[i] > max {
+            max = v[i];
+        }
+    }
+    max
+}
+
+/// Estimates the maximum value of a slice
+pub fn max_slice<T: PartialOrd + Copy>(v: &[T]) -> T {
     let mut max = v[0];
     for i in 1..v.len() {
         if v[i] > max {

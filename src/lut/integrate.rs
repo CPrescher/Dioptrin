@@ -11,6 +11,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
+/// use dioptrin::integration::RadialUnit;
 /// use dioptrin::lut::{build_lut1d_ps_csr, integrate1d};
 /// // Simple pixel-split (weighted) 1D example
 /// let mut poni = Poni::new();
@@ -20,7 +21,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// let geometry = Geometry::new(2, 2, poni);
 /// let tth = geometry.calc_tth_all();
 /// let intensity = vec![1.0; geometry.size()];
-/// let lut = build_lut1d_ps_csr(&geometry, &tth, 4);
+/// let lut = build_lut1d_ps_csr(&geometry, &tth, 4, RadialUnit::TthRad);
 /// let (_x, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 4);
 /// ```
@@ -221,6 +222,7 @@ pub fn integrate1d_with_errors(
 /// ```
 /// use dioptrin::geometry::Geometry;
 /// use dioptrin::poni::Poni;
+/// use dioptrin::integration::RadialUnit;
 /// use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
 /// let mut poni = Poni::new();
 /// poni.pixel1 = 1.0;
@@ -230,7 +232,7 @@ pub fn integrate1d_with_errors(
 /// let tth = geometry.calc_tth_all();
 /// let chi = geometry.calc_chi_all();
 /// let intensity = vec![1.0; geometry.size()];
-/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4);
+/// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &chi, 4, 4, RadialUnit::TthRad);
 /// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```

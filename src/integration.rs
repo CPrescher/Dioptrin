@@ -6,11 +6,70 @@ mod methods;
 mod tests;
 
 use std::cell::RefCell;
+use std::f64::consts::PI;
 
 use crate::geometry::Geometry;
 use crate::mask::Mask;
 
 use cache::{Lut1dCache, Lut2dCache};
+
+/// Radial unit for integration output.
+///
+/// Defines the unit used for the radial (scattering angle / momentum transfer) axis
+/// in 1D and 2D integrations. The LUT is built directly on the grid in the selected unit,
+/// ensuring correct binning for non-linear transforms (e.g., tth to q).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RadialUnit {
+    /// Two-theta in radians (default)
+    #[default]
+    TthRad,
+    /// Two-theta in degrees
+    TthDeg,
+    /// Scattering vector q in inverse Angstroms (Å⁻¹)
+    QAngstrom,
+    /// Scattering vector q in inverse nanometers (nm⁻¹)
+    QNm,
+}
+
+impl RadialUnit {
+    /// Convert two-theta values (in radians) to this unit.
+    ///
+    /// For q units, requires the wavelength in meters.
+    /// Panics if wavelength is required but not provided or is zero/negative.
+    pub fn convert_from_tth(&self, tth_rad: &[f64], wavelength: f64) -> Vec<f64> {
+        match self {
+            RadialUnit::TthRad => tth_rad.to_vec(),
+            RadialUnit::TthDeg => tth_rad.iter().map(|&t| t.to_degrees()).collect(),
+            RadialUnit::QAngstrom => {
+                assert!(
+                    wavelength > 0.0,
+                    "Wavelength must be positive for q conversion"
+                );
+                // q = 4π sin(θ) / λ, where θ = tth/2
+                // wavelength in meters, convert to Angstroms (1e10)
+                let wl_angstrom = wavelength * 1e10;
+                let factor = 4.0 * PI / wl_angstrom;
+                tth_rad.iter().map(|&t| factor * (t / 2.0).sin()).collect()
+            }
+            RadialUnit::QNm => {
+                assert!(
+                    wavelength > 0.0,
+                    "Wavelength must be positive for q conversion"
+                );
+                // q = 4π sin(θ) / λ, where θ = tth/2
+                // wavelength in meters, convert to nm (1e9)
+                let wl_nm = wavelength * 1e9;
+                let factor = 4.0 * PI / wl_nm;
+                tth_rad.iter().map(|&t| factor * (t / 2.0).sin()).collect()
+            }
+        }
+    }
+
+    /// Returns true if this unit requires a wavelength for conversion.
+    pub fn requires_wavelength(&self) -> bool {
+        matches!(self, RadialUnit::QAngstrom | RadialUnit::QNm)
+    }
+}
 
 /// Integration method selection (applies to both 1D and 2D integrations).
 ///
@@ -51,7 +110,10 @@ pub enum IntegrationMethod {
 
 pub struct Integrator {
     geometry: Geometry,
+    /// Two-theta values in radians (always computed internally)
     tth: Vec<f64>,
+    /// Radial values in the selected unit (computed from tth)
+    radial: Vec<f64>,
     chi: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
@@ -60,6 +122,7 @@ pub struct Integrator {
     mask: Option<Mask>,
     method: IntegrationMethod,
     polarization_factor: Option<f64>,
+    radial_unit: RadialUnit,
 }
 
 impl Integrator {
@@ -67,6 +130,7 @@ impl Integrator {
         Integrator {
             geometry,
             tth: vec![],
+            radial: vec![],
             chi: vec![],
             solid_angle: vec![],
             polarization: vec![],
@@ -75,6 +139,7 @@ impl Integrator {
             mask: None,
             method: IntegrationMethod::PixelSplit,
             polarization_factor: None,
+            radial_unit: RadialUnit::default(),
         }
     }
 
@@ -92,6 +157,32 @@ impl Integrator {
     // setter for method
     pub fn set_method(&mut self, method: IntegrationMethod) {
         self.method = method;
+    }
+
+    // builder pattern for radial unit
+    pub fn with_radial_unit(mut self, unit: RadialUnit) -> Self {
+        self.radial_unit = unit;
+        self.invalidate_caches();
+        self
+    }
+
+    // getter for radial unit
+    pub fn radial_unit(&self) -> RadialUnit {
+        self.radial_unit
+    }
+
+    // setter for radial unit
+    pub fn set_radial_unit(&mut self, unit: RadialUnit) {
+        if self.radial_unit != unit {
+            self.radial_unit = unit;
+            // Recompute radial values and invalidate caches
+            if !self.tth.is_empty() {
+                self.radial = self
+                    .radial_unit
+                    .convert_from_tth(&self.tth, self.geometry.poni.wavelength);
+            }
+            self.invalidate_caches();
+        }
     }
 
     // builder pattern for mask
@@ -148,13 +239,29 @@ impl Integrator {
         &self.polarization
     }
 
-    // getter for tth vector for each pixel as a flattened vector
+    // getter for tth vector for each pixel as a flattened vector (always in radians)
     pub fn tth(&self) -> &Vec<f64> {
         &self.tth
+    }
+
+    // getter for radial vector for each pixel in the selected unit
+    pub fn radial(&self) -> &Vec<f64> {
+        &self.radial
     }
 
     // getter for chi vector for each pixel as a flattened vector
     pub fn chi(&self) -> &Vec<f64> {
         &self.chi
+    }
+
+    // helper to invalidate LUT caches
+    fn invalidate_caches(&self) {
+        let mut cache_1d = self.cache_1d.borrow_mut();
+        cache_1d.key = None;
+        cache_1d.lut = None;
+        drop(cache_1d);
+        let mut cache_2d = self.cache_2d.borrow_mut();
+        cache_2d.key = None;
+        cache_2d.lut = None;
     }
 }

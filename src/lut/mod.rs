@@ -26,6 +26,9 @@ mod integrate;
 mod pixel_split;
 mod supersampled;
 
+// Re-export RadialUnit from integration module for use in LUT builders
+pub use crate::integration::RadialUnit;
+
 // Re-export unified public API
 pub use common::hull_grid;
 pub use counting_csr::{
