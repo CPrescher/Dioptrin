@@ -81,6 +81,7 @@ impl Integrator {
     /// checks whether current lut was calculated for the same number of points and unit, if not,
     /// it is recalculated
     pub(super) fn ensure_lut1d(&self, key: OneDKey) -> std::cell::Ref<'_, lut::Lut1d> {
+        // Optimized: check if rebuild needed with immutable borrow
         let rebuild = {
             let cache = self.cache_1d.borrow();
             match &cache.key {
@@ -115,6 +116,7 @@ impl Integrator {
             cache.key = Some(key);
             cache.lut = Some(lut1d);
         }
+        // Single borrow to return the reference
         std::cell::Ref::map(self.cache_1d.borrow(), |cache| cache.lut.as_ref().unwrap())
     }
 

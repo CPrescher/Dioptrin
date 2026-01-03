@@ -117,6 +117,11 @@ pub struct Integrator {
     azimuth: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
+    /// Combined correction factor: 1.0 / (polarization * solid_angle)
+    /// Pre-computed to avoid two divisions per pixel in correct_intensity()
+    correction_factor: Vec<f64>,
+    /// Cached size to avoid repeated length checks
+    cached_size: usize,
     cache_1d: RefCell<Lut1dCache>,
     cache_2d: RefCell<Lut2dCache>,
     mask: Option<Mask>,
@@ -134,6 +139,8 @@ impl Integrator {
             azimuth: vec![],
             solid_angle: vec![],
             polarization: vec![],
+            correction_factor: vec![],
+            cached_size: 0,
             cache_1d: RefCell::new(Lut1dCache::new()),
             cache_2d: RefCell::new(Lut2dCache::new()),
             mask: None,
