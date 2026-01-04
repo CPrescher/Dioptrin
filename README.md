@@ -113,6 +113,30 @@ fn main() {
 }
 ```
 
+## Examples
+
+Runnable examples are provided in the `examples/` directory:
+
+### 1D Integration
+```
+cargo run --example integrate1d [image.tif] [calibration.poni]
+```
+Loads a PONI file and TIFF image, performs 1D azimuthal integration, and prints the results.
+
+### 2D Integration
+```
+cargo run --example integrate2d [image.tif] [calibration.poni]
+```
+Performs 2D integration with radial and azimuthal binning.
+
+### Timing Benchmark
+```
+cargo run --release --example timing1d [image.tif] [calibration.poni]
+```
+Measures 1D integration performance with a warm-up phase and 100 iterations.
+
+All examples default to `test_data/CeO2_Pilatus1M.tif` and `test_data/v1.poni` if no arguments are provided.
+
 ## Benchmarks
 
 Run integration benchmarks:
