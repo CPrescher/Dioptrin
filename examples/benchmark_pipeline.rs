@@ -147,23 +147,33 @@ fn benchmark_config(
                 .build()
                 .unwrap();
 
+            // Load poni once per worker (same calibration for all images)
+            let poni = Poni::load(&poni_path).unwrap();
+
+            // We need to know dimensions for the integrator, load first frame to get them
+            let first_frame = Frame::from_tiff(image_path.clone()).unwrap();
+            let dim1 = first_frame.dim1;
+            let dim2 = first_frame.dim2;
+
+            let geometry = Geometry::new(dim1, dim2, poni);
+            let mut integrator = Integrator::new(geometry)
+                .with_method(IntegrationMethod::PixelSplit)
+                .with_radial_unit(RadialUnit::TthDeg);
+
+            // Warm-up integration
+            pool.install(|| {
+                let _ = integrator.integrate1d(&first_frame, n_bins);
+            });
+            drop(first_frame);
+
             while running.load(Ordering::Relaxed) {
-                // Full pipeline: load + integrate
+                // Load image
                 let frame = match Frame::from_tiff(image_path.clone()) {
                     Ok(f) => f,
                     Err(_) => continue,
                 };
 
-                let poni = match Poni::load(&poni_path) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-
-                let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-                let mut integrator = Integrator::new(geometry)
-                    .with_method(IntegrationMethod::PixelSplit)
-                    .with_radial_unit(RadialUnit::TthDeg);
-
+                // Integrate
                 pool.install(|| {
                     let _ = integrator.integrate1d(&frame, n_bins);
                 });
