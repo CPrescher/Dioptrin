@@ -141,6 +141,12 @@ cargo run --release --example benchmark_threads [image.tif] [calibration.poni]
 ```
 Benchmarks 1D and 2D integration performance across different thread counts (1 to system maximum), showing timing and speedup for each configuration.
 
+### Pipeline Throughput Benchmark
+```
+cargo run --release --example benchmark_pipeline [image.tif] [calibration.poni]
+```
+Measures real throughput of the full pipeline (load file + integrate) with different combinations of parallel workers and threads per worker. Helps find the optimal configuration for batch processing.
+
 All examples default to `test_data/CeO2_Pilatus1M.tif` and `test_data/v1.poni` if no arguments are provided.
 
 ## Benchmarks

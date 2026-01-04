@@ -6,6 +6,7 @@
 //! Run with: cargo run --release --example benchmark_threads [image.tif] [calibration.poni]
 
 use std::env;
+use std::io::Write;
 use std::time::Instant;
 
 use dioptrin::frame::Frame;
@@ -41,13 +42,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut results_1d: Vec<(usize, f64)> = Vec::new();
     let mut results_2d: Vec<(usize, f64)> = Vec::new();
 
+    print!("Benchmarking");
+    std::io::stdout().flush().ok();
+
     for n_threads in 1..=max_threads {
-        // We need to create a new pool since global can only be set once
+        // Create a new thread pool for this thread count
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(n_threads)
             .build()?;
 
-        // Create fresh integrator for each thread count (reload poni since Geometry takes ownership)
+        // Create fresh integrator (reload poni since Geometry takes ownership)
         let poni = Poni::load(&poni_path)?;
         let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
         let mut integrator = Integrator::new(geometry)
@@ -83,14 +87,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         results_2d.push((n_threads, per_iter_2d_us));
 
         print!(".");
-        use std::io::Write;
         std::io::stdout().flush().ok();
     }
     println!("\n");
 
-    // Print results
+    // Print 1D results
     println!("1D Integration ({} bins)", n_bins_1d);
-    println!("{:>8} {:>12} {:>12}", "Threads", "Time (µs)", "Speedup");
+    println!(
+        "{:>8} {:>12} {:>12}",
+        "Threads", "Time (µs)", "Speedup"
+    );
     println!("{:-<8} {:-<12} {:-<12}", "", "", "");
     let baseline_1d = results_1d[0].1;
     for (threads, time_us) in &results_1d {
@@ -99,8 +105,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!();
+
+    // Print 2D results
     println!("2D Integration ({}x{} bins)", n_radial_2d, n_azimuthal_2d);
-    println!("{:>8} {:>12} {:>12}", "Threads", "Time (µs)", "Speedup");
+    println!(
+        "{:>8} {:>12} {:>12}",
+        "Threads", "Time (µs)", "Speedup"
+    );
     println!("{:-<8} {:-<12} {:-<12}", "", "", "");
     let baseline_2d = results_2d[0].1;
     for (threads, time_us) in &results_2d {
