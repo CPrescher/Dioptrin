@@ -135,6 +135,12 @@ cargo run --release --example timing1d [image.tif] [calibration.poni]
 ```
 Measures 1D integration performance with a warm-up phase and 100 iterations.
 
+### Thread Scaling Benchmark
+```
+cargo run --release --example benchmark_threads [image.tif] [calibration.poni]
+```
+Benchmarks 1D and 2D integration performance across different thread counts (1 to system maximum), showing timing and speedup for each configuration.
+
 All examples default to `test_data/CeO2_Pilatus1M.tif` and `test_data/v1.poni` if no arguments are provided.
 
 ## Benchmarks

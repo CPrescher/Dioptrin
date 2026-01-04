@@ -57,7 +57,6 @@ impl Poni {
 
     /// Read a poni file into a Poni struct
     pub fn load(filename: &str) -> Result<Poni, Box<dyn std::error::Error>> {
-        println!("Reading {}", filename);
         let mut poni = Poni::new();
 
         let lines = read_lines(filename)?;
