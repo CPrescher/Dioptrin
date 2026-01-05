@@ -409,3 +409,101 @@ class Integrator:
             >>> print(f"Current unit: {unit}")
         """
         ...
+
+    def batch_integrate1d(
+        self,
+        tiff_paths: list[str],
+        n_points: int,
+        num_workers: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> list[tuple[str, Optional[Tuple[list[float], list[float]]], Optional[str]]]:
+        """
+        Perform batch 1D radial integration over multiple TIFF files.
+
+        Returns:
+            List of (filename, result, error) tuples. Result is None when error is set.
+        """
+        ...
+
+    def batch_integrate1d_with_errors(
+        self,
+        tiff_paths: list[str],
+        n_points: int,
+        num_workers: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> list[tuple[str, Optional[Tuple[list[float], list[float], list[float]]], Optional[str]]]:
+        """
+        Perform batch 1D radial integration with errors over multiple TIFF files.
+
+        Returns:
+            List of (filename, result, error) tuples. Result is None when error is set.
+        """
+        ...
+
+    def batch_integrate2d(
+        self,
+        tiff_paths: list[str],
+        n_radial: int,
+        n_azimuthal: int,
+        num_workers: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> list[tuple[str, Optional[list[float]], Optional[str]]]:
+        """
+        Perform batch 2D radial integration over multiple TIFF files.
+
+        Returns:
+            List of (filename, result, error) tuples. Result is None when error is set.
+        """
+        ...
+
+    def batch_integrate2d_with_errors(
+        self,
+        tiff_paths: list[str],
+        n_radial: int,
+        n_azimuthal: int,
+        num_workers: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> list[tuple[str, Optional[Tuple[list[float], list[float]]], Optional[str]]]:
+        """
+        Perform batch 2D radial integration with errors over multiple TIFF files.
+
+        Returns:
+            List of (filename, result, error) tuples. Result is None when error is set.
+        """
+        ...
+
+    def batch_integrate2d_with_azimuthal_range(
+        self,
+        tiff_paths: list[str],
+        n_radial: int,
+        n_azimuthal: int,
+        azimuthal_min: float,
+        azimuthal_max: float,
+        num_workers: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> list[tuple[str, Optional[list[float]], Optional[str]]]:
+        """
+        Perform batch 2D integration with an azimuthal range over multiple TIFF files.
+
+        Returns:
+            List of (filename, result, error) tuples. Result is None when error is set.
+        """
+        ...
+
+    def batch_integrate2d_with_azimuthal_range_and_errors(
+        self,
+        tiff_paths: list[str],
+        n_radial: int,
+        n_azimuthal: int,
+        azimuthal_min: float,
+        azimuthal_max: float,
+        num_workers: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> list[tuple[str, Optional[Tuple[list[float], list[float]]], Optional[str]]]:
+        """
+        Perform batch 2D integration with azimuthal range and errors over multiple TIFF files.
+
+        Returns:
+            List of (filename, result, error) tuples. Result is None when error is set.
+        """
+        ...

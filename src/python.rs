@@ -3,7 +3,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
 use rayon::ThreadPoolBuilder;
+use std::sync::Arc;
+use std::thread;
 
+use crate::batch::{
+    process_files, Integration1D, Integration1DWithErrors, Integration2D, Integration2DWithErrors,
+    Integration2DWithAzimuthalRange, Integration2DWithAzimuthalRangeAndErrors,
+};
 use crate::frame::Frame;
 use crate::geometry::Geometry;
 use crate::integration::{IntegrationMethod, Integrator, RadialUnit};
@@ -36,6 +42,39 @@ fn parse_unit(unit: Option<&str>) -> Result<RadialUnit, PyErr> {
             other
         ))),
     }
+}
+
+fn resolve_workers_threads(
+    num_workers: Option<usize>,
+    num_threads: Option<usize>,
+) -> PyResult<(usize, usize)> {
+    let num_threads = num_threads.unwrap_or(2);
+    if num_threads == 0 {
+        return Err(PyValueError::new_err("num_threads must be > 0"));
+    }
+
+    let num_workers = match num_workers {
+        Some(workers) => {
+            if workers == 0 {
+                return Err(PyValueError::new_err("num_workers must be > 0"));
+            }
+            workers
+        }
+        None => {
+            let cores = thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1);
+            let max_workers = cores / num_threads;
+            let computed = max_workers.saturating_sub(1);
+            if computed < 1 {
+                1
+            } else {
+                computed
+            }
+        }
+    };
+
+    Ok((num_workers, num_threads))
 }
 
 fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
@@ -238,7 +277,7 @@ fn set_rayon_threads(threads: usize) -> PyResult<()> {
 
 #[pyclass(name = "Integrator", unsendable)]
 struct PyIntegrator {
-    integrator: Integrator,
+    integrator: Arc<Integrator>,
 }
 
 #[pymethods]
@@ -296,7 +335,9 @@ impl PyIntegrator {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
 
-        Ok(Self { integrator })
+        Ok(Self {
+            integrator: Arc::new(integrator),
+        })
     }
 
     /// Create an Integrator from a PONI file without specifying dimensions.
@@ -346,7 +387,9 @@ impl PyIntegrator {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
 
-        Ok(Self { integrator })
+        Ok(Self {
+            integrator: Arc::new(integrator),
+        })
     }
 
     /// Create an Integrator from a PONI dictionary.
@@ -399,7 +442,9 @@ impl PyIntegrator {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
 
-        Ok(Self { integrator })
+        Ok(Self {
+            integrator: Arc::new(integrator),
+        })
     }
 
     /// Perform 1D radial integration from a TIFF file.
@@ -423,7 +468,7 @@ impl PyIntegrator {
     /// radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
     /// ```
     #[pyo3(signature = (tiff_path, n_points))]
-    fn integrate1d(&mut self, tiff_path: &str, n_points: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    fn integrate1d(&self, tiff_path: &str, n_points: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
         let frame = Frame::from_tiff(tiff_path.to_string())
             .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
         Ok(self.integrator.integrate1d(&frame, n_points))
@@ -457,7 +502,7 @@ impl PyIntegrator {
     /// ```
     #[pyo3(signature = (array, n_points))]
     fn integrate1d_array(
-        &mut self,
+        &self,
         array: PyReadonlyArray2<f64>,
         n_points: usize,
     ) -> PyResult<(Vec<f64>, Vec<f64>)> {
@@ -507,7 +552,7 @@ impl PyIntegrator {
     /// ```
     #[pyo3(signature = (array, n_points))]
     fn integrate1d_array_with_errors(
-        &mut self,
+        &self,
         array: PyReadonlyArray2<f64>,
         n_points: usize,
     ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
@@ -551,7 +596,7 @@ impl PyIntegrator {
     /// ```
     #[pyo3(signature = (tiff_path, n_points))]
     fn integrate1d_with_errors(
-        &mut self,
+        &self,
         tiff_path: &str,
         n_points: usize,
     ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
@@ -581,8 +626,10 @@ impl PyIntegrator {
     /// ```
     #[pyo3(signature = (method, n_ss=None))]
     fn set_method(&mut self, method: &str, n_ss: Option<usize>) -> PyResult<()> {
-        self.integrator
-            .set_method(parse_method(Some(method), n_ss)?);
+        let integrator = Arc::get_mut(&mut self.integrator).ok_or_else(|| {
+            PyValueError::new_err("Integrator is in use by a batch operation")
+        })?;
+        integrator.set_method(parse_method(Some(method), n_ss)?);
         Ok(())
     }
 
@@ -601,8 +648,12 @@ impl PyIntegrator {
     /// integrator.set_polarization_factor(0.99)  # Enable correction
     /// integrator.set_polarization_factor(None)  # Disable correction
     /// ```
-    fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
-        self.integrator.set_polarization_factor(polarization_factor);
+    fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) -> PyResult<()> {
+        let integrator = Arc::get_mut(&mut self.integrator).ok_or_else(|| {
+            PyValueError::new_err("Integrator is in use by a batch operation")
+        })?;
+        integrator.set_polarization_factor(polarization_factor);
+        Ok(())
     }
 
     /// Set the radial unit for integration output.
@@ -623,7 +674,10 @@ impl PyIntegrator {
     /// integrator.set_unit("q_A^-1")  # Switch to q-space in inverse Angstroms
     /// ```
     fn set_unit(&mut self, unit: &str) -> PyResult<()> {
-        self.integrator.set_radial_unit(parse_unit(Some(unit))?);
+        let integrator = Arc::get_mut(&mut self.integrator).ok_or_else(|| {
+            PyValueError::new_err("Integrator is in use by a batch operation")
+        })?;
+        integrator.set_radial_unit(parse_unit(Some(unit))?);
         Ok(())
     }
 
@@ -648,6 +702,320 @@ impl PyIntegrator {
             RadialUnit::QAngstrom => "q_A^-1",
             RadialUnit::QNm => "q_nm^-1",
         }
+    }
+
+    /// Perform batch 1D radial integration over multiple TIFF files.
+    ///
+    /// This reuses the integrator's geometry, method, unit, and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `n_points` - Number of bins for the 1D integration output
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
+    ///
+    /// # Worker/thread defaults
+    ///
+    /// If not provided, the defaults are `num_threads = 2` and
+    /// `num_workers = max(1, floor(available_cores / num_threads) - 1)`.
+    ///
+    /// # Returns
+    ///
+    /// List of (filename, result, error) tuples in the same order as input.
+    /// For each entry, result is None when error is set.
+    #[pyo3(signature = (tiff_paths, n_points, num_workers=None, num_threads=None))]
+    fn batch_integrate1d(
+        &self,
+        tiff_paths: Vec<String>,
+        n_points: usize,
+        num_workers: Option<usize>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Vec<(String, Option<(Vec<f64>, Vec<f64>)>, Option<String>)>> {
+        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        let task = Integration1D { n_bins: n_points };
+        let results = process_files(
+            &tiff_paths,
+            Arc::clone(&self.integrator),
+            task,
+            num_workers,
+            num_threads,
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|(filename, result)| match result {
+                Ok(output) => (filename, Some(output), None),
+                Err(err) => (filename, None, Some(err)),
+            })
+            .collect())
+    }
+
+    /// Perform batch 1D radial integration with errors over multiple TIFF files.
+    ///
+    /// This reuses the integrator's geometry, method, unit, and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `n_points` - Number of bins for the 1D integration output
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
+    ///
+    /// # Worker/thread defaults
+    ///
+    /// If not provided, the defaults are `num_threads = 2` and
+    /// `num_workers = max(1, floor(available_cores / num_threads) - 1)`.
+    ///
+    /// # Returns
+    ///
+    /// List of (filename, result, error) tuples in the same order as input.
+    /// For each entry, result is None when error is set.
+    #[pyo3(signature = (tiff_paths, n_points, num_workers=None, num_threads=None))]
+    fn batch_integrate1d_with_errors(
+        &self,
+        tiff_paths: Vec<String>,
+        n_points: usize,
+        num_workers: Option<usize>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Vec<(String, Option<(Vec<f64>, Vec<f64>, Vec<f64>)>, Option<String>)>> {
+        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        let task = Integration1DWithErrors { n_bins: n_points };
+        let results = process_files(
+            &tiff_paths,
+            Arc::clone(&self.integrator),
+            task,
+            num_workers,
+            num_threads,
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|(filename, result)| match result {
+                Ok(output) => (filename, Some(output), None),
+                Err(err) => (filename, None, Some(err)),
+            })
+            .collect())
+    }
+
+    /// Perform batch 2D radial integration over multiple TIFF files.
+    ///
+    /// This reuses the integrator's geometry, method, unit, and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `n_radial` - Number of radial bins
+    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
+    ///
+    /// # Worker/thread defaults
+    ///
+    /// If not provided, the defaults are `num_threads = 2` and
+    /// `num_workers = max(1, floor(available_cores / num_threads) - 1)`.
+    ///
+    /// # Returns
+    ///
+    /// List of (filename, result, error) tuples in the same order as input.
+    /// For each entry, result is None when error is set.
+    #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal, num_workers=None, num_threads=None))]
+    fn batch_integrate2d(
+        &self,
+        tiff_paths: Vec<String>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        num_workers: Option<usize>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Vec<(String, Option<Vec<f64>>, Option<String>)>> {
+        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        let task = Integration2D {
+            n_radial,
+            n_azimuthal,
+        };
+        let results = process_files(
+            &tiff_paths,
+            Arc::clone(&self.integrator),
+            task,
+            num_workers,
+            num_threads,
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|(filename, result)| match result {
+                Ok(output) => (filename, Some(output), None),
+                Err(err) => (filename, None, Some(err)),
+            })
+            .collect())
+    }
+
+    /// Perform batch 2D radial integration with errors over multiple TIFF files.
+    ///
+    /// This reuses the integrator's geometry, method, unit, and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `n_radial` - Number of radial bins
+    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
+    ///
+    /// # Worker/thread defaults
+    ///
+    /// If not provided, the defaults are `num_threads = 2` and
+    /// `num_workers = max(1, floor(available_cores / num_threads) - 1)`.
+    ///
+    /// # Returns
+    ///
+    /// List of (filename, result, error) tuples in the same order as input.
+    /// For each entry, result is None when error is set.
+    #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal, num_workers=None, num_threads=None))]
+    fn batch_integrate2d_with_errors(
+        &self,
+        tiff_paths: Vec<String>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        num_workers: Option<usize>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Vec<(String, Option<(Vec<f64>, Vec<f64>)>, Option<String>)>> {
+        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        let task = Integration2DWithErrors {
+            n_radial,
+            n_azimuthal,
+        };
+        let results = process_files(
+            &tiff_paths,
+            Arc::clone(&self.integrator),
+            task,
+            num_workers,
+            num_threads,
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|(filename, result)| match result {
+                Ok(output) => (filename, Some(output), None),
+                Err(err) => (filename, None, Some(err)),
+            })
+            .collect())
+    }
+
+    /// Perform batch 2D integration with an azimuthal range over multiple TIFF files.
+    ///
+    /// This reuses the integrator's geometry, method, unit, and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `n_radial` - Number of radial bins
+    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `azimuthal_min` - Minimum azimuthal angle (radians)
+    /// * `azimuthal_max` - Maximum azimuthal angle (radians)
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
+    ///
+    /// # Worker/thread defaults
+    ///
+    /// If not provided, the defaults are `num_threads = 2` and
+    /// `num_workers = max(1, floor(available_cores / num_threads) - 1)`.
+    ///
+    /// # Returns
+    ///
+    /// List of (filename, result, error) tuples in the same order as input.
+    /// For each entry, result is None when error is set.
+    #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal, azimuthal_min, azimuthal_max, num_workers=None, num_threads=None))]
+    fn batch_integrate2d_with_azimuthal_range(
+        &self,
+        tiff_paths: Vec<String>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_min: f64,
+        azimuthal_max: f64,
+        num_workers: Option<usize>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Vec<(String, Option<Vec<f64>>, Option<String>)>> {
+        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        let task = Integration2DWithAzimuthalRange {
+            n_radial,
+            n_azimuthal,
+            azimuthal_min,
+            azimuthal_max,
+        };
+        let results = process_files(
+            &tiff_paths,
+            Arc::clone(&self.integrator),
+            task,
+            num_workers,
+            num_threads,
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|(filename, result)| match result {
+                Ok(output) => (filename, Some(output), None),
+                Err(err) => (filename, None, Some(err)),
+            })
+            .collect())
+    }
+
+    /// Perform batch 2D integration with azimuthal range and errors over multiple TIFF files.
+    ///
+    /// This reuses the integrator's geometry, method, unit, and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `n_radial` - Number of radial bins
+    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `azimuthal_min` - Minimum azimuthal angle (radians)
+    /// * `azimuthal_max` - Maximum azimuthal angle (radians)
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
+    ///
+    /// # Worker/thread defaults
+    ///
+    /// If not provided, the defaults are `num_threads = 2` and
+    /// `num_workers = max(1, floor(available_cores / num_threads) - 1)`.
+    ///
+    /// # Returns
+    ///
+    /// List of (filename, result, error) tuples in the same order as input.
+    /// For each entry, result is None when error is set.
+    #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal, azimuthal_min, azimuthal_max, num_workers=None, num_threads=None))]
+    fn batch_integrate2d_with_azimuthal_range_and_errors(
+        &self,
+        tiff_paths: Vec<String>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_min: f64,
+        azimuthal_max: f64,
+        num_workers: Option<usize>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Vec<(String, Option<(Vec<f64>, Vec<f64>)>, Option<String>)>> {
+        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        let task = Integration2DWithAzimuthalRangeAndErrors {
+            n_radial,
+            n_azimuthal,
+            azimuthal_min,
+            azimuthal_max,
+        };
+        let results = process_files(
+            &tiff_paths,
+            Arc::clone(&self.integrator),
+            task,
+            num_workers,
+            num_threads,
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|(filename, result)| match result {
+                Ok(output) => (filename, Some(output), None),
+                Err(err) => (filename, None, Some(err)),
+            })
+            .collect())
     }
 }
 
