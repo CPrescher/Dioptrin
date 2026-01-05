@@ -5,27 +5,41 @@ import dioptrin
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Batch API speed test")
+    parser = argparse.ArgumentParser(description="Dioptrin Batch API speed test")
     parser.add_argument("--poni", default="test_data/v1.poni")
     parser.add_argument("--tiff", default="test_data/CeO2_Pilatus1M.tif")
     parser.add_argument("tiff_path", nargs="?", default=None)
-    parser.add_argument("--dim1", type=int, default=1043)
-    parser.add_argument("--dim2", type=int, default=981)
     parser.add_argument("--files", type=int, default=20)
     parser.add_argument("--n-points", type=int, default=1000)
     parser.add_argument("--n-radial", type=int, default=200)
     parser.add_argument("--n-azimuthal", type=int, default=180)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--num-threads", type=int, default=None)
+    parser.add_argument(
+        "--method",
+        default="pixel_split",
+        choices=["counting", "pixel_split", "supersampled"],
+        help="Integration method",
+    )
     args = parser.parse_args()
 
     tiff_path = args.tiff_path or args.tiff
     files = [tiff_path for _ in range(args.files)]
-    integrator = dioptrin.Integrator(
-        args.poni, dim1=args.dim1, dim2=args.dim2, method="pixel_split"
-    )
+
+    print(f"Loaded PONI: {args.poni}")
+    print(f"Integration method: {args.method}")
+    print(f"Files: {args.files}")
+    if args.num_workers:
+        print(f"Workers: {args.num_workers}")
+    if args.num_threads:
+        print(f"Threads: {args.num_threads}")
+    print()
+
+    integrator = dioptrin.Integrator(args.poni, method=args.method)
+    # Warmup - build LUT
     integrator.integrate1d(files[0], args.n_points)
 
+    # 1D batch integration
     start = time.perf_counter()
     results_1d = integrator.batch_integrate1d(
         files, args.n_points, num_workers=args.num_workers, num_threads=args.num_threads
@@ -38,6 +52,7 @@ def main() -> None:
         print(f"1D throughput: {len(results_1d) / elapsed:.2f} files/s")
     print()
 
+    # 2D batch integration
     start = time.perf_counter()
     results_2d = integrator.batch_integrate2d(
         files,
