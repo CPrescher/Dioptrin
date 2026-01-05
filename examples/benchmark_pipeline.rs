@@ -22,6 +22,46 @@ use dioptrin::poni::Poni;
 const DEFAULT_IMAGE: &str = "test_data/CeO2_Pilatus1M.tif";
 const DEFAULT_PONI: &str = "test_data/v1.poni";
 
+/// Estimate memory usage per worker in bytes.
+///
+/// Components:
+/// - Frame data (temporary): dim1 * dim2 * 8 bytes
+/// - Integrator arrays (tth, radial, azimuth, solid_angle, polarization, correction_factor):
+///   6 * dim1 * dim2 * 8 bytes
+/// - Lut1d (PixelSplit): row_ptr + col_idx + values ≈ n_bins * 8 + 2 * n_pixels * 8
+fn estimate_memory_per_worker(dim1: usize, dim2: usize, n_bins: usize) -> usize {
+    let n_pixels = dim1 * dim2;
+
+    // Frame data (held during integration)
+    let frame_mem = n_pixels * 8;
+
+    // Integrator cached geometry arrays (6 Vec<f64>)
+    let integrator_arrays = 6 * n_pixels * 8;
+
+    // Lut1d for PixelSplit (weighted)
+    // row_ptr: (n_bins + 1) * 8
+    // col_idx: n_pixels * 8 (each pixel maps to one bin)
+    // values: n_pixels * 8 (weights for pixel-split)
+    let lut_row_ptr = (n_bins + 1) * 8;
+    let lut_col_idx = n_pixels * 8;
+    let lut_values = n_pixels * 8; // PixelSplit has weights
+    let lut_mem = lut_row_ptr + lut_col_idx + lut_values;
+
+    frame_mem + integrator_arrays + lut_mem
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_path = env::args().nth(1).unwrap_or_else(|| DEFAULT_IMAGE.to_string());
     let poni_path = env::args().nth(2).unwrap_or_else(|| DEFAULT_PONI.to_string());
@@ -33,11 +73,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bench_duration = Duration::from_secs(3);
     let n_bins_1d = 1000;
 
-    // Verify files exist
+    // Verify files exist and get dimensions
     let frame = Frame::from_tiff(image_path.clone())?;
-    println!("Frame size: {} x {} pixels", frame.dim1, frame.dim2);
+    let dim1 = frame.dim1;
+    let dim2 = frame.dim2;
+    let mem_per_worker = estimate_memory_per_worker(dim1, dim2, n_bins_1d);
+    println!("Frame size: {} x {} pixels", dim1, dim2);
     println!("Max threads: {}", max_threads);
     println!("Benchmark duration: {} seconds per config", bench_duration.as_secs());
+    println!("Memory per worker: {} (frame + integrator + LUT)", format_bytes(mem_per_worker));
+    println!("Max memory ({} workers): {}", max_threads, format_bytes(max_threads * mem_per_worker));
     println!();
     drop(frame);
 
@@ -83,38 +128,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Print results
     println!("1D Integration Pipeline (load + integrate, {} bins)", n_bins_1d);
     println!(
-        "{:>8} {:>12} {:>12} {:>14}",
-        "Workers", "Threads/W", "Total Thr", "Throughput"
+        "{:>8} {:>12} {:>12} {:>14} {:>12}",
+        "Workers", "Threads/W", "Total Thr", "Throughput", "Est. Memory"
     );
     println!(
-        "{:>8} {:>12} {:>12} {:>14}",
-        "", "", "", "(files/sec)"
+        "{:>8} {:>12} {:>12} {:>14} {:>12}",
+        "", "", "", "(files/sec)", ""
     );
-    println!("{:-<8} {:-<12} {:-<12} {:-<14}", "", "", "", "");
+    println!("{:-<8} {:-<12} {:-<12} {:-<14} {:-<12}", "", "", "", "", "");
 
     for (workers, threads, total, throughput) in &results {
+        let total_mem = *workers * mem_per_worker;
         println!(
-            "{:>8} {:>12} {:>12} {:>14.1}",
-            workers, threads, *total as usize, throughput
+            "{:>8} {:>12} {:>12} {:>14.1} {:>12}",
+            workers, threads, *total as usize, throughput, format_bytes(total_mem)
         );
     }
 
     println!();
     let best = &results[0];
+    let best_mem = best.0 * mem_per_worker;
     println!(
-        "Best config: {} workers × {} threads = {:.1} files/sec",
-        best.0, best.1, best.3
+        "Best config: {} workers × {} threads = {:.1} files/sec ({})",
+        best.0, best.1, best.3, format_bytes(best_mem)
     );
 
     // Show top 5
     println!("\nTop 5 configurations:");
     for (i, (workers, threads, _, throughput)) in results.iter().take(5).enumerate() {
+        let config_mem = workers * mem_per_worker;
         println!(
-            "  {}. {} workers × {} threads → {:.1} files/sec",
+            "  {}. {} workers × {} threads → {:.1} files/sec ({})",
             i + 1,
             workers,
             threads,
-            throughput
+            throughput,
+            format_bytes(config_mem)
         );
     }
 
