@@ -6,7 +6,7 @@ def main() -> None:
     tiff_path = "test_data/CeO2_Pilatus1M.tif"
     files = [tiff_path, tiff_path]
 
-    integrator = dioptrin.Integrator(poni_path, dim1=1043, dim2=981, method="pixel_split")
+    integrator = dioptrin.Integrator(poni_path, method="pixel_split")
 
     results_1d = integrator.batch_integrate1d(files, n_points=1000)
     ok_1d = sum(1 for _, result, err in results_1d if result is not None and err is None)

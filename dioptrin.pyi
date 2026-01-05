@@ -136,8 +136,6 @@ class Integrator:
     def __init__(
         self,
         poni_path: str,
-        dim1: int,
-        dim2: int,
         method: Optional[str] = None,
         polarization_factor: Optional[float] = None,
         n_ss: Optional[int] = None,
@@ -146,14 +144,12 @@ class Integrator:
         """
         Create a new Integrator instance.
 
-        The integrator is configured with detector geometry from a PONI file
-        and the specified image dimensions. The integration method and other
-        parameters can be set during construction or modified later.
+        The integrator is configured with detector geometry from a PONI file.
+        The dimensions will be determined automatically when the first image
+        is integrated.
 
         Args:
             poni_path: Path to the PONI calibration file (v1 or v2 format)
-            dim1: First dimension (height) of the detector image
-            dim2: Second dimension (width) of the detector image
             method: Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
             polarization_factor: Optional polarization correction factor (0.0 to 1.0)
             n_ss: Number of subpixels per pixel for supersampled method (default: 5)
@@ -163,45 +159,8 @@ class Integrator:
             >>> import dioptrin
             >>> integrator = dioptrin.Integrator(
             ...     "calibration.poni",
-            ...     dim1=195,
-            ...     dim2=487,
             ...     method="pixel_split",
             ...     unit="2th_deg"
-            ... )
-        """
-        ...
-
-    @classmethod
-    def from_poni_file(
-        cls,
-        poni_path: str,
-        method: Optional[str] = None,
-        polarization_factor: Optional[float] = None,
-        n_ss: Optional[int] = None,
-        unit: Optional[str] = None,
-    ) -> "Integrator":
-        """
-        Create an Integrator from a PONI file without specifying dimensions.
-
-        The dimensions will be determined automatically when the first image
-        is integrated. This is useful when working with multiple images of
-        different sizes that share the same geometry.
-
-        Args:
-            poni_path: Path to the PONI calibration file (v1 or v2 format)
-            method: Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
-            polarization_factor: Optional polarization correction factor (0.0 to 1.0)
-            n_ss: Number of subpixels per pixel for supersampled method (default: 5)
-            unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
-
-        Returns:
-            New Integrator instance
-
-        Example:
-            >>> import dioptrin
-            >>> integrator = dioptrin.Integrator.from_poni_file(
-            ...     "calibration.poni",
-            ...     method="pixel_split"
             ... )
         """
         ...
@@ -262,7 +221,7 @@ class Integrator:
             Tuple of (radial_values, intensities) as lists of floats
 
         Example:
-            >>> integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+            >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
         """
         ...
@@ -288,7 +247,7 @@ class Integrator:
 
         Example:
             >>> import numpy as np
-            >>> integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+            >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> data = np.array(image_data, dtype=np.float64)
             >>> radial, intensity = integrator.integrate1d_array(data, n_points=1000)
         """
@@ -315,7 +274,7 @@ class Integrator:
 
         Example:
             >>> import numpy as np
-            >>> integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+            >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> data = np.array(image_data, dtype=np.float64)
             >>> radial, intensity, errors = integrator.integrate1d_array_with_errors(data, n_points=1000)
         """
@@ -338,7 +297,7 @@ class Integrator:
             Tuple of (radial_values, intensities, errors) as lists of floats
 
         Example:
-            >>> integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+            >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
         """
         ...

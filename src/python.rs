@@ -284,15 +284,13 @@ struct PyIntegrator {
 impl PyIntegrator {
     /// Create a new Integrator instance.
     ///
-    /// The integrator is configured with detector geometry from a PONI file
-    /// and the specified image dimensions. The integration method and other
-    /// parameters can be set during construction or modified later.
+    /// The integrator is configured with detector geometry from a PONI file.
+    /// The dimensions will be determined automatically when the first image
+    /// is integrated.
     ///
     /// # Arguments
     ///
     /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
-    /// * `dim1` - First dimension (height) of the detector image
-    /// * `dim2` - Second dimension (width) of the detector image
     /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
     /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
@@ -308,69 +306,13 @@ impl PyIntegrator {
     /// import dioptrin
     /// integrator = dioptrin.Integrator(
     ///     "calibration.poni",
-    ///     dim1=195,
-    ///     dim2=487,
     ///     method="pixel_split",
     ///     unit="2th_deg"
     /// )
     /// ```
     #[new]
-    #[pyo3(signature = (poni_path, dim1, dim2, method=None, polarization_factor=None, n_ss=None, unit=None))]
-    fn new(
-        poni_path: &str,
-        dim1: usize,
-        dim2: usize,
-        method: Option<&str>,
-        polarization_factor: Option<f64>,
-        n_ss: Option<usize>,
-        unit: Option<&str>,
-    ) -> PyResult<Self> {
-        let poni = Poni::load(poni_path)
-            .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
-        let geometry = Geometry::new(dim1, dim2, poni);
-        let mut integrator = Integrator::new(geometry)
-            .with_method(parse_method(method, n_ss)?)
-            .with_radial_unit(parse_unit(unit)?);
-        if let Some(polarization_factor) = polarization_factor {
-            integrator = integrator.with_polarization_factor(polarization_factor);
-        }
-
-        Ok(Self {
-            integrator: Arc::new(integrator),
-        })
-    }
-
-    /// Create an Integrator from a PONI file without specifying dimensions.
-    ///
-    /// The dimensions will be determined automatically when the first image
-    /// is integrated. This is useful when working with multiple images of
-    /// different sizes that share the same geometry.
-    ///
-    /// # Arguments
-    ///
-    /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
-    /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
-    /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
-    /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
-    /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
-    ///
-    /// # Returns
-    ///
-    /// New Integrator instance
-    ///
-    /// # Example
-    ///
-    /// ```python
-    /// import dioptrin
-    /// integrator = dioptrin.Integrator.from_poni_file(
-    ///     "calibration.poni",
-    ///     method="pixel_split"
-    /// )
-    /// ```
-    #[classmethod]
     #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None))]
-    fn from_poni_file(
-        _cls: &Bound<'_, PyType>,
+    fn new(
         poni_path: &str,
         method: Option<&str>,
         polarization_factor: Option<f64>,
@@ -464,7 +406,7 @@ impl PyIntegrator {
     /// # Example
     ///
     /// ```python
-    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// integrator = dioptrin.Integrator("calibration.poni")
     /// radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
     /// ```
     #[pyo3(signature = (tiff_path, n_points))]
@@ -496,7 +438,7 @@ impl PyIntegrator {
     ///
     /// ```python
     /// import numpy as np
-    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// integrator = dioptrin.Integrator("calibration.poni")
     /// data = np.array(image_data, dtype=np.float64)
     /// radial, intensity = integrator.integrate1d_array(data, n_points=1000)
     /// ```
@@ -546,7 +488,7 @@ impl PyIntegrator {
     ///
     /// ```python
     /// import numpy as np
-    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// integrator = dioptrin.Integrator("calibration.poni")
     /// data = np.array(image_data, dtype=np.float64)
     /// radial, intensity, errors = integrator.integrate1d_array_with_errors(data, n_points=1000)
     /// ```
@@ -591,7 +533,7 @@ impl PyIntegrator {
     /// # Example
     ///
     /// ```python
-    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// integrator = dioptrin.Integrator("calibration.poni")
     /// radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
     /// ```
     #[pyo3(signature = (tiff_path, n_points))]
