@@ -86,6 +86,62 @@ fn main() {
 }
 ```
 
+## Batch processing multiple files
+
+The `batch` module provides efficient parallel processing of multiple files with a shared integrator.
+This minimizes memory usage by sharing geometry arrays and LUT cache across workers.
+
+```rust
+use std::sync::Arc;
+use dioptrin::batch::{process_files, Integration1D, Integration1DWithErrors};
+use dioptrin::frame::Frame;
+use dioptrin::geometry::Geometry;
+use dioptrin::integration::{IntegrationMethod, Integrator, RadialUnit};
+use dioptrin::poni::Poni;
+
+fn main() {
+    // Create shared integrator (geometry + LUT cache shared across all workers)
+    let poni = Poni::load("test_data/v1.poni").expect("load poni");
+    let geometry = Geometry::new(1043, 981, poni);
+    let integrator = Arc::new(
+        Integrator::new(geometry)
+            .with_method(IntegrationMethod::PixelSplit)
+            .with_radial_unit(RadialUnit::TthDeg)
+    );
+
+    // List of files to process
+    let files = vec![
+        "image1.tif".to_string(),
+        "image2.tif".to_string(),
+        "image3.tif".to_string(),
+    ];
+
+    // Process with 4 workers, 2 threads per worker (8 total threads)
+    let task = Integration1D { n_bins: 3000 };
+    let results = process_files(&files, integrator, task, 4, 2);
+
+    // Handle results
+    for (filename, result) in results {
+        match result {
+            Ok((radial, intensity)) => {
+                println!("{}: {} bins integrated", filename, radial.len());
+            }
+            Err(e) => eprintln!("{}: error - {}", filename, e),
+        }
+    }
+}
+```
+
+**Available integration tasks:**
+- `Integration1D { n_bins }` - 1D integration → `(radial, intensity)`
+- `Integration1DWithErrors { n_bins }` - 1D with errors → `(radial, intensity, errors)`
+- `Integration2D { n_radial, n_azimuthal }` - 2D integration → `intensity_flat`
+- `Integration2DWithErrors { n_radial, n_azimuthal }` - 2D with errors → `(intensity_flat, errors_flat)`
+- `Integration2DWithAzimuthalRange` - 2D with azimuthal restriction
+- `Integration2DWithAzimuthalRangeAndErrors` - 2D with range and errors
+
+For custom processing logic, implement the `IntegrationTask` trait on your own struct.
+
 ## Raw LUT integration example
 
 If you want direct control over LUT building and integration, you can use the LUT APIs directly.
@@ -146,6 +202,12 @@ Benchmarks 1D and 2D integration performance across different thread counts (1 t
 cargo run --release --example benchmark_pipeline [image.tif] [calibration.poni]
 ```
 Measures real throughput of the full pipeline (load file + integrate) with different combinations of parallel workers and threads per worker. Helps find the optimal configuration for batch processing.
+
+### Batch Processing API
+```
+cargo run --release --example batch_api [image.tif] [calibration.poni]
+```
+Demonstrates the `batch` module API for processing multiple files in parallel. Shows different integration methods (1D, 2D, with/without errors) and compares sequential vs. parallel performance with various worker/thread configurations.
 
 All examples default to `test_data/CeO2_Pilatus1M.tif` and `test_data/v1.poni` if no arguments are provided.
 
