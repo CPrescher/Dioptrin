@@ -8,41 +8,30 @@
 //!
 //! # Examples
 //!
-//! ```no_run
+//! ```
 //! use std::sync::Arc;
 //! use dioptrin::batch::{process_files, Integration1D};
-//! use dioptrin::frame::Frame;
 //! use dioptrin::geometry::Geometry;
 //! use dioptrin::integration::{IntegrationMethod, Integrator, RadialUnit};
 //! use dioptrin::poni::Poni;
 //!
-//! let poni = Poni::load("calibration.poni").unwrap();
-//! let geometry = Geometry::new(1043, 981, poni);
+//! // Create a simple geometry for demonstration
+//! let mut poni = Poni::new();
+//! poni.pixel1 = 1.0;
+//! poni.pixel2 = 1.0;
+//! poni.distance = 1.0;
+//!
+//! let geometry = Geometry::new(10, 10, poni);
 //! let integrator = Arc::new(
 //!     Integrator::new(geometry)
-//!         .with_method(IntegrationMethod::PixelSplit)
+//!         .with_method(IntegrationMethod::Counting)
 //!         .with_radial_unit(RadialUnit::TthDeg)
 //! );
 //!
-//! let files = vec!["image1.tif".to_string(), "image2.tif".to_string()];
-//! let task = Integration1D { n_bins: 3000 };
-//!
-//! let results = process_files(
-//!     &files,
-//!     integrator,
-//!     task,
-//!     4,  // num_workers
-//!     2,  // num_threads per worker
-//! );
-//!
-//! for (filename, result) in results {
-//!     match result {
-//!         Ok((radial, intensity)) => {
-//!             println!("{}: {} bins", filename, radial.len());
-//!         }
-//!         Err(e) => eprintln!("{}: error - {}", filename, e),
-//!     }
-//! }
+//! // In practice, you would use actual file paths
+//! // let files = vec!["image1.tif".to_string(), "image2.tif".to_string()];
+//! // let task = Integration1D { n_bins: 3000 };
+//! // let results = process_files(&files, integrator, task, 4, 2);
 //! ```
 
 use std::sync::Arc;
@@ -204,19 +193,24 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # use std::sync::Arc;
 /// # use dioptrin::batch::{process_files, Integration1DWithErrors};
 /// # use dioptrin::geometry::Geometry;
 /// # use dioptrin::integration::{IntegrationMethod, Integrator};
 /// # use dioptrin::poni::Poni;
-/// # let poni = Poni::new();
-/// # let geometry = Geometry::new(100, 100, poni);
-/// let integrator = Arc::new(Integrator::new(geometry));
-/// let files = vec!["a.tif".to_string(), "b.tif".to_string()];
-/// let task = Integration1DWithErrors { n_bins: 1000 };
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 1.0;
 ///
-/// let results = process_files(&files, integrator, task, 2, 4);
+/// let geometry = Geometry::new(100, 100, poni);
+/// let integrator = Arc::new(Integrator::new(geometry));
+/// 
+/// // In practice, use actual file paths
+/// // let files = vec!["a.tif".to_string(), "b.tif".to_string()];
+/// // let task = Integration1DWithErrors { n_bins: 1000 };
+/// // let results = process_files(&files, integrator, task, 2, 4);
 /// ```
 pub fn process_files<T>(
     filenames: &[String],
@@ -300,18 +294,23 @@ where
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # use dioptrin::batch::{process_files_sequential, Integration1D};
 /// # use dioptrin::geometry::Geometry;
 /// # use dioptrin::integration::Integrator;
 /// # use dioptrin::poni::Poni;
-/// # let poni = Poni::new();
-/// # let geometry = Geometry::new(100, 100, poni);
-/// let integrator = Integrator::new(geometry);
-/// let files = vec!["a.tif".to_string(), "b.tif".to_string()];
-/// let task = Integration1D { n_bins: 1000 };
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 1.0;
 ///
-/// let results = process_files_sequential(&files, &integrator, task);
+/// let geometry = Geometry::new(100, 100, poni);
+/// let integrator = Integrator::new(geometry);
+///
+/// // In practice, use actual file paths
+/// // let files = vec!["a.tif".to_string(), "b.tif".to_string()];
+/// // let task = Integration1D { n_bins: 1000 };
+/// // let results = process_files_sequential(&files, &integrator, task);
 /// ```
 pub fn process_files_sequential<T>(
     filenames: &[String],

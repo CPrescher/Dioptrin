@@ -12,15 +12,24 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// The `radial` array contains pixel center values in the selected radial unit.
 /// The `unit` parameter specifies the radial unit for proper subpixel conversion.
 ///
-/// Example (pseudo-code)
-/// ```no_run
-/// # use dioptrin::geometry::Geometry;
-/// # use dioptrin::integration::RadialUnit;
-/// # let geometry: Geometry = unimplemented!();
-/// # let radial: Vec<f64> = unimplemented!();
-/// let lut = dioptrin::lut::build_lut1d_ss_csr(&geometry, &radial, 1024, 4, RadialUnit::TthRad);
-/// # let intensity: Vec<f64> = unimplemented!();
+/// # Example
+///
+/// ```
+/// use dioptrin::geometry::Geometry;
+/// use dioptrin::integration::RadialUnit;
+/// use dioptrin::poni::Poni;
+///
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 1.0;
+///
+/// let geometry = Geometry::new(10, 10, poni);
+/// let radial = geometry.calc_tth_all();
+/// let lut = dioptrin::lut::build_lut1d_ss_csr(&geometry, &radial, 100, 2, RadialUnit::TthRad);
+/// let intensity = vec![1.0; 100];
 /// let (_bins, y) = dioptrin::lut::integrate1d(&intensity, &lut, None);
+/// assert_eq!(y.len(), 100);
 /// ```
 pub fn build_lut1d_ss_csr(
     geometry: &Geometry,
@@ -101,17 +110,27 @@ pub fn build_lut1d_ss_csr(
 /// The `radial` array contains pixel center values in the selected radial unit.
 /// The `unit` parameter specifies the radial unit for proper subpixel conversion.
 ///
-/// Example (pseudo-code)
-/// ```no_run
-/// # use dioptrin::geometry::Geometry;
-/// # use dioptrin::integration::RadialUnit;
-/// # let geometry: Geometry = unimplemented!();
-/// # let radial: Vec<f64> = unimplemented!();
-/// # let azimuthal: Vec<f64> = unimplemented!();
-/// let lut2d = dioptrin::lut::build_lut2d_ss_csr(&geometry, &radial, &azimuthal, 1024, 360, 4, RadialUnit::TthRad);
-/// # let intensity: Vec<f64> = unimplemented!();
+/// # Example
+///
+/// ```
+/// use dioptrin::geometry::Geometry;
+/// use dioptrin::integration::RadialUnit;
+/// use dioptrin::poni::Poni;
+///
+/// let mut poni = Poni::new();
+/// poni.pixel1 = 1.0;
+/// poni.pixel2 = 1.0;
+/// poni.distance = 1.0;
+///
+/// let geometry = Geometry::new(10, 10, poni);
+/// let radial = geometry.calc_tth_all();
+/// let azimuthal = geometry.calc_azimuth_all();
+/// let lut2d = dioptrin::lut::build_lut2d_ss_csr(
+///     &geometry, &radial, &azimuthal, 32, 36, 2, RadialUnit::TthRad
+/// );
+/// let intensity = vec![1.0; 100];
 /// let y = dioptrin::lut::integrate2d(&intensity, &lut2d, None);
-/// assert_eq!(y.len(), 1024*360);
+/// assert_eq!(y.len(), 32 * 36);
 /// ```
 pub fn build_lut2d_ss_csr(
     geometry: &Geometry,
