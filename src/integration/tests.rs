@@ -25,7 +25,7 @@ fn test_radial_unit_tth_deg_conversion() {
     let tth_rad = vec![0.0, PI / 6.0, PI / 4.0, PI / 3.0, PI / 2.0];
     let wavelength = 1e-10;
     let result = RadialUnit::TthDeg.convert_from_tth(&tth_rad, wavelength);
-    let expected = vec![0.0, 30.0, 45.0, 60.0, 90.0];
+    let expected = [0.0, 30.0, 45.0, 60.0, 90.0];
     for (r, e) in result.iter().zip(expected.iter()) {
         assert!((r - e).abs() < 1e-10, "Expected {}, got {}", e, r);
     }

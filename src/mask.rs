@@ -63,7 +63,7 @@ impl Mask {
 }
 
 /// Creates a flipped up-down version of the input array with dimensions dim1 and dim2
-fn flip_ud(array: &Vec<u8>, dim1: usize, dim2: usize) -> Vec<u8> {
+fn flip_ud(array: &[u8], dim1: usize, dim2: usize) -> Vec<u8> {
     let mut out_array = vec![0u8; dim1 * dim2];
     let mut out_i = 0;
     for chunk in array.chunks(dim1).rev() {

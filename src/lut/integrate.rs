@@ -26,9 +26,9 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// assert_eq!(y.len(), 4);
 /// ```
 pub fn integrate1d(
-    intensity: &Vec<f64>,
+    intensity: &[f64],
     lut: &Lut1d,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
@@ -49,7 +49,7 @@ pub fn integrate1d(
                             Some(mask) => {
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum += w * *intensity_ptr.add(j);
@@ -60,7 +60,7 @@ pub fn integrate1d(
                             None => {
                                 while k < end {
                                     let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     sum += w * *intensity_ptr.add(j);
                                     k += 1;
                                 }
@@ -81,7 +81,7 @@ pub fn integrate1d(
                                 Some(mask) => {
                                     let mask_ptr = mask.as_ptr();
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         if *mask_ptr.add(j) == 0 {
                                             sum += *intensity_ptr.add(j);
                                             count += 1;
@@ -91,7 +91,7 @@ pub fn integrate1d(
                                 }
                                 None => {
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         sum += *intensity_ptr.add(j);
                                         count += 1;
                                         k += 1;
@@ -113,10 +113,10 @@ pub fn integrate1d(
 ///
 /// The returned error is the per-bin standard deviation computed from per-pixel variances.
 pub fn integrate1d_with_errors(
-    intensity: &Vec<f64>,
-    variance: &Vec<f64>,
+    intensity: &[f64],
+    variance: &[f64],
     lut: &Lut1d,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64)> = (0..n_points)
@@ -139,7 +139,7 @@ pub fn integrate1d_with_errors(
                             Some(mask) => {
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum += w * *intensity_ptr.add(j);
@@ -151,7 +151,7 @@ pub fn integrate1d_with_errors(
                             None => {
                                 while k < end {
                                     let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     sum += w * *intensity_ptr.add(j);
                                     sum_var += w * w * *variance_ptr.add(j);
                                     k += 1;
@@ -175,7 +175,7 @@ pub fn integrate1d_with_errors(
                                 Some(mask) => {
                                     let mask_ptr = mask.as_ptr();
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         if *mask_ptr.add(j) == 0 {
                                             sum += *intensity_ptr.add(j);
                                             sum_var += *variance_ptr.add(j);
@@ -186,7 +186,7 @@ pub fn integrate1d_with_errors(
                                 }
                                 None => {
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         sum += *intensity_ptr.add(j);
                                         sum_var += *variance_ptr.add(j);
                                         count += 1;
@@ -237,9 +237,9 @@ pub fn integrate1d_with_errors(
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
 pub fn integrate2d(
-    intensity: &Vec<f64>,
+    intensity: &[f64],
     lut: &Lut2d,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> Vec<f64> {
     let rows = lut.row_ptr.len() - 1;
     (0..rows)
@@ -260,7 +260,7 @@ pub fn integrate2d(
                             Some(mask) => {
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum += w * *intensity_ptr.add(j);
@@ -271,7 +271,7 @@ pub fn integrate2d(
                             None => {
                                 while k < end {
                                     let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     sum += w * *intensity_ptr.add(j);
                                     k += 1;
                                 }
@@ -292,7 +292,7 @@ pub fn integrate2d(
                                 Some(mask) => {
                                     let mask_ptr = mask.as_ptr();
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         if *mask_ptr.add(j) == 0 {
                                             sum += *intensity_ptr.add(j);
                                             count += 1;
@@ -302,7 +302,7 @@ pub fn integrate2d(
                                 }
                                 None => {
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         sum += *intensity_ptr.add(j);
                                         count += 1;
                                         k += 1;
@@ -322,10 +322,10 @@ pub fn integrate2d(
 ///
 /// The returned error is the per-bin standard deviation computed from per-pixel variances.
 pub fn integrate2d_with_errors(
-    intensity: &Vec<f64>,
-    variance: &Vec<f64>,
+    intensity: &[f64],
+    variance: &[f64],
     lut: &Lut2d,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
     let rows = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64)> = (0..rows)
@@ -348,7 +348,7 @@ pub fn integrate2d_with_errors(
                             Some(mask) => {
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum += w * *intensity_ptr.add(j);
@@ -360,7 +360,7 @@ pub fn integrate2d_with_errors(
                             None => {
                                 while k < end {
                                     let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k) as usize;
+                                    let j = *col_ptr.add(k);
                                     sum += w * *intensity_ptr.add(j);
                                     sum_var += w * w * *variance_ptr.add(j);
                                     k += 1;
@@ -384,7 +384,7 @@ pub fn integrate2d_with_errors(
                                 Some(mask) => {
                                     let mask_ptr = mask.as_ptr();
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         if *mask_ptr.add(j) == 0 {
                                             sum += *intensity_ptr.add(j);
                                             sum_var += *variance_ptr.add(j);
@@ -395,7 +395,7 @@ pub fn integrate2d_with_errors(
                                 }
                                 None => {
                                     while k < end {
-                                        let j = *col_ptr.add(k) as usize;
+                                        let j = *col_ptr.add(k);
                                         sum += *intensity_ptr.add(j);
                                         sum_var += *variance_ptr.add(j);
                                         count += 1;
@@ -428,7 +428,7 @@ pub fn integrate2d_with_errors(
 mod tests {
     use super::*;
 
-    fn assert_vec_close(a: &Vec<f64>, b: &Vec<f64>) {
+    fn assert_vec_close(a: &[f64], b: &[f64]) {
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(b.iter()) {
             assert!((x - y).abs() < 1e-12);

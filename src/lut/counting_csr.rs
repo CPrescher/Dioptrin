@@ -78,11 +78,6 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
     Lut1d { row_ptr, col_idx, values: None, hist_min: min, hist_step: step }
 }
 
-/// Integrate using either unweighted (mean) or weighted 1D CSR LUT.
-///
-/// See `build_lut1d_csr` for an example.
-// integrate1d moved to src/lut/integrate.rs
-
 /// Build an unweighted 2D CSR LUT from pixel `tth`/`azimuthal` to `(n_tth, n_azimuthal)` bins.
 ///
 /// Example

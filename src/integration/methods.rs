@@ -36,7 +36,7 @@ impl Integrator {
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let unit = self.radial_unit;
         let result = match self.method {
@@ -46,15 +46,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
-                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
         };
         result
@@ -70,7 +70,7 @@ impl Integrator {
         let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let unit = self.radial_unit;
         let result = match self.method {
@@ -80,15 +80,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
         };
         result
@@ -105,7 +105,7 @@ impl Integrator {
         let intensity = self.correct_intensity(data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let unit = self.radial_unit;
         match self.method {
@@ -115,15 +115,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
-                crate::lut::integrate1d(&intensity, &*lut1d, mask_data)
+                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
         }
     }
@@ -139,7 +139,7 @@ impl Integrator {
         let (intensity, variance) = self.correct_intensity_and_variance(data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let unit = self.radial_unit;
         match self.method {
@@ -149,15 +149,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled { n_points, n_ss, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
         }
     }
@@ -193,7 +193,7 @@ impl Integrator {
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let unit = self.radial_unit;
         let result = match self.method {
@@ -203,15 +203,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_radial, n_azimuthal, unit });
-                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_radial, n_azimuthal, unit });
-                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_radial, n_azimuthal, n_ss, unit });
-                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
         };
         result
@@ -237,7 +237,7 @@ impl Integrator {
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
         let unit = self.radial_unit;
@@ -248,15 +248,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal { n_radial, n_azimuthal, azimuthal, unit });
-                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal { n_radial, n_azimuthal, azimuthal, unit });
-                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal { n_radial, n_azimuthal, n_ss, azimuthal, unit });
-                crate::lut::integrate2d(&intensity, &*lut2d, mask_data)
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
         };
         result
@@ -273,7 +273,7 @@ impl Integrator {
         let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let unit = self.radial_unit;
         let result = match self.method {
@@ -286,15 +286,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_radial, n_azimuthal, unit });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit { n_radial, n_azimuthal, unit });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled { n_radial, n_azimuthal, n_ss, unit });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
         };
         result
@@ -318,7 +318,7 @@ impl Integrator {
         let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
-            &mask.data
+            mask.data.as_slice()
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
         let unit = self.radial_unit;
@@ -332,15 +332,15 @@ impl Integrator {
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal { n_radial, n_azimuthal, azimuthal, unit });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal { n_radial, n_azimuthal, azimuthal, unit });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal { n_radial, n_azimuthal, n_ss, azimuthal, unit });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &*lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
         };
         result

@@ -1,5 +1,6 @@
 //! Supersampled CSR LUT builders (1D/2D) producing weighted `Lut1d`/`Lut2d`.
 //! Integrate with `crate::lut::integrate1d` / `integrate2d`.
+#![allow(clippy::items_after_test_module)]
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;
@@ -33,7 +34,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// ```
 pub fn build_lut1d_ss_csr(
     geometry: &Geometry,
-    radial: &Vec<f64>,
+    radial: &[f64],
     n_points: usize,
     n_ss: usize,
     unit: RadialUnit,
@@ -61,7 +62,7 @@ pub fn build_lut1d_ss_csr(
             },
         )
         .reduce(
-            || Vec::new(),
+            Vec::new,
             |mut a, mut b| {
                 a.append(&mut b);
                 a
@@ -134,8 +135,8 @@ pub fn build_lut1d_ss_csr(
 /// ```
 pub fn build_lut2d_ss_csr(
     geometry: &Geometry,
-    radial: &Vec<f64>,
-    azimuthal: &Vec<f64>,
+    radial: &[f64],
+    azimuthal: &[f64],
     n_radial: usize,
     n_azimuthal: usize,
     n_ss: usize,
@@ -168,7 +169,7 @@ pub fn build_lut2d_ss_csr(
             },
         )
         .reduce(
-            || Vec::new(),
+            Vec::new,
             |mut a, mut b| {
                 a.append(&mut b);
                 a
@@ -396,9 +397,10 @@ mod tests {
 /// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
 /// `azimuthal_start - azimuthal_step / 2`. Binning wraps periodically so angles outside the
 /// total range fold back into `0..n_azimuthal`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_lut2d_ss_csr_with_azimuthal_range(
     geometry: &Geometry,
-    radial: &Vec<f64>,
+    radial: &[f64],
     n_radial: usize,
     n_azimuthal: usize,
     n_ss: usize,
@@ -433,7 +435,7 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
             },
         )
         .reduce(
-            || Vec::new(),
+            Vec::new,
             |mut a, mut b| {
                 a.append(&mut b);
                 a

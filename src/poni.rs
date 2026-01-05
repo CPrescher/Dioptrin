@@ -25,6 +25,12 @@ pub struct Poni {
     pub wavelength: f64,
 }
 
+impl Default for Poni {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Poni {
     /// Create a new Poni struct with all parameters set to 0
     pub fn new() -> Poni {
@@ -62,11 +68,9 @@ impl Poni {
 
         let lines = read_lines(filename)?;
 
-        for line in lines {
-            if let Ok(line) = line {
-                if !is_comment(&line) {
-                    Poni::assign_values(&mut poni, &line)?
-                }
+        for line in lines.map_while(Result::ok) {
+            if !is_comment(&line) {
+                Poni::assign_values(&mut poni, &line)?
             }
         }
         Ok(poni)
@@ -132,8 +136,8 @@ where
     Ok(io::BufReader::new(file).lines())
 }
 
-fn is_comment(str: &String) -> bool {
-    str[0..1] == "#".to_string()
+fn is_comment(s: &str) -> bool {
+    s.starts_with('#')
 }
 
 #[cfg(test)]

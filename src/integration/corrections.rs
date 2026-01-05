@@ -10,10 +10,9 @@ impl Integrator {
         // First check with read lock if update is needed
         let needs_update = {
             let state = self.state.read().expect("geometry state lock poisoned");
-            let stale = (state.dim1 * state.dim2) != size
+            (state.dim1 * state.dim2) != size
                 || state.dim1 != dim1
-                || state.dim2 != dim2;
-            stale
+                || state.dim2 != dim2
         };
 
         if needs_update {

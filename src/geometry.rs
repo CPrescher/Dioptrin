@@ -47,8 +47,8 @@ impl Geometry {
     ///   * `d2` - pixel positions in X image (_) direction
     fn calc_pixel_position_det_reference(
         &self,
-        d1: &Vec<f64>,
-        d2: &Vec<f64>,
+        d1: &[f64],
+        d2: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
         assert!(d1.len() == d2.len());
 
@@ -80,7 +80,7 @@ impl Geometry {
             }
         }
 
-        return (d1_cart, d2_cart);
+        (d1_cart, d2_cart)
     }
 
     /// Calculates the pixel center positions of all pixels in the PONI reference
@@ -101,7 +101,7 @@ impl Geometry {
             d1_cart_poni.push(d1_cart[i] - poni1);
             d2_cart_poni.push(d2_cart[i] - poni2);
         }
-        return (d1_cart_poni, d2_cart_poni);
+        (d1_cart_poni, d2_cart_poni)
     }
 
     /// Converts detector referenced coordinates into the PONI reference.
@@ -113,8 +113,8 @@ impl Geometry {
     ///  * `d2` - d2 in X image (_) direction with detector reference in meters
     fn calc_pixel_positions_with_poni_reference(
         &self,
-        d1: &Vec<f64>,
-        d2: &Vec<f64>,
+        d1: &[f64],
+        d2: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
         assert!(d1.len() == d2.len());
 
@@ -128,7 +128,7 @@ impl Geometry {
             d1_cart_poni.push(d1[i] - poni1);
             d2_cart_poni.push(d2[i] - poni2);
         }
-        return (d1_cart_poni, d2_cart_poni);
+        (d1_cart_poni, d2_cart_poni)
     }
 
     /// Calculates all pixel center positions in the sample reference coordinate system
@@ -139,22 +139,22 @@ impl Geometry {
         let x_sample: Vec<f64> = d1_cart_poni
             .par_iter()
             .zip(&d2_cart_poni)
-            .map(|(d1, d2)| math::f_x1(&d1, d2, &self.poni.distance, &tc))
+            .map(|(d1, d2)| math::f_x1(d1, d2, &self.poni.distance, &tc))
             .collect();
 
         let y_sample: Vec<f64> = d1_cart_poni
             .par_iter()
             .zip(&d2_cart_poni)
-            .map(|(d1, d2)| math::f_x2(&d1, d2, &self.poni.distance, &tc))
+            .map(|(d1, d2)| math::f_x2(d1, d2, &self.poni.distance, &tc))
             .collect();
 
         let z_sample: Vec<f64> = d1_cart_poni
             .par_iter()
             .zip(&d2_cart_poni)
-            .map(|(d1, d2)| math::f_x3(&d1, d2, &self.poni.distance, &tc))
+            .map(|(d1, d2)| math::f_x3(d1, d2, &self.poni.distance, &tc))
             .collect();
 
-        return (x_sample, y_sample, z_sample);
+        (x_sample, y_sample, z_sample)
     }
 
     /// Calculates the x, y, z positions in sample reference of given the coordinates in poni reference.
@@ -164,30 +164,30 @@ impl Geometry {
     ///   * `d2_cart_poni` - d2 in X image (_) direction with poni reference in meters
     fn calc_pixel_positions_with_sample_reference(
         &self,
-        d1_cart_poni: &Vec<f64>,
-        d2_cart_poni: &Vec<f64>,
+        d1_cart_poni: &[f64],
+        d2_cart_poni: &[f64],
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let tc = math::TrigonometricConstants::new(&self.poni);
 
         let x_sample: Vec<f64> = d1_cart_poni
             .par_iter()
             .zip(d2_cart_poni)
-            .map(|(d1, d2)| math::f_x1(&d1, d2, &self.poni.distance, &tc))
+            .map(|(d1, d2)| math::f_x1(d1, d2, &self.poni.distance, &tc))
             .collect();
 
         let y_sample: Vec<f64> = d1_cart_poni
             .par_iter()
             .zip(d2_cart_poni)
-            .map(|(d1, d2)| math::f_x2(&d1, d2, &self.poni.distance, &tc))
+            .map(|(d1, d2)| math::f_x2(d1, d2, &self.poni.distance, &tc))
             .collect();
 
         let z_sample: Vec<f64> = d1_cart_poni
             .par_iter()
             .zip(d2_cart_poni)
-            .map(|(d1, d2)| math::f_x3(&d1, d2, &self.poni.distance, &tc))
+            .map(|(d1, d2)| math::f_x3(d1, d2, &self.poni.distance, &tc))
             .collect();
 
-        return (x_sample, y_sample, z_sample);
+        (x_sample, y_sample, z_sample)
     }
 
     /// Calculates the two theta angle in radians for each pixel in the detector
@@ -205,7 +205,7 @@ impl Geometry {
     /// Arguments:
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
-    pub fn calc_tth(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> Vec<f64> {
+    pub fn calc_tth(&self, d1: &[f64], d2: &[f64]) -> Vec<f64> {
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -236,7 +236,7 @@ impl Geometry {
     /// Arguments:
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
-    pub fn calc_azimuth(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> Vec<f64> {
+    pub fn calc_azimuth(&self, d1: &[f64], d2: &[f64]) -> Vec<f64> {
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -252,7 +252,7 @@ impl Geometry {
 
     /// Calculates two theta and azimuthal angle in radians for each pixel in the detector.
     /// Combined function to reduce overhead for calculating each time the transform into sample reference geometry.
-    pub fn calc_tth_and_azimuth(&self, d1: &Vec<f64>, d2: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+    pub fn calc_tth_and_azimuth(&self, d1: &[f64], d2: &[f64]) -> (Vec<f64>, Vec<f64>) {
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -281,7 +281,7 @@ impl Geometry {
         let solid_angle = d1_cart_poni
             .par_iter()
             .zip(&d2_cart_poni)
-            .map(|(d1, d2)| math::f_solid_angle(&d1, &d2, &self.poni.distance))
+            .map(|(d1, d2)| math::f_solid_angle(d1, d2, &self.poni.distance))
             .collect::<Vec<f64>>();
         solid_angle
     }
@@ -292,7 +292,7 @@ impl Geometry {
     ///  * `factor` - polarization factor (value between -1 and 1)
     ///  * `tth` - two theta array in radians
     ///  * `azimuth` - azimuth array in radians
-    pub fn calc_polarization(&self, factor: f64, tth: &Vec<f64>, azimuth: &Vec<f64>) -> Vec<f64> {
+    pub fn calc_polarization(&self, factor: f64, tth: &[f64], azimuth: &[f64]) -> Vec<f64> {
         let cos2_tth = tth
             .par_iter()
             .map(|x| x.cos().powi(2))
@@ -301,7 +301,7 @@ impl Geometry {
         let polarization = cos2_tth
             .par_iter()
             .zip(azimuth)
-            .map(|(cos2_tth, azimuth)| math::f_polarization(&factor, &cos2_tth, &azimuth))
+            .map(|(cos2_tth, azimuth)| math::f_polarization(&factor, cos2_tth, azimuth))
             .collect();
         polarization
     }
@@ -367,7 +367,7 @@ mod math {
     /// p3 is the distance from the sample to the detector
     pub fn f_solid_angle(p1: &f64, p2: &f64, p3: &f64) -> f64 {
         let cosa = f_cosa(p1, p2, p3);
-        return cosa.powi(3);
+        cosa.powi(3)
     }
 
     /// Calculates the cosine of the angle between the pixel position and the sample

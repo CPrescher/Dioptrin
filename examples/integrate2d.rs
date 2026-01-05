@@ -52,8 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The result is a flattened 2D array of shape (n_azimuthal, n_radial)
     // Print a summary of the first azimuthal slice
     println!("\nFirst azimuthal slice (first 10 radial bins):");
-    for i in 0..10.min(n_radial) {
-        println!("  Radial bin {}: {:.2}", i, result[i]);
+    for (i, val) in result.iter().take(10.min(n_radial)).enumerate() {
+        println!("  Radial bin {}: {:.2}", i, val);
     }
 
     Ok(())

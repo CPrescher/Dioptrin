@@ -16,7 +16,7 @@ pub fn download_pilatus_test_file() {
 }
 
 /// Saves a vector of floats as a plain text file into the test_data/test_output directory
-pub fn save_vec(path: &str, vec: &Vec<f64>) {
+pub fn save_vec(path: &str, vec: &[f64]) {
     let dir_str: String = "test_data/test_output/".to_owned();
     fs::create_dir(&dir_str).unwrap_or_default();
 
@@ -29,7 +29,7 @@ pub fn save_vec(path: &str, vec: &Vec<f64>) {
 }
 
 /// Saves two vectors as a plain text file with two columns into the test_data/test_output directory
-pub fn save_vec2(path: &str, x: &Vec<f64>, y: &Vec<f64>) {
+pub fn save_vec2(path: &str, x: &[f64], y: &[f64]) {
     assert_eq!(
         x.len(),
         y.len(),
@@ -49,7 +49,7 @@ pub fn save_vec2(path: &str, x: &Vec<f64>, y: &Vec<f64>) {
     }
 }
 
-pub fn save_vec3(path: &str, x: &Vec<f64>, y: &Vec<f64>, z: &Vec<f64>) {
+pub fn save_vec3(path: &str, x: &[f64], y: &[f64], z: &[f64]) {
     assert_eq!(x.len(), y.len());
     assert_eq!(x.len(), z.len());
     let dir_str: String = "test_data/test_output/".to_owned();

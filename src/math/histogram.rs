@@ -10,10 +10,10 @@ use crate::{lut, math};
 
 /// Calculates a normalized histogram of weights at data values, optionally excluding masked pixels.
 pub fn histogram(
-    data: &Vec<f64>,
-    weights: &Vec<f64>,
+    data: &[f64],
+    weights: &[f64],
     n_points: usize,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
     let (min, _max, step) = min_max_step(data, n_points);
 
@@ -62,11 +62,11 @@ pub fn histogram(
 
 /// Calculates a normalized histogram of weights with per-bin errors using provided variances.
 pub fn histogram_with_errors(
-    data: &Vec<f64>,
-    weights: &Vec<f64>,
-    variances: &Vec<f64>,
+    data: &[f64],
+    weights: &[f64],
+    variances: &[f64],
     n_points: usize,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let (min, _max, step) = min_max_step(data, n_points);
 
@@ -117,10 +117,10 @@ pub fn histogram_with_errors(
 
 /// Calculates a normalized histogram of weights at data values using a parallel implementation
 pub fn histogram_parallel(
-    data: &Vec<f64>,
-    weights: &Vec<f64>,
+    data: &[f64],
+    weights: &[f64],
     n_points: usize,
-    mask: Option<&Vec<u8>>,
+    mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
     let (min, _max, step) = min_max_step(data, n_points);
 
@@ -217,7 +217,7 @@ pub fn get_bin_wrapped(value: f64, min: f64, step: f64, n_bins: usize) -> usize 
 
 pub fn ss_tth_min_max_step(
     geometry: &Geometry,
-    radial: &Vec<f64>,
+    radial: &[f64],
     n_points: usize,
     n_ss: usize,
     unit: crate::integration::RadialUnit,
@@ -226,8 +226,8 @@ pub fn ss_tth_min_max_step(
     let hull_tth = geometry.calc_tth(&hull_d1, &hull_d2);
     let hull_radial = unit.convert_from_tth(&hull_tth, geometry.poni.wavelength);
 
-    let min = math::min(&radial).min(math::min(&hull_radial));
-    let max = math::max(&radial).max(math::max(&hull_radial)) + 3.0 * f64::EPSILON;
+    let min = math::min(radial).min(math::min(&hull_radial));
+    let max = math::max(radial).max(math::max(&hull_radial)) + 3.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
     (min, max, step)
 }
@@ -248,7 +248,7 @@ pub fn supersampled_azimuthal_min_max_step(
 }
 
 /// Estimates min, max and step size for a histogram
-pub fn min_max_step(data: &Vec<f64>, n_points: usize) -> (f64, f64, f64) {
+pub fn min_max_step(data: &[f64], n_points: usize) -> (f64, f64, f64) {
     let min = math::min(data);
     let max = math::max(data) + 10.0 * f64::EPSILON; // the +10.0 * epsilon is a hack to avoid rounding errors
     let step = (max - min) / n_points as f64;

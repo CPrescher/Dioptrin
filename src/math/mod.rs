@@ -7,52 +7,42 @@ use rayon::prelude::*;
 use std::cmp::PartialOrd;
 use std::marker::Copy;
 
-/// Estimates the minimum value of a vector
-pub fn min<T: PartialOrd + Copy>(v: &Vec<T>) -> T {
-    let mut min = v[0];
-    for i in 1..v.len() {
-        if v[i] < min {
-            min = v[i];
-        }
-    }
-    min
-}
-
 /// Estimates the minimum value of a slice
-pub fn min_slice<T: PartialOrd + Copy>(v: &[T]) -> T {
+pub fn min<T: PartialOrd + Copy>(v: &[T]) -> T {
     let mut min = v[0];
-    for i in 1..v.len() {
-        if v[i] < min {
-            min = v[i];
+    for item in &v[1..] {
+        if *item < min {
+            min = *item;
         }
     }
     min
 }
 
-/// Estimates the maximum value of a vector
-pub fn max<T: PartialOrd + Copy>(v: &Vec<T>) -> T {
-    let mut max = v[0];
-    for i in 1..v.len() {
-        if v[i] > max {
-            max = v[i];
-        }
-    }
-    max
+/// Alias for min (kept for compatibility)
+#[inline]
+pub fn min_slice<T: PartialOrd + Copy>(v: &[T]) -> T {
+    min(v)
 }
 
 /// Estimates the maximum value of a slice
-pub fn max_slice<T: PartialOrd + Copy>(v: &[T]) -> T {
+pub fn max<T: PartialOrd + Copy>(v: &[T]) -> T {
     let mut max = v[0];
-    for i in 1..v.len() {
-        if v[i] > max {
-            max = v[i];
+    for item in &v[1..] {
+        if *item > max {
+            max = *item;
         }
     }
     max
 }
 
+/// Alias for max (kept for compatibility)
+#[inline]
+pub fn max_slice<T: PartialOrd + Copy>(v: &[T]) -> T {
+    max(v)
+}
+
 /// Divides vector a by vector b element-wise
-pub fn divide(a: &Vec<f64>, b: &Vec<f64>) -> Vec<f64> {
+pub fn divide(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.par_iter()
         .zip(b.par_iter())
         .map(|(a, b)| a / b)

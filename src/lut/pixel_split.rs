@@ -198,7 +198,7 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
 /// ```
 pub fn build_lut1d_ps_csr(
     geometry: &Geometry,
-    radial: &Vec<f64>,
+    radial: &[f64],
     n_points: usize,
     unit: RadialUnit,
 ) -> Lut1d {
@@ -301,7 +301,7 @@ pub fn build_lut1d_ps_csr(
                     let clipped = clip_polygon_rect_scratch(
                         &poly, bin_min, bin_max, amin, amax, &mut buf1, &mut buf2,
                     );
-                    let area = polygon_area(&clipped).abs();
+                    let area = polygon_area(clipped).abs();
                     if area > 0.0 {
                         acc[b as usize].push((idx, area));
                     }
@@ -333,8 +333,8 @@ pub fn build_lut1d_ps_csr(
     let total = *row_ptr.last().unwrap();
     let mut col_idx = Vec::with_capacity(total);
     let mut values = Vec::with_capacity(total);
-    for row in 0..n_points {
-        for (idx, val) in &buckets[row] {
+    for bucket in buckets.iter().take(n_points) {
+        for (idx, val) in bucket {
             col_idx.push(*idx);
             values.push(*val);
         }
@@ -362,8 +362,8 @@ pub fn build_lut1d_ps_csr(
 
 fn build_lut2d_ps_csr_with_azimuthal(
     geometry: &Geometry,
-    radial: &Vec<f64>,
-    azimuthal: &Vec<f64>,
+    radial: &[f64],
+    azimuthal: &[f64],
     n_radial: usize,
     n_azimuthal: usize,
     azimuthal_range: Option<(f64, f64)>,
@@ -475,7 +475,7 @@ fn build_lut2d_ps_csr_with_azimuthal(
                     let a0 = min_azimuthal + ba as f64 * step_azimuthal;
                     let a1 = a0 + step_azimuthal;
                     let clipped = clip_polygon_rect_scratch(&poly, r0, r1, a0, a1, buf1, buf2);
-                    let area = polygon_area(&clipped).abs();
+                    let area = polygon_area(clipped).abs();
                     if area <= 0.0 {
                         continue;
                     }
@@ -572,7 +572,7 @@ fn build_lut2d_ps_csr_with_azimuthal(
                     let a0 = min_azimuthal + ba as f64 * step_azimuthal;
                     let a1 = a0 + step_azimuthal;
                     let clipped = clip_polygon_rect_scratch(&poly, r0, r1, a0, a1, buf1, buf2);
-                    let area = polygon_area(&clipped).abs();
+                    let area = polygon_area(clipped).abs();
                     if area <= 0.0 {
                         continue;
                     }
@@ -643,8 +643,8 @@ fn build_lut2d_ps_csr_with_azimuthal(
 /// ```
 pub fn build_lut2d_ps_csr(
     geometry: &Geometry,
-    radial: &Vec<f64>,
-    azimuthal: &Vec<f64>,
+    radial: &[f64],
+    azimuthal: &[f64],
     n_radial: usize,
     n_azimuthal: usize,
     unit: RadialUnit,
@@ -657,10 +657,11 @@ pub fn build_lut2d_ps_csr(
 /// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
 /// `azimuthal_start - azimuthal_step / 2`. Binning wraps periodically so angles outside the
 /// total range fold back into `0..n_azimuthal`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_lut2d_ps_csr_with_azimuthal_range(
     geometry: &Geometry,
-    radial: &Vec<f64>,
-    azimuthal: &Vec<f64>,
+    radial: &[f64],
+    azimuthal: &[f64],
     n_radial: usize,
     n_azimuthal: usize,
     azimuthal_start: f64,

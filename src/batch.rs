@@ -226,7 +226,7 @@ where
     let num_files = filenames.len();
 
     // Distribute files across workers
-    let chunk_size = (num_files + num_workers - 1) / num_workers;
+    let chunk_size = num_files.div_ceil(num_workers);
     let mut handles = Vec::new();
     let mut file_chunks = Vec::new();
 
