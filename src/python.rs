@@ -72,6 +72,37 @@ fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     Ok(poni)
 }
 
+/// Perform 1D radial integration of a diffraction pattern.
+///
+/// This function loads a PONI calibration file and a TIFF image, then performs
+/// 1D integration along the radial (scattering angle) axis.
+///
+/// # Arguments
+///
+/// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
+/// * `tiff_path` - Path to the TIFF image file containing the diffraction pattern
+/// * `n_points` - Number of bins for the 1D integration output
+/// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+/// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+/// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
+/// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+///
+/// # Returns
+///
+/// Tuple of (radial_values, intensities) as lists of floats
+///
+/// # Example
+///
+/// ```python
+/// import dioptrin
+/// radial, intensity = dioptrin.integrate1d(
+///     "calibration.poni",
+///     "pattern.tif",
+///     n_points=1000,
+///     method="pixel_split",
+///     unit="2th_deg"
+/// )
+/// ```
 #[pyfunction]
 #[pyo3(
     text_signature = "(poni_path, tiff_path, n_points, method=None, polarization_factor=None, n_ss=None, unit=None)"
@@ -101,6 +132,35 @@ fn integrate1d(
     Ok(integrator.integrate1d(&frame, n_points))
 }
 
+/// Perform 1D radial integration with error propagation.
+///
+/// Similar to `integrate1d`, but also returns error estimates (standard deviations)
+/// for each bin based on Poisson statistics.
+///
+/// # Arguments
+///
+/// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
+/// * `tiff_path` - Path to the TIFF image file containing the diffraction pattern
+/// * `n_points` - Number of bins for the 1D integration output
+/// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+/// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+/// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
+/// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+///
+/// # Returns
+///
+/// Tuple of (radial_values, intensities, errors) as lists of floats
+///
+/// # Example
+///
+/// ```python
+/// import dioptrin
+/// radial, intensity, errors = dioptrin.integrate1d_with_errors(
+///     "calibration.poni",
+///     "pattern.tif",
+///     n_points=1000
+/// )
+/// ```
 #[pyfunction]
 #[pyo3(
     text_signature = "(poni_path, tiff_path, n_points, method=None, polarization_factor=None, n_ss=None, unit=None)"
@@ -130,11 +190,43 @@ fn integrate1d_with_errors(
     Ok(integrator.integrate1d_with_errors(&frame, n_points))
 }
 
+/// Get the current number of threads used by Rayon for parallel processing.
+///
+/// # Returns
+///
+/// Number of threads currently configured for parallel operations
+///
+/// # Example
+///
+/// ```python
+/// import dioptrin
+/// threads = dioptrin.rayon_num_threads()
+/// print(f"Using {threads} threads")
+/// ```
 #[pyfunction]
 fn rayon_num_threads() -> usize {
     rayon::current_num_threads()
 }
 
+/// Set the number of threads for Rayon parallel processing.
+///
+/// This affects all parallel operations in the library, including geometry
+/// calculations and integration.
+///
+/// # Arguments
+///
+/// * `threads` - Number of threads to use (must be > 0)
+///
+/// # Raises
+///
+/// ValueError if thread count is invalid or cannot be set
+///
+/// # Example
+///
+/// ```python
+/// import dioptrin
+/// dioptrin.set_rayon_threads(8)  # Use 8 threads
+/// ```
 #[pyfunction]
 #[pyo3(text_signature = "(threads)")]
 fn set_rayon_threads(threads: usize) -> PyResult<()> {
@@ -151,6 +243,38 @@ struct PyIntegrator {
 
 #[pymethods]
 impl PyIntegrator {
+    /// Create a new Integrator instance.
+    ///
+    /// The integrator is configured with detector geometry from a PONI file
+    /// and the specified image dimensions. The integration method and other
+    /// parameters can be set during construction or modified later.
+    ///
+    /// # Arguments
+    ///
+    /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
+    /// * `dim1` - First dimension (height) of the detector image
+    /// * `dim2` - Second dimension (width) of the detector image
+    /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+    /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+    /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
+    /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+    ///
+    /// # Returns
+    ///
+    /// New Integrator instance
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import dioptrin
+    /// integrator = dioptrin.Integrator(
+    ///     "calibration.poni",
+    ///     dim1=195,
+    ///     dim2=487,
+    ///     method="pixel_split",
+    ///     unit="2th_deg"
+    /// )
+    /// ```
     #[new]
     #[pyo3(signature = (poni_path, dim1, dim2, method=None, polarization_factor=None, n_ss=None, unit=None))]
     fn new(
@@ -175,6 +299,33 @@ impl PyIntegrator {
         Ok(Self { integrator })
     }
 
+    /// Create an Integrator from a PONI file without specifying dimensions.
+    ///
+    /// The dimensions will be determined automatically when the first image
+    /// is integrated. This is useful when working with multiple images of
+    /// different sizes that share the same geometry.
+    ///
+    /// # Arguments
+    ///
+    /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
+    /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+    /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+    /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
+    /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+    ///
+    /// # Returns
+    ///
+    /// New Integrator instance
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import dioptrin
+    /// integrator = dioptrin.Integrator.from_poni_file(
+    ///     "calibration.poni",
+    ///     method="pixel_split"
+    /// )
+    /// ```
     #[classmethod]
     #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None))]
     fn from_poni_file(
@@ -198,6 +349,37 @@ impl PyIntegrator {
         Ok(Self { integrator })
     }
 
+    /// Create an Integrator from a PONI dictionary.
+    ///
+    /// The dictionary should contain PONI calibration parameters as keys:
+    /// "pixel1", "pixel2", "distance", "poni1", "poni2", "rot1", "rot2", "rot3", "wavelength".
+    ///
+    /// # Arguments
+    ///
+    /// * `poni_dict` - Dictionary containing PONI calibration parameters
+    /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+    /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+    /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
+    /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+    ///
+    /// # Returns
+    ///
+    /// New Integrator instance
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import dioptrin
+    /// poni_dict = {
+    ///     "pixel1": 0.000172,
+    ///     "pixel2": 0.000172,
+    ///     "distance": 0.2,
+    ///     "poni1": 0.1,
+    ///     "poni2": 0.1,
+    ///     "wavelength": 1e-10
+    /// }
+    /// integrator = dioptrin.Integrator.from_poni_dict(poni_dict)
+    /// ```
     #[classmethod]
     #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None))]
     fn from_poni_dict(
@@ -220,6 +402,26 @@ impl PyIntegrator {
         Ok(Self { integrator })
     }
 
+    /// Perform 1D radial integration from a TIFF file.
+    ///
+    /// Loads a TIFF image and integrates it along the radial axis using the
+    /// configured integration method and corrections.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_path` - Path to the TIFF image file
+    /// * `n_points` - Number of bins for the 1D integration output
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (radial_values, intensities) as lists of floats
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
+    /// ```
     #[pyo3(signature = (tiff_path, n_points))]
     fn integrate1d(&mut self, tiff_path: &str, n_points: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
         let frame = Frame::from_tiff(tiff_path.to_string())
@@ -227,6 +429,32 @@ impl PyIntegrator {
         Ok(self.integrator.integrate1d(&frame, n_points))
     }
 
+    /// Perform 1D radial integration from a NumPy array.
+    ///
+    /// Integrates a 2D NumPy array (detector image) along the radial axis.
+    /// The array must be C-contiguous (row-major) and of type float64.
+    ///
+    /// # Arguments
+    ///
+    /// * `array` - 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
+    /// * `n_points` - Number of bins for the 1D integration output
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (radial_values, intensities) as lists of floats
+    ///
+    /// # Raises
+    ///
+    /// ValueError if the array is not C-contiguous or not float64
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import numpy as np
+    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// data = np.array(image_data, dtype=np.float64)
+    /// radial, intensity = integrator.integrate1d_array(data, n_points=1000)
+    /// ```
     #[pyo3(signature = (array, n_points))]
     fn integrate1d_array(
         &mut self,
@@ -251,6 +479,32 @@ impl PyIntegrator {
             .integrate1d_from_slice(slice, dim1, dim2, n_points))
     }
 
+    /// Perform 1D radial integration from a NumPy array with error propagation.
+    ///
+    /// Similar to `integrate1d_array`, but also returns error estimates
+    /// (standard deviations) for each bin based on Poisson statistics.
+    ///
+    /// # Arguments
+    ///
+    /// * `array` - 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
+    /// * `n_points` - Number of bins for the 1D integration output
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (radial_values, intensities, errors) as lists of floats
+    ///
+    /// # Raises
+    ///
+    /// ValueError if the array is not C-contiguous or not float64
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import numpy as np
+    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// data = np.array(image_data, dtype=np.float64)
+    /// radial, intensity, errors = integrator.integrate1d_array_with_errors(data, n_points=1000)
+    /// ```
     #[pyo3(signature = (array, n_points))]
     fn integrate1d_array_with_errors(
         &mut self,
@@ -275,6 +529,26 @@ impl PyIntegrator {
             .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points))
     }
 
+    /// Perform 1D radial integration from a TIFF file with error propagation.
+    ///
+    /// Similar to `integrate1d`, but also returns error estimates
+    /// (standard deviations) for each bin based on Poisson statistics.
+    ///
+    /// # Arguments
+    ///
+    /// * `tiff_path` - Path to the TIFF image file
+    /// * `n_points` - Number of bins for the 1D integration output
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (radial_values, intensities, errors) as lists of floats
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// integrator = dioptrin.Integrator("calibration.poni", 195, 487)
+    /// radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
+    /// ```
     #[pyo3(signature = (tiff_path, n_points))]
     fn integrate1d_with_errors(
         &mut self,
@@ -286,6 +560,25 @@ impl PyIntegrator {
         Ok(self.integrator.integrate1d_with_errors(&frame, n_points))
     }
 
+    /// Set the integration method.
+    ///
+    /// Changes the integration method used for subsequent integrations.
+    /// Available methods: "pixel_split", "counting", "histogram", or "supersampled".
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - Integration method name
+    /// * `n_ss` - Number of subpixels per pixel for supersampled method (required if method is "supersampled")
+    ///
+    /// # Raises
+    ///
+    /// ValueError if the method name is invalid
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// integrator.set_method("supersampled", n_ss=7)
+    /// ```
     #[pyo3(signature = (method, n_ss=None))]
     fn set_method(&mut self, method: &str, n_ss: Option<usize>) -> PyResult<()> {
         self.integrator
@@ -293,19 +586,61 @@ impl PyIntegrator {
         Ok(())
     }
 
+    /// Set the polarization correction factor.
+    ///
+    /// Applies polarization correction to the integration. The factor should
+    /// be between 0.0 and 1.0. Set to None to disable polarization correction.
+    ///
+    /// # Arguments
+    ///
+    /// * `polarization_factor` - Polarization factor (0.0 to 1.0) or None to disable
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// integrator.set_polarization_factor(0.99)  # Enable correction
+    /// integrator.set_polarization_factor(None)  # Disable correction
+    /// ```
     fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
         self.integrator.set_polarization_factor(polarization_factor);
     }
 
     /// Set the radial unit for integration output.
     ///
-    /// Valid options: "2th_rad", "2th_deg", "q_A^-1", "q_nm^-1"
+    /// Changes the unit used for the radial (scattering angle) axis in integration results.
+    ///
+    /// # Arguments
+    ///
+    /// * `unit` - Radial unit: "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
+    ///
+    /// # Raises
+    ///
+    /// ValueError if the unit name is invalid
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// integrator.set_unit("q_A^-1")  # Switch to q-space in inverse Angstroms
+    /// ```
     fn set_unit(&mut self, unit: &str) -> PyResult<()> {
         self.integrator.set_radial_unit(parse_unit(Some(unit))?);
         Ok(())
     }
 
     /// Get the current radial unit as a string.
+    ///
+    /// Returns the unit currently configured for the radial axis.
+    ///
+    /// # Returns
+    ///
+    /// String representation of the current radial unit: "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// unit = integrator.get_unit()
+    /// print(f"Current unit: {unit}")
+    /// ```
     fn get_unit(&self) -> &'static str {
         match self.integrator.radial_unit() {
             RadialUnit::TthRad => "2th_rad",
