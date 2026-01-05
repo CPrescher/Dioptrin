@@ -9,7 +9,7 @@ impl Integrator {
 
         // First check with read lock if update is needed
         let needs_update = {
-            let state = self.state.read().unwrap();
+            let state = self.state.read().expect("geometry state lock poisoned");
             let stale = (state.dim1 * state.dim2) != size
                 || state.dim1 != dim1
                 || state.dim2 != dim2;
@@ -18,7 +18,7 @@ impl Integrator {
 
         if needs_update {
             // Acquire write lock and double-check (another thread may have updated)
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write().expect("geometry state lock poisoned");
             if (state.dim1 * state.dim2) != size || state.dim1 != dim1 || state.dim2 != dim2 {
                 // Update geometry dimensions temporarily for calculations
                 let mut temp_geometry = self.geometry.clone();
@@ -51,7 +51,7 @@ impl Integrator {
     }
 
     pub(super) fn update_polarization(&self) {
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write().expect("geometry state lock poisoned");
         let size = state.dim1 * state.dim2;
         if size == 0 {
             return;
@@ -79,7 +79,7 @@ impl Integrator {
     /// Uses pre-computed correction_factor to avoid two divisions per pixel.
     /// Thread-safe: only reads from state.
     pub(super) fn correct_intensity(&self, data: &[f64]) -> Vec<f64> {
-        let state = self.state.read().unwrap();
+        let state = self.state.read().expect("geometry state lock poisoned");
         data.iter()
             .enumerate()
             .map(|(i, y)| y * state.correction_factor[i])
@@ -87,7 +87,7 @@ impl Integrator {
     }
 
     pub(super) fn correct_intensity_and_variance(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
-        let state = self.state.read().unwrap();
+        let state = self.state.read().expect("geometry state lock poisoned");
         let mut intensity = Vec::with_capacity(data.len());
         let mut variance = Vec::with_capacity(data.len());
         for (i, &y) in data.iter().enumerate() {

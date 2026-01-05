@@ -199,7 +199,7 @@ impl Integrator {
         if self.radial_unit != unit {
             self.radial_unit = unit;
             // Recompute radial values and invalidate caches
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write().expect("geometry state lock poisoned");
             if !state.tth.is_empty() {
                 state.radial = self
                     .radial_unit
@@ -256,36 +256,36 @@ impl Integrator {
 
     // getter for solid angle correction for each pixel as a flattened vector
     pub fn solid_angle(&self) -> Vec<f64> {
-        self.state.read().unwrap().solid_angle.clone()
+        self.state.read().expect("geometry state lock poisoned").solid_angle.clone()
     }
 
     // getter for polarization correction for each pixel as a flattened vector
     pub fn polarization(&self) -> Vec<f64> {
-        self.state.read().unwrap().polarization.clone()
+        self.state.read().expect("geometry state lock poisoned").polarization.clone()
     }
 
     // getter for tth vector for each pixel as a flattened vector (always in radians)
     pub fn tth(&self) -> Vec<f64> {
-        self.state.read().unwrap().tth.clone()
+        self.state.read().expect("geometry state lock poisoned").tth.clone()
     }
 
     // getter for radial vector for each pixel in the selected unit
     pub fn radial(&self) -> Vec<f64> {
-        self.state.read().unwrap().radial.clone()
+        self.state.read().expect("geometry state lock poisoned").radial.clone()
     }
 
     // getter for azimuth vector for each pixel as a flattened vector
     pub fn azimuth(&self) -> Vec<f64> {
-        self.state.read().unwrap().azimuth.clone()
+        self.state.read().expect("geometry state lock poisoned").azimuth.clone()
     }
 
     // helper to invalidate LUT caches
     fn invalidate_caches(&self) {
-        let mut cache_1d = self.cache_1d.write().unwrap();
+        let mut cache_1d = self.cache_1d.write().expect("1D LUT cache lock poisoned");
         cache_1d.key = None;
         cache_1d.lut = None;
         drop(cache_1d);
-        let mut cache_2d = self.cache_2d.write().unwrap();
+        let mut cache_2d = self.cache_2d.write().expect("2D LUT cache lock poisoned");
         cache_2d.key = None;
         cache_2d.lut = None;
     }

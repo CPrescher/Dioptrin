@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(1);
 
     let bench_duration = Duration::from_secs(3);
-    let n_bins_1d = 1000;
+    let n_bins_1d = 3000;
 
     // Verify files exist and get dimensions
     let frame = Frame::from_tiff(image_path.clone())?;

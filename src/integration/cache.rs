@@ -87,7 +87,10 @@ pub(super) struct Lut1dGuard<'a> {
 impl<'a> std::ops::Deref for Lut1dGuard<'a> {
     type Target = lut::Lut1d;
     fn deref(&self) -> &Self::Target {
-        self._guard.lut.as_ref().unwrap()
+        self._guard
+            .lut
+            .as_ref()
+            .expect("Lut1dGuard created without LUT being built")
     }
 }
 
@@ -98,7 +101,10 @@ pub(super) struct Lut2dGuard<'a> {
 impl<'a> std::ops::Deref for Lut2dGuard<'a> {
     type Target = lut::Lut2d;
     fn deref(&self) -> &Self::Target {
-        self._guard.lut.as_ref().unwrap()
+        self._guard
+            .lut
+            .as_ref()
+            .expect("Lut2dGuard created without LUT being built")
     }
 }
 
@@ -108,7 +114,7 @@ impl Integrator {
     pub(super) fn ensure_lut1d(&self, key: OneDKey) -> Lut1dGuard<'_> {
         // First check with read lock
         let needs_rebuild = {
-            let cache = self.cache_1d.read().unwrap();
+            let cache = self.cache_1d.read().expect("1D LUT cache lock poisoned");
             match &cache.key {
                 None => true,
                 Some(k) => k != &key,
@@ -117,7 +123,7 @@ impl Integrator {
 
         if needs_rebuild {
             // Get state for building LUT
-            let state = self.state.read().unwrap();
+            let state = self.state.read().expect("geometry state lock poisoned");
             let radial = &state.radial;
 
             // Build the LUT (this can take time, but we're not holding the cache lock)
@@ -141,7 +147,7 @@ impl Integrator {
             drop(state);
 
             // Acquire write lock and double-check (another thread may have built it)
-            let mut cache = self.cache_1d.write().unwrap();
+            let mut cache = self.cache_1d.write().expect("1D LUT cache lock poisoned");
             if cache.key.as_ref() != Some(&key) {
                 cache.key = Some(key);
                 cache.lut = Some(lut1d);
@@ -150,7 +156,7 @@ impl Integrator {
 
         // Return read guard
         Lut1dGuard {
-            _guard: self.cache_1d.read().unwrap(),
+            _guard: self.cache_1d.read().expect("1D LUT cache lock poisoned"),
         }
     }
 
@@ -159,7 +165,7 @@ impl Integrator {
     pub(super) fn ensure_lut2d(&self, key: TwoDKey) -> Lut2dGuard<'_> {
         // First check with read lock
         let needs_rebuild = {
-            let cache = self.cache_2d.read().unwrap();
+            let cache = self.cache_2d.read().expect("2D LUT cache lock poisoned");
             match &cache.key {
                 None => true,
                 Some(k) => k != &key,
@@ -168,7 +174,7 @@ impl Integrator {
 
         if needs_rebuild {
             // Get state for building LUT
-            let state = self.state.read().unwrap();
+            let state = self.state.read().expect("geometry state lock poisoned");
             let radial = &state.radial;
             let azimuth = &state.azimuth;
             let mut geom = self.geometry.clone();
@@ -213,7 +219,7 @@ impl Integrator {
             drop(state);
 
             // Acquire write lock and double-check
-            let mut cache = self.cache_2d.write().unwrap();
+            let mut cache = self.cache_2d.write().expect("2D LUT cache lock poisoned");
             if cache.key.as_ref() != Some(&key) {
                 cache.key = Some(key);
                 cache.lut = Some(lut2d);
@@ -222,7 +228,7 @@ impl Integrator {
 
         // Return read guard
         Lut2dGuard {
-            _guard: self.cache_2d.read().unwrap(),
+            _guard: self.cache_2d.read().expect("2D LUT cache lock poisoned"),
         }
     }
 }

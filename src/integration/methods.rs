@@ -41,7 +41,7 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 histogram::histogram(&radial, &intensity, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
@@ -75,7 +75,7 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 histogram::histogram_with_errors(&radial, &intensity, &variance, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
@@ -110,7 +110,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 histogram::histogram(&radial, &intensity, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
@@ -144,7 +144,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 histogram::histogram_with_errors(&radial, &intensity, &variance, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
@@ -198,7 +198,7 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 histogram::histogram(&radial, &intensity, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
@@ -243,7 +243,7 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 histogram::histogram(&radial, &intensity, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
@@ -278,7 +278,7 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
                     &radial, &intensity, &variance, n_radial, mask_data,
                 );
@@ -324,7 +324,7 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self.state.read().unwrap().radial.clone();
+                let radial = self.state.read().expect("geometry state lock poisoned").radial.clone();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
                     &radial, &intensity, &variance, n_radial, mask_data,
                 );
