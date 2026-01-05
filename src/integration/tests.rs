@@ -120,7 +120,7 @@ fn test_integrator() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::Histogram)
         .with_polarization_factor(0.99);
     let (tth, int) = integrator.integrate1d(&frame, 850);
@@ -148,7 +148,7 @@ fn test_integrate_counting_1d() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::Counting)
         .with_polarization_factor(0.99);
     let (tth, int) = integrator.integrate1d(&frame, 850);
@@ -176,7 +176,7 @@ fn test_integrate_counting_1d_with_errors() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::Counting)
         .with_polarization_factor(0.99);
 
@@ -190,7 +190,7 @@ fn test_integrate_pixel_split_1d() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::PixelSplit)
         .with_polarization_factor(0.99);
     let (tth, int) = integrator.integrate1d(&frame, 850);
@@ -203,7 +203,7 @@ fn test_integrate_pixel_split_1d_with_errors() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::PixelSplit)
         .with_polarization_factor(0.99);
 
@@ -217,7 +217,7 @@ fn test_integrate_supersampled_1d() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator =
+    let integrator =
         Integrator::new(geometry).with_method(IntegrationMethod::Supersampled { n_ss: 5 });
     let (tth, int) = integrator.integrate1d(&frame, 850);
 
@@ -268,7 +268,7 @@ fn test_integrator_tth_deg_output_range() {
     // Integrate in radians
     let poni1 = Poni::load("test_data/v1.poni").unwrap();
     let geometry1 = Geometry::new(0, 0, poni1);
-    let mut integrator_rad = Integrator::new(geometry1)
+    let integrator_rad = Integrator::new(geometry1)
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::TthRad);
     let (x_rad, _) = integrator_rad.integrate1d(&frame, 100);
@@ -276,7 +276,7 @@ fn test_integrator_tth_deg_output_range() {
     // Integrate in degrees
     let poni2 = Poni::load("test_data/v1.poni").unwrap();
     let geometry2 = Geometry::new(0, 0, poni2);
-    let mut integrator_deg = Integrator::new(geometry2)
+    let integrator_deg = Integrator::new(geometry2)
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::TthDeg);
     let (x_deg, _) = integrator_deg.integrate1d(&frame, 100);
@@ -302,7 +302,7 @@ fn test_integrator_q_angstrom_output_range() {
 
     // Integrate in q (Å⁻¹)
     let geometry = Geometry::new(0, 0, poni);
-    let mut integrator_q = Integrator::new(geometry)
+    let integrator_q = Integrator::new(geometry)
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::QAngstrom);
     let (x_q, _) = integrator_q.integrate1d(&frame, 100);
@@ -338,7 +338,7 @@ fn test_integrator_q_nm_vs_q_angstrom_ratio() {
     // Integrate in q (Å⁻¹)
     let poni1 = Poni::load("test_data/v1.poni").unwrap();
     let geometry1 = Geometry::new(0, 0, poni1);
-    let mut integrator_qa = Integrator::new(geometry1)
+    let integrator_qa = Integrator::new(geometry1)
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::QAngstrom);
     let (x_qa, _) = integrator_qa.integrate1d(&frame, 100);
@@ -346,7 +346,7 @@ fn test_integrator_q_nm_vs_q_angstrom_ratio() {
     // Integrate in q (nm⁻¹)
     let poni2 = Poni::load("test_data/v1.poni").unwrap();
     let geometry2 = Geometry::new(0, 0, poni2);
-    let mut integrator_qn = Integrator::new(geometry2)
+    let integrator_qn = Integrator::new(geometry2)
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::QNm);
     let (x_qn, _) = integrator_qn.integrate1d(&frame, 100);
@@ -384,7 +384,7 @@ fn test_integrator_intensity_invariant_across_units() {
     for unit in &units {
         let poni = Poni::load("test_data/v1.poni").unwrap();
         let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry)
+        let integrator = Integrator::new(geometry)
             .with_method(IntegrationMethod::Counting)
             .with_radial_unit(*unit);
         let (_, int) = integrator.integrate1d(&frame, 100);
@@ -414,7 +414,7 @@ fn test_integrator_pixel_split_with_q_unit() {
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
 
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::PixelSplit)
         .with_radial_unit(RadialUnit::QAngstrom);
 
@@ -434,7 +434,7 @@ fn test_integrator_supersampled_with_q_unit() {
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
 
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::Supersampled { n_ss: 3 })
         .with_radial_unit(RadialUnit::QNm);
 

@@ -5,13 +5,45 @@ mod methods;
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::sync::RwLock;
 use std::f64::consts::PI;
 
 use crate::geometry::Geometry;
 use crate::mask::Mask;
 
 use cache::{Lut1dCache, Lut2dCache};
+
+/// Mutable geometry state that can be lazily initialized.
+/// Wrapped in RwLock for thread-safe access.
+struct GeometryState {
+    /// Dimensions the state was computed for
+    dim1: usize,
+    dim2: usize,
+    /// Two-theta values in radians
+    tth: Vec<f64>,
+    /// Radial values in the selected unit
+    radial: Vec<f64>,
+    azimuth: Vec<f64>,
+    solid_angle: Vec<f64>,
+    polarization: Vec<f64>,
+    /// Combined correction factor: 1.0 / (polarization * solid_angle)
+    correction_factor: Vec<f64>,
+}
+
+impl GeometryState {
+    fn new() -> Self {
+        Self {
+            dim1: 0,
+            dim2: 0,
+            tth: vec![],
+            radial: vec![],
+            azimuth: vec![],
+            solid_angle: vec![],
+            polarization: vec![],
+            correction_factor: vec![],
+        }
+    }
+}
 
 /// Radial unit for integration output.
 ///
@@ -110,20 +142,10 @@ pub enum IntegrationMethod {
 
 pub struct Integrator {
     geometry: Geometry,
-    /// Two-theta values in radians (always computed internally)
-    tth: Vec<f64>,
-    /// Radial values in the selected unit (computed from tth)
-    radial: Vec<f64>,
-    azimuth: Vec<f64>,
-    solid_angle: Vec<f64>,
-    polarization: Vec<f64>,
-    /// Combined correction factor: 1.0 / (polarization * solid_angle)
-    /// Pre-computed to avoid two divisions per pixel in correct_intensity()
-    correction_factor: Vec<f64>,
-    /// Cached size to avoid repeated length checks
-    cached_size: usize,
-    cache_1d: RefCell<Lut1dCache>,
-    cache_2d: RefCell<Lut2dCache>,
+    /// Mutable geometry state (tth, radial, azimuth, corrections) in RwLock for thread-safe access
+    state: RwLock<GeometryState>,
+    cache_1d: RwLock<Lut1dCache>,
+    cache_2d: RwLock<Lut2dCache>,
     mask: Option<Mask>,
     method: IntegrationMethod,
     polarization_factor: Option<f64>,
@@ -134,15 +156,9 @@ impl Integrator {
     pub fn new(geometry: Geometry) -> Integrator {
         Integrator {
             geometry,
-            tth: vec![],
-            radial: vec![],
-            azimuth: vec![],
-            solid_angle: vec![],
-            polarization: vec![],
-            correction_factor: vec![],
-            cached_size: 0,
-            cache_1d: RefCell::new(Lut1dCache::new()),
-            cache_2d: RefCell::new(Lut2dCache::new()),
+            state: RwLock::new(GeometryState::new()),
+            cache_1d: RwLock::new(Lut1dCache::new()),
+            cache_2d: RwLock::new(Lut2dCache::new()),
             mask: None,
             method: IntegrationMethod::PixelSplit,
             polarization_factor: None,
@@ -183,11 +199,13 @@ impl Integrator {
         if self.radial_unit != unit {
             self.radial_unit = unit;
             // Recompute radial values and invalidate caches
-            if !self.tth.is_empty() {
-                self.radial = self
+            let mut state = self.state.write().unwrap();
+            if !state.tth.is_empty() {
+                state.radial = self
                     .radial_unit
-                    .convert_from_tth(&self.tth, self.geometry.poni.wavelength);
+                    .convert_from_tth(&state.tth, self.geometry.poni.wavelength);
             }
+            drop(state);
             self.invalidate_caches();
         }
     }
@@ -237,37 +255,37 @@ impl Integrator {
     }
 
     // getter for solid angle correction for each pixel as a flattened vector
-    pub fn solid_angle(&self) -> &Vec<f64> {
-        &self.solid_angle
+    pub fn solid_angle(&self) -> Vec<f64> {
+        self.state.read().unwrap().solid_angle.clone()
     }
 
     // getter for polarization correction for each pixel as a flattened vector
-    pub fn polarization(&self) -> &Vec<f64> {
-        &self.polarization
+    pub fn polarization(&self) -> Vec<f64> {
+        self.state.read().unwrap().polarization.clone()
     }
 
     // getter for tth vector for each pixel as a flattened vector (always in radians)
-    pub fn tth(&self) -> &Vec<f64> {
-        &self.tth
+    pub fn tth(&self) -> Vec<f64> {
+        self.state.read().unwrap().tth.clone()
     }
 
     // getter for radial vector for each pixel in the selected unit
-    pub fn radial(&self) -> &Vec<f64> {
-        &self.radial
+    pub fn radial(&self) -> Vec<f64> {
+        self.state.read().unwrap().radial.clone()
     }
 
     // getter for azimuth vector for each pixel as a flattened vector
-    pub fn azimuth(&self) -> &Vec<f64> {
-        &self.azimuth
+    pub fn azimuth(&self) -> Vec<f64> {
+        self.state.read().unwrap().azimuth.clone()
     }
 
     // helper to invalidate LUT caches
     fn invalidate_caches(&self) {
-        let mut cache_1d = self.cache_1d.borrow_mut();
+        let mut cache_1d = self.cache_1d.write().unwrap();
         cache_1d.key = None;
         cache_1d.lut = None;
         drop(cache_1d);
-        let mut cache_2d = self.cache_2d.borrow_mut();
+        let mut cache_2d = self.cache_2d.write().unwrap();
         cache_2d.key = None;
         cache_2d.lut = None;
     }

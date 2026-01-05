@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Create fresh integrator (reload poni since Geometry takes ownership)
         let poni = Poni::load(&poni_path)?;
         let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-        let mut integrator = Integrator::new(geometry)
+        let integrator = Integrator::new(geometry)
             .with_method(IntegrationMethod::PixelSplit)
             .with_radial_unit(RadialUnit::TthDeg);
 

@@ -5,6 +5,7 @@
 use crate::poni::Poni;
 use rayon::prelude::*;
 
+#[derive(Clone)]
 pub struct Geometry {
     pub dim1: usize,
     pub dim2: usize,

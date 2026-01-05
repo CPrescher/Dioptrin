@@ -6,6 +6,7 @@ use super::{IntegrationMethod, Integrator};
 
 impl Integrator {
     /// Integrate a frame to 1D using the configured integration method.
+    /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///
     /// Examples
     /// ```
@@ -25,18 +26,12 @@ impl Integrator {
     /// };
     ///
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-    /// let mut integrator = Integrator::new(geometry)
+    /// let integrator = Integrator::new(geometry)
     ///     .with_method(IntegrationMethod::Counting);
     /// let (_x, y_count) = integrator.integrate1d(&frame, 4);
-    /// integrator.set_method(IntegrationMethod::PixelSplit);
-    /// let (_x, y_ps) = integrator.integrate1d(&frame, 4);
-    /// integrator.set_method(IntegrationMethod::Supersampled { n_ss: 2 });
-    /// let (_x, y_ss) = integrator.integrate1d(&frame, 4);
     /// assert_eq!(y_count.len(), 4);
-    /// assert_eq!(y_ps.len(), 4);
-    /// assert_eq!(y_ss.len(), 4);
     /// ```
-    pub fn integrate1d(&mut self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+    pub fn integrate1d(&self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
@@ -46,7 +41,8 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.radial, &intensity, n_points, mask_data)
+                let radial = self.state.read().unwrap().radial.clone();
+                histogram::histogram(&radial, &intensity, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
@@ -66,7 +62,7 @@ impl Integrator {
 
     /// Integrate a frame to 1D and return per-bin errors (standard deviations).
     pub fn integrate1d_with_errors(
-        &mut self,
+        &self,
         frame: &Frame,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
@@ -78,9 +74,10 @@ impl Integrator {
         });
         let unit = self.radial_unit;
         let result = match self.method {
-            IntegrationMethod::Histogram => histogram::histogram_with_errors(
-                &self.radial, &intensity, &variance, n_points, mask_data,
-            ),
+            IntegrationMethod::Histogram => {
+                let radial = self.state.read().unwrap().radial.clone();
+                histogram::histogram_with_errors(&radial, &intensity, &variance, n_points, mask_data)
+            }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
@@ -98,7 +95,7 @@ impl Integrator {
     }
 
     pub fn integrate1d_from_slice(
-        &mut self,
+        &self,
         data: &[f64],
         dim1: usize,
         dim2: usize,
@@ -113,7 +110,8 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.radial, &intensity, n_points, mask_data)
+                let radial = self.state.read().unwrap().radial.clone();
+                histogram::histogram(&radial, &intensity, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
@@ -131,7 +129,7 @@ impl Integrator {
     }
 
     pub fn integrate1d_with_errors_from_slice(
-        &mut self,
+        &self,
         data: &[f64],
         dim1: usize,
         dim2: usize,
@@ -145,9 +143,10 @@ impl Integrator {
         });
         let unit = self.radial_unit;
         match self.method {
-            IntegrationMethod::Histogram => histogram::histogram_with_errors(
-                &self.radial, &intensity, &variance, n_points, mask_data,
-            ),
+            IntegrationMethod::Histogram => {
+                let radial = self.state.read().unwrap().radial.clone();
+                histogram::histogram_with_errors(&radial, &intensity, &variance, n_points, mask_data)
+            }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &*lut1d, mask_data)
@@ -164,6 +163,7 @@ impl Integrator {
     }
 
     /// Integrate a frame to 2D using the configured integration method.
+    /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///
     /// Example
     /// ```
@@ -183,12 +183,12 @@ impl Integrator {
     /// };
     ///
     /// let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
-    /// let mut integrator = Integrator::new(geometry)
+    /// let integrator = Integrator::new(geometry)
     ///     .with_method(IntegrationMethod::PixelSplit);
     /// let y = integrator.integrate2d(&frame, 2, 2);
     /// assert_eq!(y.len(), 4);
     /// ```
-    pub fn integrate2d(&mut self, frame: &Frame, n_radial: usize, n_azimuthal: usize) -> Vec<f64> {
+    pub fn integrate2d(&self, frame: &Frame, n_radial: usize, n_azimuthal: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let intensity = self.correct_intensity(&frame.data);
         let mask_data = self.mask.as_ref().map(|mask| {
@@ -198,7 +198,8 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.radial, &intensity, n_radial, mask_data).1
+                let radial = self.state.read().unwrap().radial.clone();
+                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting { n_radial, n_azimuthal, unit });
@@ -217,6 +218,7 @@ impl Integrator {
     }
 
     /// Integrate a frame to 2D using an explicit azimuthal start and step.
+    /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///
     /// For a full-circle azimuthal range, use `azimuthal_step = 2*pi / n_azimuthal` and a
     /// `azimuthal_start` that defines the center of the first bin (e.g. `0.0` for 0..2*pi).
@@ -224,7 +226,7 @@ impl Integrator {
     /// `0..n_azimuthal`.
     /// Note: `IntegrationMethod::Histogram` ignores azimuthal binning.
     pub fn integrate2d_with_azimuthal_range(
-        &mut self,
+        &self,
         frame: &Frame,
         n_radial: usize,
         n_azimuthal: usize,
@@ -241,7 +243,8 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
-                histogram::histogram(&self.radial, &intensity, n_radial, mask_data).1
+                let radial = self.state.read().unwrap().radial.clone();
+                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal { n_radial, n_azimuthal, azimuthal, unit });
@@ -261,7 +264,7 @@ impl Integrator {
 
     /// Integrate a frame to 2D and return per-bin errors (standard deviations).
     pub fn integrate2d_with_errors(
-        &mut self,
+        &self,
         frame: &Frame,
         n_radial: usize,
         n_azimuthal: usize,
@@ -275,8 +278,9 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
+                let radial = self.state.read().unwrap().radial.clone();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &self.radial, &intensity, &variance, n_radial, mask_data,
+                    &radial, &intensity, &variance, n_radial, mask_data,
                 );
                 (y, sigma)
             }
@@ -303,7 +307,7 @@ impl Integrator {
     /// the total range fold into `0..n_azimuthal`.
     /// Note: `IntegrationMethod::Histogram` ignores azimuthal binning.
     pub fn integrate2d_with_azimuthal_range_and_errors(
-        &mut self,
+        &self,
         frame: &Frame,
         n_radial: usize,
         n_azimuthal: usize,
@@ -320,8 +324,9 @@ impl Integrator {
         let unit = self.radial_unit;
         let result = match self.method {
             IntegrationMethod::Histogram => {
+                let radial = self.state.read().unwrap().radial.clone();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &self.radial, &intensity, &variance, n_radial, mask_data,
+                    &radial, &intensity, &variance, n_radial, mask_data,
                 );
                 (y, sigma)
             }

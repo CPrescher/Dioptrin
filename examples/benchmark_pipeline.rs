@@ -3,7 +3,8 @@
 //! This example measures real throughput when processing files with different
 //! configurations of parallel workers and threads per worker.
 //!
-//! Each worker performs the full pipeline: load image → create integrator → integrate
+//! Workers share a single `Arc<Integrator>`, so geometry arrays and LUT cache are
+//! computed once and reused across all workers. This significantly reduces memory usage.
 //!
 //! Run with: cargo run --release --example benchmark_pipeline [image.tif] [calibration.poni]
 
@@ -22,32 +23,32 @@ use dioptrin::poni::Poni;
 const DEFAULT_IMAGE: &str = "test_data/CeO2_Pilatus1M.tif";
 const DEFAULT_PONI: &str = "test_data/v1.poni";
 
-/// Estimate memory usage per worker in bytes.
+/// Estimate memory usage for shared integrator in bytes.
 ///
-/// Components:
-/// - Frame data (temporary): dim1 * dim2 * 8 bytes
+/// Components (shared across all workers):
 /// - Integrator arrays (tth, radial, azimuth, solid_angle, polarization, correction_factor):
 ///   6 * dim1 * dim2 * 8 bytes
 /// - Lut1d (PixelSplit): row_ptr + col_idx + values ≈ n_bins * 8 + 2 * n_pixels * 8
-fn estimate_memory_per_worker(dim1: usize, dim2: usize, n_bins: usize) -> usize {
+fn estimate_shared_integrator_memory(dim1: usize, dim2: usize, n_bins: usize) -> usize {
     let n_pixels = dim1 * dim2;
-
-    // Frame data (held during integration)
-    let frame_mem = n_pixels * 8;
 
     // Integrator cached geometry arrays (6 Vec<f64>)
     let integrator_arrays = 6 * n_pixels * 8;
 
     // Lut1d for PixelSplit (weighted)
-    // row_ptr: (n_bins + 1) * 8
-    // col_idx: n_pixels * 8 (each pixel maps to one bin)
-    // values: n_pixels * 8 (weights for pixel-split)
     let lut_row_ptr = (n_bins + 1) * 8;
     let lut_col_idx = n_pixels * 8;
-    let lut_values = n_pixels * 8; // PixelSplit has weights
+    let lut_values = n_pixels * 8;
     let lut_mem = lut_row_ptr + lut_col_idx + lut_values;
 
-    frame_mem + integrator_arrays + lut_mem
+    integrator_arrays + lut_mem
+}
+
+/// Estimate memory usage per worker in bytes (just frame data).
+fn estimate_memory_per_worker(dim1: usize, dim2: usize) -> usize {
+    let n_pixels = dim1 * dim2;
+    // Frame data (held during integration)
+    n_pixels * 8
 }
 
 fn format_bytes(bytes: usize) -> String {
@@ -77,12 +78,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frame = Frame::from_tiff(image_path.clone())?;
     let dim1 = frame.dim1;
     let dim2 = frame.dim2;
-    let mem_per_worker = estimate_memory_per_worker(dim1, dim2, n_bins_1d);
+    let shared_mem = estimate_shared_integrator_memory(dim1, dim2, n_bins_1d);
+    let mem_per_worker = estimate_memory_per_worker(dim1, dim2);
     println!("Frame size: {} x {} pixels", dim1, dim2);
     println!("Max threads: {}", max_threads);
     println!("Benchmark duration: {} seconds per config", bench_duration.as_secs());
-    println!("Memory per worker: {} (frame + integrator + LUT)", format_bytes(mem_per_worker));
-    println!("Max memory ({} workers): {}", max_threads, format_bytes(max_threads * mem_per_worker));
+    println!("Shared integrator memory: {} (geometry + LUT, shared across workers)", format_bytes(shared_mem));
+    println!("Memory per worker: {} (frame only)", format_bytes(mem_per_worker));
     println!();
     drop(frame);
 
@@ -138,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:-<8} {:-<12} {:-<12} {:-<14} {:-<12}", "", "", "", "", "");
 
     for (workers, threads, total, throughput) in &results {
-        let total_mem = *workers * mem_per_worker;
+        let total_mem = shared_mem + *workers * mem_per_worker;
         println!(
             "{:>8} {:>12} {:>12} {:>14.1} {:>12}",
             workers, threads, *total as usize, throughput, format_bytes(total_mem)
@@ -147,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     let best = &results[0];
-    let best_mem = best.0 * mem_per_worker;
+    let best_mem = shared_mem + best.0 * mem_per_worker;
     println!(
         "Best config: {} workers × {} threads = {:.1} files/sec ({})",
         best.0, best.1, best.3, format_bytes(best_mem)
@@ -156,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show top 5
     println!("\nTop 5 configurations:");
     for (i, (workers, threads, _, throughput)) in results.iter().take(5).enumerate() {
-        let config_mem = workers * mem_per_worker;
+        let config_mem = shared_mem + workers * mem_per_worker;
         println!(
             "  {}. {} workers × {} threads → {:.1} files/sec ({})",
             i + 1,
@@ -181,13 +183,27 @@ fn benchmark_config(
     let counter = Arc::new(AtomicUsize::new(0));
     let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
+    // Create shared integrator (geometry + LUT cache shared across all workers)
+    let poni = Poni::load(poni_path)?;
+    let first_frame = Frame::from_tiff(image_path.to_string())?;
+    let geometry = Geometry::new(first_frame.dim1, first_frame.dim2, poni);
+    let integrator = Arc::new(
+        Integrator::new(geometry)
+            .with_method(IntegrationMethod::PixelSplit)
+            .with_radial_unit(RadialUnit::TthDeg)
+    );
+
+    // Warm-up: build geometry arrays and LUT cache
+    let _ = integrator.integrate1d(&first_frame, n_bins);
+    drop(first_frame);
+
     let mut handles = Vec::new();
 
     for _ in 0..n_workers {
         let counter = Arc::clone(&counter);
         let running = Arc::clone(&running);
+        let integrator = Arc::clone(&integrator);
         let image_path = image_path.to_string();
-        let poni_path = poni_path.to_string();
 
         let handle = thread::spawn(move || {
             // Create thread pool for this worker
@@ -196,25 +212,6 @@ fn benchmark_config(
                 .build()
                 .unwrap();
 
-            // Load poni once per worker (same calibration for all images)
-            let poni = Poni::load(&poni_path).unwrap();
-
-            // We need to know dimensions for the integrator, load first frame to get them
-            let first_frame = Frame::from_tiff(image_path.clone()).unwrap();
-            let dim1 = first_frame.dim1;
-            let dim2 = first_frame.dim2;
-
-            let geometry = Geometry::new(dim1, dim2, poni);
-            let mut integrator = Integrator::new(geometry)
-                .with_method(IntegrationMethod::PixelSplit)
-                .with_radial_unit(RadialUnit::TthDeg);
-
-            // Warm-up integration
-            pool.install(|| {
-                let _ = integrator.integrate1d(&first_frame, n_bins);
-            });
-            drop(first_frame);
-
             while running.load(Ordering::Relaxed) {
                 // Load image
                 let frame = match Frame::from_tiff(image_path.clone()) {
@@ -222,7 +219,7 @@ fn benchmark_config(
                     Err(_) => continue,
                 };
 
-                // Integrate
+                // Integrate using shared integrator
                 pool.install(|| {
                     let _ = integrator.integrate1d(&frame, n_bins);
                 });

@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let geometry = Geometry::new(frame.dim1, frame.dim2, poni);
 
     // Create an integrator with the desired settings
-    let mut integrator = Integrator::new(geometry)
+    let integrator = Integrator::new(geometry)
         .with_method(IntegrationMethod::PixelSplit)
         .with_radial_unit(RadialUnit::TthDeg);
 

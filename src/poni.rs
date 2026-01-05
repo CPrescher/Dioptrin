@@ -11,6 +11,7 @@ use std::path::Path;
 /// A struct to hold the poni file data
 /// which provides the calibration parameters for the detector
 /// poni stands for point of normal incidence
+#[derive(Clone)]
 pub struct Poni {
     pub pixel1: f64,
     pub pixel2: f64,
