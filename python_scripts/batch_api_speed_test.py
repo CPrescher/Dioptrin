@@ -41,11 +41,11 @@ def main() -> None:
 
     # 1D batch integration
     start = time.perf_counter()
-    results_1d = integrator.batch_integrate1d(
+    results_1d = integrator.batch1d(
         files, args.n_points, num_workers=args.num_workers, num_threads=args.num_threads
     )
     elapsed = time.perf_counter() - start
-    ok_1d = sum(1 for _, result, err in results_1d if result is not None and err is None)
+    ok_1d = sum(1 for r in results_1d if r.is_ok())
     print(f"1D batch ok: {ok_1d}/{len(results_1d)}")
     print(f"1D batch time: {elapsed:.2f}s")
     if elapsed > 0:
@@ -54,7 +54,7 @@ def main() -> None:
 
     # 2D batch integration
     start = time.perf_counter()
-    results_2d = integrator.batch_integrate2d(
+    results_2d = integrator.batch2d(
         files,
         args.n_radial,
         args.n_azimuthal,
@@ -62,11 +62,24 @@ def main() -> None:
         num_threads=args.num_threads,
     )
     elapsed = time.perf_counter() - start
-    ok_2d = sum(1 for _, result, err in results_2d if result is not None and err is None)
+    ok_2d = sum(1 for r in results_2d if r.is_ok())
     print(f"2D batch ok: {ok_2d}/{len(results_2d)}")
     print(f"2D batch time: {elapsed:.2f}s")
     if elapsed > 0:
         print(f"2D throughput: {len(results_2d) / elapsed:.2f} files/s")
+    print()
+
+    # 1D streaming batch with progress
+    print("1D streaming batch:")
+    start = time.perf_counter()
+    for r in integrator.batch1d_iter(
+        files, args.n_points, num_workers=args.num_workers, num_threads=args.num_threads
+    ):
+        pass  # Just consume the iterator
+    elapsed = time.perf_counter() - start
+    print(f"1D streaming time: {elapsed:.2f}s")
+    if elapsed > 0:
+        print(f"1D streaming throughput: {len(files) / elapsed:.2f} files/s")
 
 
 if __name__ == "__main__":

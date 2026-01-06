@@ -17,8 +17,12 @@ const DEFAULT_IMAGE: &str = "test_data/CeO2_Pilatus1M.tif";
 const DEFAULT_PONI: &str = "test_data/v1.poni";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let image_path = env::args().nth(1).unwrap_or_else(|| DEFAULT_IMAGE.to_string());
-    let poni_path = env::args().nth(2).unwrap_or_else(|| DEFAULT_PONI.to_string());
+    let image_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
+    let poni_path = env::args()
+        .nth(2)
+        .unwrap_or_else(|| DEFAULT_PONI.to_string());
 
     let n_iterations = 100;
     let n_bins = 1000;
@@ -60,8 +64,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Results:");
     println!("  Total time:     {:.2} ms", total_ms);
-    println!("  Per iteration:  {:.2} ms ({:.0} µs)", per_iteration_ms, per_iteration_us);
-    println!("  Throughput:     {:.1} integrations/sec", 1000.0 / per_iteration_ms);
+    println!(
+        "  Per iteration:  {:.2} ms ({:.0} µs)",
+        per_iteration_ms, per_iteration_us
+    );
+    println!(
+        "  Throughput:     {:.1} integrations/sec",
+        1000.0 / per_iteration_ms
+    );
 
     Ok(())
 }

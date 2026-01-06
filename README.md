@@ -211,6 +211,137 @@ Demonstrates the `batch` module API for processing multiple files in parallel. S
 
 All examples default to `test_data/CeO2_Pilatus1M.tif` and `test_data/v1.poni` if no arguments are provided.
 
+## Python Bindings
+
+Dioptrin provides Python bindings via PyO3. Build with `maturin develop` (or `maturin develop --release` for optimized builds).
+
+### Basic Usage
+
+```python
+import dioptrin
+
+# Create an integrator from a PONI calibration file
+integrator = dioptrin.Integrator(
+    "calibration.poni",
+    method="pixel_split",      # "counting", "pixel_split", "histogram", or "supersampled"
+    polarization_factor=0.99,  # optional
+    unit="2th_deg"             # "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
+)
+
+# 1D integration from TIFF file
+radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
+
+# 1D integration with error estimates
+radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
+
+# 1D integration from NumPy array
+import numpy as np
+data = np.array(image_data, dtype=np.float64)
+radial, intensity = integrator.integrate1d_array(data, n_points=1000)
+```
+
+### Batch Processing
+
+For processing multiple files, use the batch methods which efficiently share geometry and LUT cache:
+
+```python
+files = ["image1.tif", "image2.tif", "image3.tif"]
+
+# Batch 1D integration - returns list of BatchResult
+results = integrator.batch1d(files, n_points=1000)
+for r in results:
+    if r.is_ok():
+        print(f"{r.filename}: {len(r.result.intensity)} bins")
+        # r.result.radial, r.result.intensity available
+    else:
+        print(f"{r.filename}: error - {r.error}")
+
+# Batch 1D with error estimates
+results = integrator.batch1d(files, n_points=1000, errors=True)
+for r in results:
+    if r.is_ok():
+        # r.result.errors is now populated
+        print(f"{r.filename}: {r.result.errors[:5]}")
+
+# Batch 2D integration
+results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
+for r in results:
+    if r.is_ok():
+        # r.result.intensity is flat array [n_radial * n_azimuthal]
+        # r.result.n_radial and r.result.n_azimuthal for reshaping
+        cake = np.array(r.result.intensity).reshape(r.result.n_azimuthal, r.result.n_radial)
+
+# Batch 2D with azimuthal range restriction
+results = integrator.batch2d(
+    files,
+    n_radial=100,
+    n_azimuthal=90,
+    azimuthal_range=(0, 1.57)  # radians
+)
+```
+
+### Streaming Batch Processing
+
+For large batches, use streaming iterators to process results as they complete:
+
+```python
+# Stream results as they complete
+for r in integrator.batch1d_iter(files, n_points=1000):
+    if r.is_ok():
+        process(r.result)
+    # Progress tracking available on the iterator
+    # (note: progress is per-result, not real-time)
+
+# 2D streaming with all options
+for r in integrator.batch2d_iter(
+    files,
+    n_radial=100,
+    n_azimuthal=360,
+    errors=True,
+    azimuthal_range=(0, 3.14),
+    num_workers=4,
+    num_threads=2
+):
+    if r.is_ok():
+        process(r.result)
+```
+
+### Result Types
+
+- **`IntegrationResult`**: Unified result with optional fields
+  - `radial`: Radial bin centers (1D only)
+  - `intensity`: Integrated intensities
+  - `errors`: Error estimates (if `errors=True`)
+  - `n_radial`, `n_azimuthal`: Dimensions for reshaping 2D results
+
+- **`BatchResult`**: Wrapper for batch results
+  - `filename`: Path of processed file
+  - `result`: `IntegrationResult` or `None` if failed
+  - `error`: Error message or `None` if successful
+  - `is_ok()`, `is_err()`: Convenience methods
+
+- **`BatchIterator`**: Streaming iterator with progress tracking
+  - `total`: Total number of files
+  - `completed`: Files processed so far
+  - `progress`: Fraction complete (0.0 to 1.0)
+
+### Thread Configuration
+
+```python
+# Get/set global Rayon thread count
+threads = dioptrin.rayon_num_threads()
+dioptrin.set_rayon_threads(8)
+
+# Batch methods accept worker/thread configuration
+results = integrator.batch1d(
+    files,
+    n_points=1000,
+    num_workers=4,    # Parallel workers
+    num_threads=2     # Threads per worker (for Rayon)
+)
+# Total threads used: num_workers * num_threads
+```
+
 ## Benchmarks
 
 Run integration benchmarks:

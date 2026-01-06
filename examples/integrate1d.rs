@@ -19,8 +19,12 @@ const DEFAULT_IMAGE: &str = "test_data/CeO2_Pilatus1M.tif";
 const DEFAULT_PONI: &str = "test_data/v1.poni";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let image_path = env::args().nth(1).unwrap_or_else(|| DEFAULT_IMAGE.to_string());
-    let poni_path = env::args().nth(2).unwrap_or_else(|| DEFAULT_PONI.to_string());
+    let image_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
+    let poni_path = env::args()
+        .nth(2)
+        .unwrap_or_else(|| DEFAULT_PONI.to_string());
 
     // Load the calibration parameters from a PONI file
     let poni = Poni::load(&poni_path)?;

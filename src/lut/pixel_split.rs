@@ -424,7 +424,12 @@ fn build_lut2d_ps_csr_with_azimuthal(
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
                 let rb = histogram::get_bin_clamped(radial[idx], min_radial, step_radial, n_radial);
-                let ab = histogram::get_bin_wrapped(center_azimuthal, min_azimuthal, step_azimuthal, n_azimuthal);
+                let ab = histogram::get_bin_wrapped(
+                    center_azimuthal,
+                    min_azimuthal,
+                    step_azimuthal,
+                    n_azimuthal,
+                );
                 counts[ab * n_radial + rb].fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -479,7 +484,8 @@ fn build_lut2d_ps_csr_with_azimuthal(
                     if area <= 0.0 {
                         continue;
                     }
-                    let row_azimuthal = ((ba % n_azimuthal as isize) + n_azimuthal as isize) % n_azimuthal as isize;
+                    let row_azimuthal =
+                        ((ba % n_azimuthal as isize) + n_azimuthal as isize) % n_azimuthal as isize;
                     let row = row_azimuthal as usize * n_radial + br as usize;
                     counts[row].fetch_add(1, Ordering::Relaxed);
                 }
@@ -518,7 +524,12 @@ fn build_lut2d_ps_csr_with_azimuthal(
             let area_total = polygon_area(&poly).abs();
             if area_total <= 0.0 {
                 let rb = histogram::get_bin_clamped(radial[idx], min_radial, step_radial, n_radial);
-                let ab = histogram::get_bin_wrapped(center_azimuthal, min_azimuthal, step_azimuthal, n_azimuthal);
+                let ab = histogram::get_bin_wrapped(
+                    center_azimuthal,
+                    min_azimuthal,
+                    step_azimuthal,
+                    n_azimuthal,
+                );
                 let row = ab * n_radial + rb;
                 let p = next[row].fetch_add(1, Ordering::Relaxed);
                 col_idx[p].store(idx, Ordering::Relaxed);
@@ -576,7 +587,8 @@ fn build_lut2d_ps_csr_with_azimuthal(
                     if area <= 0.0 {
                         continue;
                     }
-                    let row_azimuthal = ((ba % n_azimuthal as isize) + n_azimuthal as isize) % n_azimuthal as isize;
+                    let row_azimuthal =
+                        ((ba % n_azimuthal as isize) + n_azimuthal as isize) % n_azimuthal as isize;
                     let row = row_azimuthal as usize * n_radial + br as usize;
                     let p = next[row].fetch_add(1, Ordering::Relaxed);
                     col_idx[p].store(idx, Ordering::Relaxed);
@@ -649,7 +661,15 @@ pub fn build_lut2d_ps_csr(
     n_azimuthal: usize,
     unit: RadialUnit,
 ) -> Lut2d {
-    build_lut2d_ps_csr_with_azimuthal(geometry, radial, azimuthal, n_radial, n_azimuthal, None, unit)
+    build_lut2d_ps_csr_with_azimuthal(
+        geometry,
+        radial,
+        azimuthal,
+        n_radial,
+        n_azimuthal,
+        None,
+        unit,
+    )
 }
 
 /// Build a 2D pixel-split LUT using an explicit azimuthal binning definition.
@@ -773,7 +793,14 @@ mod tests {
         let azimuthal = geometry.calc_azimuth_all();
         let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
 
-        let lut = build_lut2d_ps_csr(&geometry, &radial_q, &azimuthal, 5, 4, RadialUnit::QAngstrom);
+        let lut = build_lut2d_ps_csr(
+            &geometry,
+            &radial_q,
+            &azimuthal,
+            5,
+            4,
+            RadialUnit::QAngstrom,
+        );
 
         assert_eq!(lut.n_tth, 5);
         assert_eq!(lut.n_azimuthal, 4);

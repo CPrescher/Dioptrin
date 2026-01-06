@@ -10,9 +10,7 @@ impl Integrator {
         // First check with read lock if update is needed
         let needs_update = {
             let state = self.state.read().expect("geometry state lock poisoned");
-            (state.dim1 * state.dim2) != size
-                || state.dim1 != dim1
-                || state.dim2 != dim2
+            (state.dim1 * state.dim2) != size || state.dim1 != dim1 || state.dim2 != dim2
         };
 
         if needs_update {
@@ -35,7 +33,9 @@ impl Integrator {
 
                 // Update polarization
                 state.polarization = match self.polarization_factor {
-                    Some(factor) => temp_geometry.calc_polarization(factor, &state.tth, &state.azimuth),
+                    Some(factor) => {
+                        temp_geometry.calc_polarization(factor, &state.tth, &state.azimuth)
+                    }
                     None => vec![1.0; size],
                 };
 

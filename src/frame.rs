@@ -50,7 +50,12 @@ impl Frame {
 
 /// Convert to f64 and flip up-down in a single pass (for types with Into<f64>)
 #[inline]
-fn convert_and_flip<T: Copy + Into<f64>>(array: &[T], row_len: usize, n_rows: usize, size: usize) -> Vec<f64> {
+fn convert_and_flip<T: Copy + Into<f64>>(
+    array: &[T],
+    row_len: usize,
+    n_rows: usize,
+    size: usize,
+) -> Vec<f64> {
     let mut out = Vec::with_capacity(size);
     for row in (0..n_rows).rev() {
         let start = row * row_len;

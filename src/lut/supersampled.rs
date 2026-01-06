@@ -5,8 +5,8 @@ use rayon::prelude::*;
 
 use crate::geometry::Geometry;
 use crate::integration::RadialUnit;
-use crate::math::histogram;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
+use crate::math::histogram;
 
 /// Build a supersampled 1D CSR LUT directly (no HashMap in the public type).
 ///
@@ -61,13 +61,10 @@ pub fn build_lut1d_ss_csr(
                 acc
             },
         )
-        .reduce(
-            Vec::new,
-            |mut a, mut b| {
-                a.append(&mut b);
-                a
-            },
-        );
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
 
     // Sort by (bin, pixel) and compress to unique with counts
     pairs.par_sort_unstable();
@@ -97,13 +94,26 @@ pub fn build_lut1d_ss_csr(
             values.push(cnt as f64);
             bin_total += cnt;
         }
-        if bin_total > 0 { let denom = bin_total as f64; for w in &mut values[bin_start..] { *w /= denom; } }
+        if bin_total > 0 {
+            let denom = bin_total as f64;
+            for w in &mut values[bin_start..] {
+                *w /= denom;
+            }
+        }
         row_ptr.push(col_idx.len());
     }
 
-    while row_ptr.len() < n_points + 1 { row_ptr.push(col_idx.len()); }
+    while row_ptr.len() < n_points + 1 {
+        row_ptr.push(col_idx.len());
+    }
 
-    Lut1d { row_ptr, col_idx, values: Some(values), hist_min, hist_step }
+    Lut1d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        hist_min,
+        hist_step,
+    }
 }
 
 /// Build a supersampled 2D CSR LUT directly (no HashMap in the public type).
@@ -160,21 +170,20 @@ pub fn build_lut2d_ss_csr(
                 let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for i in 0..radial_ss.len() {
-                    let rb = histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
-                    let ab = histogram::get_bin(azimuthal_ss[i], azimuthal_min, azimuthal_step) % n_azimuthal;
+                    let rb =
+                        histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
+                    let ab = histogram::get_bin(azimuthal_ss[i], azimuthal_min, azimuthal_step)
+                        % n_azimuthal;
                     let row = ab * n_radial + rb;
                     acc.push((row, actual_index[i]));
                 }
                 acc
             },
         )
-        .reduce(
-            Vec::new,
-            |mut a, mut b| {
-                a.append(&mut b);
-                a
-            },
-        );
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
 
     pairs.par_sort_unstable();
 
@@ -186,7 +195,9 @@ pub fn build_lut2d_ss_csr(
     let mut i = 0usize;
     while i < pairs.len() {
         let current_row = pairs[i].0;
-        while row_ptr.len() - 1 < current_row { row_ptr.push(col_idx.len()); }
+        while row_ptr.len() - 1 < current_row {
+            row_ptr.push(col_idx.len());
+        }
         let bin_start = col_idx.len();
         let mut bin_total = 0usize;
         while i < pairs.len() && pairs[i].0 == current_row {
@@ -201,13 +212,26 @@ pub fn build_lut2d_ss_csr(
             values.push(cnt as f64);
             bin_total += cnt;
         }
-        if bin_total > 0 { let denom = bin_total as f64; for w in &mut values[bin_start..] { *w /= denom; } }
+        if bin_total > 0 {
+            let denom = bin_total as f64;
+            for w in &mut values[bin_start..] {
+                *w /= denom;
+            }
+        }
         row_ptr.push(col_idx.len());
     }
 
-    while row_ptr.len() < rows + 1 { row_ptr.push(col_idx.len()); }
+    while row_ptr.len() < rows + 1 {
+        row_ptr.push(col_idx.len());
+    }
 
-    Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_azimuthal }
+    Lut2d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        n_tth: n_radial,
+        n_azimuthal,
+    }
 }
 
 #[cfg(test)]
@@ -280,7 +304,15 @@ mod tests {
         let azimuthal = geometry.calc_azimuth_all();
         let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
 
-        let lut = build_lut2d_ss_csr(&geometry, &radial_q, &azimuthal, 5, 4, 2, RadialUnit::QAngstrom);
+        let lut = build_lut2d_ss_csr(
+            &geometry,
+            &radial_q,
+            &azimuthal,
+            5,
+            4,
+            2,
+            RadialUnit::QAngstrom,
+        );
 
         assert_eq!(lut.n_tth, 5);
         assert_eq!(lut.n_azimuthal, 4);
@@ -426,21 +458,24 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
                 let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
                 let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                 for i in 0..radial_ss.len() {
-                    let rb = histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
-                    let ab = histogram::get_bin_wrapped(azimuthal_ss[i], min_azimuthal, azimuthal_step, n_azimuthal);
+                    let rb =
+                        histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
+                    let ab = histogram::get_bin_wrapped(
+                        azimuthal_ss[i],
+                        min_azimuthal,
+                        azimuthal_step,
+                        n_azimuthal,
+                    );
                     let row = ab * n_radial + rb;
                     acc.push((row, actual_index[i]));
                 }
                 acc
             },
         )
-        .reduce(
-            Vec::new,
-            |mut a, mut b| {
-                a.append(&mut b);
-                a
-            },
-        );
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
 
     pairs.par_sort_unstable();
 
@@ -452,7 +487,9 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
     let mut i = 0usize;
     while i < pairs.len() {
         let current_row = pairs[i].0;
-        while row_ptr.len() - 1 < current_row { row_ptr.push(col_idx.len()); }
+        while row_ptr.len() - 1 < current_row {
+            row_ptr.push(col_idx.len());
+        }
         let bin_start = col_idx.len();
         let mut bin_total = 0usize;
         while i < pairs.len() && pairs[i].0 == current_row {
@@ -467,11 +504,24 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
             values.push(cnt as f64);
             bin_total += cnt;
         }
-        if bin_total > 0 { let denom = bin_total as f64; for w in &mut values[bin_start..] { *w /= denom; } }
+        if bin_total > 0 {
+            let denom = bin_total as f64;
+            for w in &mut values[bin_start..] {
+                *w /= denom;
+            }
+        }
         row_ptr.push(col_idx.len());
     }
 
-    while row_ptr.len() < rows + 1 { row_ptr.push(col_idx.len()); }
+    while row_ptr.len() < rows + 1 {
+        row_ptr.push(col_idx.len());
+    }
 
-    Lut2d { row_ptr, col_idx, values: Some(values), n_tth: n_radial, n_azimuthal }
+    Lut2d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        n_tth: n_radial,
+        n_azimuthal,
+    }
 }

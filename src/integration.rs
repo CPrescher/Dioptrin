@@ -5,8 +5,8 @@ mod methods;
 #[cfg(test)]
 mod tests;
 
-use std::sync::RwLock;
 use std::f64::consts::PI;
+use std::sync::RwLock;
 
 use crate::geometry::Geometry;
 use crate::mask::Mask;
@@ -256,27 +256,47 @@ impl Integrator {
 
     // getter for solid angle correction for each pixel as a flattened vector
     pub fn solid_angle(&self) -> Vec<f64> {
-        self.state.read().expect("geometry state lock poisoned").solid_angle.clone()
+        self.state
+            .read()
+            .expect("geometry state lock poisoned")
+            .solid_angle
+            .clone()
     }
 
     // getter for polarization correction for each pixel as a flattened vector
     pub fn polarization(&self) -> Vec<f64> {
-        self.state.read().expect("geometry state lock poisoned").polarization.clone()
+        self.state
+            .read()
+            .expect("geometry state lock poisoned")
+            .polarization
+            .clone()
     }
 
     // getter for tth vector for each pixel as a flattened vector (always in radians)
     pub fn tth(&self) -> Vec<f64> {
-        self.state.read().expect("geometry state lock poisoned").tth.clone()
+        self.state
+            .read()
+            .expect("geometry state lock poisoned")
+            .tth
+            .clone()
     }
 
     // getter for radial vector for each pixel in the selected unit
     pub fn radial(&self) -> Vec<f64> {
-        self.state.read().expect("geometry state lock poisoned").radial.clone()
+        self.state
+            .read()
+            .expect("geometry state lock poisoned")
+            .radial
+            .clone()
     }
 
     // getter for azimuth vector for each pixel as a flattened vector
     pub fn azimuth(&self) -> Vec<f64> {
-        self.state.read().expect("geometry state lock poisoned").azimuth.clone()
+        self.state
+            .read()
+            .expect("geometry state lock poisoned")
+            .azimuth
+            .clone()
     }
 
     // helper to invalidate LUT caches

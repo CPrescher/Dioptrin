@@ -6,9 +6,19 @@ use super::{Integrator, RadialUnit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OneDKey {
-    Counting { n_points: usize, unit: RadialUnit },
-    PixelSplit { n_points: usize, unit: RadialUnit },
-    Supersampled { n_points: usize, n_ss: usize, unit: RadialUnit },
+    Counting {
+        n_points: usize,
+        unit: RadialUnit,
+    },
+    PixelSplit {
+        n_points: usize,
+        unit: RadialUnit,
+    },
+    Supersampled {
+        n_points: usize,
+        n_ss: usize,
+        unit: RadialUnit,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +68,10 @@ pub(super) struct AzimuthalRangeKey {
 
 impl AzimuthalRangeKey {
     pub(super) fn new(start: f64, step: f64) -> Self {
-        Self { start_bits: start.to_bits(), step_bits: step.to_bits() }
+        Self {
+            start_bits: start.to_bits(),
+            step_bits: step.to_bits(),
+        }
     }
 }
 
@@ -128,16 +141,18 @@ impl Integrator {
 
             // Build the LUT (this can take time, but we're not holding the cache lock)
             let lut1d = match key {
-                OneDKey::Counting { n_points, unit: _ } => {
-                    lut::build_lut1d_csr(radial, n_points)
-                }
+                OneDKey::Counting { n_points, unit: _ } => lut::build_lut1d_csr(radial, n_points),
                 OneDKey::PixelSplit { n_points, unit } => {
                     let mut geom = self.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
                     lut::build_lut1d_ps_csr(&geom, radial, n_points, unit)
                 }
-                OneDKey::Supersampled { n_points, n_ss, unit } => {
+                OneDKey::Supersampled {
+                    n_points,
+                    n_ss,
+                    unit,
+                } => {
                     let mut geom = self.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
@@ -183,38 +198,74 @@ impl Integrator {
 
             // Build the LUT
             let lut2d = match key {
-                TwoDKey::Counting { n_radial, n_azimuthal, unit: _ } => {
-                    lut::build_lut2d_csr(radial, azimuth, n_radial, n_azimuthal)
-                }
-                TwoDKey::PixelSplit { n_radial, n_azimuthal, unit } => {
-                    lut::build_lut2d_ps_csr(&geom, radial, azimuth, n_radial, n_azimuthal, unit)
-                }
-                TwoDKey::Supersampled { n_radial, n_azimuthal, n_ss, unit } => {
-                    lut::build_lut2d_ss_csr(&geom, radial, azimuth, n_radial, n_azimuthal, n_ss, unit)
-                }
-                TwoDKey::CountingAzimuthal { n_radial, n_azimuthal, azimuthal, unit: _ } => {
-                    lut::build_lut2d_csr_with_azimuthal_range(
-                        radial, azimuth, n_radial, n_azimuthal,
-                        f64::from_bits(azimuthal.start_bits),
-                        f64::from_bits(azimuthal.step_bits),
-                    )
-                }
-                TwoDKey::PixelSplitAzimuthal { n_radial, n_azimuthal, azimuthal, unit } => {
-                    lut::build_lut2d_ps_csr_with_azimuthal_range(
-                        &geom, radial, azimuth, n_radial, n_azimuthal,
-                        f64::from_bits(azimuthal.start_bits),
-                        f64::from_bits(azimuthal.step_bits),
-                        unit,
-                    )
-                }
-                TwoDKey::SupersampledAzimuthal { n_radial, n_azimuthal, n_ss, azimuthal, unit } => {
-                    lut::build_lut2d_ss_csr_with_azimuthal_range(
-                        &geom, radial, n_radial, n_azimuthal, n_ss,
-                        f64::from_bits(azimuthal.start_bits),
-                        f64::from_bits(azimuthal.step_bits),
-                        unit,
-                    )
-                }
+                TwoDKey::Counting {
+                    n_radial,
+                    n_azimuthal,
+                    unit: _,
+                } => lut::build_lut2d_csr(radial, azimuth, n_radial, n_azimuthal),
+                TwoDKey::PixelSplit {
+                    n_radial,
+                    n_azimuthal,
+                    unit,
+                } => lut::build_lut2d_ps_csr(&geom, radial, azimuth, n_radial, n_azimuthal, unit),
+                TwoDKey::Supersampled {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    unit,
+                } => lut::build_lut2d_ss_csr(
+                    &geom,
+                    radial,
+                    azimuth,
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    unit,
+                ),
+                TwoDKey::CountingAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal,
+                    unit: _,
+                } => lut::build_lut2d_csr_with_azimuthal_range(
+                    radial,
+                    azimuth,
+                    n_radial,
+                    n_azimuthal,
+                    f64::from_bits(azimuthal.start_bits),
+                    f64::from_bits(azimuthal.step_bits),
+                ),
+                TwoDKey::PixelSplitAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal,
+                    unit,
+                } => lut::build_lut2d_ps_csr_with_azimuthal_range(
+                    &geom,
+                    radial,
+                    azimuth,
+                    n_radial,
+                    n_azimuthal,
+                    f64::from_bits(azimuthal.start_bits),
+                    f64::from_bits(azimuthal.step_bits),
+                    unit,
+                ),
+                TwoDKey::SupersampledAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    azimuthal,
+                    unit,
+                } => lut::build_lut2d_ss_csr_with_azimuthal_range(
+                    &geom,
+                    radial,
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    f64::from_bits(azimuthal.start_bits),
+                    f64::from_bits(azimuthal.step_bits),
+                    unit,
+                ),
             };
             drop(state);
 

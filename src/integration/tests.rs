@@ -323,10 +323,7 @@ fn test_integrator_q_angstrom_output_range() {
 
     // Verify monotonicity: q should increase with tth for tth < π
     for i in 1..x_q.len() {
-        assert!(
-            x_q[i] >= x_q[i - 1],
-            "q should be monotonically increasing"
-        );
+        assert!(x_q[i] >= x_q[i - 1], "q should be monotonically increasing");
     }
 }
 

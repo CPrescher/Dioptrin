@@ -2,8 +2,8 @@
 //! These functions operate on the unified CSR types (`Lut1d`, `Lut2d`).
 use rayon::prelude::*;
 
-use crate::math::histogram;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
+use crate::math::histogram;
 
 /// Integrate using either unweighted (mean) or weighted 1D CSR LUT.
 ///
@@ -25,11 +25,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 /// let (_x, y) = integrate1d(&intensity, &lut, None);
 /// assert_eq!(y.len(), 4);
 /// ```
-pub fn integrate1d(
-    intensity: &[f64],
-    lut: &Lut1d,
-    mask: Option<&[u8]>,
-) -> (Vec<f64>, Vec<f64>) {
+pub fn integrate1d(intensity: &[f64], lut: &Lut1d, mask: Option<&[u8]>) -> (Vec<f64>, Vec<f64>) {
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
         .into_par_iter()
@@ -70,7 +66,9 @@ pub fn integrate1d(
                     sum
                 }
                 None => {
-                    if start == end { 0.0 } else {
+                    if start == end {
+                        0.0
+                    } else {
                         let mut sum = 0.0;
                         let mut count = 0usize;
                         let mut k = start;
@@ -99,7 +97,11 @@ pub fn integrate1d(
                                 }
                             }
                         }
-                        if count == 0 { 0.0 } else { sum / count as f64 }
+                        if count == 0 {
+                            0.0
+                        } else {
+                            sum / count as f64
+                        }
                     }
                 }
             }
@@ -162,7 +164,9 @@ pub fn integrate1d_with_errors(
                     (sum, sum_var)
                 }
                 None => {
-                    if start == end { (0.0, 0.0) } else {
+                    if start == end {
+                        (0.0, 0.0)
+                    } else {
                         let mut sum = 0.0;
                         let mut sum_var = 0.0;
                         let mut count = 0usize;
@@ -236,11 +240,7 @@ pub fn integrate1d_with_errors(
 /// let y = integrate2d(&intensity, &lut2d, None);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
-pub fn integrate2d(
-    intensity: &[f64],
-    lut: &Lut2d,
-    mask: Option<&[u8]>,
-) -> Vec<f64> {
+pub fn integrate2d(intensity: &[f64], lut: &Lut2d, mask: Option<&[u8]>) -> Vec<f64> {
     let rows = lut.row_ptr.len() - 1;
     (0..rows)
         .into_par_iter()
@@ -281,7 +281,9 @@ pub fn integrate2d(
                     sum
                 }
                 None => {
-                    if start == end { 0.0 } else {
+                    if start == end {
+                        0.0
+                    } else {
                         let mut sum = 0.0;
                         let mut count = 0usize;
                         let mut k = start;
@@ -310,7 +312,11 @@ pub fn integrate2d(
                                 }
                             }
                         }
-                        if count == 0 { 0.0 } else { sum / count as f64 }
+                        if count == 0 {
+                            0.0
+                        } else {
+                            sum / count as f64
+                        }
                     }
                 }
             }
@@ -371,7 +377,9 @@ pub fn integrate2d_with_errors(
                     (sum, sum_var)
                 }
                 None => {
-                    if start == end { (0.0, 0.0) } else {
+                    if start == end {
+                        (0.0, 0.0)
+                    } else {
                         let mut sum = 0.0;
                         let mut sum_var = 0.0;
                         let mut count = 0usize;

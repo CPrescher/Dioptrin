@@ -75,7 +75,13 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
         next[bin] += 1;
     }
 
-    Lut1d { row_ptr, col_idx, values: None, hist_min: min, hist_step: step }
+    Lut1d {
+        row_ptr,
+        col_idx,
+        values: None,
+        hist_min: min,
+        hist_step: step,
+    }
 }
 
 /// Build an unweighted 2D CSR LUT from pixel `tth`/`azimuthal` to `(n_tth, n_azimuthal)` bins.
@@ -97,7 +103,8 @@ pub fn build_lut2d_csr(
     n_azimuthal: usize,
 ) -> Lut2d {
     let (min_radial, _max_radial, step_radial) = histogram::min_max_step(radial, n_radial);
-    let (min_azimuthal, _max_azimuthal, step_azimuthal) = histogram::min_max_step(azimuthal, n_azimuthal);
+    let (min_azimuthal, _max_azimuthal, step_azimuthal) =
+        histogram::min_max_step(azimuthal, n_azimuthal);
 
     let rows = n_radial * n_azimuthal;
     let mut counts = vec![0usize; rows];

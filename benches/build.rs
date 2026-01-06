@@ -2,9 +2,9 @@ use criterion::{criterion_group, criterion_main, Criterion};
 
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
+use dioptrin::integration::RadialUnit;
 use dioptrin::lut;
 use dioptrin::poni::Poni;
-use dioptrin::integration::RadialUnit;
 
 pub fn build_lut_ss_1d_benchmark(c: &mut Criterion) {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
@@ -30,7 +30,17 @@ pub fn build_lut_ss_2d_benchmark(c: &mut Criterion) {
     let azimuthal = geometry.calc_azimuth_all();
 
     c.bench_function("bench build 2d lut supersampled", |b| {
-        b.iter(|| lut::build_lut2d_ss_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, 5, RadialUnit::TthRad))
+        b.iter(|| {
+            lut::build_lut2d_ss_csr(
+                &geometry,
+                &tth,
+                &azimuthal,
+                n_tth,
+                n_azimuthal,
+                5,
+                RadialUnit::TthRad,
+            )
+        })
     });
 }
 
@@ -58,7 +68,16 @@ pub fn build_lut_ps_2d_benchmark(c: &mut Criterion) {
     let azimuthal = geometry.calc_azimuth_all();
 
     c.bench_function("bench build 2d lut pixel-split", |b| {
-        b.iter(|| lut::build_lut2d_ps_csr(&geometry, &tth, &azimuthal, n_tth, n_azimuthal, RadialUnit::TthRad))
+        b.iter(|| {
+            lut::build_lut2d_ps_csr(
+                &geometry,
+                &tth,
+                &azimuthal,
+                n_tth,
+                n_azimuthal,
+                RadialUnit::TthRad,
+            )
+        })
     });
 }
 

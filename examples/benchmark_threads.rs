@@ -18,8 +18,12 @@ const DEFAULT_IMAGE: &str = "test_data/CeO2_Pilatus1M.tif";
 const DEFAULT_PONI: &str = "test_data/v1.poni";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let image_path = env::args().nth(1).unwrap_or_else(|| DEFAULT_IMAGE.to_string());
-    let poni_path = env::args().nth(2).unwrap_or_else(|| DEFAULT_PONI.to_string());
+    let image_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
+    let poni_path = env::args()
+        .nth(2)
+        .unwrap_or_else(|| DEFAULT_PONI.to_string());
 
     let max_threads = std::thread::available_parallelism()
         .map(|p| p.get())
@@ -93,10 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print 1D results
     println!("1D Integration ({} bins)", n_bins_1d);
-    println!(
-        "{:>8} {:>12} {:>12}",
-        "Threads", "Time (µs)", "Speedup"
-    );
+    println!("{:>8} {:>12} {:>12}", "Threads", "Time (µs)", "Speedup");
     println!("{:-<8} {:-<12} {:-<12}", "", "", "");
     let baseline_1d = results_1d[0].1;
     for (threads, time_us) in &results_1d {
@@ -108,10 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print 2D results
     println!("2D Integration ({}x{} bins)", n_radial_2d, n_azimuthal_2d);
-    println!(
-        "{:>8} {:>12} {:>12}",
-        "Threads", "Time (µs)", "Speedup"
-    );
+    println!("{:>8} {:>12} {:>12}", "Threads", "Time (µs)", "Speedup");
     println!("{:-<8} {:-<12} {:-<12}", "", "", "");
     let baseline_2d = results_2d[0].1;
     for (threads, time_us) in &results_2d {

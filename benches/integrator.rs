@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
-use dioptrin::integration::{Integrator, IntegrationMethod, RadialUnit};
+use dioptrin::integration::{IntegrationMethod, Integrator, RadialUnit};
 use dioptrin::poni::Poni;
 
 fn setup_integrator() -> (Integrator, Frame) {

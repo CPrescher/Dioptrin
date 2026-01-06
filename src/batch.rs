@@ -34,6 +34,8 @@
 //! // let results = process_files(&files, integrator, task, 4, 2);
 //! ```
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
@@ -206,7 +208,7 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
 ///
 /// let geometry = Geometry::new(100, 100, poni);
 /// let integrator = Arc::new(Integrator::new(geometry));
-/// 
+///
 /// // In practice, use actual file paths
 /// // let files = vec!["a.tif".to_string(), "b.tif".to_string()];
 /// // let task = Integration1DWithErrors { n_bins: 1000 };
@@ -331,6 +333,116 @@ where
     }
 
     results
+}
+
+/// A streaming batch processor that yields results as they complete.
+///
+/// Results are sent through a channel as each file is processed,
+/// allowing the caller to handle results incrementally.
+pub struct StreamingBatch<T> {
+    receiver: Receiver<(String, Result<T, String>)>,
+    total_files: usize,
+    completed: Arc<AtomicUsize>,
+    #[allow(dead_code)]
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl<T> StreamingBatch<T> {
+    /// Get the total number of files being processed.
+    pub fn total(&self) -> usize {
+        self.total_files
+    }
+
+    /// Get the number of files completed so far.
+    pub fn completed(&self) -> usize {
+        self.completed.load(Ordering::Relaxed)
+    }
+
+    /// Consume the batch and return the receiver.
+    pub fn into_receiver(self) -> Receiver<(String, Result<T, String>)> {
+        self.receiver
+    }
+
+    /// Consume the batch and return an iterator over results.
+    pub fn into_iter(self) -> impl Iterator<Item = (String, Result<T, String>)> {
+        self.receiver.into_iter()
+    }
+}
+
+/// Process multiple files in parallel, streaming results as they complete.
+///
+/// Unlike `process_files`, this function returns immediately with a `StreamingBatch`
+/// that can be iterated to receive results as each file completes.
+///
+/// # Arguments
+///
+/// * `filenames` - Slice of file paths to process
+/// * `integrator` - Shared integrator instance
+/// * `task` - Integration task defining which method to use
+/// * `num_workers` - Number of parallel workers to spawn
+/// * `num_threads` - Number of threads per worker (for Rayon thread pool)
+///
+/// # Returns
+///
+/// A `StreamingBatch` that yields `(filename, Result<Output>)` pairs as they complete.
+pub fn process_files_streaming<T>(
+    filenames: &[String],
+    integrator: Arc<Integrator>,
+    task: T,
+    num_workers: usize,
+    num_threads: usize,
+) -> StreamingBatch<T::Output>
+where
+    T: IntegrationTask + Clone + 'static,
+    T::Output: 'static,
+{
+    let num_workers = num_workers.max(1);
+    let num_files = filenames.len();
+    let completed = Arc::new(AtomicUsize::new(0));
+
+    let (tx, rx): (Sender<(String, Result<T::Output, String>)>, _) = mpsc::channel();
+
+    // Distribute files across workers
+    let chunk_size = num_files.div_ceil(num_workers);
+    let mut handles = Vec::new();
+
+    for chunk_files in filenames.chunks(chunk_size) {
+        let chunk = chunk_files.to_vec();
+        let integrator = Arc::clone(&integrator);
+        let task = task.clone();
+        let tx = tx.clone();
+        let completed = Arc::clone(&completed);
+
+        let handle = thread::spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .expect("failed to build thread pool");
+
+            for filename in chunk {
+                let result = pool.install(|| {
+                    let frame = Frame::from_tiff(filename.clone()).map_err(|e| e.to_string())?;
+                    Ok(task.execute(&integrator, &frame))
+                });
+
+                completed.fetch_add(1, Ordering::Relaxed);
+                // Ignore send errors (receiver may have been dropped)
+                let _ = tx.send((filename, result));
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    // Drop the original sender so the channel closes when all workers finish
+    drop(tx);
+
+    StreamingBatch {
+        receiver: rx,
+        total_files: num_files,
+        completed,
+        handles,
+    }
 }
 
 #[cfg(test)]

@@ -21,16 +21,36 @@ impl Mask {
         let dim2 = dims.0 as usize;
 
         let array: Vec<u8> = match decoder.read_image()? {
-            tiff::decoder::DecodingResult::U8(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::U16(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::U32(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::U64(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::I8(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::I16(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::I32(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::I64(v) => v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::F32(v) => v.iter().map(|&x| if x != 0.0 { 1 } else { 0 }).collect(),
-            tiff::decoder::DecodingResult::F64(v) => v.iter().map(|&x| if x != 0.0 { 1 } else { 0 }).collect(),
+            tiff::decoder::DecodingResult::U8(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::U16(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::U32(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::U64(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::I8(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::I16(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::I32(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::I64(v) => {
+                v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::F32(v) => {
+                v.iter().map(|&x| if x != 0.0 { 1 } else { 0 }).collect()
+            }
+            tiff::decoder::DecodingResult::F64(v) => {
+                v.iter().map(|&x| if x != 0.0 { 1 } else { 0 }).collect()
+            }
         };
 
         let mask = Mask {

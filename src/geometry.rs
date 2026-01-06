@@ -45,11 +45,7 @@ impl Geometry {
     /// Arguments:
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
-    fn calc_pixel_position_det_reference(
-        &self,
-        d1: &[f64],
-        d2: &[f64],
-    ) -> (Vec<f64>, Vec<f64>) {
+    fn calc_pixel_position_det_reference(&self, d1: &[f64], d2: &[f64]) -> (Vec<f64>, Vec<f64>) {
         assert!(d1.len() == d2.len());
 
         let pixel1 = self.poni.pixel1;

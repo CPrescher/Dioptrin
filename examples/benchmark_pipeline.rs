@@ -64,8 +64,12 @@ fn format_bytes(bytes: usize) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let image_path = env::args().nth(1).unwrap_or_else(|| DEFAULT_IMAGE.to_string());
-    let poni_path = env::args().nth(2).unwrap_or_else(|| DEFAULT_PONI.to_string());
+    let image_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
+    let poni_path = env::args()
+        .nth(2)
+        .unwrap_or_else(|| DEFAULT_PONI.to_string());
 
     let max_threads = std::thread::available_parallelism()
         .map(|p| p.get())
@@ -82,9 +86,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mem_per_worker = estimate_memory_per_worker(dim1, dim2);
     println!("Frame size: {} x {} pixels", dim1, dim2);
     println!("Max threads: {}", max_threads);
-    println!("Benchmark duration: {} seconds per config", bench_duration.as_secs());
-    println!("Shared integrator memory: {} (geometry + LUT, shared across workers)", format_bytes(shared_mem));
-    println!("Memory per worker: {} (frame only)", format_bytes(mem_per_worker));
+    println!(
+        "Benchmark duration: {} seconds per config",
+        bench_duration.as_secs()
+    );
+    println!(
+        "Shared integrator memory: {} (geometry + LUT, shared across workers)",
+        format_bytes(shared_mem)
+    );
+    println!(
+        "Memory per worker: {} (frame only)",
+        format_bytes(mem_per_worker)
+    );
     println!();
     drop(frame);
 
@@ -117,7 +130,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         let total_threads = n_workers * threads_per_worker;
-        results.push((*n_workers, *threads_per_worker, total_threads as f64, throughput));
+        results.push((
+            *n_workers,
+            *threads_per_worker,
+            total_threads as f64,
+            throughput,
+        ));
 
         print!(".");
         std::io::stdout().flush().ok();
@@ -128,7 +146,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     results.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
 
     // Print results
-    println!("1D Integration Pipeline (load + integrate, {} bins)", n_bins_1d);
+    println!(
+        "1D Integration Pipeline (load + integrate, {} bins)",
+        n_bins_1d
+    );
     println!(
         "{:>8} {:>12} {:>12} {:>14} {:>12}",
         "Workers", "Threads/W", "Total Thr", "Throughput", "Est. Memory"
@@ -143,7 +164,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let total_mem = shared_mem + *workers * mem_per_worker;
         println!(
             "{:>8} {:>12} {:>12} {:>14.1} {:>12}",
-            workers, threads, *total as usize, throughput, format_bytes(total_mem)
+            workers,
+            threads,
+            *total as usize,
+            throughput,
+            format_bytes(total_mem)
         );
     }
 
@@ -152,7 +177,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let best_mem = shared_mem + best.0 * mem_per_worker;
     println!(
         "Best config: {} workers × {} threads = {:.1} files/sec ({})",
-        best.0, best.1, best.3, format_bytes(best_mem)
+        best.0,
+        best.1,
+        best.3,
+        format_bytes(best_mem)
     );
 
     // Show top 5
@@ -190,7 +218,7 @@ fn benchmark_config(
     let integrator = Arc::new(
         Integrator::new(geometry)
             .with_method(IntegrationMethod::PixelSplit)
-            .with_radial_unit(RadialUnit::TthDeg)
+            .with_radial_unit(RadialUnit::TthDeg),
     );
 
     // Warm-up: build geometry arrays and LUT cache
