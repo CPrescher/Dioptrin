@@ -275,6 +275,59 @@ impl Integrator {
         result
     }
 
+    pub fn integrate2d_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+    ) -> Vec<f64> {
+        self.update_geometry_arrays(dim1, dim2);
+        let intensity = self.correct_intensity(data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                let radial = self
+                    .state
+                    .read()
+                    .expect("geometry state lock poisoned")
+                    .radial
+                    .clone();
+                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting {
+                    n_radial,
+                    n_azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
+                    n_radial,
+                    n_azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    unit,
+                });
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+            }
+        }
+    }
+
     /// Integrate a frame to 2D using an explicit azimuthal start and step.
     /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///
@@ -341,6 +394,65 @@ impl Integrator {
         result
     }
 
+    pub fn integrate2d_with_azimuthal_range_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_start: f64,
+        azimuthal_step: f64,
+    ) -> Vec<f64> {
+        self.update_geometry_arrays(dim1, dim2);
+        let intensity = self.correct_intensity(data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                let radial = self
+                    .state
+                    .read()
+                    .expect("geometry state lock poisoned")
+                    .radial
+                    .clone();
+                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+            }
+        }
+    }
+
     /// Integrate a frame to 2D and return per-bin errors (standard deviations).
     pub fn integrate2d_with_errors(
         &self,
@@ -395,6 +507,62 @@ impl Integrator {
             }
         };
         result
+    }
+
+    pub fn integrate2d_with_errors_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(dim1, dim2);
+        let (intensity, variance) = self.correct_intensity_and_variance(data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                let radial = self
+                    .state
+                    .read()
+                    .expect("geometry state lock poisoned")
+                    .radial
+                    .clone();
+                let (_bins, y, sigma) = histogram::histogram_with_errors(
+                    &radial, &intensity, &variance, n_radial, mask_data,
+                );
+                (y, sigma)
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Counting {
+                    n_radial,
+                    n_azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
+                    n_radial,
+                    n_azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    unit,
+                });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+            }
+        }
     }
 
     /// Integrate a frame to 2D with errors using an explicit azimuthal binning definition.
@@ -462,5 +630,67 @@ impl Integrator {
             }
         };
         result
+    }
+
+    pub fn integrate2d_with_azimuthal_range_and_errors_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_start: f64,
+        azimuthal_step: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.update_geometry_arrays(dim1, dim2);
+        let (intensity, variance) = self.correct_intensity_and_variance(data);
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                let radial = self
+                    .state
+                    .read()
+                    .expect("geometry state lock poisoned")
+                    .radial
+                    .clone();
+                let (_bins, y, sigma) = histogram::histogram_with_errors(
+                    &radial, &intensity, &variance, n_radial, mask_data,
+                );
+                (y, sigma)
+            }
+            IntegrationMethod::Counting => {
+                let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    azimuthal,
+                    unit,
+                });
+                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+            }
+        }
     }
 }

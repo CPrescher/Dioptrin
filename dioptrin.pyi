@@ -252,30 +252,29 @@ class Integrator:
         ...
 
     def integrate1d(
-        self, tiff_path: str, n_points: int
-    ) -> Tuple[list[float], list[float]]:
+        self, tiff_path: str, n_points: int, errors: bool = False
+    ) -> IntegrationResult:
         """
         Perform 1D radial integration from a TIFF file.
-
-        Loads a TIFF image and integrates it along the radial axis using the
-        configured integration method and corrections.
 
         Args:
             tiff_path: Path to the TIFF image file
             n_points: Number of bins for the 1D integration output
+            errors: Whether to compute error estimates (default: False)
 
         Returns:
-            Tuple of (radial_values, intensities) as lists of floats
+            IntegrationResult with radial values, intensities, and optional errors
 
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
-            >>> radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
+            >>> result = integrator.integrate1d("pattern.tif", n_points=1000)
+            >>> result = integrator.integrate1d("pattern.tif", n_points=1000, errors=True)
         """
         ...
 
-    def integrate1d_array(
-        self, array: np.ndarray, n_points: int
-    ) -> Tuple[list[float], list[float]]:
+    def integrate1d_from_array(
+        self, array: np.ndarray, n_points: int, errors: bool = False
+    ) -> IntegrationResult:
         """
         Perform 1D radial integration from a NumPy array.
 
@@ -285,9 +284,10 @@ class Integrator:
         Args:
             array: 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
             n_points: Number of bins for the 1D integration output
+            errors: Whether to compute error estimates (default: False)
 
         Returns:
-            Tuple of (radial_values, intensities) as lists of floats
+            IntegrationResult with radial values, intensities, and optional errors
 
         Raises:
             ValueError: If the array is not C-contiguous or not float64
@@ -296,56 +296,65 @@ class Integrator:
             >>> import numpy as np
             >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> data = np.array(image_data, dtype=np.float64)
-            >>> radial, intensity = integrator.integrate1d_array(data, n_points=1000)
+            >>> result = integrator.integrate1d_from_array(data, n_points=1000)
         """
         ...
 
-    def integrate1d_array_with_errors(
-        self, array: np.ndarray, n_points: int
-    ) -> Tuple[list[float], list[float], list[float]]:
+    def integrate2d(
+        self,
+        tiff_path: str,
+        n_radial: int,
+        n_azimuthal: int,
+        errors: bool = False,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
+    ) -> IntegrationResult:
         """
-        Perform 1D radial integration from a NumPy array with error propagation.
-
-        Similar to `integrate1d_array`, but also returns error estimates
-        (standard deviations) for each bin based on Poisson statistics.
-
-        Args:
-            array: 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
-            n_points: Number of bins for the 1D integration output
-
-        Returns:
-            Tuple of (radial_values, intensities, errors) as lists of floats
-
-        Raises:
-            ValueError: If the array is not C-contiguous or not float64
-
-        Example:
-            >>> import numpy as np
-            >>> integrator = dioptrin.Integrator("calibration.poni")
-            >>> data = np.array(image_data, dtype=np.float64)
-            >>> radial, intensity, errors = integrator.integrate1d_array_with_errors(data, n_points=1000)
-        """
-        ...
-
-    def integrate1d_with_errors(
-        self, tiff_path: str, n_points: int
-    ) -> Tuple[list[float], list[float], list[float]]:
-        """
-        Perform 1D radial integration from a TIFF file with error propagation.
-
-        Similar to `integrate1d`, but also returns error estimates
-        (standard deviations) for each bin based on Poisson statistics.
+        Perform 2D integration from a TIFF file.
 
         Args:
             tiff_path: Path to the TIFF image file
-            n_points: Number of bins for the 1D integration output
+            n_radial: Number of radial bins
+            n_azimuthal: Number of azimuthal bins
+            errors: Whether to compute error estimates (default: False)
+            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
 
         Returns:
-            Tuple of (radial_values, intensities, errors) as lists of floats
+            IntegrationResult with flat intensity (and optional errors) sized
+            n_radial * n_azimuthal
 
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
-            >>> radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
+            >>> result = integrator.integrate2d("pattern.tif", n_radial=100, n_azimuthal=360)
+        """
+        ...
+
+    def integrate2d_from_array(
+        self,
+        array: np.ndarray,
+        n_radial: int,
+        n_azimuthal: int,
+        errors: bool = False,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
+    ) -> IntegrationResult:
+        """
+        Perform 2D integration from a NumPy array.
+
+        Accepts a 2D NumPy array (float64, C-contiguous). Use azimuthal_range to
+        restrict the azimuthal range.
+
+        Args:
+            array: 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
+            n_radial: Number of radial bins
+            n_azimuthal: Number of azimuthal bins
+            errors: Whether to compute error estimates (default: False)
+            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
+
+        Returns:
+            IntegrationResult with flat intensity (and optional errors) sized
+            n_radial * n_azimuthal
+
+        Raises:
+            ValueError: If the array is not C-contiguous or not float64
         """
         ...
 

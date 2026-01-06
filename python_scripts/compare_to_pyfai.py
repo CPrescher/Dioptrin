@@ -30,11 +30,13 @@ time_function(
     "pyFAI integrate1d warm-up",
 )
 
-integrator = dioptrin.Integrator.from_poni_file(poni_path, "ss", 0.99, 5)
+integrator = dioptrin.Integrator(
+    poni_path, method="ss", polarization_factor=0.99, n_ss=5
+)
 time_function(
-    lambda: integrator.integrate1d_array(image_c, 1000),  # Warm-up
+    lambda: integrator.integrate1d_from_array(image_c, 1000),  # Warm-up
     1,
-    "dioptrin integrate1d_array warm-up",
+    "dioptrin integrate1d warm-up",
 )
 
 time_function(
@@ -45,15 +47,17 @@ time_function(
 
 time_function(
     # lambda: integrator.integrated1d_array_with_errors(np.ascontiguousarray(image, np.float64), 1000),
-    lambda: integrator.integrate1d_with_errors(image_path, 1000),
+    lambda: integrator.integrate1d(image_path, 1000, errors=True),
     100,
-    "dioptrin integrate1d_with_errors from file:",
+    "dioptrin integrate1d errors from file:",
 )
 
 time_function(
-    lambda: integrator.integrate1d_array_with_errors(
-        np.ascontiguousarray(fabio.open(image_path).data[::-1], np.float64), 1000
+    lambda: integrator.integrate1d_from_array(
+        np.ascontiguousarray(fabio.open(image_path).data[::-1], np.float64),
+        1000,
+        errors=True,
     ),
     100,
-    "dioptrin integrate1d_array_with_errors from array:",
+    "dioptrin integrate1d errors from array:",
 )

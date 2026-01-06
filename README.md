@@ -229,15 +229,24 @@ integrator = dioptrin.Integrator(
 )
 
 # 1D integration from TIFF file
-radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
+result = integrator.integrate1d("pattern.tif", n_points=1000)
+radial, intensity = result.radial, result.intensity
 
 # 1D integration with error estimates
-radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
+result = integrator.integrate1d("pattern.tif", n_points=1000, errors=True)
+errors = result.errors
 
 # 1D integration from NumPy array
 import numpy as np
 data = np.array(image_data, dtype=np.float64)
-radial, intensity = integrator.integrate1d_array(data, n_points=1000)
+result = integrator.integrate1d_from_array(data, n_points=1000)
+
+# 2D integration from TIFF file
+result = integrator.integrate2d("pattern.tif", n_radial=100, n_azimuthal=360)
+cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
+
+# 2D integration from NumPy array
+result = integrator.integrate2d_from_array(data, n_radial=100, n_azimuthal=360)
 ```
 
 ### Batch Processing

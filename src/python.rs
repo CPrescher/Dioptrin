@@ -400,6 +400,19 @@ fn resolve_workers_threads(
     Ok((num_workers, num_threads))
 }
 
+fn extract_array_dims(array: &PyReadonlyArray2<f64>) -> PyResult<(usize, usize)> {
+    let view = array.as_array();
+    if !view.is_standard_layout() {
+        return Err(PyValueError::new_err(
+            "Array must be C-contiguous (row-major) and float64",
+        ));
+    }
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+    Ok((dim1, dim2))
+}
+
 fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     let mut poni = Poni::new();
 
@@ -596,29 +609,42 @@ impl PyIntegrator {
 
     /// Perform 1D radial integration from a TIFF file.
     ///
-    /// Loads a TIFF image and integrates it along the radial axis using the
-    /// configured integration method and corrections.
-    ///
     /// # Arguments
     ///
     /// * `tiff_path` - Path to the TIFF image file
     /// * `n_points` - Number of bins for the 1D integration output
+    /// * `errors` - Whether to compute error estimates (default: False)
     ///
     /// # Returns
     ///
-    /// Tuple of (radial_values, intensities) as lists of floats
+    /// IntegrationResult with radial values, intensities, and optional errors
     ///
     /// # Example
     ///
     /// ```python
     /// integrator = dioptrin.Integrator("calibration.poni")
-    /// radial, intensity = integrator.integrate1d("pattern.tif", n_points=1000)
+    /// result = integrator.integrate1d("pattern.tif", n_points=1000)
+    /// result = integrator.integrate1d("pattern.tif", n_points=1000, errors=True)
     /// ```
-    #[pyo3(signature = (tiff_path, n_points))]
-    fn integrate1d(&self, tiff_path: &str, n_points: usize) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    #[pyo3(signature = (tiff_path, n_points, errors=false))]
+    fn integrate1d(
+        &self,
+        tiff_path: &str,
+        n_points: usize,
+        errors: bool,
+    ) -> PyResult<PyIntegrationResult> {
         let frame = Frame::from_tiff(tiff_path.to_string())
             .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
-        Ok(self.integrator.integrate1d(&frame, n_points))
+        if errors {
+            let (radial, intensity, errs) =
+                self.integrator.integrate1d_with_errors(&frame, n_points);
+            Ok(PyIntegrationResult::from_1d_with_errors(
+                radial, intensity, errs,
+            ))
+        } else {
+            let (radial, intensity) = self.integrator.integrate1d(&frame, n_points);
+            Ok(PyIntegrationResult::from_1d(radial, intensity))
+        }
     }
 
     /// Perform 1D radial integration from a NumPy array.
@@ -630,10 +656,11 @@ impl PyIntegrator {
     ///
     /// * `array` - 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
     /// * `n_points` - Number of bins for the 1D integration output
+    /// * `errors` - Whether to compute error estimates (default: False)
     ///
     /// # Returns
     ///
-    /// Tuple of (radial_values, intensities) as lists of floats
+    /// IntegrationResult with radial values, intensities, and optional errors
     ///
     /// # Raises
     ///
@@ -645,111 +672,200 @@ impl PyIntegrator {
     /// import numpy as np
     /// integrator = dioptrin.Integrator("calibration.poni")
     /// data = np.array(image_data, dtype=np.float64)
-    /// radial, intensity = integrator.integrate1d_array(data, n_points=1000)
+    /// result = integrator.integrate1d_from_array(data, n_points=1000)
+    /// result = integrator.integrate1d_from_array(data, n_points=1000, errors=True)
     /// ```
-    #[pyo3(signature = (array, n_points))]
-    fn integrate1d_array(
+    #[pyo3(signature = (array, n_points, errors=false))]
+    fn integrate1d_from_array(
         &self,
         array: PyReadonlyArray2<f64>,
         n_points: usize,
-    ) -> PyResult<(Vec<f64>, Vec<f64>)> {
-        let view = array.as_array();
-        if !view.is_standard_layout() {
-            return Err(PyValueError::new_err(
-                "Array must be C-contiguous (row-major) and float64",
-            ));
-        }
-        let shape = view.shape();
-        let dim1 = shape[0];
-        let dim2 = shape[1];
-
+        errors: bool,
+    ) -> PyResult<PyIntegrationResult> {
+        let (dim1, dim2) = extract_array_dims(&array)?;
         let slice = array
             .as_slice()
             .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
-        Ok(self
-            .integrator
-            .integrate1d_from_slice(slice, dim1, dim2, n_points))
-    }
-
-    /// Perform 1D radial integration from a NumPy array with error propagation.
-    ///
-    /// Similar to `integrate1d_array`, but also returns error estimates
-    /// (standard deviations) for each bin based on Poisson statistics.
-    ///
-    /// # Arguments
-    ///
-    /// * `array` - 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
-    /// * `n_points` - Number of bins for the 1D integration output
-    ///
-    /// # Returns
-    ///
-    /// Tuple of (radial_values, intensities, errors) as lists of floats
-    ///
-    /// # Raises
-    ///
-    /// ValueError if the array is not C-contiguous or not float64
-    ///
-    /// # Example
-    ///
-    /// ```python
-    /// import numpy as np
-    /// integrator = dioptrin.Integrator("calibration.poni")
-    /// data = np.array(image_data, dtype=np.float64)
-    /// radial, intensity, errors = integrator.integrate1d_array_with_errors(data, n_points=1000)
-    /// ```
-    #[pyo3(signature = (array, n_points))]
-    fn integrate1d_array_with_errors(
-        &self,
-        array: PyReadonlyArray2<f64>,
-        n_points: usize,
-    ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
-        let view = array.as_array();
-        if !view.is_standard_layout() {
-            return Err(PyValueError::new_err(
-                "Array must be C-contiguous (row-major) and float64",
-            ));
+        if errors {
+            let (radial, intensity, errs) = self
+                .integrator
+                .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points);
+            Ok(PyIntegrationResult::from_1d_with_errors(
+                radial, intensity, errs,
+            ))
+        } else {
+            let (radial, intensity) =
+                self.integrator
+                    .integrate1d_from_slice(slice, dim1, dim2, n_points);
+            Ok(PyIntegrationResult::from_1d(radial, intensity))
         }
-        let shape = view.shape();
-        let dim1 = shape[0];
-        let dim2 = shape[1];
-
-        let slice = array
-            .as_slice()
-            .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
-        Ok(self
-            .integrator
-            .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points))
     }
 
-    /// Perform 1D radial integration from a TIFF file with error propagation.
+    /// Perform 2D integration from a TIFF file.
     ///
-    /// Similar to `integrate1d`, but also returns error estimates
-    /// (standard deviations) for each bin based on Poisson statistics.
+    /// Set `errors=True` to include per-bin error estimates. Use `azimuthal_range`
+    /// to restrict the azimuthal range.
     ///
     /// # Arguments
     ///
     /// * `tiff_path` - Path to the TIFF image file
-    /// * `n_points` - Number of bins for the 1D integration output
+    /// * `n_radial` - Number of radial bins
+    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `azimuthal_range` - Optional (min, max) tuple for azimuthal range in radians
     ///
     /// # Returns
     ///
-    /// Tuple of (radial_values, intensities, errors) as lists of floats
+    /// IntegrationResult with flat intensity (and optional errors) sized
+    /// `n_radial * n_azimuthal`
     ///
     /// # Example
     ///
     /// ```python
     /// integrator = dioptrin.Integrator("calibration.poni")
-    /// radial, intensity, errors = integrator.integrate1d_with_errors("pattern.tif", n_points=1000)
+    /// result = integrator.integrate2d("pattern.tif", n_radial=100, n_azimuthal=360)
+    /// result = integrator.integrate2d(
+    ///     "pattern.tif", n_radial=100, n_azimuthal=90, azimuthal_range=(0, 1.57), errors=True
+    /// )
     /// ```
-    #[pyo3(signature = (tiff_path, n_points))]
-    fn integrate1d_with_errors(
+    #[pyo3(signature = (tiff_path, n_radial, n_azimuthal, errors=false, azimuthal_range=None))]
+    fn integrate2d(
         &self,
         tiff_path: &str,
-        n_points: usize,
-    ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+        n_radial: usize,
+        n_azimuthal: usize,
+        errors: bool,
+        azimuthal_range: Option<(f64, f64)>,
+    ) -> PyResult<PyIntegrationResult> {
         let frame = Frame::from_tiff(tiff_path.to_string())
             .map_err(|err| PyValueError::new_err(format!("Failed to load TIFF: {}", err)))?;
-        Ok(self.integrator.integrate1d_with_errors(&frame, n_points))
+
+        let result = match (errors, azimuthal_range) {
+            (false, None) => {
+                let intensity = self.integrator.integrate2d(&frame, n_radial, n_azimuthal);
+                PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+            }
+            (true, None) => {
+                let (intensity, errs) =
+                    self.integrator
+                        .integrate2d_with_errors(&frame, n_radial, n_azimuthal);
+                PyIntegrationResult::from_2d_with_errors(intensity, errs, n_radial, n_azimuthal)
+            }
+            (false, Some((azimuthal_min, azimuthal_max))) => {
+                let intensity = self.integrator.integrate2d_with_azimuthal_range(
+                    &frame,
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal_min,
+                    azimuthal_max,
+                );
+                PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+            }
+            (true, Some((azimuthal_min, azimuthal_max))) => {
+                let (intensity, errs) =
+                    self.integrator.integrate2d_with_azimuthal_range_and_errors(
+                        &frame,
+                        n_radial,
+                        n_azimuthal,
+                        azimuthal_min,
+                        azimuthal_max,
+                    );
+                PyIntegrationResult::from_2d_with_errors(intensity, errs, n_radial, n_azimuthal)
+            }
+        };
+
+        Ok(result)
+    }
+
+    /// Perform 2D integration from a NumPy array.
+    ///
+    /// Accepts a 2D NumPy array (float64, C-contiguous). Set `errors=True` to include
+    /// per-bin error estimates. Use `azimuthal_range` to restrict the azimuthal range.
+    ///
+    /// # Arguments
+    ///
+    /// * `array` - 2D NumPy array of shape (dim1, dim2) containing the diffraction pattern
+    /// * `n_radial` - Number of radial bins
+    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `azimuthal_range` - Optional (min, max) tuple for azimuthal range in radians
+    ///
+    /// # Returns
+    ///
+    /// IntegrationResult with flat intensity (and optional errors) sized
+    /// `n_radial * n_azimuthal`
+    ///
+    /// # Raises
+    ///
+    /// ValueError if the array is not C-contiguous or not float64
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import numpy as np
+    /// integrator = dioptrin.Integrator("calibration.poni")
+    /// data = np.array(image_data, dtype=np.float64)
+    /// result = integrator.integrate2d_from_array(data, n_radial=100, n_azimuthal=360)
+    /// ```
+    #[pyo3(signature = (array, n_radial, n_azimuthal, errors=false, azimuthal_range=None))]
+    fn integrate2d_from_array(
+        &self,
+        array: PyReadonlyArray2<f64>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        errors: bool,
+        azimuthal_range: Option<(f64, f64)>,
+    ) -> PyResult<PyIntegrationResult> {
+        let (dim1, dim2) = extract_array_dims(&array)?;
+        let slice = array
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
+        let result = match (errors, azimuthal_range) {
+            (false, None) => {
+                let intensity =
+                    self.integrator
+                        .integrate2d_from_slice(slice, dim1, dim2, n_radial, n_azimuthal);
+                PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+            }
+            (true, None) => {
+                let (intensity, errs) = self.integrator.integrate2d_with_errors_from_slice(
+                    slice,
+                    dim1,
+                    dim2,
+                    n_radial,
+                    n_azimuthal,
+                );
+                PyIntegrationResult::from_2d_with_errors(intensity, errs, n_radial, n_azimuthal)
+            }
+            (false, Some((azimuthal_min, azimuthal_max))) => {
+                let intensity = self.integrator.integrate2d_with_azimuthal_range_from_slice(
+                    slice,
+                    dim1,
+                    dim2,
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal_min,
+                    azimuthal_max,
+                );
+                PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+            }
+            (true, Some((azimuthal_min, azimuthal_max))) => {
+                let (intensity, errs) =
+                    self.integrator
+                        .integrate2d_with_azimuthal_range_and_errors_from_slice(
+                            slice,
+                            dim1,
+                            dim2,
+                            n_radial,
+                            n_azimuthal,
+                            azimuthal_min,
+                            azimuthal_max,
+                        );
+                PyIntegrationResult::from_2d_with_errors(intensity, errs, n_radial, n_azimuthal)
+            }
+        };
+
+        Ok(result)
     }
 
     /// Set the integration method.
