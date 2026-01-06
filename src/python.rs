@@ -15,7 +15,15 @@ use crate::batch::{
 use crate::frame::Frame;
 use crate::geometry::Geometry;
 use crate::integration::{IntegrationMethod, Integrator, RadialUnit};
+use crate::mask::Mask;
 use crate::poni::Poni;
+
+#[derive(FromPyObject)]
+enum MaskInput<'p> {
+    Path(String),
+    ArrayU8(PyReadonlyArray2<'p, u8>),
+    ArrayBool(PyReadonlyArray2<'p, bool>),
+}
 
 /// Result of an integration operation.
 ///
@@ -400,12 +408,16 @@ fn resolve_workers_threads(
     Ok((num_workers, num_threads))
 }
 
-fn extract_array_dims(array: &PyReadonlyArray2<f64>) -> PyResult<(usize, usize)> {
+fn extract_array_dims<T>(array: &PyReadonlyArray2<T>, type_name: &str) -> PyResult<(usize, usize)>
+where
+    T: numpy::Element,
+{
     let view = array.as_array();
     if !view.is_standard_layout() {
-        return Err(PyValueError::new_err(
-            "Array must be C-contiguous (row-major) and float64",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "Array must be C-contiguous (row-major) and {}",
+            type_name
+        )));
     }
     let shape = view.shape();
     let dim1 = shape[0];
@@ -682,7 +694,7 @@ impl PyIntegrator {
         n_points: usize,
         errors: bool,
     ) -> PyResult<PyIntegrationResult> {
-        let (dim1, dim2) = extract_array_dims(&array)?;
+        let (dim1, dim2) = extract_array_dims(&array, "float64")?;
         let slice = array
             .as_slice()
             .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
@@ -816,7 +828,7 @@ impl PyIntegrator {
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
     ) -> PyResult<PyIntegrationResult> {
-        let (dim1, dim2) = extract_array_dims(&array)?;
+        let (dim1, dim2) = extract_array_dims(&array, "float64")?;
         let slice = array
             .as_slice()
             .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
@@ -936,7 +948,7 @@ impl PyIntegrator {
     /// # Example
     ///
     /// ```python
-    /// integrator.set_unit("q_A^-1")  # Switch to q-space in inverse Angstroms
+    ///     integrator.set_unit("q_A^-1")  # Switch to q-space in inverse Angstroms
     /// ```
     fn set_unit(&mut self, unit: &str) -> PyResult<()> {
         let integrator = Arc::get_mut(&mut self.integrator)
@@ -945,10 +957,90 @@ impl PyIntegrator {
         Ok(())
     }
 
+    /// Set the mask for the integrator.
+    ///
+    /// The mask can be provided as a path to a TIFF file or as a NumPy array.
+    /// In the mask, non-zero values indicate pixels to be masked (ignored).
+    ///
+    /// # Arguments
+    ///
+    /// * `mask` - Path to a TIFF file (str), a NumPy array (uint8 or bool), or None to clear the mask.
+    ///
+    /// # Raises
+    ///
+    /// ValueError if the mask file cannot be loaded or if the array has an incorrect shape or type.
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// import numpy as np
+    /// # From file
+    /// integrator.set_mask("mask.tif")
+    ///
+    /// # From array
+    /// mask_array = np.zeros((1043, 981), dtype=np.uint8)
+    /// mask_array[500:600, :] = 1
+    /// integrator.set_mask(mask_array)
+    ///
+    /// # Clear mask
+    /// integrator.set_mask(None)
+    /// ```
+    #[pyo3(signature = (mask))]
+    fn set_mask(&mut self, mask: Option<MaskInput>) -> PyResult<()> {
+        let integrator = Arc::get_mut(&mut self.integrator)
+            .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
+
+        match mask {
+            Some(MaskInput::Path(path)) => {
+                let mask_obj = Mask::from_tiff(path).map_err(|err| {
+                    PyValueError::new_err(format!("Failed to load mask TIFF: {}", err))
+                })?;
+                integrator.set_mask(mask_obj);
+            }
+            Some(MaskInput::ArrayU8(array)) => {
+                let (dim1, dim2) = extract_array_dims(&array, "uint8")?;
+                let slice = array.as_slice().map_err(|err| {
+                    PyValueError::new_err(format!("Mask must be contiguous: {}", err))
+                })?;
+                let mask_obj = Mask::from_vec(slice.to_vec(), dim1, dim2)
+                    .map_err(|err| PyValueError::new_err(err))?;
+                integrator.set_mask(mask_obj);
+            }
+            Some(MaskInput::ArrayBool(array)) => {
+                let (dim1, dim2) = extract_array_dims(&array, "bool")?;
+                let slice = array.as_slice().map_err(|err| {
+                    PyValueError::new_err(format!("Mask must be contiguous: {}", err))
+                })?;
+                let data_u8: Vec<u8> = slice.iter().map(|&b| b as u8).collect();
+                let mask_obj = Mask::from_vec(data_u8, dim1, dim2)
+                    .map_err(|err| PyValueError::new_err(err))?;
+                integrator.set_mask(mask_obj);
+            }
+            None => {
+                integrator.clear_mask();
+            }
+        }
+        Ok(())
+    }
+    /// Clear the mask from the integrator.
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// integrator.clear_mask()
+    /// ```
+    fn clear_mask(&mut self) -> PyResult<()> {
+        let integrator = Arc::get_mut(&mut self.integrator)
+            .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
+        integrator.clear_mask();
+        Ok(())
+    }
+
     /// Get the current radial unit as a string.
     ///
     /// Returns the unit currently configured for the radial axis.
     ///
+
     /// # Returns
     ///
     /// String representation of the current radial unit: "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
