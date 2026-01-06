@@ -394,6 +394,7 @@ impl Integrator {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_from_slice(
         &self,
         data: &[f64],
@@ -632,6 +633,7 @@ impl Integrator {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_and_errors_from_slice(
         &self,
         data: &[f64],

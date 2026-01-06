@@ -364,6 +364,7 @@ impl<T> StreamingBatch<T> {
     }
 
     /// Consume the batch and return an iterator over results.
+    #[allow(clippy::should_implement_trait)]
     pub fn into_iter(self) -> impl Iterator<Item = (String, Result<T, String>)> {
         self.receiver.into_iter()
     }
@@ -400,6 +401,7 @@ where
     let num_files = filenames.len();
     let completed = Arc::new(AtomicUsize::new(0));
 
+    #[allow(clippy::type_complexity)]
     let (tx, rx): (Sender<(String, Result<T::Output, String>)>, _) = mpsc::channel();
 
     // Distribute files across workers
