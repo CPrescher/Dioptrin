@@ -270,7 +270,8 @@ where
     // Collect results from all workers
     let mut all_results = Vec::new();
     for handle in handles {
-        match handle.join() {
+        let result = handle.join();
+        match result {
             Ok(mut worker_results) => {
                 all_results.append(&mut worker_results);
             }
