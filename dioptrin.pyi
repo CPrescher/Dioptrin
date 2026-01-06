@@ -410,6 +410,43 @@ class Integrator:
         """
         ...
 
+    def set_mask(self, mask: Optional[str | np.ndarray]) -> None:
+        """
+        Set the mask for the integrator.
+
+        The mask can be provided as a path to a TIFF file or as a NumPy array.
+        In the mask, non-zero values indicate pixels to be masked (ignored).
+
+        Args:
+            mask: Path to a TIFF file (str), a NumPy array (uint8 or bool), or None to clear the mask.
+
+        Raises:
+            ValueError: If the mask file cannot be loaded or if the array has an incorrect shape or type.
+
+        Example:
+            >>> import numpy as np
+            >>> # From file
+            >>> integrator.set_mask("mask.tif")
+            >>>
+            >>> # From array
+            >>> mask_array = np.zeros((1043, 981), dtype=np.uint8)
+            >>> mask_array[500:600, :] = 1
+            >>> integrator.set_mask(mask_array)
+            >>>
+            >>> # Clear mask
+            >>> integrator.set_mask(None)
+        """
+        ...
+
+    def clear_mask(self) -> None:
+        """
+        Clear the mask from the integrator.
+
+        Example:
+            >>> integrator.clear_mask()
+        """
+        ...
+
     def get_unit(self) -> str:
         """
         Get the current radial unit as a string.
