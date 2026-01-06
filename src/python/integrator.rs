@@ -480,8 +480,8 @@ impl PyIntegrator {
                 let slice = array.as_slice().map_err(|err| {
                     PyValueError::new_err(format!("Mask must be contiguous: {}", err))
                 })?;
-                let mask_obj = Mask::from_vec(slice.to_vec(), dim1, dim2)
-                    .map_err(PyValueError::new_err)?;
+                let mask_obj =
+                    Mask::from_vec(slice.to_vec(), dim1, dim2).map_err(PyValueError::new_err)?;
                 integrator.set_mask(mask_obj);
             }
             Some(MaskInput::ArrayBool(array)) => {
@@ -490,8 +490,8 @@ impl PyIntegrator {
                     PyValueError::new_err(format!("Mask must be contiguous: {}", err))
                 })?;
                 let data_u8: Vec<u8> = slice.iter().map(|&b| b as u8).collect();
-                let mask_obj = Mask::from_vec(data_u8, dim1, dim2)
-                    .map_err(PyValueError::new_err)?;
+                let mask_obj =
+                    Mask::from_vec(data_u8, dim1, dim2).map_err(PyValueError::new_err)?;
                 integrator.set_mask(mask_obj);
             }
             None => {
@@ -921,7 +921,6 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
     ) -> PyResult<PyBatchIterator> {
-
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         let total = tiff_paths.len();
 
