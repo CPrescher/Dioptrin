@@ -154,6 +154,7 @@ impl PyBatchResult {
 }
 
 /// Internal enum to hold different receiver types for the iterator
+#[allow(clippy::type_complexity)]
 pub(crate) enum BatchReceiver {
     Integration1D(Mutex<Receiver<(String, Result<(Vec<f64>, Vec<f64>), String>)>>),
     Integration1DWithErrors(
