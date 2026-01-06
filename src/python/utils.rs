@@ -1,12 +1,18 @@
 use numpy::PyReadonlyArray2;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use pyo3::exceptions::PyValueError;
 use rayon::ThreadPoolBuilder;
 use std::thread;
 
 use crate::integration::{IntegrationMethod, RadialUnit};
 use crate::poni::Poni;
+
+#[derive(FromPyObject)]
+pub enum ImageInput<'p> {
+    Path(String),
+    Array(PyReadonlyArray2<'p, f64>),
+}
 
 pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
     match method.unwrap_or("pixel_split").to_lowercase().as_str() {
@@ -70,7 +76,10 @@ pub fn resolve_workers_threads(
     Ok((num_workers, num_threads))
 }
 
-pub fn extract_array_dims<T>(array: &PyReadonlyArray2<T>, type_name: &str) -> PyResult<(usize, usize)>
+pub fn extract_array_dims<T>(
+    array: &PyReadonlyArray2<T>,
+    type_name: &str,
+) -> PyResult<(usize, usize)>
 where
     T: numpy::Element,
 {

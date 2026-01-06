@@ -34,7 +34,7 @@ integrator = dioptrin.Integrator(
     poni_path, method="ss", polarization_factor=0.99, n_ss=5
 )
 time_function(
-    lambda: integrator.integrate1d_from_array(image_c, 1000),  # Warm-up
+    lambda: integrator.integrate1d(image_c, 1000),  # Warm-up
     1,
     "dioptrin integrate1d warm-up",
 )
@@ -53,7 +53,7 @@ time_function(
 )
 
 time_function(
-    lambda: integrator.integrate1d_from_array(
+    lambda: integrator.integrate1d(
         np.ascontiguousarray(fabio.open(image_path).data[::-1], np.float64),
         1000,
         errors=True,

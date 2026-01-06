@@ -239,14 +239,14 @@ errors = result.errors
 # 1D integration from NumPy array
 import numpy as np
 data = np.array(image_data, dtype=np.float64)
-result = integrator.integrate1d_from_array(data, n_points=1000)
+result = integrator.integrate1d(data, n_points=1000)
 
 # 2D integration from TIFF file
 result = integrator.integrate2d("pattern.tif", n_radial=100, n_azimuthal=360)
 cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 
 # 2D integration from NumPy array
-result = integrator.integrate2d_from_array(data, n_radial=100, n_azimuthal=360)
+result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
 ### Batch Processing
