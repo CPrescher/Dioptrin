@@ -694,9 +694,9 @@ impl PyIntegrator {
                 radial, intensity, errs,
             ))
         } else {
-            let (radial, intensity) =
-                self.integrator
-                    .integrate1d_from_slice(slice, dim1, dim2, n_points);
+            let (radial, intensity) = self
+                .integrator
+                .integrate1d_from_slice(slice, dim1, dim2, n_points);
             Ok(PyIntegrationResult::from_1d(radial, intensity))
         }
     }
@@ -822,9 +822,13 @@ impl PyIntegrator {
             .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
         let result = match (errors, azimuthal_range) {
             (false, None) => {
-                let intensity =
-                    self.integrator
-                        .integrate2d_from_slice(slice, dim1, dim2, n_radial, n_azimuthal);
+                let intensity = self.integrator.integrate2d_from_slice(
+                    slice,
+                    dim1,
+                    dim2,
+                    n_radial,
+                    n_azimuthal,
+                );
                 PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
             }
             (true, None) => {
@@ -850,17 +854,17 @@ impl PyIntegrator {
                 PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
             }
             (true, Some((azimuthal_min, azimuthal_max))) => {
-                let (intensity, errs) =
-                    self.integrator
-                        .integrate2d_with_azimuthal_range_and_errors_from_slice(
-                            slice,
-                            dim1,
-                            dim2,
-                            n_radial,
-                            n_azimuthal,
-                            azimuthal_min,
-                            azimuthal_max,
-                        );
+                let (intensity, errs) = self
+                    .integrator
+                    .integrate2d_with_azimuthal_range_and_errors_from_slice(
+                        slice,
+                        dim1,
+                        dim2,
+                        n_radial,
+                        n_azimuthal,
+                        azimuthal_min,
+                        azimuthal_max,
+                    );
                 PyIntegrationResult::from_2d_with_errors(intensity, errs, n_radial, n_azimuthal)
             }
         };
