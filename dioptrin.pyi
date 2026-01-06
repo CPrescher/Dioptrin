@@ -1,93 +1,17 @@
 """Type stubs for dioptrin - High-performance 1D/2D diffraction integration library."""
 
-from typing import Tuple, Optional
+from typing import Iterator, Optional, Tuple
+
 import numpy as np
 
 __all__ = [
     "Integrator",
-    "integrate1d",
-    "integrate1d_with_errors",
+    "IntegrationResult",
+    "BatchResult",
+    "BatchIterator",
     "rayon_num_threads",
     "set_rayon_threads",
 ]
-
-
-def integrate1d(
-    poni_path: str,
-    tiff_path: str,
-    n_points: int,
-    method: Optional[str] = None,
-    polarization_factor: Optional[float] = None,
-    n_ss: Optional[int] = None,
-    unit: Optional[str] = None,
-) -> Tuple[list[float], list[float]]:
-    """
-    Perform 1D radial integration of a diffraction pattern.
-
-    This function loads a PONI calibration file and a TIFF image, then performs
-    1D integration along the radial (scattering angle) axis.
-
-    Args:
-        poni_path: Path to the PONI calibration file (v1 or v2 format)
-        tiff_path: Path to the TIFF image file containing the diffraction pattern
-        n_points: Number of bins for the 1D integration output
-        method: Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
-        polarization_factor: Optional polarization correction factor (0.0 to 1.0)
-        n_ss: Number of subpixels per pixel for supersampled method (default: 5)
-        unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
-
-    Returns:
-        Tuple of (radial_values, intensities) as lists of floats
-
-    Example:
-        >>> import dioptrin
-        >>> radial, intensity = dioptrin.integrate1d(
-        ...     "calibration.poni",
-        ...     "pattern.tif",
-        ...     n_points=1000,
-        ...     method="pixel_split",
-        ...     unit="2th_deg"
-        ... )
-    """
-    ...
-
-
-def integrate1d_with_errors(
-    poni_path: str,
-    tiff_path: str,
-    n_points: int,
-    method: Optional[str] = None,
-    polarization_factor: Optional[float] = None,
-    n_ss: Optional[int] = None,
-    unit: Optional[str] = None,
-) -> Tuple[list[float], list[float], list[float]]:
-    """
-    Perform 1D radial integration with error propagation.
-
-    Similar to `integrate1d`, but also returns error estimates (standard deviations)
-    for each bin based on Poisson statistics.
-
-    Args:
-        poni_path: Path to the PONI calibration file (v1 or v2 format)
-        tiff_path: Path to the TIFF image file containing the diffraction pattern
-        n_points: Number of bins for the 1D integration output
-        method: Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
-        polarization_factor: Optional polarization correction factor (0.0 to 1.0)
-        n_ss: Number of subpixels per pixel for supersampled method (default: 5)
-        unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
-
-    Returns:
-        Tuple of (radial_values, intensities, errors) as lists of floats
-
-    Example:
-        >>> import dioptrin
-        >>> radial, intensity, errors = dioptrin.integrate1d_with_errors(
-        ...     "calibration.poni",
-        ...     "pattern.tif",
-        ...     n_points=1000
-        ... )
-    """
-    ...
 
 
 def rayon_num_threads() -> int:
@@ -125,9 +49,132 @@ def set_rayon_threads(threads: int) -> None:
     ...
 
 
+class IntegrationResult:
+    """
+    Result of an integration operation.
+
+    Contains the integrated intensity data along with optional radial/azimuthal
+    coordinates and error estimates, depending on the integration type performed.
+
+    Attributes:
+        radial: Radial bin centers (present for 1D integration, None for 2D)
+        azimuthal: Azimuthal bin centers (present for 2D integration, None for 1D)
+        intensity: Integrated intensity values
+        errors: Error estimates (present if errors=True was specified)
+        n_radial: Number of radial bins (for reshaping 2D data)
+        n_azimuthal: Number of azimuthal bins (for reshaping 2D data)
+    """
+
+    @property
+    def radial(self) -> Optional[list[float]]:
+        """Radial bin centers (1D only)."""
+        ...
+
+    @property
+    def azimuthal(self) -> Optional[list[float]]:
+        """Azimuthal bin centers (2D only)."""
+        ...
+
+    @property
+    def intensity(self) -> list[float]:
+        """Integrated intensity values."""
+        ...
+
+    @property
+    def errors(self) -> Optional[list[float]]:
+        """Error estimates (if errors=True was specified)."""
+        ...
+
+    @property
+    def n_radial(self) -> Optional[int]:
+        """Number of radial bins (for reshaping 2D data)."""
+        ...
+
+    @property
+    def n_azimuthal(self) -> Optional[int]:
+        """Number of azimuthal bins (for reshaping 2D data)."""
+        ...
+
+
+class BatchResult:
+    """
+    Result of a single file in a batch integration.
+
+    Attributes:
+        filename: Path to the processed file
+        result: IntegrationResult if successful, None if failed
+        error: Error message if failed, None if successful
+    """
+
+    @property
+    def filename(self) -> str:
+        """Path of processed file."""
+        ...
+
+    @property
+    def result(self) -> Optional[IntegrationResult]:
+        """IntegrationResult or None if failed."""
+        ...
+
+    @property
+    def error(self) -> Optional[str]:
+        """Error message or None if successful."""
+        ...
+
+    def is_ok(self) -> bool:
+        """Check if the integration was successful."""
+        ...
+
+    def is_err(self) -> bool:
+        """Check if the integration failed."""
+        ...
+
+
+class BatchIterator(Iterator[BatchResult]):
+    """
+    Iterator for streaming batch integration results.
+
+    Yields BatchResult objects as each file completes processing.
+    Use this for memory-efficient processing of large batches.
+
+    Attributes:
+        total: Total number of files being processed
+        completed: Number of files processed so far
+        progress: Fraction complete (0.0 to 1.0)
+
+    Example:
+        >>> it = integrator.batch1d_iter(files, n_points=1000)
+        >>> for result in it:
+        ...     print(f"Progress: {it.completed}/{it.total}")
+        ...     if result.is_ok():
+        ...         process(result.result)
+    """
+
+    @property
+    def total(self) -> int:
+        """Total number of files being processed."""
+        ...
+
+    @property
+    def completed(self) -> int:
+        """Number of files processed so far."""
+        ...
+
+    @property
+    def progress(self) -> float:
+        """Fraction complete (0.0 to 1.0)."""
+        ...
+
+    def __iter__(self) -> "BatchIterator":
+        ...
+
+    def __next__(self) -> BatchResult:
+        ...
+
+
 class Integrator:
     """
-    Integrator for 1D radial integration of diffraction patterns.
+    Integrator for 1D/2D radial integration of diffraction patterns.
 
     The integrator is configured with detector geometry from a PONI file
     and supports various integration methods and corrections.
@@ -369,100 +416,147 @@ class Integrator:
         """
         ...
 
-    def batch_integrate1d(
+    def batch1d(
         self,
         tiff_paths: list[str],
         n_points: int,
+        errors: bool = False,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
-    ) -> list[tuple[str, Optional[Tuple[list[float], list[float]]], Optional[str]]]:
+    ) -> list[BatchResult]:
         """
-        Perform batch 1D radial integration over multiple TIFF files.
+        Perform batch 1D integration.
+
+        Returns a list of BatchResult objects with IntegrationResult containing
+        optional error estimates.
+
+        Args:
+            tiff_paths: List of TIFF file paths to process
+            n_points: Number of bins for the 1D integration output
+            errors: Whether to compute error estimates (default: False)
+            num_workers: Number of parallel workers (optional)
+            num_threads: Threads per worker (optional)
 
         Returns:
-            List of (filename, result, error) tuples. Result is None when error is set.
+            List of BatchResult objects, each containing filename and IntegrationResult.
+
+        Example:
+            >>> results = integrator.batch1d(files, n_points=1000, errors=True)
+            >>> for r in results:
+            ...     if r.is_ok():
+            ...         print(r.result.intensity)
+            ...         if r.result.errors:
+            ...             print(r.result.errors)
         """
         ...
 
-    def batch_integrate1d_with_errors(
+    def batch1d_iter(
         self,
         tiff_paths: list[str],
         n_points: int,
+        errors: bool = False,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
-    ) -> list[tuple[str, Optional[Tuple[list[float], list[float], list[float]]], Optional[str]]]:
+    ) -> BatchIterator:
         """
-        Perform batch 1D radial integration with errors over multiple TIFF files.
+        Perform streaming batch 1D integration.
+
+        Returns an iterator that yields results as each file completes.
+        More memory-efficient for large batches.
+
+        Args:
+            tiff_paths: List of TIFF file paths to process
+            n_points: Number of bins for the 1D integration output
+            errors: Whether to compute error estimates (default: False)
+            num_workers: Number of parallel workers (optional)
+            num_threads: Threads per worker (optional)
 
         Returns:
-            List of (filename, result, error) tuples. Result is None when error is set.
+            BatchIterator that yields BatchResult objects as they complete.
+            The iterator has `total`, `completed`, and `progress` properties.
+
+        Example:
+            >>> it = integrator.batch1d_iter(files, n_points=1000)
+            >>> for result in it:
+            ...     print(f"Progress: {it.completed}/{it.total}")
+            ...     if result.is_ok():
+            ...         process(result.result)
         """
         ...
 
-    def batch_integrate2d(
+    def batch2d(
         self,
         tiff_paths: list[str],
         n_radial: int,
         n_azimuthal: int,
+        errors: bool = False,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
-    ) -> list[tuple[str, Optional[list[float]], Optional[str]]]:
+    ) -> list[BatchResult]:
         """
-        Perform batch 2D radial integration over multiple TIFF files.
+        Perform batch 2D integration.
+
+        Returns a list of BatchResult objects with IntegrationResult containing
+        optional error estimates.
+
+        Args:
+            tiff_paths: List of TIFF file paths to process
+            n_radial: Number of radial bins
+            n_azimuthal: Number of azimuthal bins
+            errors: Whether to compute error estimates (default: False)
+            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
+            num_workers: Number of parallel workers (optional)
+            num_threads: Threads per worker (optional)
 
         Returns:
-            List of (filename, result, error) tuples. Result is None when error is set.
+            List of BatchResult objects, each containing filename and IntegrationResult.
+
+        Example:
+            >>> # Full 2D integration
+            >>> results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
+            >>>
+            >>> # With azimuthal range and errors
+            >>> results = integrator.batch2d(
+            ...     files, n_radial=100, n_azimuthal=90,
+            ...     azimuthal_range=(0, 1.57),  # 0 to pi/2
+            ...     errors=True
+            ... )
         """
         ...
 
-    def batch_integrate2d_with_errors(
+    def batch2d_iter(
         self,
         tiff_paths: list[str],
         n_radial: int,
         n_azimuthal: int,
+        errors: bool = False,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
-    ) -> list[tuple[str, Optional[Tuple[list[float], list[float]]], Optional[str]]]:
+    ) -> BatchIterator:
         """
-        Perform batch 2D radial integration with errors over multiple TIFF files.
+        Perform streaming batch 2D integration.
+
+        Returns an iterator that yields results as each file completes.
+        More memory-efficient for large batches.
+
+        Args:
+            tiff_paths: List of TIFF file paths to process
+            n_radial: Number of radial bins
+            n_azimuthal: Number of azimuthal bins
+            errors: Whether to compute error estimates (default: False)
+            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
+            num_workers: Number of parallel workers (optional)
+            num_threads: Threads per worker (optional)
 
         Returns:
-            List of (filename, result, error) tuples. Result is None when error is set.
-        """
-        ...
+            BatchIterator that yields BatchResult objects as they complete.
+            The iterator has `total`, `completed`, and `progress` properties.
 
-    def batch_integrate2d_with_azimuthal_range(
-        self,
-        tiff_paths: list[str],
-        n_radial: int,
-        n_azimuthal: int,
-        azimuthal_min: float,
-        azimuthal_max: float,
-        num_workers: Optional[int] = None,
-        num_threads: Optional[int] = None,
-    ) -> list[tuple[str, Optional[list[float]], Optional[str]]]:
-        """
-        Perform batch 2D integration with an azimuthal range over multiple TIFF files.
-
-        Returns:
-            List of (filename, result, error) tuples. Result is None when error is set.
-        """
-        ...
-
-    def batch_integrate2d_with_azimuthal_range_and_errors(
-        self,
-        tiff_paths: list[str],
-        n_radial: int,
-        n_azimuthal: int,
-        azimuthal_min: float,
-        azimuthal_max: float,
-        num_workers: Optional[int] = None,
-        num_threads: Optional[int] = None,
-    ) -> list[tuple[str, Optional[Tuple[list[float], list[float]]], Optional[str]]]:
-        """
-        Perform batch 2D integration with azimuthal range and errors over multiple TIFF files.
-
-        Returns:
-            List of (filename, result, error) tuples. Result is None when error is set.
+        Example:
+            >>> for result in integrator.batch2d_iter(files, n_radial=100, n_azimuthal=360):
+            ...     if result.is_ok():
+            ...         cake = result.result.intensity
         """
         ...
