@@ -219,12 +219,11 @@ impl Geometry {
     /// Calculates the azimuthal angle in radians for each pixel in the detector
     pub fn calc_azimuth_all(&self) -> Vec<f64> {
         let (x_sample, y_sample, _z_sample) = self.calc_pixel_positions_with_sample_reference_all();
-        let azimuth = x_sample
+        x_sample
             .par_iter()
             .zip(&y_sample)
             .map(|(x, y)| math::f_azimuth(x, y))
-            .collect();
-        azimuth
+            .collect()
     }
 
     /// Calculates the azimuthal angle in radians for given pixel coordinates.
@@ -274,12 +273,11 @@ impl Geometry {
     /// Calculates Solid Angle for each pixel in the detector
     pub fn calc_solid_angle(&self) -> Vec<f64> {
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference_all();
-        let solid_angle = d1_cart_poni
+        d1_cart_poni
             .par_iter()
             .zip(&d2_cart_poni)
             .map(|(d1, d2)| math::f_solid_angle(d1, d2, &self.poni.distance))
-            .collect::<Vec<f64>>();
-        solid_angle
+            .collect::<Vec<f64>>()
     }
 
     /// Calculates polarization for each pixel in the detector
@@ -294,12 +292,11 @@ impl Geometry {
             .map(|x| x.cos().powi(2))
             .collect::<Vec<f64>>();
 
-        let polarization = cos2_tth
+        cos2_tth
             .par_iter()
             .zip(azimuth)
             .map(|(cos2_tth, azimuth)| math::f_polarization(&factor, cos2_tth, azimuth))
-            .collect();
-        polarization
+            .collect()
     }
 }
 

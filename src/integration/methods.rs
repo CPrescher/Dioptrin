@@ -39,7 +39,7 @@ impl Integrator {
             mask.data.as_slice()
         });
         let unit = self.radial_unit;
-        let result = match self.method {
+        match self.method {
             IntegrationMethod::Histogram => {
                 let radial = self
                     .state
@@ -65,8 +65,7 @@ impl Integrator {
                 });
                 crate::lut::integrate1d(&intensity, &lut1d, mask_data)
             }
-        };
-        result
+        }
     }
 
     /// Integrate a frame to 1D and return per-bin errors (standard deviations).
@@ -82,7 +81,7 @@ impl Integrator {
             mask.data.as_slice()
         });
         let unit = self.radial_unit;
-        let result = match self.method {
+        match self.method {
             IntegrationMethod::Histogram => {
                 let radial = self
                     .state
@@ -110,8 +109,7 @@ impl Integrator {
                 });
                 crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
             }
-        };
-        result
+        }
     }
 
     pub fn integrate1d_from_slice(
@@ -236,7 +234,7 @@ impl Integrator {
             mask.data.as_slice()
         });
         let unit = self.radial_unit;
-        let result = match self.method {
+        match self.method {
             IntegrationMethod::Histogram => {
                 let radial = self
                     .state
@@ -271,8 +269,7 @@ impl Integrator {
                 });
                 crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
-        };
-        result
+        }
     }
 
     pub fn integrate2d_from_slice(
@@ -352,7 +349,7 @@ impl Integrator {
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
         let unit = self.radial_unit;
-        let result = match self.method {
+        match self.method {
             IntegrationMethod::Histogram => {
                 let radial = self
                     .state
@@ -390,8 +387,7 @@ impl Integrator {
                 });
                 crate::lut::integrate2d(&intensity, &lut2d, mask_data)
             }
-        };
-        result
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -468,7 +464,7 @@ impl Integrator {
             mask.data.as_slice()
         });
         let unit = self.radial_unit;
-        let result = match self.method {
+        match self.method {
             IntegrationMethod::Histogram => {
                 let radial = self
                     .state
@@ -506,8 +502,7 @@ impl Integrator {
                 });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
-        };
-        result
+        }
     }
 
     pub fn integrate2d_with_errors_from_slice(
@@ -588,7 +583,7 @@ impl Integrator {
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
         let unit = self.radial_unit;
-        let result = match self.method {
+        match self.method {
             IntegrationMethod::Histogram => {
                 let radial = self
                     .state
@@ -629,8 +624,7 @@ impl Integrator {
                 });
                 crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
             }
-        };
-        result
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
