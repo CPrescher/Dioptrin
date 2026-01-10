@@ -43,16 +43,22 @@ def run_example(script_path: Path) -> bool:
 
 def main():
     """Run all example tests."""
-    examples_dir = Path(__file__).parent / "examples"
+    examples_dir = Path(__file__).parent / "python_examples"
 
-    # List of Python examples to test
-    examples = [
-        "hdf5_chunked_batch.py",
-        "test_hdf5_arrays.py",
-    ]
+    # Automatically discover all Python scripts in python_examples/
+    # Skip __init__.py and any scripts starting with underscore
+    examples = sorted([
+        f.name for f in examples_dir.glob("*.py")
+        if f.name != "__init__.py" and not f.name.startswith("_")
+    ])
+
+    if not examples:
+        print("❌ No example scripts found in python_examples/")
+        return 1
 
     print("Testing Python Examples")
     print("="*70)
+    print(f"Found {len(examples)} example(s) to test")
     print()
 
     # Check dependencies

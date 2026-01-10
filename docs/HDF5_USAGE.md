@@ -122,7 +122,7 @@ with h5py.File('large_data.h5', 'r') as f:
             print(f"Progress: {batch_iter.completed}/{batch_iter.total}")
 ```
 
-**See `examples/hdf5_chunked_batch.py` for a complete working example.**
+**See `python_examples/hdf5_chunked_batch.py` for a complete working example.**
 
 ### Auto-Detecting NeXus Paths
 

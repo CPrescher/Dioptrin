@@ -20,7 +20,7 @@ from pyFAI.geometry import Geometry
 
 # %%
 geometry = Geometry()
-geometry.load("../test_data/v1.poni")
+geometry.load("test_data/v1.poni")
 
 shape = (10, 20)
 test_index = 65
@@ -32,8 +32,8 @@ test_index = 65
 # ## Pixel Positions with detector as reference
 
 # %%
-d1_rust = np.loadtxt("../test_data/test_output/d1_cart.txt").reshape(shape)
-d2_rust = np.loadtxt("../test_data/test_output/d2_cart.txt").reshape(shape)
+d1_rust = np.loadtxt("test_data/test_output/d1_cart.txt").reshape(shape)
+d2_rust = np.loadtxt("test_data/test_output/d2_cart.txt").reshape(shape)
 figure(figsize=(6, 3))
 subplot(1, 2, 1)
 title("d1 Cartesian"); axis("off")
@@ -49,8 +49,8 @@ tight_layout()
 # ## Pixel positions with PONI as reference
 
 # %%
-d1_rust = np.loadtxt("../test_data/test_output/d1_cart_poni.txt").reshape(shape)
-d2_rust = np.loadtxt("../test_data/test_output/d2_cart_poni.txt").reshape(shape)
+d1_rust = np.loadtxt("test_data/test_output/d1_cart_poni.txt").reshape(shape)
+d2_rust = np.loadtxt("test_data/test_output/d2_cart_poni.txt").reshape(shape)
 figure(figsize=(6, 3))
 subplot(1, 2, 1)
 title("d1 poni reference"); axis("off")
@@ -66,9 +66,9 @@ tight_layout()
 # ## Pixel position in x, y, z with sample as reference
 
 # %%
-x_rust = np.loadtxt("../test_data/test_output/x.txt").reshape(shape)
-y_rust = np.loadtxt("../test_data/test_output/y.txt").reshape(shape)
-z_rust = np.loadtxt("../test_data/test_output/z.txt").reshape(shape)
+x_rust = np.loadtxt("test_data/test_output/x.txt").reshape(shape)
+y_rust = np.loadtxt("test_data/test_output/y.txt").reshape(shape)
+z_rust = np.loadtxt("test_data/test_output/z.txt").reshape(shape)
 
 figure(figsize=(8, 3))
 subplot(1, 3, 1)
@@ -127,15 +127,15 @@ imshow(z-z_rust, origin="lower", aspect="auto")
 tight_layout()
 
 # %%
-np.savetxt("../test_data/test_output/x_pyFAI.txt", x.flatten())
-np.savetxt("../test_data/test_output/y_pyFAI.txt", y.flatten())
-np.savetxt("../test_data/test_output/z_pyFAI.txt", z.flatten())
+np.savetxt("test_data/test_output/x_pyFAI.txt", x.flatten())
+np.savetxt("test_data/test_output/y_pyFAI.txt", y.flatten())
+np.savetxt("test_data/test_output/z_pyFAI.txt", z.flatten())
 
 # %% [markdown]
 # ## Two-Theta
 
 # %%
-tth_rust = np.loadtxt("../test_data/test_output/tth.txt").reshape(shape)
+tth_rust = np.loadtxt("test_data/test_output/tth.txt").reshape(shape)
 tth = geometry.twoThetaArray()
 figure(figsize=(8, 3))
 suptitle("Two Theta")
@@ -151,13 +151,13 @@ imshow(tth_rust-tth, origin="lower", aspect="auto")
 tight_layout()
 
 # %%
-np.savetxt("../test_data/test_output/tth_pyFAI.txt", tth.flatten())
+np.savetxt("test_data/test_output/tth_pyFAI.txt", tth.flatten())
 
 # %% [markdown]
 # ## Azimuthal angle
 
 # %%
-azimuth_rust = np.loadtxt("../test_data/test_output/azimuth.txt").reshape(shape)
+azimuth_rust = np.loadtxt("test_data/test_output/azimuth.txt").reshape(shape)
 azimuth = geometry.chiArray()
 figure(figsize=(8, 3))
 suptitle("Azimuthal Angle")
@@ -173,14 +173,14 @@ imshow(azimuth_rust-azimuth, origin="lower", aspect="auto")
 tight_layout()
 
 # %%
-np.savetxt("../test_data/test_output/azimuth_pyFAI.txt", azimuth.flatten())
+np.savetxt("test_data/test_output/azimuth_pyFAI.txt", azimuth.flatten())
 
 # %% [markdown]
 # # Solid Angle
 
 # %%
 sa = geometry.solidAngleArray()
-sa_rust = np.loadtxt("../test_data/test_output/solid_angle.txt").reshape(shape)
+sa_rust = np.loadtxt("test_data/test_output/solid_angle.txt").reshape(shape)
 
 figure(figsize=(8, 3))
 suptitle("Solid Angle")
@@ -196,14 +196,14 @@ imshow(sa_rust-sa, origin="lower", aspect="auto")
 tight_layout()
 
 # %%
-np.savetxt("../test_data/test_output/solid_angle_pyFAI.txt", sa.flatten())
+np.savetxt("test_data/test_output/solid_angle_pyFAI.txt", sa.flatten())
 
 # %% [markdown]
 # ## Polarization
 
 # %%
 pol = geometry.polarization(factor=0.99)
-pol_rust = np.loadtxt("../test_data/test_output/polarization.txt").reshape(shape)
+pol_rust = np.loadtxt("test_data/test_output/polarization.txt").reshape(shape)
 
 figure(figsize=(8, 3))
 suptitle("Polarization")
@@ -219,4 +219,4 @@ imshow(pol_rust-pol, origin="lower", aspect="auto")
 tight_layout()
 
 # %%
-np.savetxt("../test_data/test_output/polarization_pyFAI.txt", pol.flatten())
+np.savetxt("test_data/test_output/polarization_pyFAI.txt", pol.flatten())

@@ -17,8 +17,8 @@ def time_function(lambda_func, repetition, name=""):
 
 
 # Load the image using fabio
-image_path = "../test_data/CeO2_Pilatus1M.tif"
-poni_path = "../test_data/v1.poni"
+image_path = "test_data/CeO2_Pilatus1M.tif"
+poni_path = "test_data/v1.poni"
 image = fabio.open(image_path).data[::-1]
 image_c = np.ascontiguousarray(image, dtype=np.float64)
 
