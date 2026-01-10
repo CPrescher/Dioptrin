@@ -40,6 +40,7 @@ For multiple frames, load them into a list and use `batch1d` for parallel proces
 
 ```python
 import h5py
+import numpy as np
 import dioptrin
 
 integrator = dioptrin.Integrator("calibration.poni")
@@ -47,7 +48,8 @@ integrator = dioptrin.Integrator("calibration.poni")
 # Load all frames (h5py handles decompression)
 with h5py.File('data.h5', 'r') as f:
     dataset = f['/entry/data/data']
-    frames = [dataset[i] for i in range(len(dataset))]
+    # Convert to float64 (Dioptrin requires float64 arrays)
+    frames = [dataset[i].astype(np.float64) for i in range(len(dataset))]
 
 # Parallel integration in Rust
 results = integrator.batch1d(frames, n_points=1000)
@@ -63,6 +65,7 @@ For very large HDF5 files that don't fit in memory, process in chunks:
 
 ```python
 import h5py
+import numpy as np
 import dioptrin
 
 integrator = dioptrin.Integrator("calibration.poni")
@@ -77,8 +80,8 @@ with h5py.File('large_data.h5', 'r') as f:
     for start in range(0, n_frames, chunk_size):
         end = min(start + chunk_size, n_frames)
 
-        # Load chunk
-        frames = [dataset[i] for i in range(start, end)]
+        # Load chunk and convert to float64
+        frames = [dataset[i].astype(np.float64) for i in range(start, end)]
 
         # Integrate in parallel
         results = integrator.batch1d(frames, n_points=1000)
@@ -93,6 +96,7 @@ Use `batch1d_iter` to process results as they complete (useful for real-time pro
 
 ```python
 import h5py
+import numpy as np
 import dioptrin
 
 integrator = dioptrin.Integrator("calibration.poni")
@@ -105,7 +109,8 @@ with h5py.File('large_data.h5', 'r') as f:
 
     for start in range(0, n_frames, chunk_size):
         end = min(start + chunk_size, n_frames)
-        frames = [dataset[i] for i in range(start, end)]
+        # Convert to float64
+        frames = [dataset[i].astype(np.float64) for i in range(start, end)]
 
         # Stream results as they complete
         batch_iter = integrator.batch1d_iter(frames, n_points=1000)
@@ -172,9 +177,16 @@ results = integrator.batch1d(frames, n_points=1000)
 
 ## Array Requirements
 
-- **Type**: `float64` (will auto-convert from int16, uint16, etc.)
+- **Type**: `float64` (required - use `.astype(np.float64)` to convert)
 - **Layout**: C-contiguous (row-major) - h5py arrays are already this
 - **Shape**: 2D array `[height, width]`
+
+**Important:** HDF5 datasets often use int16 or uint16 to save space. Always convert to float64:
+
+```python
+frame = dataset[i].astype(np.float64)  # ✅ Correct
+frame = dataset[i]                       # ❌ Will fail if not float64
+```
 
 ## Comparison with pyFAI
 

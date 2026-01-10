@@ -102,8 +102,8 @@ def test_with_real_hdf5():
         print(f"Dataset shape: {dataset.shape}")
         print(f"Dataset dtype: {dataset.dtype}")
 
-        # Load first 5 frames
-        frames = [dataset[i] for i in range(min(5, len(dataset)))]
+        # Load first 5 frames and convert to float64
+        frames = [dataset[i].astype(np.float64) for i in range(min(5, len(dataset)))]
         print(f"Loaded {len(frames)} frames")
 
         # Integrate

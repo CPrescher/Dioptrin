@@ -690,16 +690,16 @@ impl PyIntegrator {
 
     /// Perform streaming batch 1D integration.
     ///
-    /// Returns an iterator that yields results as each file completes.
+    /// Returns an iterator that yields results as each frame completes.
     /// More memory-efficient for large batches.
     ///
     /// # Arguments
     ///
-    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `images` - List of TIFF file paths (strings) or NumPy arrays (2D float64)
     /// * `n_points` - Number of bins for the 1D integration output
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `num_workers` - Number of parallel workers (optional)
-    /// * `num_threads` - Threads per worker (optional)
+    /// * `num_workers` - Number of parallel workers (optional, only used for file paths)
+    /// * `num_threads` - Threads per worker (optional, only used for file paths)
     ///
     /// # Returns
     ///
@@ -709,52 +709,144 @@ impl PyIntegrator {
     /// # Example
     ///
     /// ```python
-    /// it = integrator.batch1d_iter(files, n_points=1000)
+    /// # With files
+    /// it = integrator.batch1d_iter(file_paths, n_points=1000)
+    ///
+    /// # With arrays
+    /// import h5py
+    /// with h5py.File('data.h5', 'r') as f:
+    ///     frames = [f['/entry/data/data'][i].astype(np.float64) for i in range(100)]
+    /// it = integrator.batch1d_iter(frames, n_points=1000)
+    ///
     /// for result in it:
     ///     print(f"Progress: {it.completed}/{it.total}")
     ///     if result.is_ok():
     ///         process(result.result)
     /// ```
-    #[pyo3(signature = (tiff_paths, n_points, errors=false, num_workers=None, num_threads=None))]
+    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None))]
     fn batch1d_iter(
         &self,
-        tiff_paths: Vec<String>,
+        images: BatchImageInput,
         n_points: usize,
         errors: bool,
         num_workers: Option<usize>,
         num_threads: Option<usize>,
     ) -> PyResult<PyBatchIterator> {
-        let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
-        let total = tiff_paths.len();
+        match images {
+            BatchImageInput::Paths(tiff_paths) => {
+                // File-based streaming
+                let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+                let total = tiff_paths.len();
 
-        if errors {
-            let task = Integration1DWithErrors { n_bins: n_points };
-            let batch = process_files_streaming(
-                &tiff_paths,
-                Arc::clone(&self.integrator),
-                task,
-                num_workers,
-                num_threads,
-            );
-            Ok(PyBatchIterator {
-                receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(batch.into_receiver())),
-                total,
-                completed: 0,
-            })
-        } else {
-            let task = Integration1D { n_bins: n_points };
-            let batch = process_files_streaming(
-                &tiff_paths,
-                Arc::clone(&self.integrator),
-                task,
-                num_workers,
-                num_threads,
-            );
-            Ok(PyBatchIterator {
-                receiver: BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
-                total,
-                completed: 0,
-            })
+                if errors {
+                    let task = Integration1DWithErrors { n_bins: n_points };
+                    let batch = process_files_streaming(
+                        &tiff_paths,
+                        Arc::clone(&self.integrator),
+                        task,
+                        num_workers,
+                        num_threads,
+                    );
+                    Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(batch.into_receiver())),
+                        total,
+                        completed: 0,
+                    })
+                } else {
+                    let task = Integration1D { n_bins: n_points };
+                    let batch = process_files_streaming(
+                        &tiff_paths,
+                        Arc::clone(&self.integrator),
+                        task,
+                        num_workers,
+                        num_threads,
+                    );
+                    Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
+                        total,
+                        completed: 0,
+                    })
+                }
+            }
+            BatchImageInput::Arrays(arrays) => {
+                // Array-based processing: for iterator, we just process them all at once
+                // since they're already in memory. The iterator just yields precomputed results.
+                let num_arrays = arrays.len();
+
+                // Convert all arrays to owned Frame objects
+                let frames: Result<Vec<Frame>, PyErr> = arrays
+                    .iter()
+                    .enumerate()
+                    .map(|(i, array)| {
+                        let (dim1, dim2) = extract_array_dims(array, "float64")?;
+                        let slice = array.as_slice().map_err(|err| {
+                            PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                        })?;
+                        Ok(Frame {
+                            name: format!("array[{}]", i),
+                            data: slice.to_vec(),
+                            dim1,
+                            dim2,
+                        })
+                    })
+                    .collect();
+
+                let frames = frames?;
+
+                // Process all frames in parallel and send through channel
+                use std::sync::mpsc;
+                let integrator = Arc::clone(&self.integrator);
+
+                if errors {
+                    let (tx, rx) = mpsc::channel();
+
+                    std::thread::spawn(move || {
+                        use rayon::prelude::*;
+                        (0..num_arrays)
+                            .into_par_iter()
+                            .map(|i| {
+                                let frame = &frames[i];
+                                let result = integrator.integrate1d_with_errors(frame, n_points);
+                                (format!("array[{}]", i), Ok(result))
+                            })
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .for_each(|result| {
+                                let _ = tx.send(result);
+                            });
+                    });
+
+                    Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(rx)),
+                        total: num_arrays,
+                        completed: 0,
+                    })
+                } else {
+                    let (tx, rx) = mpsc::channel();
+
+                    std::thread::spawn(move || {
+                        use rayon::prelude::*;
+                        (0..num_arrays)
+                            .into_par_iter()
+                            .map(|i| {
+                                let frame = &frames[i];
+                                let result = integrator.integrate1d(frame, n_points);
+                                (format!("array[{}]", i), Ok(result))
+                            })
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .for_each(|result| {
+                                let _ = tx.send(result);
+                            });
+                    });
+
+                    Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1D(Mutex::new(rx)),
+                        total: num_arrays,
+                        completed: 0,
+                    })
+                }
+            }
         }
     }
 

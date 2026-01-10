@@ -49,8 +49,8 @@ def batch_process_hdf5_chunked(
 
             print(f"Chunk {chunk_num}/{total_chunks}: Loading frames {start}-{end-1}...")
 
-            # Load chunk into memory
-            frames = [dataset[i] for i in range(start, end)]
+            # Load chunk into memory and convert to float64
+            frames = [dataset[i].astype(np.float64) for i in range(start, end)]
 
             print(f"  Integrating {len(frames)} frames...")
 
@@ -110,8 +110,8 @@ def batch_process_hdf5_iter_chunked(
 
             print(f"Chunk {chunk_num}/{total_chunks}: Loading frames {start}-{end-1}...")
 
-            # Load chunk into memory
-            frames = [dataset[i] for i in range(start, end)]
+            # Load chunk into memory and convert to float64
+            frames = [dataset[i].astype(np.float64) for i in range(start, end)]
 
             print(f"  Integrating {len(frames)} frames with streaming API...")
 

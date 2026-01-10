@@ -17,7 +17,10 @@ cargo bench --bench integrate      # Integration benchmarks
 cargo bench --bench build          # LUT building benchmarks
 cargo run --example integrate1d    # 1D integration example
 cargo run --release --example timing1d  # Performance timing
-maturin develop                    # Build Python extension
+
+# Python bindings
+maturin develop --features python  # Build Python extension
+python test_examples.py            # Test all Python examples
 ```
 
 ## Architecture
@@ -53,8 +56,10 @@ Dioptrin does NOT include HDF5 reading in Rust. Instead, users read HDF5 files w
 
 ```python
 import h5py
+import numpy as np
 with h5py.File('data.h5', 'r') as f:
-    frames = [f['/entry/data/data'][i] for i in range(100)]
+    dataset = f['/entry/data/data']
+    frames = [dataset[i].astype(np.float64) for i in range(100)]
 results = integrator.batch1d(frames, n_points=1000)  # Parallel integration
 ```
 
