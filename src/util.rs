@@ -1,6 +1,6 @@
 use std::fs;
-use std::io::prelude::*;
 use std::io::Write;
+use std::io::prelude::*;
 use std::path::Path;
 
 /// Downloads the CeO2_Pilatus1M.tiff file from the Dioptas repository into the test_data directory

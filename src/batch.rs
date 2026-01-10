@@ -34,9 +34,9 @@
 //! // let results = process_files(&files, integrator, task, 4, 2);
 //! ```
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 use std::thread;
 
 use crate::frame::Frame;

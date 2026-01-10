@@ -5,9 +5,9 @@ use pyo3::types::{PyDict, PyType};
 use std::sync::{Arc, Mutex};
 
 use crate::batch::{
-    process_files, process_files_streaming, Integration1D, Integration1DWithErrors, Integration2D,
-    Integration2DWithAzimuthalRange, Integration2DWithAzimuthalRangeAndErrors,
-    Integration2DWithErrors,
+    Integration1D, Integration1DWithErrors, Integration2D, Integration2DWithAzimuthalRange,
+    Integration2DWithAzimuthalRangeAndErrors, Integration2DWithErrors, process_files,
+    process_files_streaming,
 };
 use crate::frame::Frame;
 use crate::geometry::Geometry;
@@ -17,8 +17,8 @@ use crate::poni::Poni;
 
 use super::results::{BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult};
 use super::utils::{
-    extract_array_dims, parse_method, parse_unit, poni_from_dict, resolve_workers_threads,
-    BatchImageInput, ImageInput,
+    BatchImageInput, ImageInput, extract_array_dims, parse_method, parse_unit, poni_from_dict,
+    resolve_workers_threads,
 };
 
 #[derive(FromPyObject)]
@@ -647,7 +647,10 @@ impl PyIntegrator {
                     .map(|(i, array)| {
                         let (dim1, dim2) = extract_array_dims(array, "float64")?;
                         let slice = array.as_slice().map_err(|err| {
-                            PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                            PyValueError::new_err(format!(
+                                "Array {} must be contiguous: {}",
+                                i, err
+                            ))
                         })?;
                         Ok(Frame {
                             name: format!("array[{}]", i),
@@ -748,7 +751,9 @@ impl PyIntegrator {
                         num_threads,
                     );
                     Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(batch.into_receiver())),
+                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(
+                            batch.into_receiver(),
+                        )),
                         total,
                         completed: 0,
                     })
@@ -780,7 +785,10 @@ impl PyIntegrator {
                     .map(|(i, array)| {
                         let (dim1, dim2) = extract_array_dims(array, "float64")?;
                         let slice = array.as_slice().map_err(|err| {
-                            PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                            PyValueError::new_err(format!(
+                                "Array {} must be contiguous: {}",
+                                i, err
+                            ))
                         })?;
                         Ok(Frame {
                             name: format!("array[{}]", i),

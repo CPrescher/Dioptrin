@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use dioptrin::batch::{
-    process_files, process_files_sequential, Integration1D, Integration1DWithErrors, Integration2D,
+    Integration1D, Integration1DWithErrors, Integration2D, process_files, process_files_sequential,
 };
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;

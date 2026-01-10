@@ -71,11 +71,7 @@ pub fn resolve_workers_threads(
                 .unwrap_or(1);
             let max_workers = cores / num_threads;
             let computed = max_workers.saturating_sub(1);
-            if computed < 1 {
-                1
-            } else {
-                computed
-            }
+            if computed < 1 { 1 } else { computed }
         }
     };
 

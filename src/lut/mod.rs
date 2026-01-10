@@ -32,7 +32,7 @@ pub use crate::integration::RadialUnit;
 // Re-export unified public API
 pub use common::hull_grid;
 pub use counting_csr::{
-    build_lut1d_csr, build_lut2d_csr, build_lut2d_csr_with_azimuthal_range, Lut1d, Lut2d,
+    Lut1d, Lut2d, build_lut1d_csr, build_lut2d_csr, build_lut2d_csr_with_azimuthal_range,
 };
 pub use integrate::{integrate1d, integrate1d_with_errors, integrate2d, integrate2d_with_errors};
 pub use pixel_split::{

@@ -1,7 +1,7 @@
 use pyo3::exceptions::{PyStopIteration, PyValueError};
 use pyo3::prelude::*;
-use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
 
 /// Result of an integration operation.
 ///

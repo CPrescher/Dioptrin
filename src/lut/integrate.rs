@@ -97,11 +97,7 @@ pub fn integrate1d(intensity: &[f64], lut: &Lut1d, mask: Option<&[u8]>) -> (Vec<
                                 }
                             }
                         }
-                        if count == 0 {
-                            0.0
-                        } else {
-                            sum / count as f64
-                        }
+                        if count == 0 { 0.0 } else { sum / count as f64 }
                     }
                 }
             }
@@ -312,11 +308,7 @@ pub fn integrate2d(intensity: &[f64], lut: &Lut2d, mask: Option<&[u8]>) -> Vec<f
                                 }
                             }
                         }
-                        if count == 0 {
-                            0.0
-                        } else {
-                            sum / count as f64
-                        }
+                        if count == 0 { 0.0 } else { sum / count as f64 }
                     }
                 }
             }
