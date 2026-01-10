@@ -18,7 +18,7 @@ use crate::poni::Poni;
 use super::results::{BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult};
 use super::utils::{
     extract_array_dims, parse_method, parse_unit, poni_from_dict, resolve_workers_threads,
-    ImageInput,
+    BatchImageInput, ImageInput,
 };
 
 #[derive(FromPyObject)]
@@ -544,7 +544,7 @@ impl PyIntegrator {
     ///
     /// # Arguments
     ///
-    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `images` - List of TIFF file paths (strings) or NumPy arrays (2D float64)
     /// * `n_points` - Number of bins for the 1D integration output
     /// * `errors` - Whether to compute error estimates (default: False)
     /// * `num_workers` - Number of parallel workers (optional)
@@ -552,22 +552,28 @@ impl PyIntegrator {
     ///
     /// # Returns
     ///
-    /// List of BatchResult objects, each containing filename and IntegrationResult.
+    /// List of BatchResult objects, each containing filename/index and IntegrationResult.
     ///
     /// # Example
     ///
     /// ```python
-    /// results = integrator.batch1d(files, n_points=1000, errors=True)
+    /// # From TIFF files
+    /// results = integrator.batch1d(file_paths, n_points=1000, errors=True)
+    ///
+    /// # From HDF5 via NumPy arrays
+    /// import h5py
+    /// with h5py.File('data.h5', 'r') as f:
+    ///     frames = [f['/entry/data/data'][i] for i in range(100)]
+    /// results = integrator.batch1d(frames, n_points=1000)
+    ///
     /// for r in results:
     ///     if r.is_ok():
     ///         print(r.result.intensity)
-    ///         if r.result.errors:
-    ///             print(r.result.errors)
     /// ```
-    #[pyo3(signature = (tiff_paths, n_points, errors=false, num_workers=None, num_threads=None))]
+    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None))]
     fn batch1d(
         &self,
-        tiff_paths: Vec<String>,
+        images: BatchImageInput,
         n_points: usize,
         errors: bool,
         num_workers: Option<usize>,
@@ -575,56 +581,110 @@ impl PyIntegrator {
     ) -> PyResult<Vec<PyBatchResult>> {
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
-        if errors {
-            let task = Integration1DWithErrors { n_bins: n_points };
-            let results = process_files(
-                &tiff_paths,
-                Arc::clone(&self.integrator),
-                task,
-                num_workers,
-                num_threads,
-            );
-            Ok(results
-                .into_iter()
-                .map(|(filename, result)| match result {
-                    Ok((radial, intensity, errs)) => PyBatchResult {
-                        filename,
-                        result: Some(PyIntegrationResult::from_1d_with_errors(
-                            radial, intensity, errs,
-                        )),
-                        error: None,
-                    },
-                    Err(err) => PyBatchResult {
-                        filename,
-                        result: None,
-                        error: Some(err),
-                    },
-                })
-                .collect())
-        } else {
-            let task = Integration1D { n_bins: n_points };
-            let results = process_files(
-                &tiff_paths,
-                Arc::clone(&self.integrator),
-                task,
-                num_workers,
-                num_threads,
-            );
-            Ok(results
-                .into_iter()
-                .map(|(filename, result)| match result {
-                    Ok((radial, intensity)) => PyBatchResult {
-                        filename,
-                        result: Some(PyIntegrationResult::from_1d(radial, intensity)),
-                        error: None,
-                    },
-                    Err(err) => PyBatchResult {
-                        filename,
-                        result: None,
-                        error: Some(err),
-                    },
-                })
-                .collect())
+        match images {
+            BatchImageInput::Paths(tiff_paths) => {
+                // Original file-based processing
+                if errors {
+                    let task = Integration1DWithErrors { n_bins: n_points };
+                    let results = process_files(
+                        &tiff_paths,
+                        Arc::clone(&self.integrator),
+                        task,
+                        num_workers,
+                        num_threads,
+                    );
+                    Ok(results
+                        .into_iter()
+                        .map(|(filename, result)| match result {
+                            Ok((radial, intensity, errs)) => PyBatchResult {
+                                filename,
+                                result: Some(PyIntegrationResult::from_1d_with_errors(
+                                    radial, intensity, errs,
+                                )),
+                                error: None,
+                            },
+                            Err(err) => PyBatchResult {
+                                filename,
+                                result: None,
+                                error: Some(err),
+                            },
+                        })
+                        .collect())
+                } else {
+                    let task = Integration1D { n_bins: n_points };
+                    let results = process_files(
+                        &tiff_paths,
+                        Arc::clone(&self.integrator),
+                        task,
+                        num_workers,
+                        num_threads,
+                    );
+                    Ok(results
+                        .into_iter()
+                        .map(|(filename, result)| match result {
+                            Ok((radial, intensity)) => PyBatchResult {
+                                filename,
+                                result: Some(PyIntegrationResult::from_1d(radial, intensity)),
+                                error: None,
+                            },
+                            Err(err) => PyBatchResult {
+                                filename,
+                                result: None,
+                                error: Some(err),
+                            },
+                        })
+                        .collect())
+                }
+            }
+            BatchImageInput::Arrays(arrays) => {
+                // Array-based processing: convert arrays to frames then integrate
+                let num_arrays = arrays.len();
+
+                // Convert all arrays to owned Frame objects
+                let frames: Result<Vec<Frame>, PyErr> = arrays
+                    .iter()
+                    .enumerate()
+                    .map(|(i, array)| {
+                        let (dim1, dim2) = extract_array_dims(array, "float64")?;
+                        let slice = array.as_slice().map_err(|err| {
+                            PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                        })?;
+                        Ok(Frame {
+                            name: format!("array[{}]", i),
+                            data: slice.to_vec(),
+                            dim1,
+                            dim2,
+                        })
+                    })
+                    .collect();
+
+                let frames = frames?;
+
+                // Process frames in parallel using rayon
+                use rayon::prelude::*;
+                let results: Vec<PyBatchResult> = (0..num_arrays)
+                    .into_par_iter()
+                    .map(|i| {
+                        let frame = &frames[i];
+                        let integration_result = if errors {
+                            let (radial, intensity, errs) =
+                                self.integrator.integrate1d_with_errors(frame, n_points);
+                            PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+                        } else {
+                            let (radial, intensity) = self.integrator.integrate1d(frame, n_points);
+                            PyIntegrationResult::from_1d(radial, intensity)
+                        };
+
+                        PyBatchResult {
+                            filename: format!("array[{}]", i),
+                            result: Some(integration_result),
+                            error: None,
+                        }
+                    })
+                    .collect();
+
+                Ok(results)
+            }
         }
     }
 

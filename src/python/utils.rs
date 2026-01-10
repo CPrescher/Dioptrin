@@ -14,6 +14,12 @@ pub enum ImageInput<'p> {
     Array(PyReadonlyArray2<'p, f64>),
 }
 
+#[derive(FromPyObject)]
+pub enum BatchImageInput<'p> {
+    Paths(Vec<String>),
+    Arrays(Vec<PyReadonlyArray2<'p, f64>>),
+}
+
 pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
     match method.unwrap_or("pixel_split").to_lowercase().as_str() {
         "pixel_split" | "pixelsplit" | "ps" | "pixelsplitting" => Ok(IntegrationMethod::PixelSplit),
