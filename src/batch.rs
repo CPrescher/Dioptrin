@@ -448,6 +448,116 @@ where
     }
 }
 
+/// A work item for queue-based streaming processing.
+///
+/// Workers pull items from a shared queue, enabling dynamic load balancing
+/// and lazy consumption of input (e.g., Python generators).
+pub enum WorkItem {
+    /// A file path — the worker loads the TIFF before integrating.
+    Path(String),
+    /// An already-loaded frame (e.g., from a numpy array).
+    Frame { name: String, frame: Frame },
+}
+
+/// Process work items from a shared queue, streaming results as they complete.
+///
+/// Workers pull items from the receiver using work-stealing (shared
+/// `Arc<Mutex<Receiver<WorkItem>>>`), providing automatic load balancing.
+///
+/// # Arguments
+///
+/// * `work_rx` - Receiver end of the work queue
+/// * `integrator` - Shared integrator instance
+/// * `task` - Integration task defining which method to use
+/// * `num_workers` - Number of parallel workers to spawn
+/// * `num_threads` - Number of threads per worker (for Rayon thread pool)
+///
+/// # Returns
+///
+/// A `StreamingBatch` that yields `(name, Result<Output>)` pairs as they complete.
+/// The `total_files` field is set to 0 since the total is unknown for queue-based input.
+pub fn process_queue_streaming<T>(
+    work_rx: std::sync::mpsc::Receiver<WorkItem>,
+    integrator: Arc<Integrator>,
+    task: T,
+    num_workers: usize,
+    num_threads: usize,
+) -> StreamingBatch<T::Output>
+where
+    T: IntegrationTask + Clone + 'static,
+    T::Output: 'static,
+{
+    let num_workers = num_workers.max(1);
+    let completed = Arc::new(AtomicUsize::new(0));
+
+    #[allow(clippy::type_complexity)]
+    let (tx, rx): (Sender<(String, Result<T::Output, String>)>, _) = mpsc::channel();
+
+    let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
+    let mut handles = Vec::new();
+
+    for _ in 0..num_workers {
+        let integrator = Arc::clone(&integrator);
+        let task = task.clone();
+        let tx = tx.clone();
+        let completed = Arc::clone(&completed);
+        let work_rx = Arc::clone(&work_rx);
+
+        let handle = thread::spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .expect("failed to build thread pool");
+
+            loop {
+                // Pull the next work item from the shared queue
+                let item = {
+                    let guard = match work_rx.lock() {
+                        Ok(g) => g,
+                        Err(_) => break,
+                    };
+                    match guard.recv() {
+                        Ok(item) => item,
+                        Err(_) => break, // Channel closed, no more work
+                    }
+                };
+
+                let (name, result) = match item {
+                    WorkItem::Path(path) => {
+                        let name = path.clone();
+                        let result = pool.install(|| {
+                            let frame = Frame::from_tiff(path).map_err(|e| e.to_string())?;
+                            Ok(task.execute(&integrator, &frame))
+                        });
+                        (name, result)
+                    }
+                    WorkItem::Frame { name, frame } => {
+                        let result = pool.install(|| Ok(task.execute(&integrator, &frame)));
+                        (name, result)
+                    }
+                };
+
+                completed.fetch_add(1, Ordering::Relaxed);
+                if tx.send((name, result)).is_err() {
+                    break; // Receiver dropped
+                }
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    // Drop the original sender so the channel closes when all workers finish
+    drop(tx);
+
+    StreamingBatch {
+        receiver: rx,
+        total_files: 0, // Unknown for queue-based input
+        completed,
+        handles,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

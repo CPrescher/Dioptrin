@@ -80,6 +80,46 @@ def main() -> None:
     print(f"1D streaming time: {elapsed:.2f}s")
     if elapsed > 0:
         print(f"1D streaming throughput: {len(files) / elapsed:.2f} files/s")
+    print()
+
+    # 1D streaming batch from generator (file paths)
+    def path_generator():
+        for f in files:
+            yield f
+
+    print("1D generator batch (file paths):")
+    start = time.perf_counter()
+    count = 0
+    for r in integrator.batch1d_iter(
+        path_generator(), args.n_points, num_workers=args.num_workers, num_threads=args.num_threads
+    ):
+        count += 1
+    elapsed = time.perf_counter() - start
+    print(f"1D generator time: {elapsed:.2f}s")
+    if elapsed > 0:
+        print(f"1D generator throughput: {count / elapsed:.2f} files/s")
+    print()
+
+    # 1D streaming batch from generator (numpy arrays)
+    import numpy as np
+
+    sample_array = np.random.rand(1043, 981).astype(np.float64)
+
+    def array_generator():
+        for _ in range(args.files):
+            yield sample_array
+
+    print("1D generator batch (numpy arrays):")
+    start = time.perf_counter()
+    count = 0
+    for r in integrator.batch1d_iter(
+        array_generator(), args.n_points, num_workers=args.num_workers, num_threads=args.num_threads
+    ):
+        count += 1
+    elapsed = time.perf_counter() - start
+    print(f"1D generator time: {elapsed:.2f}s")
+    if elapsed > 0:
+        print(f"1D generator throughput: {count / elapsed:.2f} files/s")
 
 
 if __name__ == "__main__":

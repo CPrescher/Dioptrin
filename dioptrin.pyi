@@ -1,6 +1,6 @@
 """Type stubs for dioptrin - High-performance 1D/2D diffraction integration library."""
 
-from typing import Iterator, Optional, Tuple, Union
+from typing import Iterable, Iterator, Optional, Tuple, Union
 
 import numpy as np
 
@@ -161,8 +161,8 @@ class BatchIterator(Iterator[BatchResult]):
         ...
 
     @property
-    def progress(self) -> float:
-        """Fraction complete (0.0 to 1.0)."""
+    def progress(self) -> Optional[float]:
+        """Fraction complete (0.0 to 1.0), or None when total is unknown (generator input)."""
         ...
 
     def __iter__(self) -> "BatchIterator":
@@ -450,7 +450,7 @@ class Integrator:
 
     def batch1d_iter(
         self,
-        tiff_paths: list[str],
+        images: Union[list[str], list[np.ndarray], Iterable[Union[str, np.ndarray]]],
         n_points: int,
         errors: bool = False,
         num_workers: Optional[int] = None,
@@ -459,11 +459,12 @@ class Integrator:
         """
         Perform streaming batch 1D integration.
 
-        Returns an iterator that yields results as each file completes.
-        More memory-efficient for large batches.
+        Returns an iterator that yields results as each frame completes.
+        Accepts lists or generators/iterators for constant-memory processing.
 
         Args:
-            tiff_paths: List of TIFF file paths to process
+            images: List of TIFF file paths, list of NumPy arrays (2D float64),
+                or a generator/iterator yielding file paths or NumPy arrays
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute error estimates (default: False)
             num_workers: Number of parallel workers (optional)
@@ -472,13 +473,23 @@ class Integrator:
         Returns:
             BatchIterator that yields BatchResult objects as they complete.
             The iterator has `total`, `completed`, and `progress` properties.
+            When using a generator, `total` is 0 and `progress` returns None.
 
         Example:
+            >>> # With a list
             >>> it = integrator.batch1d_iter(files, n_points=1000)
             >>> for result in it:
             ...     print(f"Progress: {it.completed}/{it.total}")
             ...     if result.is_ok():
             ...         process(result.result)
+            >>>
+            >>> # With a generator (constant memory)
+            >>> def frame_gen():
+            ...     with h5py.File('data.h5') as f:
+            ...         for i in range(1000):
+            ...             yield f['/data'][i].astype(np.float64)
+            >>> for result in integrator.batch1d_iter(frame_gen(), n_points=1000):
+            ...     process(result.result)
         """
         ...
 
@@ -525,7 +536,7 @@ class Integrator:
 
     def batch2d_iter(
         self,
-        tiff_paths: list[str],
+        images: Union[list[str], list[np.ndarray], Iterable[Union[str, np.ndarray]]],
         n_radial: int,
         n_azimuthal: int,
         errors: bool = False,
@@ -536,11 +547,12 @@ class Integrator:
         """
         Perform streaming batch 2D integration.
 
-        Returns an iterator that yields results as each file completes.
-        More memory-efficient for large batches.
+        Returns an iterator that yields results as each frame completes.
+        Accepts lists or generators/iterators for constant-memory processing.
 
         Args:
-            tiff_paths: List of TIFF file paths to process
+            images: List of TIFF file paths, list of NumPy arrays (2D float64),
+                or a generator/iterator yielding file paths or NumPy arrays
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
@@ -551,10 +563,16 @@ class Integrator:
         Returns:
             BatchIterator that yields BatchResult objects as they complete.
             The iterator has `total`, `completed`, and `progress` properties.
+            When using a generator, `total` is 0 and `progress` returns None.
 
         Example:
+            >>> # With a list
             >>> for result in integrator.batch2d_iter(files, n_radial=100, n_azimuthal=360):
             ...     if result.is_ok():
             ...         cake = result.result.intensity
+            >>>
+            >>> # With a generator
+            >>> for result in integrator.batch2d_iter(frame_gen(), n_radial=100, n_azimuthal=360):
+            ...     process(result.result)
         """
         ...

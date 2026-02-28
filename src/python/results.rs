@@ -1,4 +1,4 @@
-use pyo3::exceptions::{PyStopIteration, PyValueError};
+use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
@@ -199,13 +199,15 @@ impl PyBatchIterator {
         slf
     }
 
-    fn __next__(&mut self) -> PyResult<PyBatchResult> {
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<PyBatchResult> {
         let batch_result = match &self.receiver {
             BatchReceiver::Integration1D(rx) => {
-                let guard = rx
-                    .lock()
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                match guard.recv() {
+                let recv_result = py.detach(|| {
+                    rx.lock()
+                        .map_err(|e| e.to_string())
+                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
+                });
+                match recv_result {
                     Ok((filename, result)) => match result {
                         Ok((radial, intensity)) => PyBatchResult {
                             filename,
@@ -222,10 +224,12 @@ impl PyBatchIterator {
                 }
             }
             BatchReceiver::Integration1DWithErrors(rx) => {
-                let guard = rx
-                    .lock()
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                match guard.recv() {
+                let recv_result = py.detach(|| {
+                    rx.lock()
+                        .map_err(|e| e.to_string())
+                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
+                });
+                match recv_result {
                     Ok((filename, result)) => match result {
                         Ok((radial, intensity, errors)) => PyBatchResult {
                             filename,
@@ -248,17 +252,22 @@ impl PyBatchIterator {
                 n_radial,
                 n_azimuthal,
             } => {
-                let guard = receiver
-                    .lock()
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                match guard.recv() {
+                let n_radial = *n_radial;
+                let n_azimuthal = *n_azimuthal;
+                let recv_result = py.detach(|| {
+                    receiver
+                        .lock()
+                        .map_err(|e| e.to_string())
+                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
+                });
+                match recv_result {
                     Ok((filename, result)) => match result {
                         Ok(intensity) => PyBatchResult {
                             filename,
                             result: Some(PyIntegrationResult::from_2d(
                                 intensity,
-                                *n_radial,
-                                *n_azimuthal,
+                                n_radial,
+                                n_azimuthal,
                             )),
                             error: None,
                         },
@@ -276,18 +285,23 @@ impl PyBatchIterator {
                 n_radial,
                 n_azimuthal,
             } => {
-                let guard = receiver
-                    .lock()
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                match guard.recv() {
+                let n_radial = *n_radial;
+                let n_azimuthal = *n_azimuthal;
+                let recv_result = py.detach(|| {
+                    receiver
+                        .lock()
+                        .map_err(|e| e.to_string())
+                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
+                });
+                match recv_result {
                     Ok((filename, result)) => match result {
                         Ok((intensity, errors)) => PyBatchResult {
                             filename,
                             result: Some(PyIntegrationResult::from_2d_with_errors(
                                 intensity,
                                 errors,
-                                *n_radial,
-                                *n_azimuthal,
+                                n_radial,
+                                n_azimuthal,
                             )),
                             error: None,
                         },
@@ -319,12 +333,14 @@ impl PyBatchIterator {
     }
 
     /// Get the progress as a fraction (0.0 to 1.0).
+    ///
+    /// Returns None when the total is unknown (e.g., generator input).
     #[getter]
-    fn progress(&self) -> f64 {
+    fn progress(&self) -> Option<f64> {
         if self.total == 0 {
-            1.0
+            None
         } else {
-            self.completed as f64 / self.total as f64
+            Some(self.completed as f64 / self.total as f64)
         }
     }
 }

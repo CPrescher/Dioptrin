@@ -5,6 +5,7 @@ use pyo3::types::PyDict;
 use rayon::ThreadPoolBuilder;
 use std::thread;
 
+use crate::frame::Frame;
 use crate::integration::{IntegrationMethod, RadialUnit};
 use crate::poni::Poni;
 
@@ -130,6 +131,72 @@ pub fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     }
 
     Ok(poni)
+}
+
+/// Classified input for batch operations.
+///
+/// Tries extraction in order: Vec<String> (paths), Vec<Array> (numpy),
+/// then falls back to Python iterator.
+pub enum ClassifiedInput<'py> {
+    Paths(Vec<String>),
+    Arrays(Vec<PyReadonlyArray2<'py, f64>>),
+    Iterator(Bound<'py, PyAny>),
+}
+
+/// Classify a Python object as paths, arrays, or an iterator.
+///
+/// Preserves backward compatibility: lists of strings or arrays match first,
+/// only generators/iterators fall through to the Iterator variant.
+pub fn classify_batch_input<'py>(obj: &Bound<'py, PyAny>) -> PyResult<ClassifiedInput<'py>> {
+    // Try Vec<String> first
+    if let Ok(paths) = obj.extract::<Vec<String>>() {
+        return Ok(ClassifiedInput::Paths(paths));
+    }
+    // Try Vec<PyReadonlyArray2<f64>>
+    if let Ok(arrays) = obj.extract::<Vec<PyReadonlyArray2<'py, f64>>>() {
+        return Ok(ClassifiedInput::Arrays(arrays));
+    }
+    // Fall back to iterator protocol
+    let iter = obj.call_method0("__iter__").map_err(|_| {
+        PyValueError::new_err(
+            "images must be a list of file paths, a list of numpy arrays, or an iterable/generator",
+        )
+    })?;
+    Ok(ClassifiedInput::Iterator(iter))
+}
+
+/// Extract a Frame from a Python object (str path or numpy array).
+pub fn extract_frame_from_pyany(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<FrameOrPath> {
+    // Try string first (file path)
+    if let Ok(path) = obj.extract::<String>() {
+        return Ok(FrameOrPath::Path(path));
+    }
+    // Try numpy array
+    let array: PyReadonlyArray2<'_, f64> = obj.extract().map_err(|_| {
+        PyValueError::new_err(format!(
+            "Iterator item {} must be a file path (str) or a 2D float64 numpy array",
+            index
+        ))
+    })?;
+    let (dim1, dim2) = extract_array_dims(&array, "float64")?;
+    let slice = array.as_slice().map_err(|err| {
+        PyValueError::new_err(format!(
+            "Iterator item {} array must be contiguous: {}",
+            index, err
+        ))
+    })?;
+    Ok(FrameOrPath::Frame(Frame {
+        name: format!("iter[{}]", index),
+        data: slice.to_vec(),
+        dim1,
+        dim2,
+    }))
+}
+
+/// Result of extracting a frame from a Python object.
+pub enum FrameOrPath {
+    Path(String),
+    Frame(Frame),
 }
 
 /// Get the current number of threads used by Rayon for parallel processing.
