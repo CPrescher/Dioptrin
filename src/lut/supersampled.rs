@@ -113,6 +113,7 @@ pub fn build_lut1d_ss_csr(
         values: Some(values),
         hist_min,
         hist_step,
+        azimuthal_coverage: None,
     }
 }
 

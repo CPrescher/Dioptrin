@@ -15,6 +15,7 @@ pub struct Lut1d {
     pub values: Option<Vec<f64>>, // optional weights per entry
     pub hist_min: f64,
     pub hist_step: f64,
+    pub azimuthal_coverage: Option<Vec<f64>>,
 }
 
 impl Lut1d {
@@ -81,6 +82,7 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
         values: None,
         hist_min: min,
         hist_step: step,
+        azimuthal_coverage: None,
     }
 }
 

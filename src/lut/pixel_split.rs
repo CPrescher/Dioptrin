@@ -357,6 +357,7 @@ pub fn build_lut1d_ps_csr(
         values: Some(values),
         hist_min: min,
         hist_step: step,
+        azimuthal_coverage: None,
     }
 }
 

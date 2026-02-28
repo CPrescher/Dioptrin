@@ -1,9 +1,43 @@
 //! Shared LUT integrators used by all methods (counting, pixel-split, supersampled).
 //! These functions operate on the unified CSR types (`Lut1d`, `Lut2d`).
 use rayon::prelude::*;
+use std::f64::consts::PI;
 
 use crate::lut::counting_csr::{Lut1d, Lut2d};
 use crate::math::histogram;
+
+const N_AZIMUTHAL_SUB_BINS: usize = 3600; // 0.1 degree resolution
+
+/// Compute per-bin azimuthal coverage fraction for a 1D LUT.
+///
+/// For each radial bin, determines what fraction of the full 2pi azimuthal range
+/// is covered by detector pixels. Returns a Vec of coverage fractions in [0, 1].
+/// Empty bins return 1.0 to avoid division by zero in normalization.
+pub fn compute_azimuthal_coverage(lut: &Lut1d, azimuth: &[f64]) -> Vec<f64> {
+    let n_points = lut.row_ptr.len() - 1;
+    (0..n_points)
+        .into_par_iter()
+        .map(|i| {
+            let start = lut.row_ptr[i];
+            let end = lut.row_ptr[i + 1];
+            if start == end {
+                return 1.0;
+            }
+            let mut occupied = vec![false; N_AZIMUTHAL_SUB_BINS];
+            for k in start..end {
+                let pixel = lut.col_idx[k];
+                let az = azimuth[pixel];
+                // Map [-pi, pi] to [0, N_SUB_BINS)
+                let sub_bin = ((az + PI) / (2.0 * PI) * N_AZIMUTHAL_SUB_BINS as f64).floor()
+                    as usize;
+                let sub_bin = sub_bin.min(N_AZIMUTHAL_SUB_BINS - 1);
+                occupied[sub_bin] = true;
+            }
+            let count = occupied.iter().filter(|&&b| b).count();
+            count as f64 / N_AZIMUTHAL_SUB_BINS as f64
+        })
+        .collect()
+}
 
 /// Integrate using either unweighted (mean) or weighted 1D CSR LUT.
 ///
@@ -103,6 +137,14 @@ pub fn integrate1d(intensity: &[f64], lut: &Lut1d, mask: Option<&[u8]>) -> (Vec<
             }
         })
         .collect();
+    let mut pattern_intensity = pattern_intensity;
+    if let Some(coverage) = &lut.azimuthal_coverage {
+        for (y, &cov) in pattern_intensity.iter_mut().zip(coverage.iter()) {
+            if cov > 0.0 {
+                *y /= cov;
+            }
+        }
+    }
     let pattern_tth = histogram::bins(n_points, lut.hist_min, lut.hist_step);
     (pattern_tth, pattern_intensity)
 }
@@ -211,6 +253,14 @@ pub fn integrate1d_with_errors(
     for (y, var) in results {
         pattern_intensity.push(y);
         pattern_sigma.push(var.max(0.0).sqrt());
+    }
+    if let Some(coverage) = &lut.azimuthal_coverage {
+        for i in 0..n_points {
+            if coverage[i] > 0.0 {
+                pattern_intensity[i] /= coverage[i];
+                pattern_sigma[i] /= coverage[i];
+            }
+        }
     }
     let pattern_tth = histogram::bins(n_points, lut.hist_min, lut.hist_step);
     (pattern_tth, pattern_intensity, pattern_sigma)
@@ -456,6 +506,7 @@ mod tests {
             values: Some(vec![0.5, 0.5, 0.25, 0.75]),
             hist_min: 0.0,
             hist_step: 1.0,
+            azimuthal_coverage: None,
         };
         let (_bins, y) = integrate1d(&intensity, &lut, None);
         let (_bins_err, y_err, _sigma) = integrate1d_with_errors(&intensity, &variance, &lut, None);
@@ -511,6 +562,7 @@ mod tests {
             values: Some(vec![0.25, 0.75]),
             hist_min: 0.0,
             hist_step: 1.0,
+            azimuthal_coverage: None,
         };
         let (_bins, _y, sigma) = integrate1d_with_errors(&intensity, &variance, &lut, None);
         assert_eq!(sigma.len(), 1);
