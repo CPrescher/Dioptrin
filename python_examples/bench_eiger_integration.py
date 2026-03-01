@@ -138,6 +138,33 @@ def bench_stream(
     gc.collect()
 
 
+def bench_stream_to_array(
+    integrator: dioptrin.Integrator,
+    name: str,
+    gen_fn,
+    n_points: int,
+    num_workers: int | None,
+    num_threads: int | None,
+) -> None:
+    """Benchmark streaming pipeline with collection into a 2D NumPy array."""
+    gc.collect()
+    t0 = time.perf_counter()
+    rows = []
+    for batch_result in integrator.batch1d_iter(
+        gen_fn(), n_points, num_workers=num_workers, num_threads=num_threads,
+    ):
+        if batch_result.is_ok():
+            rows.append(batch_result.result.intensity)
+    patterns = np.array(rows)  # shape: (n_frames, n_points)
+    elapsed = time.perf_counter() - t0
+    count = patterns.shape[0]
+    print(
+        f"  {name:30s}: {elapsed:7.2f}s  ({count:4d} frames, {count / elapsed:6.1f} fps)"
+        f"  -> {patterns.shape} array"
+    )
+    gc.collect()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -159,6 +186,7 @@ def main() -> None:
         choices=["counting", "pixel_split", "supersampled"],
     )
     parser.add_argument("--no-mask", action="store_true", help="Skip loading mask")
+    parser.add_argument("--flip", action="store_true", help="Flip frames vertically (frame[::-1])")
     args = parser.parse_args()
 
     for path, label in [(args.hdf5, "HDF5"), (args.poni, "PONI")]:
@@ -192,6 +220,8 @@ def main() -> None:
     print("\nWarming up (building LUT)...")
     with h5py.File(args.hdf5, "r") as f:
         warmup_frame = f[args.dataset][0].astype(np.float64)
+    if args.flip:
+        warmup_frame = np.ascontiguousarray(warmup_frame[::-1])
     t0 = time.perf_counter()
     integrator.integrate1d(warmup_frame, args.points)
     warmup = time.perf_counter() - t0
@@ -200,8 +230,19 @@ def main() -> None:
     gc.collect()
 
     dw = args.decomp_workers
+    flip = args.flip
 
-    print(f"\n=== Disk streaming integration ({args.points} bins, {args.frames} frames) ===")
+    def maybe_flip(gen_fn):
+        """Wrap a generator factory to flip frames vertically if --flip is set."""
+        if not flip:
+            return gen_fn
+        def wrapped():
+            for frame in gen_fn():
+                yield np.ascontiguousarray(frame[::-1])
+        return wrapped
+
+    flip_label = " [flipped]" if flip else ""
+    print(f"\n=== Disk streaming integration ({args.points} bins, {args.frames} frames){flip_label} ===")
     # bench_stream(
     #     integrator, "h5py",
     #     lambda: gen_frames_h5py(args.hdf5, args.dataset, args.frames),
@@ -212,17 +253,31 @@ def main() -> None:
     #     lambda: gen_frames_fabio(args.hdf5, args.frames),
     #     args.points, args.workers, args.threads,
     # )
+    bitshuffle_gen = maybe_flip(
+        lambda: gen_frames_parallel(args.hdf5, args.dataset, args.frames, decomp_workers=dw),
+    )
     bench_stream(
         integrator, f"parallel bitshuffle ({dw}w)",
-        lambda: gen_frames_parallel(args.hdf5, args.dataset, args.frames, decomp_workers=dw),
+        bitshuffle_gen,
+        args.points, args.workers, args.threads,
+    )
+    bench_stream_to_array(
+        integrator, f"  + collect to array",
+        bitshuffle_gen,
         args.points, args.workers, args.threads,
     )
 
     tiff_path = os.path.join(DATA_DIR, "eiger_0000.tiff")
     if os.path.exists(tiff_path):
+        tiff_gen = maybe_flip(lambda: gen_frames_tiff(tiff_path, args.frames))
         bench_stream(
             integrator, "tiff re-read",
-            lambda: gen_frames_tiff(tiff_path, args.frames),
+            tiff_gen,
+            args.points, args.workers, args.threads,
+        )
+        bench_stream_to_array(
+            integrator, "  + collect to array",
+            tiff_gen,
             args.points, args.workers, args.threads,
         )
 
