@@ -132,12 +132,8 @@ pub struct PyBatchResult {
 #[pymethods]
 impl PyBatchResult {
     fn __repr__(&self) -> String {
-        if self.error.is_some() {
-            format!(
-                "BatchResult({}, error={})",
-                self.filename,
-                self.error.as_ref().unwrap()
-            )
+        if let Some(err) = &self.error {
+            format!("BatchResult({}, error={})", self.filename, err)
         } else {
             format!("BatchResult({}, ok)", self.filename)
         }
@@ -159,7 +155,13 @@ impl PyBatchResult {
 pub(crate) enum BatchReceiver {
     Integration1D(Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>), String>)>>),
     Integration1DWithErrors(
-        Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>, Vec<f64>), String>)>>,
+        Mutex<
+            Receiver<(
+                usize,
+                String,
+                Result<(Vec<f64>, Vec<f64>, Vec<f64>), String>,
+            )>,
+        >,
     ),
     Integration2D {
         receiver: Mutex<Receiver<(usize, String, Result<Vec<f64>, String>)>>,
@@ -215,11 +217,9 @@ impl PyBatchIterator {
             let (index, batch_result) = match &self.receiver {
                 BatchReceiver::Integration1D(rx) => {
                     let recv_result = py.detach(|| {
-                        rx.lock()
-                            .map_err(|e| e.to_string())
-                            .and_then(|guard| {
-                                guard.recv().map_err(|_| "channel closed".to_string())
-                            })
+                        rx.lock().map_err(|e| e.to_string()).and_then(|guard| {
+                            guard.recv().map_err(|_| "channel closed".to_string())
+                        })
                     });
                     match recv_result {
                         Ok((index, filename, result)) => match result {
@@ -245,11 +245,9 @@ impl PyBatchIterator {
                 }
                 BatchReceiver::Integration1DWithErrors(rx) => {
                     let recv_result = py.detach(|| {
-                        rx.lock()
-                            .map_err(|e| e.to_string())
-                            .and_then(|guard| {
-                                guard.recv().map_err(|_| "channel closed".to_string())
-                            })
+                        rx.lock().map_err(|e| e.to_string()).and_then(|guard| {
+                            guard.recv().map_err(|_| "channel closed".to_string())
+                        })
                     });
                     match recv_result {
                         Ok((index, filename, result)) => match result {

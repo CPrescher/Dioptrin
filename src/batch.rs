@@ -666,7 +666,12 @@ mod tests {
         assert_eq!(results.len(), n_frames);
         for (i, (index, name, _)) in results.iter().enumerate() {
             assert_eq!(*index, i, "index mismatch at position {}", i);
-            assert_eq!(name, &format!("frame_{}", i), "name mismatch at position {}", i);
+            assert_eq!(
+                name,
+                &format!("frame_{}", i),
+                "name mismatch at position {}",
+                i
+            );
         }
     }
 

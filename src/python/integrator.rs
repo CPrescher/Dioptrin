@@ -877,10 +877,9 @@ impl PyIntegrator {
                             match iter.call_method0("__next__") {
                                 Ok(item) => {
                                     let work_item = match extract_frame_from_pyany(&item, index) {
-                                        Ok(FrameOrPath::Path(path)) => WorkItem::Path {
-                                            index,
-                                            path,
-                                        },
+                                        Ok(FrameOrPath::Path(path)) => {
+                                            WorkItem::Path { index, path }
+                                        }
                                         Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
                                             index,
                                             name: frame.name.clone(),
@@ -1337,10 +1336,9 @@ impl PyIntegrator {
                             match iter.call_method0("__next__") {
                                 Ok(item) => {
                                     let work_item = match extract_frame_from_pyany(&item, index) {
-                                        Ok(FrameOrPath::Path(path)) => WorkItem::Path {
-                                            index,
-                                            path,
-                                        },
+                                        Ok(FrameOrPath::Path(path)) => {
+                                            WorkItem::Path { index, path }
+                                        }
                                         Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
                                             index,
                                             name: frame.name.clone(),
