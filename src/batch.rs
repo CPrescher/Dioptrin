@@ -341,7 +341,7 @@ where
 /// Results are sent through a channel as each file is processed,
 /// allowing the caller to handle results incrementally.
 pub struct StreamingBatch<T> {
-    receiver: Receiver<(String, Result<T, String>)>,
+    receiver: Receiver<(usize, String, Result<T, String>)>,
     total_files: usize,
     completed: Arc<AtomicUsize>,
     #[allow(dead_code)]
@@ -360,13 +360,13 @@ impl<T> StreamingBatch<T> {
     }
 
     /// Consume the batch and return the receiver.
-    pub fn into_receiver(self) -> Receiver<(String, Result<T, String>)> {
+    pub fn into_receiver(self) -> Receiver<(usize, String, Result<T, String>)> {
         self.receiver
     }
 
     /// Consume the batch and return an iterator over results.
     #[allow(clippy::should_implement_trait)]
-    pub fn into_iter(self) -> impl Iterator<Item = (String, Result<T, String>)> {
+    pub fn into_iter(self) -> impl Iterator<Item = (usize, String, Result<T, String>)> {
         self.receiver.into_iter()
     }
 }
@@ -403,14 +403,20 @@ where
     let completed = Arc::new(AtomicUsize::new(0));
 
     #[allow(clippy::type_complexity)]
-    let (tx, rx): (Sender<(String, Result<T::Output, String>)>, _) = mpsc::channel();
+    let (tx, rx): (Sender<(usize, String, Result<T::Output, String>)>, _) = mpsc::channel();
 
     // Distribute files across workers
     let chunk_size = num_files.div_ceil(num_workers);
     let mut handles = Vec::new();
+    let mut chunk_start = 0usize;
 
     for chunk_files in filenames.chunks(chunk_size) {
-        let chunk = chunk_files.to_vec();
+        let chunk: Vec<(usize, String)> = chunk_files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (chunk_start + i, f.clone()))
+            .collect();
+        chunk_start += chunk_files.len();
         let integrator = Arc::clone(&integrator);
         let task = task.clone();
         let tx = tx.clone();
@@ -422,7 +428,7 @@ where
                 .build()
                 .expect("failed to build thread pool");
 
-            for filename in chunk {
+            for (index, filename) in chunk {
                 let result = pool.install(|| {
                     let frame = Frame::from_tiff(filename.clone()).map_err(|e| e.to_string())?;
                     Ok(task.execute(&integrator, &frame))
@@ -430,7 +436,7 @@ where
 
                 completed.fetch_add(1, Ordering::Relaxed);
                 // Ignore send errors (receiver may have been dropped)
-                let _ = tx.send((filename, result));
+                let _ = tx.send((index, filename, result));
             }
         });
 
@@ -454,9 +460,13 @@ where
 /// and lazy consumption of input (e.g., Python generators).
 pub enum WorkItem {
     /// A file path — the worker loads the TIFF before integrating.
-    Path(String),
+    Path { index: usize, path: String },
     /// An already-loaded frame (e.g., from a numpy array).
-    Frame { name: String, frame: Frame },
+    Frame {
+        index: usize,
+        name: String,
+        frame: Frame,
+    },
 }
 
 /// Process work items from a shared queue, streaming results as they complete.
@@ -491,7 +501,7 @@ where
     let completed = Arc::new(AtomicUsize::new(0));
 
     #[allow(clippy::type_complexity)]
-    let (tx, rx): (Sender<(String, Result<T::Output, String>)>, _) = mpsc::channel();
+    let (tx, rx): (Sender<(usize, String, Result<T::Output, String>)>, _) = mpsc::channel();
 
     let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
     let mut handles = Vec::new();
@@ -522,23 +532,23 @@ where
                     }
                 };
 
-                let (name, result) = match item {
-                    WorkItem::Path(path) => {
+                let (index, name, result) = match item {
+                    WorkItem::Path { index, path } => {
                         let name = path.clone();
                         let result = pool.install(|| {
                             let frame = Frame::from_tiff(path).map_err(|e| e.to_string())?;
                             Ok(task.execute(&integrator, &frame))
                         });
-                        (name, result)
+                        (index, name, result)
                     }
-                    WorkItem::Frame { name, frame } => {
+                    WorkItem::Frame { index, name, frame } => {
                         let result = pool.install(|| Ok(task.execute(&integrator, &frame)));
-                        (name, result)
+                        (index, name, result)
                     }
                 };
 
                 completed.fetch_add(1, Ordering::Relaxed);
-                if tx.send((name, result)).is_err() {
+                if tx.send((index, name, result)).is_err() {
                     break; // Receiver dropped
                 }
             }
@@ -564,6 +574,132 @@ mod tests {
     use crate::geometry::Geometry;
     use crate::integration::IntegrationMethod;
     use crate::poni::Poni;
+
+    fn test_poni() -> Poni {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1.0;
+        poni.pixel2 = 1.0;
+        poni.distance = 1.0;
+        poni
+    }
+
+    fn test_frame(name: &str, value: f64) -> Frame {
+        Frame {
+            name: String::from(name),
+            data: vec![value; 4],
+            dim1: 2,
+            dim2: 2,
+        }
+    }
+
+    #[test]
+    fn test_queue_streaming_indices_match_input_order() {
+        // Send 20 frames through process_queue_streaming with 4 workers.
+        // Verify that the index in each result matches the name we gave it,
+        // proving the index is threaded correctly through the pipeline.
+        let poni = test_poni();
+        let geometry = Geometry::new(2, 2, poni);
+        let integrator =
+            Arc::new(Integrator::new(geometry).with_method(IntegrationMethod::Counting));
+
+        let (work_tx, work_rx) = mpsc::channel();
+        let n_frames = 20;
+
+        for i in 0..n_frames {
+            let frame = test_frame(&format!("frame_{}", i), i as f64);
+            work_tx
+                .send(WorkItem::Frame {
+                    index: i,
+                    name: format!("frame_{}", i),
+                    frame,
+                })
+                .unwrap();
+        }
+        drop(work_tx);
+
+        let task = Integration1D { n_bins: 4 };
+        let batch = process_queue_streaming(work_rx, integrator, task, 4, 1);
+
+        // Collect all results (may arrive out of order)
+        let results: Vec<_> = batch.into_iter().collect();
+        assert_eq!(results.len(), n_frames);
+
+        // Verify each result's index matches its name
+        for (index, name, result) in &results {
+            assert_eq!(name, &format!("frame_{}", index));
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_queue_streaming_reorder_yields_input_order() {
+        // Simulate the reorder buffer logic used by PyBatchIterator:
+        // collect results from the channel, sort by index, verify sequential order.
+        let poni = test_poni();
+        let geometry = Geometry::new(2, 2, poni);
+        let integrator =
+            Arc::new(Integrator::new(geometry).with_method(IntegrationMethod::Counting));
+
+        let (work_tx, work_rx) = mpsc::channel();
+        let n_frames = 30;
+
+        for i in 0..n_frames {
+            let frame = test_frame(&format!("frame_{}", i), i as f64);
+            work_tx
+                .send(WorkItem::Frame {
+                    index: i,
+                    name: format!("frame_{}", i),
+                    frame,
+                })
+                .unwrap();
+        }
+        drop(work_tx);
+
+        let task = Integration1D { n_bins: 4 };
+        let batch = process_queue_streaming(work_rx, integrator, task, 4, 1);
+
+        // Collect and sort by index (this is what the reorder buffer does)
+        let mut results: Vec<_> = batch.into_iter().collect();
+        results.sort_by_key(|(index, _, _)| *index);
+
+        // Verify we get all frames in sequential order
+        assert_eq!(results.len(), n_frames);
+        for (i, (index, name, _)) in results.iter().enumerate() {
+            assert_eq!(*index, i, "index mismatch at position {}", i);
+            assert_eq!(name, &format!("frame_{}", i), "name mismatch at position {}", i);
+        }
+    }
+
+    #[test]
+    fn test_files_streaming_indices_are_sequential() {
+        // process_files_streaming distributes files across worker chunks.
+        // Verify indices are globally sequential (chunk_start + i), not per-chunk.
+        // We can't use real TIFF files here, but we can test with the queue approach
+        // which exercises the same indexing in process_queue_streaming.
+        // Instead, test process_files_streaming with a few "files" that will fail
+        // to load (non-existent), and verify the indices are still correct.
+        let poni = test_poni();
+        let geometry = Geometry::new(2, 2, poni);
+        let integrator =
+            Arc::new(Integrator::new(geometry).with_method(IntegrationMethod::Counting));
+
+        let filenames: Vec<String> = (0..8).map(|i| format!("nonexistent_{}.tif", i)).collect();
+
+        let task = Integration1D { n_bins: 4 };
+        let batch = process_files_streaming(&filenames, integrator, task, 4, 1);
+
+        let mut results: Vec<_> = batch.into_iter().collect();
+        assert_eq!(results.len(), 8);
+
+        // Sort by index and verify sequential
+        results.sort_by_key(|(index, _, _)| *index);
+        for (i, (index, name, result)) in results.iter().enumerate() {
+            assert_eq!(*index, i, "index mismatch at position {}", i);
+            assert_eq!(name, &format!("nonexistent_{}.tif", i));
+            // All should be errors since files don't exist
+            assert!(result.is_err());
+        }
+    }
 
     #[test]
     fn test_integration_tasks() {

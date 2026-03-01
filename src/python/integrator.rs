@@ -2,6 +2,7 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::batch::{
@@ -758,6 +759,8 @@ impl PyIntegrator {
                         )),
                         total,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 } else {
                     let task = Integration1D { n_bins: n_points };
@@ -772,6 +775,8 @@ impl PyIntegrator {
                         receiver: BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
                         total,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
             }
@@ -814,7 +819,7 @@ impl PyIntegrator {
                             .map(|i| {
                                 let frame = &frames[i];
                                 let result = integrator.integrate1d_with_errors(frame, n_points);
-                                (format!("array[{}]", i), Ok(result))
+                                (i, format!("array[{}]", i), Ok(result))
                             })
                             .collect::<Vec<_>>()
                             .into_iter()
@@ -827,6 +832,8 @@ impl PyIntegrator {
                         receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(rx)),
                         total: num_arrays,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 } else {
                     let (tx, rx) = mpsc::channel();
@@ -838,7 +845,7 @@ impl PyIntegrator {
                             .map(|i| {
                                 let frame = &frames[i];
                                 let result = integrator.integrate1d(frame, n_points);
-                                (format!("array[{}]", i), Ok(result))
+                                (i, format!("array[{}]", i), Ok(result))
                             })
                             .collect::<Vec<_>>()
                             .into_iter()
@@ -851,6 +858,8 @@ impl PyIntegrator {
                         receiver: BatchReceiver::Integration1D(Mutex::new(rx)),
                         total: num_arrays,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
             }
@@ -868,8 +877,12 @@ impl PyIntegrator {
                             match iter.call_method0("__next__") {
                                 Ok(item) => {
                                     let work_item = match extract_frame_from_pyany(&item, index) {
-                                        Ok(FrameOrPath::Path(path)) => WorkItem::Path(path),
+                                        Ok(FrameOrPath::Path(path)) => WorkItem::Path {
+                                            index,
+                                            path,
+                                        },
                                         Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
+                                            index,
                                             name: frame.name.clone(),
                                             frame,
                                         },
@@ -887,6 +900,7 @@ impl PyIntegrator {
                                         // Log non-StopIteration errors as the first error result
                                         // by sending a poison path that will fail in the worker
                                         let _ = work_tx.send(WorkItem::Frame {
+                                            index,
                                             name: format!("iter[{}]", index),
                                             frame: Frame {
                                                 name: format!("error: {}", err),
@@ -920,6 +934,8 @@ impl PyIntegrator {
                         )),
                         total: 0,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 } else {
                     let task = Integration1D { n_bins: n_points };
@@ -934,6 +950,8 @@ impl PyIntegrator {
                         receiver: BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
                         total: 0,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
             }
@@ -1199,6 +1217,8 @@ impl PyIntegrator {
                         },
                         total,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
                 (true, None) => {
@@ -1221,6 +1241,8 @@ impl PyIntegrator {
                         },
                         total,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
                 (false, Some((azimuthal_min, azimuthal_max))) => {
@@ -1245,6 +1267,8 @@ impl PyIntegrator {
                         },
                         total,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
                 (true, Some((azimuthal_min, azimuthal_max))) => {
@@ -1269,6 +1293,8 @@ impl PyIntegrator {
                         },
                         total,
                         completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
                     })
                 }
             };
@@ -1293,6 +1319,7 @@ impl PyIntegrator {
                         dim2,
                     };
                     let _ = work_tx.send(WorkItem::Frame {
+                        index: i,
                         name: frame.name.clone(),
                         frame,
                     });
@@ -1310,8 +1337,12 @@ impl PyIntegrator {
                             match iter.call_method0("__next__") {
                                 Ok(item) => {
                                     let work_item = match extract_frame_from_pyany(&item, index) {
-                                        Ok(FrameOrPath::Path(path)) => WorkItem::Path(path),
+                                        Ok(FrameOrPath::Path(path)) => WorkItem::Path {
+                                            index,
+                                            path,
+                                        },
                                         Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
+                                            index,
                                             name: frame.name.clone(),
                                             frame,
                                         },
@@ -1326,6 +1357,7 @@ impl PyIntegrator {
                                     if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py)
                                     {
                                         let _ = work_tx.send(WorkItem::Frame {
+                                            index,
                                             name: format!("iter[{}]", index),
                                             frame: Frame {
                                                 name: format!("error: {}", err),
@@ -1364,6 +1396,8 @@ impl PyIntegrator {
                     },
                     total,
                     completed: 0,
+                    buffer: BTreeMap::new(),
+                    next_index: 0,
                 })
             }
             (true, None) => {
@@ -1381,6 +1415,8 @@ impl PyIntegrator {
                     },
                     total,
                     completed: 0,
+                    buffer: BTreeMap::new(),
+                    next_index: 0,
                 })
             }
             (false, Some((azimuthal_min, azimuthal_max))) => {
@@ -1400,6 +1436,8 @@ impl PyIntegrator {
                     },
                     total,
                     completed: 0,
+                    buffer: BTreeMap::new(),
+                    next_index: 0,
                 })
             }
             (true, Some((azimuthal_min, azimuthal_max))) => {
@@ -1419,6 +1457,8 @@ impl PyIntegrator {
                     },
                     total,
                     completed: 0,
+                    buffer: BTreeMap::new(),
+                    next_index: 0,
                 })
             }
         }

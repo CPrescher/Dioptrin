@@ -1,5 +1,6 @@
 use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
 
@@ -156,17 +157,17 @@ impl PyBatchResult {
 /// Internal enum to hold different receiver types for the iterator
 #[allow(clippy::type_complexity)]
 pub(crate) enum BatchReceiver {
-    Integration1D(Mutex<Receiver<(String, Result<(Vec<f64>, Vec<f64>), String>)>>),
+    Integration1D(Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>), String>)>>),
     Integration1DWithErrors(
-        Mutex<Receiver<(String, Result<(Vec<f64>, Vec<f64>, Vec<f64>), String>)>>,
+        Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>, Vec<f64>), String>)>>,
     ),
     Integration2D {
-        receiver: Mutex<Receiver<(String, Result<Vec<f64>, String>)>>,
+        receiver: Mutex<Receiver<(usize, String, Result<Vec<f64>, String>)>>,
         n_radial: usize,
         n_azimuthal: usize,
     },
     Integration2DWithErrors {
-        receiver: Mutex<Receiver<(String, Result<(Vec<f64>, Vec<f64>), String>)>>,
+        receiver: Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>), String>)>>,
         n_radial: usize,
         n_azimuthal: usize,
     },
@@ -191,6 +192,8 @@ pub struct PyBatchIterator {
     pub(crate) receiver: BatchReceiver,
     pub(crate) total: usize,
     pub(crate) completed: usize,
+    pub(crate) buffer: BTreeMap<usize, PyBatchResult>,
+    pub(crate) next_index: usize,
 }
 
 #[pymethods]
@@ -200,124 +203,173 @@ impl PyBatchIterator {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<PyBatchResult> {
-        let batch_result = match &self.receiver {
-            BatchReceiver::Integration1D(rx) => {
-                let recv_result = py.detach(|| {
-                    rx.lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
-                });
-                match recv_result {
-                    Ok((filename, result)) => match result {
-                        Ok((radial, intensity)) => PyBatchResult {
-                            filename,
-                            result: Some(PyIntegrationResult::from_1d(radial, intensity)),
-                            error: None,
-                        },
-                        Err(e) => PyBatchResult {
-                            filename,
-                            result: None,
-                            error: Some(e),
-                        },
-                    },
-                    Err(_) => return Err(PyStopIteration::new_err(())),
-                }
+        loop {
+            // Check if the next expected result is already buffered
+            if let Some(result) = self.buffer.remove(&self.next_index) {
+                self.next_index += 1;
+                self.completed += 1;
+                return Ok(result);
             }
-            BatchReceiver::Integration1DWithErrors(rx) => {
-                let recv_result = py.detach(|| {
-                    rx.lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
-                });
-                match recv_result {
-                    Ok((filename, result)) => match result {
-                        Ok((radial, intensity, errors)) => PyBatchResult {
-                            filename,
-                            result: Some(PyIntegrationResult::from_1d_with_errors(
-                                radial, intensity, errors,
-                            )),
-                            error: None,
-                        },
-                        Err(e) => PyBatchResult {
-                            filename,
-                            result: None,
-                            error: Some(e),
-                        },
-                    },
-                    Err(_) => return Err(PyStopIteration::new_err(())),
-                }
-            }
-            BatchReceiver::Integration2D {
-                receiver,
-                n_radial,
-                n_azimuthal,
-            } => {
-                let n_radial = *n_radial;
-                let n_azimuthal = *n_azimuthal;
-                let recv_result = py.detach(|| {
-                    receiver
-                        .lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
-                });
-                match recv_result {
-                    Ok((filename, result)) => match result {
-                        Ok(intensity) => PyBatchResult {
-                            filename,
-                            result: Some(PyIntegrationResult::from_2d(
-                                intensity,
-                                n_radial,
-                                n_azimuthal,
-                            )),
-                            error: None,
-                        },
-                        Err(e) => PyBatchResult {
-                            filename,
-                            result: None,
-                            error: Some(e),
-                        },
-                    },
-                    Err(_) => return Err(PyStopIteration::new_err(())),
-                }
-            }
-            BatchReceiver::Integration2DWithErrors {
-                receiver,
-                n_radial,
-                n_azimuthal,
-            } => {
-                let n_radial = *n_radial;
-                let n_azimuthal = *n_azimuthal;
-                let recv_result = py.detach(|| {
-                    receiver
-                        .lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|guard| guard.recv().map_err(|_| "channel closed".to_string()))
-                });
-                match recv_result {
-                    Ok((filename, result)) => match result {
-                        Ok((intensity, errors)) => PyBatchResult {
-                            filename,
-                            result: Some(PyIntegrationResult::from_2d_with_errors(
-                                intensity,
-                                errors,
-                                n_radial,
-                                n_azimuthal,
-                            )),
-                            error: None,
-                        },
-                        Err(e) => PyBatchResult {
-                            filename,
-                            result: None,
-                            error: Some(e),
-                        },
-                    },
-                    Err(_) => return Err(PyStopIteration::new_err(())),
-                }
-            }
-        };
 
-        self.completed += 1;
-        Ok(batch_result)
+            // Receive the next result from the channel
+            let (index, batch_result) = match &self.receiver {
+                BatchReceiver::Integration1D(rx) => {
+                    let recv_result = py.detach(|| {
+                        rx.lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|guard| {
+                                guard.recv().map_err(|_| "channel closed".to_string())
+                            })
+                    });
+                    match recv_result {
+                        Ok((index, filename, result)) => match result {
+                            Ok((radial, intensity)) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: Some(PyIntegrationResult::from_1d(radial, intensity)),
+                                    error: None,
+                                },
+                            ),
+                            Err(e) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: None,
+                                    error: Some(e),
+                                },
+                            ),
+                        },
+                        Err(_) => return Err(PyStopIteration::new_err(())),
+                    }
+                }
+                BatchReceiver::Integration1DWithErrors(rx) => {
+                    let recv_result = py.detach(|| {
+                        rx.lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|guard| {
+                                guard.recv().map_err(|_| "channel closed".to_string())
+                            })
+                    });
+                    match recv_result {
+                        Ok((index, filename, result)) => match result {
+                            Ok((radial, intensity, errors)) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: Some(PyIntegrationResult::from_1d_with_errors(
+                                        radial, intensity, errors,
+                                    )),
+                                    error: None,
+                                },
+                            ),
+                            Err(e) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: None,
+                                    error: Some(e),
+                                },
+                            ),
+                        },
+                        Err(_) => return Err(PyStopIteration::new_err(())),
+                    }
+                }
+                BatchReceiver::Integration2D {
+                    receiver,
+                    n_radial,
+                    n_azimuthal,
+                } => {
+                    let n_radial = *n_radial;
+                    let n_azimuthal = *n_azimuthal;
+                    let recv_result = py.detach(|| {
+                        receiver
+                            .lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|guard| {
+                                guard.recv().map_err(|_| "channel closed".to_string())
+                            })
+                    });
+                    match recv_result {
+                        Ok((index, filename, result)) => match result {
+                            Ok(intensity) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: Some(PyIntegrationResult::from_2d(
+                                        intensity,
+                                        n_radial,
+                                        n_azimuthal,
+                                    )),
+                                    error: None,
+                                },
+                            ),
+                            Err(e) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: None,
+                                    error: Some(e),
+                                },
+                            ),
+                        },
+                        Err(_) => return Err(PyStopIteration::new_err(())),
+                    }
+                }
+                BatchReceiver::Integration2DWithErrors {
+                    receiver,
+                    n_radial,
+                    n_azimuthal,
+                } => {
+                    let n_radial = *n_radial;
+                    let n_azimuthal = *n_azimuthal;
+                    let recv_result = py.detach(|| {
+                        receiver
+                            .lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|guard| {
+                                guard.recv().map_err(|_| "channel closed".to_string())
+                            })
+                    });
+                    match recv_result {
+                        Ok((index, filename, result)) => match result {
+                            Ok((intensity, errors)) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: Some(PyIntegrationResult::from_2d_with_errors(
+                                        intensity,
+                                        errors,
+                                        n_radial,
+                                        n_azimuthal,
+                                    )),
+                                    error: None,
+                                },
+                            ),
+                            Err(e) => (
+                                index,
+                                PyBatchResult {
+                                    filename,
+                                    result: None,
+                                    error: Some(e),
+                                },
+                            ),
+                        },
+                        Err(_) => return Err(PyStopIteration::new_err(())),
+                    }
+                }
+            };
+
+            // If this is the one we're waiting for, yield it directly
+            if index == self.next_index {
+                self.next_index += 1;
+                self.completed += 1;
+                return Ok(batch_result);
+            }
+
+            // Otherwise buffer it and keep receiving
+            self.buffer.insert(index, batch_result);
+        }
     }
 
     /// Get the total number of files being processed.
