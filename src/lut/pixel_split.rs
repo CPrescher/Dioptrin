@@ -193,7 +193,8 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
 /// let tth = geometry.calc_tth_all();
 /// let intensity = vec![1.0; geometry.size()];
 /// let lut = build_lut1d_ps_csr(&geometry, &tth, 4, RadialUnit::TthRad);
-/// let (_bins, y) = integrate1d(&intensity, &lut, None, None);
+/// let norm = vec![1.0; geometry.size()];
+/// let (_bins, y) = integrate1d(&intensity, &lut, None, &norm);
 /// assert_eq!(y.len(), 4);
 /// ```
 pub fn build_lut1d_ps_csr(
@@ -650,7 +651,8 @@ fn build_lut2d_ps_csr_with_azimuthal(
 /// let azimuthal = geometry.calc_azimuth_all();
 /// let intensity = vec![1.0; geometry.size()];
 /// let lut2d = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 4, 4, RadialUnit::TthRad);
-/// let y = integrate2d(&intensity, &lut2d, None, None);
+/// let norm = vec![1.0; geometry.size()];
+/// let y = integrate2d(&intensity, &lut2d, None, &norm);
 /// assert_eq!(y.len(), 4 * 4);
 /// ```
 pub fn build_lut2d_ps_csr(
@@ -817,12 +819,13 @@ mod tests {
 
         // Build and integrate in radians
         let lut_rad = build_lut1d_ps_csr(&geometry, &tth, 5, RadialUnit::TthRad);
-        let (_, int_rad) = integrate1d(&intensity, &lut_rad, None, None);
+        let norm = vec![1.0; geometry.size()];
+        let (_, int_rad) = integrate1d(&intensity, &lut_rad, None, &norm);
 
         // Build and integrate in q
         let radial_q = RadialUnit::QAngstrom.convert_from_tth(&tth, geometry.poni.wavelength);
         let lut_q = build_lut1d_ps_csr(&geometry, &radial_q, 5, RadialUnit::QAngstrom);
-        let (_, int_q) = integrate1d(&intensity, &lut_q, None, None);
+        let (_, int_q) = integrate1d(&intensity, &lut_q, None, &norm);
 
         // Total integrated intensity should be similar (not exactly equal due to different binning)
         let total_rad: f64 = int_rad.iter().sum();

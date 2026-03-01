@@ -46,7 +46,8 @@ pub struct Lut2d {
 /// let tth = vec![0.1, 0.2, 0.3, 0.4];
 /// let intensity = vec![10.0, 20.0, 30.0, 40.0];
 /// let lut = build_lut1d_csr(&tth, 3);
-/// let (_bins, y) = integrate1d(&intensity, &lut, None, None);
+/// let norm = vec![1.0; 4];
+/// let (_bins, y) = integrate1d(&intensity, &lut, None, &norm);
 /// assert_eq!(y.len(), 3);
 /// ```
 pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
@@ -93,7 +94,8 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
 /// let azimuthal = vec![0.0, 0.1, 0.2, 0.3];
 /// let intensity = vec![1.0, 2.0, 3.0, 4.0];
 /// let lut2d = build_lut2d_csr(&tth, &azimuthal, 2, 3);
-/// let y = integrate2d(&intensity, &lut2d, None, None);
+/// let norm = vec![1.0; 4];
+/// let y = integrate2d(&intensity, &lut2d, None, &norm);
 /// assert_eq!(y.len(), 2*3);
 /// ```
 pub fn build_lut2d_csr(

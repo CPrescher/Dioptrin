@@ -29,11 +29,13 @@ pub fn integrate_lut_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
+    let norm = vec![1.0; intensity.len()];
+
     // Warm-up run
-    let _ = lut::integrate1d(&intensity, &csr, None, None);
+    let _ = lut::integrate1d(&intensity, &csr, None, &norm);
 
     c.bench_function("bench 1d lut_csr", |b| {
-        b.iter(|| lut::integrate1d(&intensity, &csr, None, None))
+        b.iter(|| lut::integrate1d(&intensity, &csr, None, &norm))
     });
 }
 
@@ -61,11 +63,13 @@ pub fn integrate_lut_ss_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
+    let norm = vec![1.0; intensity.len()];
+
     // Warm-up
-    let _ = lut::integrate1d(&intensity, &csr_ss, None, None);
+    let _ = lut::integrate1d(&intensity, &csr_ss, None, &norm);
 
     c.bench_function("bench 1d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate1d(&intensity, &csr_ss, None, None))
+        b.iter(|| lut::integrate1d(&intensity, &csr_ss, None, &norm))
     });
 }
 
@@ -92,11 +96,13 @@ pub fn integrate2d_lut_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
+    let norm = vec![1.0; intensity.len()];
+
     // Warm-up
-    let _ = lut::integrate2d(&intensity, &csr2d, None, None);
+    let _ = lut::integrate2d(&intensity, &csr2d, None, &norm);
 
     c.bench_function("bench 2d lut_csr", |b| {
-        b.iter(|| lut::integrate2d(&intensity, &csr2d, None, None))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d, None, &norm))
     });
 }
 
@@ -132,11 +138,13 @@ pub fn integrate2d_lut_ss_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
+    let norm = vec![1.0; intensity.len()];
+
     // Warm-up
-    let _ = lut::integrate2d(&intensity, &csr2d_ss, None, None);
+    let _ = lut::integrate2d(&intensity, &csr2d_ss, None, &norm);
 
     c.bench_function("bench 2d lut_ss_csr", |b| {
-        b.iter(|| lut::integrate2d(&intensity, &csr2d_ss, None, None))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d_ss, None, &norm))
     });
 }
 
@@ -162,10 +170,11 @@ pub fn integrate_lut_ps_benchmark(c: &mut Criterion) {
 
     // Pixel-split CSR (fractional weights)
     let csr_ps = lut::build_lut1d_ps_csr(&geometry, &tth, n_points, RadialUnit::TthRad);
-    let _ = lut::integrate1d(&intensity, &csr_ps, None, None);
+    let norm = vec![1.0; intensity.len()];
+    let _ = lut::integrate1d(&intensity, &csr_ps, None, &norm);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate1d(&intensity, &csr_ps, None, None))
+        b.iter(|| lut::integrate1d(&intensity, &csr_ps, None, &norm))
     });
 }
 
@@ -190,10 +199,11 @@ pub fn integrate_lut_ps_csr_benchmark(c: &mut Criterion) {
         .map(|(i, y)| y / polarization[i] / solid_angle[i])
         .collect();
 
-    let _ = lut::integrate1d(&intensity, &csr_ps, None, None);
+    let norm = vec![1.0; intensity.len()];
+    let _ = lut::integrate1d(&intensity, &csr_ps, None, &norm);
 
     c.bench_function("bench 1d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate1d(&intensity, &csr_ps, None, None))
+        b.iter(|| lut::integrate1d(&intensity, &csr_ps, None, &norm))
     });
 }
 
@@ -226,10 +236,11 @@ pub fn integrate2d_lut_ps_benchmark(c: &mut Criterion) {
         n_azimuthal,
         RadialUnit::TthRad,
     );
-    let _ = lut::integrate2d(&intensity, &csr2d_ps, None, None);
+    let norm = vec![1.0; intensity.len()];
+    let _ = lut::integrate2d(&intensity, &csr2d_ps, None, &norm);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate2d(&intensity, &csr2d_ps, None, None))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d_ps, None, &norm))
     });
 }
 
@@ -261,10 +272,11 @@ pub fn integrate2d_lut_ps_csr_benchmark(c: &mut Criterion) {
         n_azimuthal,
         RadialUnit::TthRad,
     );
-    let _ = lut::integrate2d(&intensity, &csr2d_ps2, None, None);
+    let norm = vec![1.0; intensity.len()];
+    let _ = lut::integrate2d(&intensity, &csr2d_ps2, None, &norm);
 
     c.bench_function("bench 2d lut pixel-split csr", |b| {
-        b.iter(|| lut::integrate2d(&intensity, &csr2d_ps2, None, None))
+        b.iter(|| lut::integrate2d(&intensity, &csr2d_ps2, None, &norm))
     });
 }
 
