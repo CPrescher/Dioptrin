@@ -34,10 +34,7 @@ pub use common::hull_grid;
 pub use counting_csr::{
     Lut1d, Lut2d, build_lut1d_csr, build_lut2d_csr, build_lut2d_csr_with_azimuthal_range,
 };
-pub use integrate::{
-    compute_azimuthal_coverage, integrate1d, integrate1d_with_errors, integrate2d,
-    integrate2d_with_errors,
-};
+pub use integrate::{integrate1d, integrate1d_with_errors, integrate2d, integrate2d_with_errors};
 pub use pixel_split::{
     build_lut1d_ps_csr, build_lut2d_ps_csr, build_lut2d_ps_csr_with_azimuthal_range,
 };

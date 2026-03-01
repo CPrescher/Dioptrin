@@ -33,7 +33,7 @@ impl Integrator {
     /// ```
     pub fn integrate1d(&self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
+        let normalization = self.get_normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -47,15 +47,22 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
-                histogram::histogram(&radial, &intensity, n_points, mask_data)
+                // Histogram uses pre-corrected intensity for backward compat
+                let corrected: Vec<f64> = frame
+                    .data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                histogram::histogram(&radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
+                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, Some(&normalization))
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
+                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, Some(&normalization))
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -63,7 +70,7 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
+                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, Some(&normalization))
             }
         }
     }
@@ -75,7 +82,9 @@ impl Integrator {
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
+        let normalization = self.get_normalization();
+        // Variance under Poisson assumption: var(pixel) = signal (raw counts)
+        let variance: Vec<f64> = frame.data.iter().map(|&x| x.max(0.0)).collect();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -89,17 +98,44 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
+                let corrected: Vec<f64> = frame
+                    .data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                let corrected_var: Vec<f64> = variance
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+                    .collect();
                 histogram::histogram_with_errors(
-                    &radial, &intensity, &variance, n_points, mask_data,
+                    &radial,
+                    &corrected,
+                    &corrected_var,
+                    n_points,
+                    mask_data,
                 )
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -107,7 +143,13 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
         }
     }
@@ -120,7 +162,7 @@ impl Integrator {
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(dim1, dim2);
-        let intensity = self.correct_intensity(data);
+        let normalization = self.get_normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -134,15 +176,20 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
-                histogram::histogram(&radial, &intensity, n_points, mask_data)
+                let corrected: Vec<f64> = data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                histogram::histogram(&radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
+                crate::lut::integrate1d(data, &lut1d, mask_data, Some(&normalization))
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
+                crate::lut::integrate1d(data, &lut1d, mask_data, Some(&normalization))
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -150,7 +197,7 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate1d(&intensity, &lut1d, mask_data)
+                crate::lut::integrate1d(data, &lut1d, mask_data, Some(&normalization))
             }
         }
     }
@@ -163,7 +210,8 @@ impl Integrator {
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(dim1, dim2);
-        let (intensity, variance) = self.correct_intensity_and_variance(data);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -177,17 +225,43 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
+                let corrected: Vec<f64> = data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                let corrected_var: Vec<f64> = variance
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+                    .collect();
                 histogram::histogram_with_errors(
-                    &radial, &intensity, &variance, n_points, mask_data,
+                    &radial,
+                    &corrected,
+                    &corrected_var,
+                    n_points,
+                    mask_data,
                 )
             }
             IntegrationMethod::Counting => {
                 let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(
+                    data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(
+                    data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -195,7 +269,13 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate1d_with_errors(&intensity, &variance, &lut1d, mask_data)
+                crate::lut::integrate1d_with_errors(
+                    data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
         }
     }
@@ -228,7 +308,7 @@ impl Integrator {
     /// ```
     pub fn integrate2d(&self, frame: &Frame, n_radial: usize, n_azimuthal: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
+        let normalization = self.get_normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -242,7 +322,13 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
-                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
+                let corrected: Vec<f64> = frame
+                    .data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting {
@@ -250,7 +336,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
@@ -258,7 +344,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
@@ -267,7 +353,7 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, Some(&normalization))
             }
         }
     }
@@ -281,7 +367,7 @@ impl Integrator {
         n_azimuthal: usize,
     ) -> Vec<f64> {
         self.update_geometry_arrays(dim1, dim2);
-        let intensity = self.correct_intensity(data);
+        let normalization = self.get_normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -295,7 +381,12 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
-                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
+                let corrected: Vec<f64> = data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting {
@@ -303,7 +394,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
@@ -311,7 +402,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
@@ -320,7 +411,7 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(data, &lut2d, mask_data, Some(&normalization))
             }
         }
     }
@@ -342,7 +433,7 @@ impl Integrator {
         azimuthal_step: f64,
     ) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let intensity = self.correct_intensity(&frame.data);
+        let normalization = self.get_normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -357,7 +448,13 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
-                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
+                let corrected: Vec<f64> = frame
+                    .data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
@@ -366,7 +463,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
@@ -375,7 +472,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
@@ -385,7 +482,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, Some(&normalization))
             }
         }
     }
@@ -402,7 +499,7 @@ impl Integrator {
         azimuthal_step: f64,
     ) -> Vec<f64> {
         self.update_geometry_arrays(dim1, dim2);
-        let intensity = self.correct_intensity(data);
+        let normalization = self.get_normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -417,7 +514,12 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
-                histogram::histogram(&radial, &intensity, n_radial, mask_data).1
+                let corrected: Vec<f64> = data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
@@ -426,7 +528,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
@@ -435,7 +537,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(data, &lut2d, mask_data, Some(&normalization))
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
@@ -445,7 +547,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&intensity, &lut2d, mask_data)
+                crate::lut::integrate2d(data, &lut2d, mask_data, Some(&normalization))
             }
         }
     }
@@ -458,7 +560,8 @@ impl Integrator {
         n_azimuthal: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = frame.data.iter().map(|&x| x.max(0.0)).collect();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -472,8 +575,23 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
+                let corrected: Vec<f64> = frame
+                    .data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                let corrected_var: Vec<f64> = variance
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+                    .collect();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial, &intensity, &variance, n_radial, mask_data,
+                    &radial,
+                    &corrected,
+                    &corrected_var,
+                    n_radial,
+                    mask_data,
                 );
                 (y, sigma)
             }
@@ -483,7 +601,13 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
@@ -491,7 +615,13 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
@@ -500,7 +630,13 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
         }
     }
@@ -514,7 +650,8 @@ impl Integrator {
         n_azimuthal: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(dim1, dim2);
-        let (intensity, variance) = self.correct_intensity_and_variance(data);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -528,8 +665,22 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
+                let corrected: Vec<f64> = data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                let corrected_var: Vec<f64> = variance
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+                    .collect();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial, &intensity, &variance, n_radial, mask_data,
+                    &radial,
+                    &corrected,
+                    &corrected_var,
+                    n_radial,
+                    mask_data,
                 );
                 (y, sigma)
             }
@@ -539,7 +690,13 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
@@ -547,7 +704,13 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
@@ -556,7 +719,13 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
         }
     }
@@ -576,7 +745,8 @@ impl Integrator {
         azimuthal_step: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let (intensity, variance) = self.correct_intensity_and_variance(&frame.data);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = frame.data.iter().map(|&x| x.max(0.0)).collect();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -591,8 +761,23 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
+                let corrected: Vec<f64> = frame
+                    .data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                let corrected_var: Vec<f64> = variance
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+                    .collect();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial, &intensity, &variance, n_radial, mask_data,
+                    &radial,
+                    &corrected,
+                    &corrected_var,
+                    n_radial,
+                    mask_data,
                 );
                 (y, sigma)
             }
@@ -603,7 +788,13 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
@@ -612,7 +803,13 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
@@ -622,7 +819,13 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    &frame.data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
         }
     }
@@ -639,7 +842,8 @@ impl Integrator {
         azimuthal_step: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         self.update_geometry_arrays(dim1, dim2);
-        let (intensity, variance) = self.correct_intensity_and_variance(data);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -654,8 +858,22 @@ impl Integrator {
                     .expect("geometry state lock poisoned")
                     .radial
                     .clone();
+                let corrected: Vec<f64> = data
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+                    .collect();
+                let corrected_var: Vec<f64> = variance
+                    .iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+                    .collect();
                 let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial, &intensity, &variance, n_radial, mask_data,
+                    &radial,
+                    &corrected,
+                    &corrected_var,
+                    n_radial,
+                    mask_data,
                 );
                 (y, sigma)
             }
@@ -666,7 +884,13 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
@@ -675,7 +899,13 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
@@ -685,7 +915,13 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d_with_errors(&intensity, &variance, &lut2d, mask_data)
+                crate::lut::integrate2d_with_errors(
+                    data,
+                    &variance,
+                    &lut2d,
+                    mask_data,
+                    Some(&normalization),
+                )
             }
         }
     }

@@ -39,9 +39,9 @@ impl Integrator {
                     None => vec![1.0; size],
                 };
 
-                // Update correction factor
-                state.correction_factor = (0..size)
-                    .map(|i| 1.0 / (state.polarization[i] * state.solid_angle[i]))
+                // Update normalization: pol * sa (pyFAI-style)
+                state.normalization = (0..size)
+                    .map(|i| state.polarization[i] * state.solid_angle[i])
                     .collect();
             }
             drop(state);
@@ -66,34 +66,18 @@ impl Integrator {
             None => vec![1.0; size],
         };
 
-        // Update correction factor when polarization changes
+        // Update normalization when polarization changes
         if !state.solid_angle.is_empty() {
-            state.correction_factor = (0..size)
-                .map(|i| 1.0 / (state.polarization[i] * state.solid_angle[i]))
+            state.normalization = (0..size)
+                .map(|i| state.polarization[i] * state.solid_angle[i])
                 .collect();
         }
     }
 
-    /// Apply polarization and solid angle corrections to the intensity.
-    /// Uses pre-computed correction_factor to avoid two divisions per pixel.
+    /// Get the normalization array (pol * sa) for weighted-average integration.
     /// Thread-safe: only reads from state.
-    pub(super) fn correct_intensity(&self, data: &[f64]) -> Vec<f64> {
+    pub(super) fn get_normalization(&self) -> Vec<f64> {
         let state = self.state.read().expect("geometry state lock poisoned");
-        data.iter()
-            .enumerate()
-            .map(|(i, y)| y * state.correction_factor[i])
-            .collect::<Vec<f64>>()
-    }
-
-    pub(super) fn correct_intensity_and_variance(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
-        let state = self.state.read().expect("geometry state lock poisoned");
-        let mut intensity = Vec::with_capacity(data.len());
-        let mut variance = Vec::with_capacity(data.len());
-        for (i, &y) in data.iter().enumerate() {
-            let corr = state.correction_factor[i];
-            intensity.push(y * corr);
-            variance.push(y * corr * corr);
-        }
-        (intensity, variance)
+        state.normalization.clone()
     }
 }

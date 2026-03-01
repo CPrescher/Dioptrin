@@ -167,9 +167,7 @@ fn test_integrate_counting_1d() {
         .sum();
 
     let int_diff = int_diff / int.len() as f64;
-    // Tolerance widened: azimuthal coverage normalization corrects partial-ring bins,
-    // causing deviations from the pyFAI reference (~0.9% of max).
-    assert!(int_diff < math::max(&int) * 0.02);
+    assert!(int_diff < math::max(&int) * 1e-4);
 }
 
 #[test]
@@ -397,10 +395,8 @@ fn test_integrator_intensity_invariant_across_units() {
     let reference = total_intensities[0];
     for (i, total) in total_intensities.iter().enumerate() {
         let rel_diff = (total - reference).abs() / reference;
-        // Tolerance widened: azimuthal coverage normalization affects edge bins differently
-        // depending on radial unit binning, causing per-unit total intensity to vary.
         assert!(
-            rel_diff < 0.05,
+            rel_diff < 0.01,
             "Unit {:?}: total intensity differs by {:.2}%",
             units[i],
             rel_diff * 100.0

@@ -26,8 +26,8 @@ struct GeometryState {
     azimuth: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
-    /// Combined correction factor: 1.0 / (polarization * solid_angle)
-    correction_factor: Vec<f64>,
+    /// Combined normalization: polarization * solid_angle (pyFAI-style)
+    normalization: Vec<f64>,
 }
 
 impl GeometryState {
@@ -40,7 +40,7 @@ impl GeometryState {
             azimuth: vec![],
             solid_angle: vec![],
             polarization: vec![],
-            correction_factor: vec![],
+            normalization: vec![],
         }
     }
 }

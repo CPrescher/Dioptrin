@@ -159,10 +159,6 @@ impl Integrator {
                     lut::build_lut1d_ss_csr(&geom, radial, n_points, n_ss, unit)
                 }
             };
-            let azimuthal_coverage =
-                lut::compute_azimuthal_coverage(&lut1d, &state.azimuth);
-            let mut lut1d = lut1d;
-            lut1d.azimuthal_coverage = Some(azimuthal_coverage);
             drop(state);
 
             // Acquire write lock and double-check (another thread may have built it)

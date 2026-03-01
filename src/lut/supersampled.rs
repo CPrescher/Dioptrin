@@ -29,7 +29,7 @@ use crate::math::histogram;
 /// let radial = geometry.calc_tth_all();
 /// let lut = dioptrin::lut::build_lut1d_ss_csr(&geometry, &radial, 100, 2, RadialUnit::TthRad);
 /// let intensity = vec![1.0; 100];
-/// let (_bins, y) = dioptrin::lut::integrate1d(&intensity, &lut, None);
+/// let (_bins, y) = dioptrin::lut::integrate1d(&intensity, &lut, None, None);
 /// assert_eq!(y.len(), 100);
 /// ```
 pub fn build_lut1d_ss_csr(
@@ -113,7 +113,6 @@ pub fn build_lut1d_ss_csr(
         values: Some(values),
         hist_min,
         hist_step,
-        azimuthal_coverage: None,
     }
 }
 
@@ -141,7 +140,7 @@ pub fn build_lut1d_ss_csr(
 ///     &geometry, &radial, &azimuthal, 32, 36, 2, RadialUnit::TthRad
 /// );
 /// let intensity = vec![1.0; 100];
-/// let y = dioptrin::lut::integrate2d(&intensity, &lut2d, None);
+/// let y = dioptrin::lut::integrate2d(&intensity, &lut2d, None, None);
 /// assert_eq!(y.len(), 32 * 36);
 /// ```
 pub fn build_lut2d_ss_csr(
@@ -396,12 +395,12 @@ mod tests {
 
         // Build and integrate in radians
         let lut_rad = build_lut1d_ss_csr(&geometry, &tth, 5, 2, RadialUnit::TthRad);
-        let (bins_rad, int_rad) = integrate1d(&intensity, &lut_rad, None);
+        let (bins_rad, int_rad) = integrate1d(&intensity, &lut_rad, None, None);
 
         // Build and integrate in degrees
         let radial_deg = RadialUnit::TthDeg.convert_from_tth(&tth, geometry.poni.wavelength);
         let lut_deg = build_lut1d_ss_csr(&geometry, &radial_deg, 5, 2, RadialUnit::TthDeg);
-        let (bins_deg, int_deg) = integrate1d(&intensity, &lut_deg, None);
+        let (bins_deg, int_deg) = integrate1d(&intensity, &lut_deg, None, None);
 
         // Bin centers should differ by 180/π
         for (r, d) in bins_rad.iter().zip(bins_deg.iter()) {
