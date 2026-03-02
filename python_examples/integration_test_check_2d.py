@@ -2,8 +2,8 @@ import argparse
 import os
 import sys
 
-if not os.path.isdir("test_data/test_output"):
-    print("Skipping: test_data/test_output/ not found (run examples locally first)")
+if not os.path.isfile("test_data/test_output/cake_lut.txt"):
+    print("Skipping: test_data/test_output/cake_lut.txt not found (run 2D integration example locally first)")
     sys.exit(77)
 
 import numpy as np
