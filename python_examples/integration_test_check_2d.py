@@ -1,4 +1,11 @@
 import argparse
+import os
+import sys
+
+if not os.path.isdir("test_data/test_output"):
+    print("Skipping: test_data/test_output/ not found (run examples locally first)")
+    sys.exit(77)
+
 import numpy as np
 import fabio
 import matplotlib.pyplot as plt

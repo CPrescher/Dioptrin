@@ -99,6 +99,9 @@ jobs:
           source .venv/bin/activate
           uv pip install .[test]
 
+      - name: Generate test output data
+        run: cargo test --all-features
+
       - name: Run Python examples
         run: |
           source .venv/bin/activate

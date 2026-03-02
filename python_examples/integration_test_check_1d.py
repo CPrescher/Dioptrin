@@ -1,5 +1,6 @@
 import argparse
 import time
+
 import numpy as np
 import fabio
 import matplotlib.pyplot as plt
