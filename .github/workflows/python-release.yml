@@ -20,15 +20,11 @@ jobs:
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          architecture: x64
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --features python,licensed
+          args: --release --out dist --features python,licensed -i ${{ matrix.python-version }}
           sccache: 'true'
           manylinux: auto
       - name: Upload wheels
