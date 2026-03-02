@@ -176,10 +176,7 @@ name = "dioptrin"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
-    { name = "ipython" },
-    { name = "matplotlib" },
     { name = "numpy" },
-    { name = "pyfai" },
 ]
 
 [package.optional-dependencies]
@@ -187,6 +184,11 @@ benchmark = [
     { name = "bitshuffle" },
     { name = "fabio" },
     { name = "h5py" },
+    { name = "pyfai" },
+]
+interactive = [
+    { name = "ipython" },
+    { name = "matplotlib" },
 ]
 
 [package.metadata]
@@ -194,12 +196,12 @@ requires-dist = [
     { name = "bitshuffle", marker = "extra == 'benchmark'" },
     { name = "fabio", marker = "extra == 'benchmark'" },
     { name = "h5py", marker = "extra == 'benchmark'" },
-    { name = "ipython", specifier = ">=9.8.0" },
-    { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "ipython", marker = "extra == 'interactive'", specifier = ">=9.8.0" },
+    { name = "matplotlib", marker = "extra == 'interactive'", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=1.23" },
-    { name = "pyfai", specifier = ">=2025.12.1" },
+    { name = "pyfai", marker = "extra == 'benchmark'", specifier = ">=2025.12.1" },
 ]
-provides-extras = ["benchmark"]
+provides-extras = ["benchmark", "interactive"]
 
 [[package]]
 name = "executing"
