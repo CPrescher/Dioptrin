@@ -82,14 +82,20 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
           pip install maturin numpy h5py
 
       - name: Build Python package
-        run: maturin develop --features python
+        run: |
+          source .venv/bin/activate
+          maturin develop --features python
 
       - name: Run Python examples
-        run: python test_examples.py
+        run: |
+          source .venv/bin/activate
+          python test_examples.py
 
   benchmarks:
     name: Benchmarks (no regression check)
