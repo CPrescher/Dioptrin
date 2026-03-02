@@ -150,6 +150,7 @@ This is useful when you want to reuse a LUT across multiple frames or manage cac
 ```rust
 use dioptrin::frame::Frame;
 use dioptrin::geometry::Geometry;
+use dioptrin::integration::RadialUnit;
 use dioptrin::lut::{build_lut2d_ps_csr, integrate2d};
 use dioptrin::poni::Poni;
 
@@ -160,10 +161,11 @@ fn main() {
 
     let tth = geometry.calc_tth_all();
     let azimuthal = geometry.calc_azimuth_all();
-    let lut2d = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 1250, 360);
+    let lut2d = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 1250, 360, RadialUnit::TthRad);
 
     let intensity = frame.data.clone();
-    let cake = integrate2d(&intensity, &lut2d, None);
+    let norm = vec![1.0; intensity.len()];
+    let cake = integrate2d(&intensity, &lut2d, None, &norm);
 
     println!("2D bins: {}", cake.len());
 }

@@ -43,8 +43,6 @@ Demonstrates:
 
 ### Core Functionality Tests
 
-**`frame_test_check.py`** - Test frame loading from TIFF files
-
 **`geometry_test_check.py`** - Test detector geometry calculations
 
 **`integration_test_check_1d.py`** - Test 1D integration methods
