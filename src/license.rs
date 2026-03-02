@@ -132,8 +132,7 @@ fn parse_payload(payload: &str) -> Result<License, LicenseError> {
     }
 
     Ok(License {
-        email: email
-            .ok_or_else(|| LicenseError::InvalidFormat("missing 'email' field".into()))?,
+        email: email.ok_or_else(|| LicenseError::InvalidFormat("missing 'email' field".into()))?,
         expires: expires
             .ok_or_else(|| LicenseError::InvalidFormat("missing 'expires' field".into()))?,
         tier: tier.ok_or_else(|| LicenseError::InvalidFormat("missing 'tier' field".into()))?,
@@ -199,8 +198,8 @@ mod tests {
     fn test_keypair() -> (SigningKey, VerifyingKey) {
         // Deterministic test keypair (DO NOT use in production)
         let secret: [u8; 32] = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29, 30, 31, 32,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32,
         ];
         let signing = SigningKey::from_bytes(&secret);
         let verifying = signing.verifying_key();

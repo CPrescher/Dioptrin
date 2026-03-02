@@ -1,6 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use ed25519_dalek::{SigningKey, Signer};
+use ed25519_dalek::{Signer, SigningKey};
 use std::fs;
 use std::process;
 
@@ -21,7 +21,9 @@ fn main() {
 fn usage() -> ! {
     eprintln!("Usage:");
     eprintln!("  keygen --generate-keypair [--output-dir <dir>]");
-    eprintln!("  keygen --email <email> --expires <YYYY-MM-DD> --tier <tier> [--private-key <path>] [--output <path>]");
+    eprintln!(
+        "  keygen --email <email> --expires <YYYY-MM-DD> --tier <tier> [--private-key <path>] [--output <path>]"
+    );
     process::exit(1);
 }
 
@@ -65,7 +67,8 @@ fn sign_license(args: &[String]) {
         process::exit(1);
     });
 
-    let private_key_path = get_arg(args, "--private-key").unwrap_or_else(|| "keys/private.key".into());
+    let private_key_path =
+        get_arg(args, "--private-key").unwrap_or_else(|| "keys/private.key".into());
     let private_bytes = fs::read(&private_key_path).unwrap_or_else(|e| {
         eprintln!("Error reading private key '{}': {}", private_key_path, e);
         process::exit(1);
