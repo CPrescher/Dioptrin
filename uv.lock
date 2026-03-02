@@ -190,18 +190,28 @@ interactive = [
     { name = "ipython" },
     { name = "matplotlib" },
 ]
+test = [
+    { name = "fabio" },
+    { name = "h5py" },
+    { name = "matplotlib" },
+    { name = "pyfai" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "bitshuffle", marker = "extra == 'benchmark'" },
     { name = "fabio", marker = "extra == 'benchmark'" },
+    { name = "fabio", marker = "extra == 'test'" },
     { name = "h5py", marker = "extra == 'benchmark'" },
+    { name = "h5py", marker = "extra == 'test'" },
     { name = "ipython", marker = "extra == 'interactive'", specifier = ">=9.8.0" },
     { name = "matplotlib", marker = "extra == 'interactive'", specifier = ">=3.10.8" },
+    { name = "matplotlib", marker = "extra == 'test'", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=1.23" },
     { name = "pyfai", marker = "extra == 'benchmark'", specifier = ">=2025.12.1" },
+    { name = "pyfai", marker = "extra == 'test'", specifier = ">=2025.12.1" },
 ]
-provides-extras = ["benchmark", "interactive"]
+provides-extras = ["test", "benchmark", "interactive"]
 
 [[package]]
 name = "executing"

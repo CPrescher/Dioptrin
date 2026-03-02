@@ -216,8 +216,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if not os.path.exists(args.hdf5):
-        print(f"Error: HDF5 file not found: {args.hdf5}")
-        sys.exit(1)
+        print(f"Skipping: HDF5 file not found: {args.hdf5}")
+        sys.exit(77)
 
     print(f"HDF5 file      : {args.hdf5}")
     print(f"Frames         : {args.frames}")

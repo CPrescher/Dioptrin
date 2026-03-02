@@ -9,6 +9,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+test = ["h5py", "fabio", "pyfai>=2025.12.1", "matplotlib>=3.10.8"]
 benchmark = ["h5py", "fabio", "bitshuffle", "pyfai>=2025.12.1"]
 interactive = ["ipython>=9.8.0", "matplotlib>=3.10.8"]
 

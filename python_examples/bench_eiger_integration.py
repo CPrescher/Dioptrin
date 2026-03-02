@@ -191,8 +191,8 @@ def main() -> None:
 
     for path, label in [(args.hdf5, "HDF5"), (args.poni, "PONI")]:
         if not os.path.exists(path):
-            print(f"Error: {label} file not found: {path}")
-            sys.exit(1)
+            print(f"Skipping: {label} file not found: {path}")
+            sys.exit(77)
 
     print(f"HDF5 file      : {args.hdf5}")
     print(f"Method         : {args.method}")

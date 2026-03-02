@@ -80,17 +80,24 @@ jobs:
           path: target
           key: ${{ runner.os }}-py${{ matrix.python-version }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Install Python dependencies
         run: |
-          python -m venv .venv
+          uv venv .venv
           source .venv/bin/activate
-          pip install --upgrade pip
-          pip install maturin numpy h5py
+          uv pip install maturin
 
       - name: Build Python package
         run: |
           source .venv/bin/activate
           maturin develop --features python
+
+      - name: Install test dependencies
+        run: |
+          source .venv/bin/activate
+          uv pip install .[test]
 
       - name: Run Python examples
         run: |

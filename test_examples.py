@@ -25,6 +25,10 @@ def run_example(script_path: Path) -> bool:
 
         print(result.stdout)
 
+        if result.returncode == 77:
+            print(f"⏭️  SKIPPED (missing optional dependencies or data)")
+            return None
+
         if result.returncode != 0:
             print(f"❌ FAILED with exit code {result.returncode}")
             print("STDERR:", result.stderr)
