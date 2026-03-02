@@ -1,6 +1,6 @@
 [package]
 name = "dioptrin"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -10,6 +10,9 @@ tiff = "0.8"
 rayon = "1.5"
 pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
 numpy = { version = "0.27", optional = true }
+ed25519-dalek = { version = "2", optional = true, features = ["rand_core"] }
+base64 = { version = "0.22", optional = true }
+rand = { version = "0.8", optional = true }
 
 [dev-dependencies]
 criterion = "0.5.1"
@@ -32,9 +35,14 @@ lto = true
 codegen-units = 1
 opt-level = 3
 
-# No optional features
 [features]
 python = ["numpy", "pyo3", "pyo3/extension-module"]
+licensed = ["ed25519-dalek", "base64", "rand"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "keygen"
+path = "src/keygen/main.rs"
+required-features = ["licensed"]

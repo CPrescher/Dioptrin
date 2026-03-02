@@ -10,5 +10,8 @@ pub mod poni;
 #[cfg(test)]
 mod util;
 
+#[cfg(feature = "licensed")]
+pub mod license;
+
 #[cfg(feature = "python")]
 pub mod python;

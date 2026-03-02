@@ -12,3 +12,5 @@ test_data/test_output/*.txt
 
 *.ipynb
 notebooks/.ipynb_checkpoints
+
+keys/private.key

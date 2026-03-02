@@ -74,6 +74,11 @@ impl PyIntegrator {
         n_ss: Option<usize>,
         unit: Option<&str>,
     ) -> PyResult<Self> {
+        #[cfg(feature = "licensed")]
+        {
+            crate::license::verify_license()
+                .map_err(|e| crate::python::LicenseError::new_err(e.to_string()))?;
+        }
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
         let geometry = Geometry::new(0, 0, poni);
@@ -130,6 +135,11 @@ impl PyIntegrator {
         n_ss: Option<usize>,
         unit: Option<&str>,
     ) -> PyResult<Self> {
+        #[cfg(feature = "licensed")]
+        {
+            crate::license::verify_license()
+                .map_err(|e| crate::python::LicenseError::new_err(e.to_string()))?;
+        }
         let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry)
