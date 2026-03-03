@@ -22,7 +22,7 @@ fn usage() -> ! {
     eprintln!("Usage:");
     eprintln!("  keygen --generate-keypair [--output-dir <dir>]");
     eprintln!(
-        "  keygen --email <email> --expires <YYYY-MM-DD> --tier <tier> [--private-key <path>] [--output <path>]"
+        "  keygen --email <email> --expires <YYYY-MM-DD> [--private-key <path>] [--output <path>]"
     );
     process::exit(1);
 }
@@ -62,11 +62,6 @@ fn sign_license(args: &[String]) {
         eprintln!("Error: --expires is required");
         process::exit(1);
     });
-    let tier = get_arg(args, "--tier").unwrap_or_else(|| {
-        eprintln!("Error: --tier is required");
-        process::exit(1);
-    });
-
     let private_key_path =
         get_arg(args, "--private-key").unwrap_or_else(|| "keys/private.key".into());
     let private_bytes = fs::read(&private_key_path).unwrap_or_else(|e| {
@@ -79,7 +74,7 @@ fn sign_license(args: &[String]) {
     });
     let signing_key = SigningKey::from_bytes(&key_bytes);
 
-    let payload = format!("email={}\nexpires={}\ntier={}", email, expires, tier);
+    let payload = format!("email={}\nexpires={}", email, expires);
     let signature = signing_key.sign(payload.as_bytes());
     let sig_b64 = BASE64.encode(signature.to_bytes());
     let license = format!("{}\n---\n{}", payload, sig_b64);

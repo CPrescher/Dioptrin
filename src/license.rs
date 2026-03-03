@@ -11,7 +11,6 @@ const PUBLIC_KEY_BYTES: &[u8; 32] = include_bytes!("../keys/public.key");
 pub struct License {
     pub email: String,
     pub expires: String,
-    pub tier: String,
 }
 
 #[derive(Debug)]
@@ -114,7 +113,6 @@ fn verify_signature(
 fn parse_payload(payload: &str) -> Result<License, LicenseError> {
     let mut email = None;
     let mut expires = None;
-    let mut tier = None;
 
     for line in payload.lines() {
         let line = line.trim();
@@ -125,7 +123,6 @@ fn parse_payload(payload: &str) -> Result<License, LicenseError> {
             match key.trim() {
                 "email" => email = Some(value.trim().to_string()),
                 "expires" => expires = Some(value.trim().to_string()),
-                "tier" => tier = Some(value.trim().to_string()),
                 _ => {}
             }
         }
@@ -135,7 +132,6 @@ fn parse_payload(payload: &str) -> Result<License, LicenseError> {
         email: email.ok_or_else(|| LicenseError::InvalidFormat("missing 'email' field".into()))?,
         expires: expires
             .ok_or_else(|| LicenseError::InvalidFormat("missing 'expires' field".into()))?,
-        tier: tier.ok_or_else(|| LicenseError::InvalidFormat("missing 'tier' field".into()))?,
     })
 }
 
@@ -216,18 +212,17 @@ mod tests {
     #[test]
     fn test_valid_license() {
         let (signing, verifying) = test_keypair();
-        let payload = "email=test@example.com\nexpires=2099-12-31\ntier=pro";
+        let payload = "email=test@example.com\nexpires=2099-12-31";
         let content = sign_license(payload, &signing);
         let license = verify_with_key(&content, &verifying).unwrap();
         assert_eq!(license.email, "test@example.com");
         assert_eq!(license.expires, "2099-12-31");
-        assert_eq!(license.tier, "pro");
     }
 
     #[test]
     fn test_expired_license() {
         let (signing, verifying) = test_keypair();
-        let payload = "email=test@example.com\nexpires=2020-01-01\ntier=pro";
+        let payload = "email=test@example.com\nexpires=2020-01-01";
         let content = sign_license(payload, &signing);
         let err = verify_with_key(&content, &verifying).unwrap_err();
         assert!(matches!(err, LicenseError::Expired { .. }));
@@ -239,7 +234,7 @@ mod tests {
         // Use a different keypair to sign
         let other_secret: [u8; 32] = [99; 32];
         let other_signing = SigningKey::from_bytes(&other_secret);
-        let payload = "email=test@example.com\nexpires=2099-12-31\ntier=pro";
+        let payload = "email=test@example.com\nexpires=2099-12-31";
         let content = sign_license(payload, &other_signing);
         let err = verify_with_key(&content, &verifying).unwrap_err();
         assert!(matches!(err, LicenseError::InvalidSignature));
@@ -248,10 +243,10 @@ mod tests {
     #[test]
     fn test_tampered_payload() {
         let (signing, _verifying) = test_keypair();
-        let payload = "email=test@example.com\nexpires=2099-12-31\ntier=pro";
+        let payload = "email=test@example.com\nexpires=2099-12-31";
         let content = sign_license(payload, &signing);
         // Tamper with the payload
-        let tampered = content.replace("pro", "enterprise");
+        let tampered = content.replace("2099", "2199");
         let (_, verifying) = test_keypair();
         let err = verify_with_key(&tampered, &verifying).unwrap_err();
         assert!(matches!(err, LicenseError::InvalidSignature));
@@ -267,7 +262,7 @@ mod tests {
     #[test]
     fn test_missing_fields() {
         let (signing, verifying) = test_keypair();
-        let payload = "email=test@example.com\nexpires=2099-12-31";
+        let payload = "email=test@example.com";
         let content = sign_license(payload, &signing);
         let err = verify_with_key(&content, &verifying).unwrap_err();
         assert!(matches!(err, LicenseError::InvalidFormat(_)));

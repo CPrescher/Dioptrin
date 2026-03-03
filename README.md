@@ -382,7 +382,6 @@ A license file looks like this:
 ```
 email=user@university.edu
 expires=2027-01-01
-tier=pro
 ---
 <base64-encoded ed25519 signature>
 ```
@@ -422,14 +421,12 @@ cargo run --features licensed --bin keygen -- --generate-keypair
 cargo run --features licensed --bin keygen -- \
     --email user@university.edu \
     --expires 2027-01-01 \
-    --tier pro \
     --output license.key
 
 # Use a custom private key location
 cargo run --features licensed --bin keygen -- \
     --email user@university.edu \
     --expires 2027-01-01 \
-    --tier pro \
     --private-key /path/to/private.key
 ```
 
