@@ -76,8 +76,7 @@ impl PyIntegrator {
     ) -> PyResult<Self> {
         #[cfg(feature = "licensed")]
         {
-            crate::license::verify_license()
-                .map_err(|e| crate::python::LicenseError::new_err(e.to_string()))?;
+            crate::license::verify_license().map_err(crate::python::license_error_to_py)?;
         }
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
@@ -137,8 +136,7 @@ impl PyIntegrator {
     ) -> PyResult<Self> {
         #[cfg(feature = "licensed")]
         {
-            crate::license::verify_license()
-                .map_err(|e| crate::python::LicenseError::new_err(e.to_string()))?;
+            crate::license::verify_license().map_err(crate::python::license_error_to_py)?;
         }
         let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
