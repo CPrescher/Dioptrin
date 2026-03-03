@@ -21,10 +21,22 @@ pub fn license_error_to_py(e: crate::license::LicenseError) -> PyErr {
     }
 }
 
+/// Validate the current license. Returns None if valid, raises LicenseError otherwise.
+/// In unlicensed builds, always returns None (no check performed).
+#[pyfunction]
+fn validate_license() -> PyResult<()> {
+    #[cfg(feature = "licensed")]
+    {
+        crate::license::verify_license().map_err(license_error_to_py)?;
+    }
+    Ok(())
+}
+
 #[pymodule]
 fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rayon_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(set_rayon_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_license, m)?)?;
     m.add_class::<PyIntegrator>()?;
     m.add_class::<PyIntegrationResult>()?;
     m.add_class::<PyBatchResult>()?;
