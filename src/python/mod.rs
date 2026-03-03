@@ -19,9 +19,7 @@ pyo3::create_exception!(dioptrin, LicenseExpiredError, LicenseError);
 pub fn license_error_to_py(e: crate::license::LicenseError) -> PyErr {
     match &e {
         crate::license::LicenseError::NotFound => LicenseNotFoundError::new_err(e.to_string()),
-        crate::license::LicenseError::Expired { .. } => {
-            LicenseExpiredError::new_err(e.to_string())
-        }
+        crate::license::LicenseError::Expired { .. } => LicenseExpiredError::new_err(e.to_string()),
         _ => LicenseError::new_err(e.to_string()),
     }
 }

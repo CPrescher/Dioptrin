@@ -61,10 +61,10 @@ pub fn verify_with_key(content: &str, public_key: &VerifyingKey) -> Result<Licen
 
 fn read_license_content() -> Result<String, LicenseError> {
     // 1. Try DIOPTRIN_LICENSE env var (content, not path)
-    if let Ok(content) = std::env::var("DIOPTRIN_LICENSE") {
-        if !content.is_empty() {
-            return Ok(content);
-        }
+    if let Ok(content) = std::env::var("DIOPTRIN_LICENSE")
+        && !content.is_empty()
+    {
+        return Ok(content);
     }
 
     // 2. Fall back to ~/.dioptrin/license.key
