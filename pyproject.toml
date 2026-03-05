@@ -10,7 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["h5py", "fabio", "pyfai>=2025.12.1", "matplotlib>=3.10.8"]
-benchmark = ["h5py", "fabio", "bitshuffle", "pyfai>=2025.12.1"]
+benchmark = ["h5py", "fabio", "bitshuffle", "psutil", "pyfai>=2025.12.1"]
 
 [build-system]
 requires = ["maturin>=1.4,<2.0"]
