@@ -31,16 +31,23 @@ python test_examples.py            # Test all Python examples
 - `poni.rs` - PONI calibration file parsing (v1 and v2 formats)
 - `mask.rs` - Binary pixel masking
 - `integration/` - Main `Integrator` API with builder pattern, LUT caching via RefCell, corrections
+  - `Integrator` supports optional `radial_range` for explicit bin grids (required for MultiIntegrator)
+  - `integrate1d_raw` methods return intermediate sums (sum_signal, sum_norm, sum_variance) before division
 - `lut/` - CSR lookup table builders (counting, pixel-split, supersampled) and integration functions
+  - `_with_range` variants of 1D builders accept explicit radial min/max
+  - `IntermediateResult1d`/`IntermediateResult2d` structs for raw integration output
+- `multi.rs` - `MultiIntegrator` for merging results from multiple detectors (similar to pyFAI's MultiGeometry)
 - `math/` - Sparse matrix implementations (CSR, COO), histogram utilities
 - `python/` - PyO3 bindings (enabled with `--features python`)
   - Accepts both file paths and NumPy arrays for integration
   - `batch1d`/`batch2d` methods work with lists of TIFF paths or NumPy arrays
+  - `MultiIntegrator` class for multi-detector merging from Python
 
 **Key patterns:**
 - Builder pattern for Integrator configuration
 - Interior mutability (RefCell) for LUT caching in `&self` methods
 - Lazy geometry array computation, cached and updated on dimension change
+- Multi-detector merging: sum raw intermediates across detectors, divide once at the end
 
 ## Test Data
 

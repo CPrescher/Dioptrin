@@ -470,3 +470,542 @@ fn test_integrator_unit_change_invalidates_cache() {
         "After unit change, x values should be in degrees (larger)"
     );
 }
+
+// ============================================================================
+// Radial range tests
+// ============================================================================
+
+#[test]
+fn test_radial_range_builder() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 1.0;
+    let geometry = Geometry::new(10, 10, poni);
+    let integrator = Integrator::new(geometry).with_radial_range(0.1, 0.5);
+    assert_eq!(integrator.radial_range(), Some((0.1, 0.5)));
+}
+
+#[test]
+fn test_radial_range_setter() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 1.0;
+    let geometry = Geometry::new(10, 10, poni);
+    let mut integrator = Integrator::new(geometry);
+    assert_eq!(integrator.radial_range(), None);
+    integrator.set_radial_range(Some((0.1, 0.5)));
+    assert_eq!(integrator.radial_range(), Some((0.1, 0.5)));
+    integrator.set_radial_range(None);
+    assert_eq!(integrator.radial_range(), None);
+}
+
+#[test]
+fn test_radial_range_controls_bin_grid() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let geometry = Geometry::new(10, 10, poni);
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: vec![1.0; 100],
+        dim1: 10,
+        dim2: 10,
+    };
+
+    // Without radial range
+    let integrator_auto = Integrator::new(geometry.clone())
+        .with_method(IntegrationMethod::Counting);
+    let (bins_auto, _) = integrator_auto.integrate1d(&frame, 50);
+
+    // With explicit radial range wider than data
+    let integrator_range = Integrator::new(geometry)
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 1.0);
+    let (bins_range, _) = integrator_range.integrate1d(&frame, 50);
+
+    // The ranged bins should start near 0.0 and end near 1.0
+    assert!(bins_range[0] < 0.02, "First bin should be near 0.0, got {}", bins_range[0]);
+    assert!(bins_range[49] > 0.95, "Last bin should be near 1.0, got {}", bins_range[49]);
+
+    // Auto bins should be much narrower (detector only covers small angle)
+    assert!(bins_auto[49] < bins_range[49], "Auto range should be narrower");
+}
+
+// ============================================================================
+// integrate1d_raw tests
+// ============================================================================
+
+#[test]
+fn test_integrate1d_raw_matches_integrate1d() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let geometry = Geometry::new(10, 10, poni);
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: vec![5.0; 100],
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let integrator = Integrator::new(geometry)
+        .with_method(IntegrationMethod::Counting);
+
+    let (bins, intensity) = integrator.integrate1d(&frame, 20);
+    let raw = integrator.integrate1d_raw(&frame, 20);
+
+    // Bins should match
+    assert_eq!(bins.len(), raw.bins.len());
+    for (a, b) in bins.iter().zip(raw.bins.iter()) {
+        assert!((a - b).abs() < 1e-12, "Bins differ: {} vs {}", a, b);
+    }
+
+    // Manual division of raw sums should match integrate1d result
+    for i in 0..20 {
+        let expected = if raw.sum_norm[i] == 0.0 {
+            0.0
+        } else {
+            raw.sum_signal[i] / raw.sum_norm[i]
+        };
+        assert!(
+            (intensity[i] - expected).abs() < 1e-12,
+            "Bin {}: integrate1d={}, raw divided={}",
+            i, intensity[i], expected
+        );
+    }
+}
+
+#[test]
+fn test_integrate1d_raw_with_variance_matches_integrate1d_with_errors() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let geometry = Geometry::new(10, 10, poni);
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: (1..=100).map(|x| x as f64).collect(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let integrator = Integrator::new(geometry)
+        .with_method(IntegrationMethod::PixelSplit);
+
+    let (bins, intensity, sigma) = integrator.integrate1d_with_errors(&frame, 20);
+    let raw = integrator.integrate1d_raw_with_variance(&frame, 20);
+
+    // Bins should match
+    for (a, b) in bins.iter().zip(raw.bins.iter()) {
+        assert!((a - b).abs() < 1e-12);
+    }
+
+    // Manual computation from raw should match
+    let sum_var = raw.sum_variance.unwrap();
+    for i in 0..20 {
+        let expected_int = if raw.sum_norm[i] == 0.0 {
+            0.0
+        } else {
+            raw.sum_signal[i] / raw.sum_norm[i]
+        };
+        let expected_sig = if raw.sum_norm[i] == 0.0 {
+            0.0
+        } else {
+            (sum_var[i] / (raw.sum_norm[i] * raw.sum_norm[i])).max(0.0).sqrt()
+        };
+        assert!(
+            (intensity[i] - expected_int).abs() < 1e-10,
+            "Bin {}: intensity mismatch", i
+        );
+        assert!(
+            (sigma[i] - expected_sig).abs() < 1e-10,
+            "Bin {}: sigma mismatch", i
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "not supported for Histogram")]
+fn test_integrate1d_raw_panics_for_histogram() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let geometry = Geometry::new(10, 10, poni);
+    let frame = Frame {
+        name: String::from("test"),
+        data: vec![1.0; 100],
+        dim1: 10,
+        dim2: 10,
+    };
+    let integrator = Integrator::new(geometry)
+        .with_method(IntegrationMethod::Histogram);
+    let _ = integrator.integrate1d_raw(&frame, 20);
+}
+
+// ============================================================================
+// MultiIntegrator tests
+// ============================================================================
+
+#[test]
+fn test_multi_integrator_single_detector_matches_plain() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let geometry = Geometry::new(10, 10, poni.clone());
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: (1..=100).map(|x| x as f64).collect(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    // Plain integrator with radial range
+    let plain = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+    let (bins_plain, int_plain) = plain.integrate1d(&frame, 50);
+
+    // MultiIntegrator with one detector
+    let multi_int = Integrator::new(geometry)
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+    let multi = crate::multi::MultiIntegrator::new(vec![multi_int]);
+    let (bins_multi, int_multi) = multi.integrate1d(&[&frame], 50);
+
+    // Results should match exactly
+    assert_eq!(bins_plain.len(), bins_multi.len());
+    for i in 0..bins_plain.len() {
+        assert!(
+            (bins_plain[i] - bins_multi[i]).abs() < 1e-12,
+            "Bin {} differs: {} vs {}", i, bins_plain[i], bins_multi[i]
+        );
+        assert!(
+            (int_plain[i] - int_multi[i]).abs() < 1e-12,
+            "Intensity {} differs: {} vs {}", i, int_plain[i], int_multi[i]
+        );
+    }
+}
+
+#[test]
+fn test_multi_integrator_two_identical_detectors() {
+    // Two identical detectors with same data should produce same intensity as one
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: (1..=100).map(|x| x as f64).collect(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+
+    // Single detector result
+    let (_, int_single) = int1.integrate1d(&frame, 50);
+
+    let int2 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+    let int3 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+
+    let multi = crate::multi::MultiIntegrator::new(vec![int2, int3]);
+    let (_, int_double) = multi.integrate1d(&[&frame, &frame], 50);
+
+    // With identical detectors and data, signal doubles and norm doubles,
+    // so intensity = 2*signal / 2*norm = signal/norm = same as single
+    for i in 0..50 {
+        assert!(
+            (int_single[i] - int_double[i]).abs() < 1e-10,
+            "Bin {}: single={}, double={}", i, int_single[i], int_double[i]
+        );
+    }
+}
+
+#[test]
+fn test_multi_integrator_with_errors() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: (1..=100).map(|x| x as f64).collect(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+
+    let multi = crate::multi::MultiIntegrator::new(vec![int1]);
+    let (bins, intensity, sigma) = multi.integrate1d_with_errors(&[&frame], 50);
+
+    assert_eq!(bins.len(), 50);
+    assert_eq!(intensity.len(), 50);
+    assert_eq!(sigma.len(), 50);
+
+    // Sigma should be non-negative
+    for &s in &sigma {
+        assert!(s >= 0.0, "Sigma should be non-negative, got {}", s);
+    }
+}
+
+#[test]
+fn test_multi_integrator_from_slices() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+
+    let data: Vec<f64> = (1..=100).map(|x| x as f64).collect();
+    let frame = Frame {
+        name: String::from("test"),
+        data: data.clone(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+    let int2 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+
+    let multi = crate::multi::MultiIntegrator::new(vec![int1, int2]);
+
+    // Frame-based
+    let (bins_frame, int_frame) = multi.integrate1d(&[&frame, &frame], 50);
+    // Slice-based
+    let (bins_slice, int_slice) =
+        multi.integrate1d_from_slices(&[(&data, 10, 10), (&data, 10, 10)], 50);
+
+    for i in 0..50 {
+        assert!(
+            (bins_frame[i] - bins_slice[i]).abs() < 1e-12,
+            "Bin {} differs", i
+        );
+        assert!(
+            (int_frame[i] - int_slice[i]).abs() < 1e-12,
+            "Intensity {} differs", i
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "does not support Histogram")]
+fn test_multi_integrator_rejects_histogram() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let int1 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Histogram)
+        .with_radial_range(0.0, 0.2);
+    let _ = crate::multi::MultiIntegrator::new(vec![int1]);
+}
+
+#[test]
+#[should_panic(expected = "radial_range set")]
+fn test_multi_integrator_rejects_missing_radial_range() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let int1 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Counting);
+    let _ = crate::multi::MultiIntegrator::new(vec![int1]);
+}
+
+#[test]
+#[should_panic(expected = "same radial_range")]
+fn test_multi_integrator_rejects_mismatched_radial_range() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+    let int2 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.5);
+    let _ = crate::multi::MultiIntegrator::new(vec![int1, int2]);
+}
+
+#[test]
+#[should_panic(expected = "same radial_unit")]
+fn test_multi_integrator_rejects_mismatched_units() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+    poni.wavelength = 1e-10;
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_unit(RadialUnit::TthRad)
+        .with_radial_range(0.0, 0.2);
+    let int2 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_unit(RadialUnit::TthDeg)
+        .with_radial_range(0.0, 0.2);
+    let _ = crate::multi::MultiIntegrator::new(vec![int1, int2]);
+}
+
+#[test]
+fn test_multi_integrator_flat_field_uniform_intensity() {
+    // Uniform illumination across two detectors at different distances
+    // should produce uniform merged intensity
+    let mut poni1 = Poni::new();
+    poni1.pixel1 = 1.0;
+    poni1.pixel2 = 1.0;
+    poni1.distance = 100.0;
+
+    let mut poni2 = Poni::new();
+    poni2.pixel1 = 1.0;
+    poni2.pixel2 = 1.0;
+    poni2.distance = 200.0; // different distance
+
+    let frame1 = Frame {
+        name: String::from("flat1"),
+        data: vec![1.0; 100],
+        dim1: 10,
+        dim2: 10,
+    };
+    let frame2 = Frame {
+        name: String::from("flat2"),
+        data: vec![1.0; 100],
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let int1 = Integrator::new(Geometry::new(10, 10, poni1))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.15);
+    let int2 = Integrator::new(Geometry::new(10, 10, poni2))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.15);
+
+    let multi = crate::multi::MultiIntegrator::new(vec![int1, int2]);
+    let (_, intensity) = multi.integrate1d(&[&frame1, &frame2], 20);
+
+    // All non-zero bins should have similar intensity (uniform flat field)
+    let nonzero: Vec<f64> = intensity.iter().copied().filter(|&v| v > 0.0).collect();
+    if nonzero.len() > 1 {
+        let mean = nonzero.iter().sum::<f64>() / nonzero.len() as f64;
+        for &v in &nonzero {
+            // With uniform signal and normalization, merged intensity should be consistent
+            assert!(
+                (v - mean).abs() / mean < 0.5,
+                "Flat field not uniform: {} vs mean {}", v, mean
+            );
+        }
+    }
+}
+
+#[test]
+fn test_multi_integrator_pixel_split_method() {
+    // Verify MultiIntegrator works with pixel-split method
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: (1..=100).map(|x| x as f64).collect(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_radial_range(0.0, 0.2);
+
+    // Single detector with PixelSplit
+    let (_, int_single) = int1.integrate1d(&frame, 30);
+
+    let int2 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_radial_range(0.0, 0.2);
+    let int3 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_radial_range(0.0, 0.2);
+
+    let multi = crate::multi::MultiIntegrator::new(vec![int2, int3]);
+    let (_, int_double) = multi.integrate1d(&[&frame, &frame], 30);
+
+    // Same data, same geometry → same result
+    for i in 0..30 {
+        assert!(
+            (int_single[i] - int_double[i]).abs() < 1e-10,
+            "Bin {}: single={}, double={}", i, int_single[i], int_double[i]
+        );
+    }
+}
+
+#[test]
+fn test_multi_integrator_error_propagation() {
+    // Verify error propagation: two identical detectors should produce
+    // smaller errors than one (sqrt(2*var) / (2*norm) < sqrt(var) / norm)
+    let mut poni = Poni::new();
+    poni.pixel1 = 1.0;
+    poni.pixel2 = 1.0;
+    poni.distance = 100.0;
+
+    let frame = Frame {
+        name: String::from("test"),
+        data: (1..=100).map(|x| x as f64).collect(),
+        dim1: 10,
+        dim2: 10,
+    };
+
+    let int1 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+
+    let single = crate::multi::MultiIntegrator::new(vec![int1]);
+    let (_, _, sigma_single) = single.integrate1d_with_errors(&[&frame], 30);
+
+    let int2 = Integrator::new(Geometry::new(10, 10, poni.clone()))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+    let int3 = Integrator::new(Geometry::new(10, 10, poni))
+        .with_method(IntegrationMethod::Counting)
+        .with_radial_range(0.0, 0.2);
+
+    let double = crate::multi::MultiIntegrator::new(vec![int2, int3]);
+    let (_, _, sigma_double) = double.integrate1d_with_errors(&[&frame, &frame], 30);
+
+    // With two identical measurements, sigma should decrease by ~1/sqrt(2)
+    for i in 0..30 {
+        if sigma_single[i] > 0.0 {
+            let ratio = sigma_double[i] / sigma_single[i];
+            let expected_ratio = 1.0 / 2.0_f64.sqrt();
+            assert!(
+                (ratio - expected_ratio).abs() < 0.01,
+                "Bin {}: error reduction ratio = {}, expected ~{}",
+                i, ratio, expected_ratio
+            );
+        }
+    }
+}

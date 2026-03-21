@@ -1,10 +1,15 @@
 use crate::frame::Frame;
 use crate::math::histogram;
 
-use super::cache::{AzimuthalRangeKey, OneDKey, TwoDKey};
+use super::cache::{AzimuthalRangeKey, OneDKey, RadialRangeKey, TwoDKey};
 use super::{IntegrationMethod, Integrator};
 
 impl Integrator {
+    fn radial_range_key(&self) -> Option<RadialRangeKey> {
+        self.radial_range
+            .map(|(min, max)| RadialRangeKey::new(min, max))
+    }
+
     /// Integrate a frame to 1D using the configured integration method.
     /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///
@@ -57,11 +62,19 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization)
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization)
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -69,6 +82,7 @@ impl Integrator {
                     n_points,
                     n_ss,
                     unit,
+                    radial_range: self.radial_range_key(),
                 });
                 crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization)
             }
@@ -118,7 +132,11 @@ impl Integrator {
                 )
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d_with_errors(
                     &frame.data,
                     &variance,
@@ -128,7 +146,11 @@ impl Integrator {
                 )
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d_with_errors(
                     &frame.data,
                     &variance,
@@ -142,6 +164,7 @@ impl Integrator {
                     n_points,
                     n_ss,
                     unit,
+                    radial_range: self.radial_range_key(),
                 });
                 crate::lut::integrate1d_with_errors(
                     &frame.data,
@@ -184,11 +207,19 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d(data, &lut1d, mask_data, &normalization)
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d(data, &lut1d, mask_data, &normalization)
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -196,6 +227,7 @@ impl Integrator {
                     n_points,
                     n_ss,
                     unit,
+                    radial_range: self.radial_range_key(),
                 });
                 crate::lut::integrate1d(data, &lut1d, mask_data, &normalization)
             }
@@ -244,7 +276,11 @@ impl Integrator {
                 )
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d_with_errors(
                     data,
                     &variance,
@@ -254,7 +290,11 @@ impl Integrator {
                 )
             }
             IntegrationMethod::PixelSplit => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit { n_points, unit });
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
                 crate::lut::integrate1d_with_errors(
                     data,
                     &variance,
@@ -268,8 +308,237 @@ impl Integrator {
                     n_points,
                     n_ss,
                     unit,
+                    radial_range: self.radial_range_key(),
                 });
                 crate::lut::integrate1d_with_errors(
+                    data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    &normalization,
+                )
+            }
+        }
+    }
+
+    /// Raw 1D integration returning intermediate sums (for multi-detector merging).
+    /// Panics if method is Histogram.
+    pub fn integrate1d_raw(
+        &self,
+        frame: &Frame,
+        n_points: usize,
+    ) -> crate::lut::IntermediateResult1d {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let normalization = self.get_normalization();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            mask.data.as_slice()
+        });
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                panic!("integrate1d_raw is not supported for Histogram method")
+            }
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                    n_points,
+                    n_ss,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization)
+            }
+        }
+    }
+
+    /// Raw 1D integration with variance returning intermediate sums (for multi-detector merging).
+    /// Panics if method is Histogram.
+    pub fn integrate1d_raw_with_variance(
+        &self,
+        frame: &Frame,
+        n_points: usize,
+    ) -> crate::lut::IntermediateResult1d {
+        self.update_geometry_arrays(frame.dim1, frame.dim2);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = frame.data.iter().map(|&x| x.max(0.0)).collect();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(frame.dim1, frame.dim2);
+            mask.data.as_slice()
+        });
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                panic!("integrate1d_raw_with_variance is not supported for Histogram method")
+            }
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw_with_variance(
+                    &frame.data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    &normalization,
+                )
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw_with_variance(
+                    &frame.data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    &normalization,
+                )
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                    n_points,
+                    n_ss,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw_with_variance(
+                    &frame.data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    &normalization,
+                )
+            }
+        }
+    }
+
+    /// Raw 1D integration from slice returning intermediate sums (for multi-detector merging).
+    /// Panics if method is Histogram.
+    pub fn integrate1d_raw_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+    ) -> crate::lut::IntermediateResult1d {
+        self.update_geometry_arrays(dim1, dim2);
+        let normalization = self.get_normalization();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                panic!("integrate1d_raw_from_slice is not supported for Histogram method")
+            }
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization)
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                    n_points,
+                    n_ss,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization)
+            }
+        }
+    }
+
+    /// Raw 1D integration with variance from slice (for multi-detector merging).
+    /// Panics if method is Histogram.
+    pub fn integrate1d_raw_with_variance_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+    ) -> crate::lut::IntermediateResult1d {
+        self.update_geometry_arrays(dim1, dim2);
+        let normalization = self.get_normalization();
+        let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let unit = self.radial_unit;
+        match self.method {
+            IntegrationMethod::Histogram => {
+                panic!(
+                    "integrate1d_raw_with_variance_from_slice is not supported for Histogram method"
+                )
+            }
+            IntegrationMethod::Counting => {
+                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw_with_variance(
+                    data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    &normalization,
+                )
+            }
+            IntegrationMethod::PixelSplit => {
+                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw_with_variance(
+                    data,
+                    &variance,
+                    &lut1d,
+                    mask_data,
+                    &normalization,
+                )
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                    n_points,
+                    n_ss,
+                    unit,
+                    radial_range: self.radial_range_key(),
+                });
+                crate::lut::integrate1d_raw_with_variance(
                     data,
                     &variance,
                     &lut1d,

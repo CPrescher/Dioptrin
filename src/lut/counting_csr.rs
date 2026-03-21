@@ -85,6 +85,47 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
     }
 }
 
+/// Build an unweighted 1D CSR LUT with explicit radial range.
+pub fn build_lut1d_csr_with_range(
+    radial: &Vec<f64>,
+    n_points: usize,
+    radial_min: f64,
+    radial_max: f64,
+) -> Lut1d {
+    let (min, _max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
+
+    let index: Vec<usize> = radial
+        .par_iter()
+        .map(|r| histogram::get_bin_clamped(*r, min, step, n_points))
+        .collect();
+
+    let mut counts = vec![0usize; n_points];
+    for &idx in &index {
+        counts[idx] += 1;
+    }
+
+    let mut row_ptr = vec![0usize; n_points + 1];
+    for i in 0..n_points {
+        row_ptr[i + 1] = row_ptr[i] + counts[i];
+    }
+
+    let mut next = row_ptr.clone();
+    let mut col_idx = vec![0usize; radial.len()];
+    for (i, &bin) in index.iter().enumerate() {
+        let pos = next[bin];
+        col_idx[pos] = i;
+        next[bin] += 1;
+    }
+
+    Lut1d {
+        row_ptr,
+        col_idx,
+        values: None,
+        hist_min: min,
+        hist_step: step,
+    }
+}
+
 /// Build an unweighted 2D CSR LUT from pixel `tth`/`azimuthal` to `(n_tth, n_azimuthal)` bins.
 ///
 /// Example

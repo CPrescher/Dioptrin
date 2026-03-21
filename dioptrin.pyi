@@ -6,6 +6,7 @@ import numpy as np
 
 __all__ = [
     "Integrator",
+    "MultiIntegrator",
     "IntegrationResult",
     "BatchResult",
     "BatchIterator",
@@ -187,6 +188,7 @@ class Integrator:
         polarization_factor: Optional[float] = None,
         n_ss: Optional[int] = None,
         unit: Optional[str] = None,
+        radial_range: Optional[Tuple[float, float]] = None,
     ) -> None:
         """
         Create a new Integrator instance.
@@ -201,13 +203,17 @@ class Integrator:
             polarization_factor: Optional polarization correction factor (0.0 to 1.0)
             n_ss: Number of subpixels per pixel for supersampled method (default: 5)
             unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+            radial_range: Optional (min, max) tuple for explicit radial bin range.
+                Required when using MultiIntegrator to ensure all detectors
+                share the same bin grid. Units must match the selected unit.
 
         Example:
             >>> import dioptrin
             >>> integrator = dioptrin.Integrator(
             ...     "calibration.poni",
             ...     method="pixel_split",
-            ...     unit="2th_deg"
+            ...     unit="q_A^-1",
+            ...     radial_range=(0.5, 25.0),
             ... )
         """
         ...
@@ -220,6 +226,7 @@ class Integrator:
         polarization_factor: Optional[float] = None,
         n_ss: Optional[int] = None,
         unit: Optional[str] = None,
+        radial_range: Optional[Tuple[float, float]] = None,
     ) -> "Integrator":
         """
         Create an Integrator from a PONI dictionary.
@@ -233,6 +240,7 @@ class Integrator:
             polarization_factor: Optional polarization correction factor (0.0 to 1.0)
             n_ss: Number of subpixels per pixel for supersampled method (default: 5)
             unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+            radial_range: Optional (min, max) tuple for explicit radial bin range
 
         Returns:
             New Integrator instance
@@ -574,5 +582,110 @@ class Integrator:
             >>> # With a generator
             >>> for result in integrator.batch2d_iter(frame_gen(), n_radial=100, n_azimuthal=360):
             ...     process(result.result)
+        """
+        ...
+
+
+class MultiIntegrator:
+    """
+    Multi-detector integrator that merges results from multiple detectors.
+
+    Merges integration results from multiple detectors into a single diffraction
+    pattern by summing raw signal, normalization, and variance across detectors
+    before dividing. This is equivalent to pyFAI's MultiGeometry.
+
+    All integrators must share the same radial_unit and radial_range, and must
+    not use the "histogram" method.
+
+    Example:
+        >>> import dioptrin
+        >>> int1 = dioptrin.Integrator("det1.poni", unit="q_A^-1", radial_range=(0.5, 25.0))
+        >>> int2 = dioptrin.Integrator("det2.poni", unit="q_A^-1", radial_range=(0.5, 25.0))
+        >>> multi = dioptrin.MultiIntegrator(integrators=[int1, int2])
+        >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
+    """
+
+    def __init__(self, integrators: list[Integrator]) -> None:
+        """
+        Create a new MultiIntegrator from a list of Integrator instances.
+
+        All integrators must:
+        - Have the same radial_unit
+        - Have an explicit radial_range set
+        - Have the same radial_range values
+        - Not use the "histogram" method
+
+        Args:
+            integrators: List of Integrator instances, one per detector
+
+        Raises:
+            ValueError: If validation fails (empty list, mismatched units/ranges,
+                missing radial_range, or histogram method used)
+
+        Example:
+            >>> int1 = dioptrin.Integrator("det1.poni", unit="q_A^-1", radial_range=(0.5, 25.0))
+            >>> int2 = dioptrin.Integrator("det2.poni", unit="q_A^-1", radial_range=(0.5, 25.0))
+            >>> multi = dioptrin.MultiIntegrator(integrators=[int1, int2])
+        """
+        ...
+
+    def integrate1d(
+        self,
+        images: list[Union[str, np.ndarray]],
+        n_points: int,
+        errors: bool = False,
+    ) -> IntegrationResult:
+        """
+        Integrate one image per detector and merge into a single 1D pattern.
+
+        Args:
+            images: List of images (file paths or 2D float64 NumPy arrays),
+                one per detector, in the same order as the integrators
+            n_points: Number of bins for the 1D integration output
+            errors: Whether to compute error estimates (default: False)
+
+        Returns:
+            IntegrationResult with merged radial values, intensities, and optional errors
+
+        Raises:
+            ValueError: If number of images doesn't match number of detectors
+
+        Example:
+            >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
+            >>> result = multi.integrate1d(images=[img1, img2], n_points=2000, errors=True)
+            >>> print(result.radial, result.intensity)
+        """
+        ...
+
+    def batch1d(
+        self,
+        images: list[list[Union[str, np.ndarray]]],
+        n_points: int,
+        errors: bool = False,
+    ) -> list[IntegrationResult]:
+        """
+        Batch integrate multiple sets of detector images.
+
+        Each element in the outer list is one "frame set" containing one image
+        per detector. The inner lists must have the same length as the number
+        of integrators.
+
+        Args:
+            images: List of image-lists, e.g.
+                ``[[det1_frame1, det2_frame1], [det1_frame2, det2_frame2], ...]``
+            n_points: Number of bins for the 1D integration output
+            errors: Whether to compute error estimates (default: False)
+
+        Returns:
+            List of IntegrationResult, one per frame set
+
+        Raises:
+            ValueError: If any image-list has wrong length
+
+        Example:
+            >>> image_sets = [[img1_a, img2_a], [img1_b, img2_b]]
+            >>> results = multi.batch1d(images=image_sets, n_points=2000)
+            >>> for result in results:
+            ...     print(result.intensity)
         """
         ...

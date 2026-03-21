@@ -117,6 +117,91 @@ pub fn build_lut1d_ss_csr(
     }
 }
 
+/// Build a supersampled 1D CSR LUT with explicit radial range.
+pub fn build_lut1d_ss_csr_with_range(
+    geometry: &Geometry,
+    _radial: &[f64],
+    n_points: usize,
+    n_ss: usize,
+    unit: RadialUnit,
+    radial_min: f64,
+    radial_max: f64,
+) -> Lut1d {
+    let (hist_min, _hist_max, hist_step) =
+        histogram::min_max_step_from_range(radial_min, radial_max, n_points);
+
+    let wavelength = geometry.poni.wavelength;
+
+    let per_row = geometry.dim2 * n_ss * n_ss;
+    let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
+        .into_par_iter()
+        .fold(
+            || Vec::with_capacity(per_row),
+            |mut acc, row| {
+                let (d1, d2, actual_index) = crate::lut::common::subgrid(row, geometry.dim2, n_ss);
+                let tth_ss = geometry.calc_tth(&d1, &d2);
+                let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
+                for (i, &v) in radial_ss.iter().enumerate() {
+                    let b = histogram::get_bin_clamped(v, hist_min, hist_step, n_points);
+                    acc.push((b, actual_index[i]));
+                }
+                acc
+            },
+        )
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        });
+
+    pairs.par_sort_unstable();
+
+    let mut row_ptr = Vec::with_capacity(n_points + 1);
+    let mut col_idx: Vec<usize> = Vec::new();
+    let mut values: Vec<f64> = Vec::new();
+    row_ptr.push(0);
+
+    let mut i = 0usize;
+    while i < pairs.len() {
+        let current_bin = pairs[i].0;
+        while row_ptr.len() - 1 < current_bin {
+            row_ptr.push(row_ptr.last().copied().unwrap());
+        }
+        let mut bin_total: usize = 0;
+        let bin_start = col_idx.len();
+        while i < pairs.len() && pairs[i].0 == current_bin {
+            let pixel = pairs[i].1;
+            let mut cnt = 1usize;
+            i += 1;
+            while i < pairs.len() && pairs[i].0 == current_bin && pairs[i].1 == pixel {
+                cnt += 1;
+                i += 1;
+            }
+            col_idx.push(pixel);
+            values.push(cnt as f64);
+            bin_total += cnt;
+        }
+        if bin_total > 0 {
+            let denom = bin_total as f64;
+            for w in &mut values[bin_start..] {
+                *w /= denom;
+            }
+        }
+        row_ptr.push(col_idx.len());
+    }
+
+    while row_ptr.len() < n_points + 1 {
+        row_ptr.push(col_idx.len());
+    }
+
+    Lut1d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        hist_min,
+        hist_step,
+    }
+}
+
 /// Build a supersampled 2D CSR LUT directly (no HashMap in the public type).
 ///
 /// The `radial` array contains pixel center values in the selected radial unit.

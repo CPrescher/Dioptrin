@@ -247,6 +247,13 @@ pub fn supersampled_azimuthal_min_max_step(
     (min, max, step)
 }
 
+/// Computes min, step for a histogram with an explicit range.
+pub fn min_max_step_from_range(min: f64, max: f64, n_points: usize) -> (f64, f64, f64) {
+    let max = max + 10.0 * f64::EPSILON;
+    let step = (max - min) / n_points as f64;
+    (min, max, step)
+}
+
 /// Estimates min, max and step size for a histogram
 pub fn min_max_step(data: &[f64], n_points: usize) -> (f64, f64, f64) {
     let min = math::min(data);

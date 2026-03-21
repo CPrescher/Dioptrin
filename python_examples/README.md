@@ -57,6 +57,17 @@ Demonstrates:
 
 **`batch_api_speed_test.py`** - Performance benchmarks for batch processing
 
+### Multi-Detector Integration
+
+**`multi_integrator_example.py`** - Multi-detector merging with `MultiIntegrator`
+
+Demonstrates:
+- Determining a shared radial range across detectors
+- Creating a `MultiIntegrator` from multiple `Integrator` instances
+- Single and batch integration with merged output
+- Error propagation across detectors
+- Verification: single-detector equivalence, two-identical-detectors invariance
+
 ### Comparison with pyFAI
 
 **`compare_to_pyfai.py`** - Compare Dioptrin results with pyFAI

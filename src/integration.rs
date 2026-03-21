@@ -150,6 +150,7 @@ pub struct Integrator {
     method: IntegrationMethod,
     polarization_factor: Option<f64>,
     radial_unit: RadialUnit,
+    radial_range: Option<(f64, f64)>,
 }
 
 impl Integrator {
@@ -163,6 +164,7 @@ impl Integrator {
             method: IntegrationMethod::PixelSplit,
             polarization_factor: None,
             radial_unit: RadialUnit::default(),
+            radial_range: None,
         }
     }
 
@@ -229,6 +231,26 @@ impl Integrator {
     // setter for mask
     pub fn set_mask(&mut self, mask: Mask) {
         self.mask = Some(mask);
+    }
+
+    // builder pattern for radial range
+    pub fn with_radial_range(mut self, min: f64, max: f64) -> Self {
+        self.radial_range = Some((min, max));
+        self.invalidate_caches();
+        self
+    }
+
+    // getter for radial range
+    pub fn radial_range(&self) -> Option<(f64, f64)> {
+        self.radial_range
+    }
+
+    // setter for radial range
+    pub fn set_radial_range(&mut self, range: Option<(f64, f64)>) {
+        if self.radial_range != range {
+            self.radial_range = range;
+            self.invalidate_caches();
+        }
     }
 
     // builder pattern for polarization factor

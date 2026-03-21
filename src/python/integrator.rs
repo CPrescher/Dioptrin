@@ -35,6 +35,12 @@ pub struct PyIntegrator {
     integrator: Arc<Integrator>,
 }
 
+impl PyIntegrator {
+    pub fn inner(&self) -> &Arc<Integrator> {
+        &self.integrator
+    }
+}
+
 #[pymethods]
 impl PyIntegrator {
     /// Create a new Integrator instance.
@@ -66,13 +72,14 @@ impl PyIntegrator {
     /// )
     /// ```
     #[new]
-    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None))]
+    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None))]
     fn new(
         poni_path: &str,
         method: Option<&str>,
         polarization_factor: Option<f64>,
         n_ss: Option<usize>,
         unit: Option<&str>,
+        radial_range: Option<(f64, f64)>,
     ) -> PyResult<Self> {
         #[cfg(feature = "licensed")]
         {
@@ -86,6 +93,9 @@ impl PyIntegrator {
             .with_radial_unit(parse_unit(unit)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
+        }
+        if let Some((min, max)) = radial_range {
+            integrator = integrator.with_radial_range(min, max);
         }
 
         Ok(Self {
@@ -125,7 +135,7 @@ impl PyIntegrator {
     /// integrator = dioptrin.Integrator.from_poni_dict(poni_dict)
     /// ```
     #[classmethod]
-    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None))]
+    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None))]
     fn from_poni_dict(
         _cls: &Bound<'_, PyType>,
         poni_dict: &Bound<'_, PyDict>,
@@ -133,6 +143,7 @@ impl PyIntegrator {
         polarization_factor: Option<f64>,
         n_ss: Option<usize>,
         unit: Option<&str>,
+        radial_range: Option<(f64, f64)>,
     ) -> PyResult<Self> {
         #[cfg(feature = "licensed")]
         {
@@ -145,6 +156,9 @@ impl PyIntegrator {
             .with_radial_unit(parse_unit(unit)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
+        }
+        if let Some((min, max)) = radial_range {
+            integrator = integrator.with_radial_range(min, max);
         }
 
         Ok(Self {

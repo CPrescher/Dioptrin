@@ -361,6 +361,167 @@ pub fn build_lut1d_ps_csr(
     }
 }
 
+/// Build a pixel-splitting 1D CSR LUT with explicit radial range.
+pub fn build_lut1d_ps_csr_with_range(
+    geometry: &Geometry,
+    radial: &[f64],
+    n_points: usize,
+    unit: RadialUnit,
+    radial_min: f64,
+    radial_max: f64,
+) -> Lut1d {
+    assert_eq!(radial.len(), geometry.size());
+
+    let wavelength = geometry.poni.wavelength;
+
+    let (d1, d2) = geometry.corner_grid();
+    let (tth_corners, azimuthal_corners) = geometry.calc_tth_and_azimuth(&d1, &d2);
+    let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
+    let azimuthal = geometry.calc_azimuth_all();
+
+    let (min, _max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
+
+    let dim2 = geometry.dim2;
+    let width = dim2 + 1;
+
+    let (buckets, _, _) = radial
+        .par_iter()
+        .enumerate()
+        .fold(
+            || {
+                (
+                    vec![Vec::<(usize, f64)>::new(); n_points],
+                    Vec::with_capacity(8),
+                    Vec::with_capacity(8),
+                )
+            },
+            |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
+                let row = idx / dim2;
+                let col = idx - row * dim2;
+                let base = row * width + col;
+
+                let r00 = radial_corners[base];
+                let r01 = radial_corners[base + 1];
+                let r10 = radial_corners[base + width];
+                let r11 = radial_corners[base + width + 1];
+
+                let center_azimuthal = azimuthal[idx];
+                let a00 = unwrap_angle(azimuthal_corners[base], center_azimuthal);
+                let a01 = unwrap_angle(azimuthal_corners[base + 1], center_azimuthal);
+                let a10 = unwrap_angle(azimuthal_corners[base + width], center_azimuthal);
+                let a11 = unwrap_angle(azimuthal_corners[base + width + 1], center_azimuthal);
+
+                let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
+                let area_total = polygon_area(&poly).abs();
+                if area_total <= 0.0 {
+                    let pos = (center_radial - min) / step;
+                    if pos < 0.0 {
+                        return (acc, buf1, buf2);
+                    }
+                    let bin = pos.floor() as isize;
+                    if bin >= 0 && (bin as usize) < n_points {
+                        acc[bin as usize].push((idx, 1.0));
+                    }
+                    return (acc, buf1, buf2);
+                }
+
+                let mut rmin = r00;
+                let mut rmax = r00;
+                for v in [r01, r10, r11] {
+                    if v < rmin {
+                        rmin = v;
+                    }
+                    if v > rmax {
+                        rmax = v;
+                    }
+                }
+
+                let mut start = ((rmin - min) / step).floor() as isize;
+                let mut end = ((rmax - min) / step).floor() as isize;
+                if end < 0 || start >= n_points as isize {
+                    return (acc, buf1, buf2);
+                }
+                if start < 0 {
+                    start = 0;
+                }
+                if end >= n_points as isize {
+                    end = n_points as isize - 1;
+                }
+
+                let mut amin = a00;
+                let mut amax = a00;
+                for v in [a01, a10, a11] {
+                    if v < amin {
+                        amin = v;
+                    }
+                    if v > amax {
+                        amax = v;
+                    }
+                }
+
+                for b in start..=end {
+                    let bin_min = min + b as f64 * step;
+                    let bin_max = bin_min + step;
+                    let clipped = clip_polygon_rect_scratch(
+                        &poly, bin_min, bin_max, amin, amax, &mut buf1, &mut buf2,
+                    );
+                    let area = polygon_area(clipped).abs();
+                    if area > 0.0 {
+                        acc[b as usize].push((idx, area));
+                    }
+                }
+                (acc, buf1, buf2)
+            },
+        )
+        .reduce(
+            || {
+                (
+                    vec![Vec::<(usize, f64)>::new(); n_points],
+                    Vec::new(),
+                    Vec::new(),
+                )
+            },
+            |(mut a, _, _), (b, _, _)| {
+                for (row, mut v) in b.into_iter().enumerate() {
+                    a[row].append(&mut v);
+                }
+                (a, Vec::new(), Vec::new())
+            },
+        );
+
+    let mut row_ptr = vec![0usize; n_points + 1];
+    for i in 0..n_points {
+        row_ptr[i + 1] = row_ptr[i] + buckets[i].len();
+    }
+    let total = *row_ptr.last().unwrap();
+    let mut col_idx = Vec::with_capacity(total);
+    let mut values = Vec::with_capacity(total);
+    for bucket in buckets.iter().take(n_points) {
+        for (idx, val) in bucket {
+            col_idx.push(*idx);
+            values.push(*val);
+        }
+    }
+
+    for i in 0..n_points {
+        let (s, e) = (row_ptr[i], row_ptr[i + 1]);
+        let ssum: f64 = values[s..e].iter().sum();
+        if ssum > 0.0 {
+            for v in &mut values[s..e] {
+                *v /= ssum;
+            }
+        }
+    }
+
+    Lut1d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        hist_min: min,
+        hist_step: step,
+    }
+}
+
 fn build_lut2d_ps_csr_with_azimuthal(
     geometry: &Geometry,
     radial: &[f64],

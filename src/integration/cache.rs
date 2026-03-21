@@ -5,19 +5,37 @@ use crate::lut;
 use super::{Integrator, RadialUnit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RadialRangeKey {
+    pub(super) min_bits: u64,
+    pub(super) max_bits: u64,
+}
+
+impl RadialRangeKey {
+    pub(super) fn new(min: f64, max: f64) -> Self {
+        Self {
+            min_bits: min.to_bits(),
+            max_bits: max.to_bits(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OneDKey {
     Counting {
         n_points: usize,
         unit: RadialUnit,
+        radial_range: Option<RadialRangeKey>,
     },
     PixelSplit {
         n_points: usize,
         unit: RadialUnit,
+        radial_range: Option<RadialRangeKey>,
     },
     Supersampled {
         n_points: usize,
         n_ss: usize,
         unit: RadialUnit,
+        radial_range: Option<RadialRangeKey>,
     },
 }
 
@@ -141,22 +159,60 @@ impl Integrator {
 
             // Build the LUT (this can take time, but we're not holding the cache lock)
             let lut1d = match key {
-                OneDKey::Counting { n_points, unit: _ } => lut::build_lut1d_csr(radial, n_points),
-                OneDKey::PixelSplit { n_points, unit } => {
+                OneDKey::Counting {
+                    n_points,
+                    unit: _,
+                    radial_range,
+                } => match radial_range {
+                    Some(rr) => lut::build_lut1d_csr_with_range(
+                        radial,
+                        n_points,
+                        f64::from_bits(rr.min_bits),
+                        f64::from_bits(rr.max_bits),
+                    ),
+                    None => lut::build_lut1d_csr(radial, n_points),
+                },
+                OneDKey::PixelSplit {
+                    n_points,
+                    unit,
+                    radial_range,
+                } => {
                     let mut geom = self.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
-                    lut::build_lut1d_ps_csr(&geom, radial, n_points, unit)
+                    match radial_range {
+                        Some(rr) => lut::build_lut1d_ps_csr_with_range(
+                            &geom,
+                            radial,
+                            n_points,
+                            unit,
+                            f64::from_bits(rr.min_bits),
+                            f64::from_bits(rr.max_bits),
+                        ),
+                        None => lut::build_lut1d_ps_csr(&geom, radial, n_points, unit),
+                    }
                 }
                 OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
+                    radial_range,
                 } => {
                     let mut geom = self.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
-                    lut::build_lut1d_ss_csr(&geom, radial, n_points, n_ss, unit)
+                    match radial_range {
+                        Some(rr) => lut::build_lut1d_ss_csr_with_range(
+                            &geom,
+                            radial,
+                            n_points,
+                            n_ss,
+                            unit,
+                            f64::from_bits(rr.min_bits),
+                            f64::from_bits(rr.max_bits),
+                        ),
+                        None => lut::build_lut1d_ss_csr(&geom, radial, n_points, n_ss, unit),
+                    }
                 }
             };
             drop(state);

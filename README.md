@@ -336,6 +336,45 @@ for r in integrator.batch2d_iter(
   - `completed`: Files processed so far
   - `progress`: Fraction complete (0.0 to 1.0)
 
+### Multi-Detector Integration
+
+Merge results from multiple detectors into a single diffraction pattern using `MultiIntegrator`:
+
+```python
+import dioptrin
+
+# Create one integrator per detector with a shared radial range and unit
+int1 = dioptrin.Integrator(
+    "detector1.poni",
+    method="pixel_split",
+    unit="q_A^-1",
+    radial_range=(0.5, 25.0),
+)
+int2 = dioptrin.Integrator(
+    "detector2.poni",
+    method="pixel_split",
+    unit="q_A^-1",
+    radial_range=(0.5, 25.0),
+)
+
+# Create multi-detector integrator
+multi = dioptrin.MultiIntegrator(integrators=[int1, int2])
+
+# Integrate — one image per detector
+result = multi.integrate1d(images=[img1, img2], n_points=2000)
+print(result.radial, result.intensity)
+
+# With error estimates
+result = multi.integrate1d(images=[img1, img2], n_points=2000, errors=True)
+
+# Batch processing multiple frame sets
+image_sets = [[img1_a, img2_a], [img1_b, img2_b]]
+results = multi.batch1d(images=image_sets, n_points=2000)
+```
+
+All integrators must share the same `unit` and `radial_range`. The `"histogram"` method is not supported.
+See `docs/MULTI_DETECTOR.md` for full details including Rust API and pyFAI comparison.
+
 ### Thread Configuration
 
 ```python
