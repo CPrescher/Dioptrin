@@ -517,8 +517,8 @@ fn test_radial_range_controls_bin_grid() {
     };
 
     // Without radial range
-    let integrator_auto = Integrator::new(geometry.clone())
-        .with_method(IntegrationMethod::Counting);
+    let integrator_auto =
+        Integrator::new(geometry.clone()).with_method(IntegrationMethod::Counting);
     let (bins_auto, _) = integrator_auto.integrate1d(&frame, 50);
 
     // With explicit radial range wider than data
@@ -528,11 +528,22 @@ fn test_radial_range_controls_bin_grid() {
     let (bins_range, _) = integrator_range.integrate1d(&frame, 50);
 
     // The ranged bins should start near 0.0 and end near 1.0
-    assert!(bins_range[0] < 0.02, "First bin should be near 0.0, got {}", bins_range[0]);
-    assert!(bins_range[49] > 0.95, "Last bin should be near 1.0, got {}", bins_range[49]);
+    assert!(
+        bins_range[0] < 0.02,
+        "First bin should be near 0.0, got {}",
+        bins_range[0]
+    );
+    assert!(
+        bins_range[49] > 0.95,
+        "Last bin should be near 1.0, got {}",
+        bins_range[49]
+    );
 
     // Auto bins should be much narrower (detector only covers small angle)
-    assert!(bins_auto[49] < bins_range[49], "Auto range should be narrower");
+    assert!(
+        bins_auto[49] < bins_range[49],
+        "Auto range should be narrower"
+    );
 }
 
 // ============================================================================
@@ -554,8 +565,7 @@ fn test_integrate1d_raw_matches_integrate1d() {
         dim2: 10,
     };
 
-    let integrator = Integrator::new(geometry)
-        .with_method(IntegrationMethod::Counting);
+    let integrator = Integrator::new(geometry).with_method(IntegrationMethod::Counting);
 
     let (bins, intensity) = integrator.integrate1d(&frame, 20);
     let raw = integrator.integrate1d_raw(&frame, 20);
@@ -567,16 +577,18 @@ fn test_integrate1d_raw_matches_integrate1d() {
     }
 
     // Manual division of raw sums should match integrate1d result
-    for i in 0..20 {
+    for (i, &int_val) in intensity.iter().enumerate() {
         let expected = if raw.sum_norm[i] == 0.0 {
             0.0
         } else {
             raw.sum_signal[i] / raw.sum_norm[i]
         };
         assert!(
-            (intensity[i] - expected).abs() < 1e-12,
+            (int_val - expected).abs() < 1e-12,
             "Bin {}: integrate1d={}, raw divided={}",
-            i, intensity[i], expected
+            i,
+            int_val,
+            expected
         );
     }
 }
@@ -596,8 +608,7 @@ fn test_integrate1d_raw_with_variance_matches_integrate1d_with_errors() {
         dim2: 10,
     };
 
-    let integrator = Integrator::new(geometry)
-        .with_method(IntegrationMethod::PixelSplit);
+    let integrator = Integrator::new(geometry).with_method(IntegrationMethod::PixelSplit);
 
     let (bins, intensity, sigma) = integrator.integrate1d_with_errors(&frame, 20);
     let raw = integrator.integrate1d_raw_with_variance(&frame, 20);
@@ -609,24 +620,31 @@ fn test_integrate1d_raw_with_variance_matches_integrate1d_with_errors() {
 
     // Manual computation from raw should match
     let sum_var = raw.sum_variance.unwrap();
-    for i in 0..20 {
-        let expected_int = if raw.sum_norm[i] == 0.0 {
+    for (i, ((&int_val, &sig_val), &norm_val)) in intensity
+        .iter()
+        .zip(sigma.iter())
+        .zip(raw.sum_norm.iter())
+        .enumerate()
+    {
+        let expected_int = if norm_val == 0.0 {
             0.0
         } else {
-            raw.sum_signal[i] / raw.sum_norm[i]
+            raw.sum_signal[i] / norm_val
         };
-        let expected_sig = if raw.sum_norm[i] == 0.0 {
+        let expected_sig = if norm_val == 0.0 {
             0.0
         } else {
-            (sum_var[i] / (raw.sum_norm[i] * raw.sum_norm[i])).max(0.0).sqrt()
+            (sum_var[i] / (norm_val * norm_val)).max(0.0).sqrt()
         };
         assert!(
-            (intensity[i] - expected_int).abs() < 1e-10,
-            "Bin {}: intensity mismatch", i
+            (int_val - expected_int).abs() < 1e-10,
+            "Bin {}: intensity mismatch",
+            i
         );
         assert!(
-            (sigma[i] - expected_sig).abs() < 1e-10,
-            "Bin {}: sigma mismatch", i
+            (sig_val - expected_sig).abs() < 1e-10,
+            "Bin {}: sigma mismatch",
+            i
         );
     }
 }
@@ -645,8 +663,7 @@ fn test_integrate1d_raw_panics_for_histogram() {
         dim1: 10,
         dim2: 10,
     };
-    let integrator = Integrator::new(geometry)
-        .with_method(IntegrationMethod::Histogram);
+    let integrator = Integrator::new(geometry).with_method(IntegrationMethod::Histogram);
     let _ = integrator.integrate1d_raw(&frame, 20);
 }
 
@@ -687,11 +704,17 @@ fn test_multi_integrator_single_detector_matches_plain() {
     for i in 0..bins_plain.len() {
         assert!(
             (bins_plain[i] - bins_multi[i]).abs() < 1e-12,
-            "Bin {} differs: {} vs {}", i, bins_plain[i], bins_multi[i]
+            "Bin {} differs: {} vs {}",
+            i,
+            bins_plain[i],
+            bins_multi[i]
         );
         assert!(
             (int_plain[i] - int_multi[i]).abs() < 1e-12,
-            "Intensity {} differs: {} vs {}", i, int_plain[i], int_multi[i]
+            "Intensity {} differs: {} vs {}",
+            i,
+            int_plain[i],
+            int_multi[i]
         );
     }
 }
@@ -733,7 +756,10 @@ fn test_multi_integrator_two_identical_detectors() {
     for i in 0..50 {
         assert!(
             (int_single[i] - int_double[i]).abs() < 1e-10,
-            "Bin {}: single={}, double={}", i, int_single[i], int_double[i]
+            "Bin {}: single={}, double={}",
+            i,
+            int_single[i],
+            int_double[i]
         );
     }
 }
@@ -802,11 +828,13 @@ fn test_multi_integrator_from_slices() {
     for i in 0..50 {
         assert!(
             (bins_frame[i] - bins_slice[i]).abs() < 1e-12,
-            "Bin {} differs", i
+            "Bin {} differs",
+            i
         );
         assert!(
             (int_frame[i] - int_slice[i]).abs() < 1e-12,
-            "Intensity {} differs", i
+            "Intensity {} differs",
+            i
         );
     }
 }
@@ -831,8 +859,8 @@ fn test_multi_integrator_rejects_missing_radial_range() {
     poni.pixel1 = 1.0;
     poni.pixel2 = 1.0;
     poni.distance = 100.0;
-    let int1 = Integrator::new(Geometry::new(10, 10, poni))
-        .with_method(IntegrationMethod::Counting);
+    let int1 =
+        Integrator::new(Geometry::new(10, 10, poni)).with_method(IntegrationMethod::Counting);
     let _ = crate::multi::MultiIntegrator::new(vec![int1]);
 }
 
@@ -916,7 +944,9 @@ fn test_multi_integrator_flat_field_uniform_intensity() {
             // With uniform signal and normalization, merged intensity should be consistent
             assert!(
                 (v - mean).abs() / mean < 0.5,
-                "Flat field not uniform: {} vs mean {}", v, mean
+                "Flat field not uniform: {} vs mean {}",
+                v,
+                mean
             );
         }
     }
@@ -958,7 +988,10 @@ fn test_multi_integrator_pixel_split_method() {
     for i in 0..30 {
         assert!(
             (int_single[i] - int_double[i]).abs() < 1e-10,
-            "Bin {}: single={}, double={}", i, int_single[i], int_double[i]
+            "Bin {}: single={}, double={}",
+            i,
+            int_single[i],
+            int_double[i]
         );
     }
 }
@@ -1004,7 +1037,9 @@ fn test_multi_integrator_error_propagation() {
             assert!(
                 (ratio - expected_ratio).abs() < 0.01,
                 "Bin {}: error reduction ratio = {}, expected ~{}",
-                i, ratio, expected_ratio
+                i,
+                ratio,
+                expected_ratio
             );
         }
     }
