@@ -18,7 +18,13 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
-import psutil
+
+try:
+    import psutil
+
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
 
 # pyFAI process pool globals
 _worker_ai = None
@@ -54,16 +60,21 @@ def _pyfai_2d_task(args):
 
 
 class PeakMemoryTracker:
-    """Polls RSS of current process + children in a background thread."""
+    """Polls RSS of current process + children in a background thread.
+
+    Falls back to no-op when psutil is not available.
+    """
 
     def __init__(self, interval=0.05):
         self._interval = interval
-        self._proc = psutil.Process()
         self._peak = 0
         self._stop = threading.Event()
         self._thread = None
+        self._proc = psutil.Process() if HAS_PSUTIL else None
 
     def _sample(self):
+        if not HAS_PSUTIL:
+            return 0
         total = self._proc.memory_info().rss
         for child in self._proc.children(recursive=True):
             try:
@@ -145,8 +156,12 @@ def main():
     print()
 
     # Baseline memory before any benchmarks (just Python + numpy + fabio loaded)
-    baseline_mb = psutil.Process().memory_info().rss / (1024 * 1024)
-    print(f"Baseline RSS: {baseline_mb:.1f} MB")
+    if HAS_PSUTIL:
+        baseline_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+        print(f"Baseline RSS: {baseline_mb:.1f} MB")
+    else:
+        baseline_mb = 0.0
+        print("Baseline RSS: N/A (psutil not installed, memory tracking disabled)")
     print()
 
     # ── pyFAI benchmarks ──────────────────────────────────────────────
