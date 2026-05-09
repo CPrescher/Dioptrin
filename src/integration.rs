@@ -6,7 +6,7 @@ mod methods;
 mod tests;
 
 use std::f64::consts::PI;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::geometry::Geometry;
 use crate::mask::Mask;
@@ -26,8 +26,9 @@ struct GeometryState {
     azimuth: Vec<f64>,
     solid_angle: Vec<f64>,
     polarization: Vec<f64>,
-    /// Combined normalization: polarization * solid_angle (pyFAI-style)
-    normalization: Vec<f64>,
+    /// Combined normalization: polarization * solid_angle (pyFAI-style).
+    /// Wrapped in Arc so per-frame integrations can share it without copying.
+    normalization: Arc<Vec<f64>>,
 }
 
 impl GeometryState {
@@ -40,7 +41,7 @@ impl GeometryState {
             azimuth: vec![],
             solid_angle: vec![],
             polarization: vec![],
-            normalization: vec![],
+            normalization: Arc::new(vec![]),
         }
     }
 }

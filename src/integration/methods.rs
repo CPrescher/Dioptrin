@@ -67,7 +67,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
@@ -75,7 +75,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -84,7 +84,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d(&frame.data, &lut1d, mask_data, &normalization[..])
             }
         }
     }
@@ -142,7 +142,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -156,7 +156,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -171,7 +171,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -212,7 +212,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d(data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
@@ -220,7 +220,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d(data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -229,7 +229,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d(data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d(data, &lut1d, mask_data, &normalization[..])
             }
         }
     }
@@ -286,7 +286,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -300,7 +300,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -315,7 +315,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -345,7 +345,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
@@ -353,7 +353,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -362,7 +362,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization[..])
             }
         }
     }
@@ -397,7 +397,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -411,7 +411,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -426,7 +426,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -458,7 +458,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
@@ -466,7 +466,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
@@ -475,7 +475,7 @@ impl Integrator {
                     unit,
                     radial_range: self.radial_range_key(),
                 });
-                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization)
+                crate::lut::integrate1d_raw(data, &lut1d, mask_data, &normalization[..])
             }
         }
     }
@@ -514,7 +514,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -528,7 +528,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -543,7 +543,7 @@ impl Integrator {
                     &variance,
                     &lut1d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -605,7 +605,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
@@ -613,7 +613,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
@@ -622,7 +622,7 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
         }
     }
@@ -663,7 +663,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
@@ -671,7 +671,7 @@ impl Integrator {
                     n_azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
@@ -680,7 +680,7 @@ impl Integrator {
                     n_ss,
                     unit,
                 });
-                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
         }
     }
@@ -732,7 +732,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
@@ -741,7 +741,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
@@ -751,7 +751,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
         }
     }
@@ -797,7 +797,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit => {
                 let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
@@ -806,7 +806,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
                 let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
@@ -816,7 +816,7 @@ impl Integrator {
                     azimuthal,
                     unit,
                 });
-                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization)
+                crate::lut::integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
         }
     }
@@ -875,7 +875,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -889,7 +889,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -904,7 +904,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -964,7 +964,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -978,7 +978,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -993,7 +993,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -1062,7 +1062,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -1077,7 +1077,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -1093,7 +1093,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }
@@ -1158,7 +1158,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::PixelSplit => {
@@ -1173,7 +1173,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -1189,7 +1189,7 @@ impl Integrator {
                     &variance,
                     &lut2d,
                     mask_data,
-                    &normalization,
+                    &normalization[..],
                 )
             }
         }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::Integrator;
 
 impl Integrator {
@@ -40,9 +42,11 @@ impl Integrator {
                 };
 
                 // Update normalization: pol * sa (pyFAI-style)
-                state.normalization = (0..size)
-                    .map(|i| state.polarization[i] * state.solid_angle[i])
-                    .collect();
+                state.normalization = Arc::new(
+                    (0..size)
+                        .map(|i| state.polarization[i] * state.solid_angle[i])
+                        .collect(),
+                );
             }
             drop(state);
             self.invalidate_caches();
@@ -68,16 +72,19 @@ impl Integrator {
 
         // Update normalization when polarization changes
         if !state.solid_angle.is_empty() {
-            state.normalization = (0..size)
-                .map(|i| state.polarization[i] * state.solid_angle[i])
-                .collect();
+            state.normalization = Arc::new(
+                (0..size)
+                    .map(|i| state.polarization[i] * state.solid_angle[i])
+                    .collect(),
+            );
         }
     }
 
     /// Get the normalization array (pol * sa) for weighted-average integration.
-    /// Thread-safe: only reads from state.
-    pub(super) fn get_normalization(&self) -> Vec<f64> {
+    /// Thread-safe: only reads from state. Returns an `Arc` clone so callers
+    /// share the underlying buffer without copying it (cheap atomic refcount bump).
+    pub(super) fn get_normalization(&self) -> Arc<Vec<f64>> {
         let state = self.state.read().expect("geometry state lock poisoned");
-        state.normalization.clone()
+        Arc::clone(&state.normalization)
     }
 }
