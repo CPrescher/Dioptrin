@@ -248,14 +248,19 @@ where
                 .expect("failed to build thread pool");
 
             let mut results = Vec::new();
+            // Reuse one Frame per worker so the 80 MB f64 buffer is allocated
+            // once instead of per file.
+            let mut frame = Frame {
+                name: String::new(),
+                data: Vec::new(),
+                dim1: 0,
+                dim2: 0,
+            };
 
             for filename in chunk {
-                let result = pool.install(|| {
-                    // Load frame
-                    let frame = Frame::from_tiff(filename.clone()).map_err(|e| e.to_string())?;
-
-                    // Execute integration task
-                    Ok(task.execute(&integrator, &frame))
+                let result = pool.install(|| match frame.reload_from_tiff(filename.clone()) {
+                    Ok(()) => Ok(task.execute(&integrator, &frame)),
+                    Err(e) => Err(e.to_string()),
                 });
 
                 results.push((filename, result));
@@ -428,10 +433,18 @@ where
                 .build()
                 .expect("failed to build thread pool");
 
+            // One Frame per worker, reused across files (avoids per-file allocation).
+            let mut frame = Frame {
+                name: String::new(),
+                data: Vec::new(),
+                dim1: 0,
+                dim2: 0,
+            };
+
             for (index, filename) in chunk {
-                let result = pool.install(|| {
-                    let frame = Frame::from_tiff(filename.clone()).map_err(|e| e.to_string())?;
-                    Ok(task.execute(&integrator, &frame))
+                let result = pool.install(|| match frame.reload_from_tiff(filename.clone()) {
+                    Ok(()) => Ok(task.execute(&integrator, &frame)),
+                    Err(e) => Err(e.to_string()),
                 });
 
                 completed.fetch_add(1, Ordering::Relaxed);
@@ -519,6 +532,15 @@ where
                 .build()
                 .expect("failed to build thread pool");
 
+            // Reusable Frame for the path branch — kept across iterations of
+            // the queue loop so we allocate the f64 buffer at most once.
+            let mut path_frame = Frame {
+                name: String::new(),
+                data: Vec::new(),
+                dim1: 0,
+                dim2: 0,
+            };
+
             loop {
                 // Pull the next work item from the shared queue
                 let item = {
@@ -535,9 +557,9 @@ where
                 let (index, name, result) = match item {
                     WorkItem::Path { index, path } => {
                         let name = path.clone();
-                        let result = pool.install(|| {
-                            let frame = Frame::from_tiff(path).map_err(|e| e.to_string())?;
-                            Ok(task.execute(&integrator, &frame))
+                        let result = pool.install(|| match path_frame.reload_from_tiff(path) {
+                            Ok(()) => Ok(task.execute(&integrator, &path_frame)),
+                            Err(e) => Err(e.to_string()),
                         });
                         (index, name, result)
                     }
