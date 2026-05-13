@@ -7,7 +7,7 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
     Calibrant, CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss,
-    MassifOptions, ParamMask, find_peaks, refine,
+    MassifOptions, ParamMask, RansacOptions, RansacResult, find_peaks, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -351,4 +351,120 @@ pub fn find_peaks_massif_py(
         dedup_dist,
     };
     Ok(find_peaks(slice, dim1, dim2, seed, &opts))
+}
+
+// ---------- RANSAC ellipse clustering ----------
+
+#[pyclass(name = "EllipseFit")]
+pub struct PyEllipseFit {
+    inner: crate::calibration::Ellipse,
+}
+
+#[pymethods]
+impl PyEllipseFit {
+    #[getter]
+    fn center(&self) -> (f64, f64) {
+        self.inner.center
+    }
+    #[getter]
+    fn semi_major(&self) -> f64 {
+        self.inner.semi_major
+    }
+    #[getter]
+    fn semi_minor(&self) -> f64 {
+        self.inner.semi_minor
+    }
+    #[getter]
+    fn theta(&self) -> f64 {
+        self.inner.theta
+    }
+    /// Conic coefficients `[A, B, C, D, E, F]` with the convention
+    /// `A x² + B xy + C y² + D x + E y + F = 0`.
+    #[getter]
+    fn conic(&self) -> [f64; 6] {
+        self.inner.conic
+    }
+    fn distance(&self, point: (f64, f64)) -> f64 {
+        self.inner.sampson_distance(point)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "EllipseFit(center=({:.2}, {:.2}), semi=({:.2}, {:.2}), theta={:.4})",
+            self.inner.center.0,
+            self.inner.center.1,
+            self.inner.semi_major,
+            self.inner.semi_minor,
+            self.inner.theta,
+        )
+    }
+}
+
+#[pyclass(name = "RansacEllipseResult")]
+pub struct PyRansacEllipseResult {
+    inner: RansacResult,
+}
+
+#[pymethods]
+impl PyRansacEllipseResult {
+    /// List of `EllipseFit`, sorted by semi-major axis (smallest first).
+    #[getter]
+    fn ellipses(&self) -> Vec<PyEllipseFit> {
+        self.inner
+            .ellipses
+            .iter()
+            .map(|&e| PyEllipseFit { inner: e })
+            .collect()
+    }
+    /// Per-input-point assignment: `Some(k)` = inlier of `ellipses[k]`,
+    /// `None` = outlier rejected from every ellipse.
+    #[getter]
+    fn assignments(&self) -> Vec<Option<usize>> {
+        self.inner.assignments.clone()
+    }
+    /// `True` for inliers (any ellipse), `False` for outliers.
+    fn inlier_mask(&self) -> Vec<bool> {
+        self.inner.assignments.iter().map(|a| a.is_some()).collect()
+    }
+    fn n_ellipses(&self) -> usize {
+        self.inner.ellipses.len()
+    }
+}
+
+/// RANSAC ellipse clustering of a list of 2-D peak coordinates.
+///
+/// Returns a `RansacEllipseResult` listing the detected ellipses (sorted by
+/// semi-major axis — for a powder diffraction pattern this matches ring
+/// index k = 0, 1, 2 …) and a per-point assignment vector.
+///
+/// # Arguments
+///
+/// * `points`            — list of `(d1, d2)` peak coordinates
+/// * `inlier_threshold`  — Sampson distance (pixels) for inlier acceptance
+/// * `min_inliers`       — minimum points required to accept an ellipse
+/// * `max_iterations`    — random samples per ellipse search
+/// * `max_ellipses`      — cap on detected ellipses
+/// * `rng_seed`          — for reproducibility
+#[pyfunction]
+#[pyo3(name = "ransac_ellipses")]
+#[pyo3(signature = (points, inlier_threshold=1.5, min_inliers=10, max_iterations=2000, max_ellipses=12, max_axis_ratio=None, rng_seed=0xC0FF_EEC0_DE12_3456_u64))]
+#[allow(clippy::too_many_arguments)]
+pub fn ransac_ellipses_py(
+    points: Vec<(f64, f64)>,
+    inlier_threshold: f64,
+    min_inliers: usize,
+    max_iterations: usize,
+    max_ellipses: usize,
+    max_axis_ratio: Option<f64>,
+    rng_seed: u64,
+) -> PyRansacEllipseResult {
+    let opts = RansacOptions {
+        inlier_threshold,
+        min_inliers,
+        max_iterations,
+        max_ellipses,
+        max_axis_ratio,
+        rng_seed,
+    };
+    let result = ransac_ellipses(&points, &opts);
+    PyRansacEllipseResult { inner: result }
 }

@@ -25,6 +25,7 @@
 //! Dioptrin's `Geometry`. Both are `f64` so sub-pixel centroids are fine.
 
 mod calibrant;
+mod ellipse;
 mod massif;
 mod refinement;
 
@@ -32,6 +33,7 @@ mod refinement;
 mod tests;
 
 pub use calibrant::{Calibrant, CalibrantError};
+pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
 pub use massif::{MassifOptions, find_peaks};
 pub use refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,

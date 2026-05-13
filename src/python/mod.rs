@@ -7,7 +7,8 @@ pub mod results;
 pub mod utils;
 
 use calibration::{
-    PyCalibrant, PyCalibrationPoints, PyCalibrationResult, find_peaks_massif_py, refine_py,
+    PyCalibrant, PyCalibrationPoints, PyCalibrationResult, PyEllipseFit, PyRansacEllipseResult,
+    find_peaks_massif_py, ransac_ellipses_py, refine_py,
 };
 use integrator::PyIntegrator;
 use multi_integrator::PyMultiIntegrator;
@@ -45,6 +46,7 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_license, m)?)?;
     m.add_function(wrap_pyfunction!(refine_py, m)?)?;
     m.add_function(wrap_pyfunction!(find_peaks_massif_py, m)?)?;
+    m.add_function(wrap_pyfunction!(ransac_ellipses_py, m)?)?;
     m.add_class::<PyIntegrator>()?;
     m.add_class::<PyMultiIntegrator>()?;
     m.add_class::<PyIntegrationResult>()?;
@@ -53,6 +55,8 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCalibrant>()?;
     m.add_class::<PyCalibrationPoints>()?;
     m.add_class::<PyCalibrationResult>()?;
+    m.add_class::<PyEllipseFit>()?;
+    m.add_class::<PyRansacEllipseResult>()?;
     m.add("LicenseError", m.py().get_type::<LicenseError>())?;
     m.add(
         "LicenseNotFoundError",

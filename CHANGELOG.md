@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RANSAC ellipse clustering (`dioptrin.ransac_ellipses`).** Given a list of
+  2-D peak coordinates, fit a family of ellipses with outlier rejection.
+  Implementation: direct linear conic fit (F=-1 normalization) with the
+  ellipse discriminant check `4AC-B² > 0`, Sampson distance for inlier
+  testing, greedy RANSAC that detects one ellipse, removes its inliers, and
+  repeats. Optional `max_axis_ratio` filter rejects degenerate elongated
+  fits when the user knows the detector is near-perpendicular (e.g.
+  setting `1.2` for typical lab/synchrotron geometries). Returns sorted
+  ellipses (semi-major ascending → ring order under a powder pattern) plus
+  per-input-point assignment (`None` = outlier). Public Rust API in
+  `dioptrin::calibration::{ellipse, ransac_ellipses}`. Synthetic Rust
+  tests verify single-ellipse recovery to 10⁻⁶, multi-ellipse clustering
+  with planted outliers, and pure-noise rejection. Real-data smoke test
+  on Dioptas's LaB6 peaks confirms at least the brightest rings are
+  cleanly captured at the true beam center.
 - **Massif peak picking (`dioptrin.find_peaks_massif`).** A port of pyFAI's
   `Massif.find_peaks` algorithm: separable Gaussian background filter,
   binarisation against the local background, 4-connected component
