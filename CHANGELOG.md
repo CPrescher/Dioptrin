@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ring identity matching (`dioptrin.identify_rings`).** Given a list of
+  detected ellipses (sorted ascending by semi-major axis) and a known
+  calibrant, identify which calibrant ring each ellipse corresponds to —
+  with no input geometry hint (no distance, no beam-center estimate).
+  Algorithm: the ratio `r_k / r_0 = tan(2θ_k) / tan(2θ_0)` is independent
+  of detector distance, so a hypothesis-test loop over every
+  `(anchor_ellipse, anchor_ring)` pair finds the assignment whose
+  implied-distance scatter is tightest. Handles missing rings, spurious
+  ellipses, smallest-ellipse-not-being-ring-0, and dense calibrants
+  (LaB6 has 91 d-spacings) where the ratio chain alone is ambiguous —
+  the distance-consistency check breaks the tie. Validated by 5 Rust
+  unit tests on synthetic LaB6 (full sequence, missing rings, anchor
+  offset, spurious extra ellipse, random sizes) and a real-data smoke
+  test on LaB6_40keV_MarCCD.tif that recovers 10/11 ring identities
+  matching Dioptas's iterative-fit labels (the one mismatch is a
+  Dioptrin-rejected spurious ellipse).
 - **RANSAC ellipse clustering (`dioptrin.ransac_ellipses`).** Given a list of
   2-D peak coordinates, fit a family of ellipses with outlier rejection.
   Implementation: direct linear conic fit (F=-1 normalization) with the

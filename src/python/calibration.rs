@@ -7,7 +7,8 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
     Calibrant, CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss,
-    MassifOptions, ParamMask, RansacOptions, RansacResult, find_peaks, ransac_ellipses, refine,
+    MassifOptions, ParamMask, RansacOptions, RansacResult, RingIdOptions, RingIdResult, find_peaks,
+    identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -467,4 +468,83 @@ pub fn ransac_ellipses_py(
     };
     let result = ransac_ellipses(&points, &opts);
     PyRansacEllipseResult { inner: result }
+}
+
+// ---------- Ring identity ----------
+
+#[pyclass(name = "RingIdResult")]
+pub struct PyRingIdResult {
+    inner: RingIdResult,
+}
+
+#[pymethods]
+impl PyRingIdResult {
+    /// Per-ellipse calibrant ring assignment. `None` = ellipse couldn't be
+    /// matched to any calibrant ring within tolerance.
+    #[getter]
+    fn ring_index(&self) -> Vec<Option<usize>> {
+        self.inner.ring_index.clone()
+    }
+    /// Calibrant ring of the smallest ellipse, or `None` if that ellipse is
+    /// unmatched.
+    #[getter]
+    fn anchor_ring(&self) -> Option<usize> {
+        self.inner.anchor_ring
+    }
+    /// Number of ellipses confidently matched to calibrant rings.
+    #[getter]
+    fn n_matched(&self) -> usize {
+        self.inner.n_matched
+    }
+    /// True iff `n_matched >= min_matches`.
+    #[getter]
+    fn confident(&self) -> bool {
+        self.inner.confident
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "RingIdResult(n_matched={}, confident={}, anchor_ring={:?})",
+            self.inner.n_matched, self.inner.confident, self.inner.anchor_ring
+        )
+    }
+}
+
+/// Identify which calibrant ring each detected ellipse corresponds to,
+/// using the size-ratio invariant `r_k / r_0 = tan(2θ_k) / tan(2θ_0)`.
+///
+/// Iterates over every (anchor_ellipse, anchor_ring) hypothesis and picks
+/// the assignment that maximises matched ellipses subject to a distance-
+/// consistency check. Naturally handles missing calibrant rings, spurious
+/// detected ellipses, and the case where the smallest detected ellipse is
+/// not the calibrant's ring 0.
+///
+/// # Arguments
+///
+/// * `ellipses`         — list of `EllipseFit` from `dioptrin.ransac_ellipses`
+///                        (or constructed manually). Must be sorted by
+///                        semi-major axis (ascending).
+/// * `calibrant`        — a `dioptrin.Calibrant`
+/// * `wavelength`       — beam wavelength in metres
+/// * `ratio_tolerance`  — relative tolerance on size-ratio matching (default 0.02 = 2 %)
+/// * `max_anchor_ring`  — highest calibrant ring index to try as the anchor (default 8)
+/// * `min_matches`      — minimum matched ellipses for `confident=True` (default 3)
+#[pyfunction]
+#[pyo3(name = "identify_rings")]
+#[pyo3(signature = (ellipses, calibrant, wavelength, ratio_tolerance=0.02, max_anchor_ring=8, min_matches=3))]
+pub fn identify_rings_py(
+    ellipses: Vec<PyRef<PyEllipseFit>>,
+    calibrant: &PyCalibrant,
+    wavelength: f64,
+    ratio_tolerance: f64,
+    max_anchor_ring: usize,
+    min_matches: usize,
+) -> PyRingIdResult {
+    let ell_list: Vec<crate::calibration::Ellipse> = ellipses.iter().map(|e| e.inner).collect();
+    let opts = RingIdOptions {
+        ratio_tolerance,
+        max_anchor_ring,
+        min_matches,
+    };
+    let result = identify_rings(&ell_list, &calibrant.inner, wavelength, &opts);
+    PyRingIdResult { inner: result }
 }

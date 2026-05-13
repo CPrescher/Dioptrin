@@ -28,6 +28,7 @@ mod calibrant;
 mod ellipse;
 mod massif;
 mod refinement;
+mod ring_identity;
 
 #[cfg(test)]
 mod tests;
@@ -39,3 +40,4 @@ pub use refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,
     refine,
 };
+pub use ring_identity::{RingIdOptions, RingIdResult, identify_rings};
