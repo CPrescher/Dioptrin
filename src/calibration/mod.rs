@@ -24,6 +24,7 @@
 //! and `d2` is the column index (fast / X axis), matching the rest of
 //! Dioptrin's `Geometry`. Both are `f64` so sub-pixel centroids are fine.
 
+mod auto;
 mod calibrant;
 mod ellipse;
 mod massif;
@@ -33,9 +34,12 @@ mod ring_identity;
 #[cfg(test)]
 mod tests;
 
+pub use auto::{
+    AutoCalibrateDiagnostics, AutoCalibrateError, AutoCalibrateOptions, auto_calibrate,
+};
 pub use calibrant::{Calibrant, CalibrantError};
 pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
-pub use massif::{MassifOptions, find_peaks};
+pub use massif::{ImagePeakOptions, MassifOptions, find_peaks, find_peaks_image};
 pub use refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,
     refine,

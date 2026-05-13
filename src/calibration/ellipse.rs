@@ -211,6 +211,12 @@ pub struct RansacOptions {
     /// arbitrary tilted detectors where genuinely eccentric ellipses are
     /// expected.
     pub max_axis_ratio: Option<f64>,
+    /// Post-RANSAC ellipse deduplication. Two ellipses are merged when their
+    /// centers are within `dedupe_center_dist` pixels and their semi-major
+    /// axes agree to within `dedupe_size_rel`. After merging, the union of
+    /// their inlier point sets is refit. Disable by setting both to 0.
+    pub dedupe_center_dist: f64,
+    pub dedupe_size_rel: f64,
     /// Random seed for reproducibility.
     pub rng_seed: u64,
 }
@@ -223,6 +229,8 @@ impl Default for RansacOptions {
             max_iterations: 2000,
             max_ellipses: 12,
             max_axis_ratio: None,
+            dedupe_center_dist: 5.0,
+            dedupe_size_rel: 0.02,
             rng_seed: 0xC0FF_EEC0_DE12_3456,
         }
     }
@@ -351,6 +359,24 @@ pub fn ransac_ellipses(points: &[(f64, f64)], options: &RansacOptions) -> Ransac
         available.retain(|i| assignments[*i].is_none());
     }
 
+    // Optional dedup: merge ellipses with similar center + semi-major axis.
+    // RANSAC's greedy structure sometimes produces two fits of the same
+    // physical ring when the first fit's inlier removal leaves enough of the
+    // ring behind to trigger a second similar consensus. Merging takes the
+    // union of inliers and refits.
+    let dedupe = options.dedupe_center_dist > 0.0 || options.dedupe_size_rel > 0.0;
+    let (ellipses, mut assignments) = if dedupe {
+        merge_similar_ellipses(
+            ellipses,
+            assignments,
+            points,
+            options.dedupe_center_dist,
+            options.dedupe_size_rel,
+        )
+    } else {
+        (ellipses, assignments)
+    };
+
     // Sort ellipses by semi-major axis. Update assignments accordingly.
     let mut order: Vec<usize> = (0..ellipses.len()).collect();
     order.sort_by(|&a, &b| {
@@ -367,15 +393,93 @@ pub fn ransac_ellipses(points: &[(f64, f64)], options: &RansacOptions) -> Ransac
         }
         r
     };
-    let assignments = assignments
+    assignments = assignments
         .into_iter()
         .map(|a| a.map(|k| remap[k]))
         .collect();
+    let _ = ellipses; // moved into `sorted` above
 
     RansacResult {
         ellipses: sorted,
         assignments,
     }
+}
+
+/// Merge ellipses that share a similar center and semi-major axis. Inliers
+/// are unioned across merge groups and the resulting cluster is refit.
+fn merge_similar_ellipses(
+    ellipses: Vec<Ellipse>,
+    assignments: Vec<Option<usize>>,
+    points: &[(f64, f64)],
+    center_dist: f64,
+    size_rel: f64,
+) -> (Vec<Ellipse>, Vec<Option<usize>>) {
+    let n = ellipses.len();
+    if n < 2 {
+        return (ellipses, assignments);
+    }
+    // Union-find over ellipse indices.
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        if parent[i] == i {
+            i
+        } else {
+            let r = find(parent, parent[i]);
+            parent[i] = r;
+            r
+        }
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let a = ellipses[i];
+            let b = ellipses[j];
+            let dc = ((a.center.0 - b.center.0).powi(2) + (a.center.1 - b.center.1).powi(2)).sqrt();
+            let rel_size =
+                (a.semi_major - b.semi_major).abs() / a.semi_major.max(b.semi_major).max(1e-30);
+            if dc <= center_dist && rel_size <= size_rel {
+                let ri = find(&mut parent, i);
+                let rj = find(&mut parent, j);
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+    // Group ellipse indices by their union-find root.
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    // Build new ellipse list. For each group, refit on the union of inliers.
+    let mut new_ellipses: Vec<Ellipse> = Vec::with_capacity(groups.len());
+    let mut old_to_new: Vec<usize> = vec![0; n];
+    for group in groups.values() {
+        let new_idx = new_ellipses.len();
+        for &old_idx in group {
+            old_to_new[old_idx] = new_idx;
+        }
+        // Collect the union of inliers from every old ellipse in the group.
+        let mut union_pts: Vec<(f64, f64)> = Vec::new();
+        for (pi, slot) in assignments.iter().enumerate() {
+            if let Some(k) = slot
+                && group.contains(k)
+            {
+                union_pts.push(points[pi]);
+            }
+        }
+        let refit = if union_pts.len() >= 5 {
+            fit_least_squares(&union_pts).unwrap_or(ellipses[group[0]])
+        } else {
+            ellipses[group[0]]
+        };
+        new_ellipses.push(refit);
+    }
+    let new_assignments = assignments
+        .into_iter()
+        .map(|a| a.map(|k| old_to_new[k]))
+        .collect();
+    (new_ellipses, new_assignments)
 }
 
 #[cfg(test)]
@@ -448,6 +552,8 @@ mod tests {
             max_iterations: 600,
             max_ellipses: 6,
             max_axis_ratio: None,
+            dedupe_center_dist: 0.0,
+            dedupe_size_rel: 0.0,
             rng_seed: 42,
         };
         let result = ransac_ellipses(&pts, &opts);
@@ -489,6 +595,8 @@ mod tests {
             max_iterations: 500,
             max_ellipses: 4,
             max_axis_ratio: None,
+            dedupe_center_dist: 0.0,
+            dedupe_size_rel: 0.0,
             rng_seed: 1,
         };
         let result = ransac_ellipses(&pts, &opts);

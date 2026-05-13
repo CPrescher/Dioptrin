@@ -439,4 +439,130 @@ mod tests {
         let peaks = find_peaks(&img, dim, dim, (28, 28), &opts);
         assert!(peaks.is_empty(), "background seed should return no peaks");
     }
+
+    #[test]
+    fn image_wide_peak_finder_recovers_multiple_peaks() {
+        let dim = 128;
+        let mut img = vec![1.0_f64; dim * dim];
+        let truths: Vec<(f64, f64)> = vec![(30.4, 40.7), (70.2, 50.3), (90.6, 110.1)];
+        for &(i, j) in &truths {
+            add_gaussian(&mut img, dim, dim, i, j, 80.0, 1.5);
+        }
+        let opts = ImagePeakOptions {
+            valley_size: Some(6.0),
+            threshold_factor: 3.0,
+            max_peaks: 200,
+        };
+        let peaks = find_peaks_image(&img, dim, dim, &opts);
+        // Every truth should be near some detected peak.
+        for t in &truths {
+            let nearest = peaks
+                .iter()
+                .map(|p| ((p.0 - t.0).powi(2) + (p.1 - t.1).powi(2)).sqrt())
+                .fold(f64::INFINITY, f64::min);
+            assert!(nearest < 0.5, "truth {:?} not within 0.5 px", t);
+        }
+    }
+}
+
+// ---------- image-wide peak finder (no seed) ----------
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImagePeakOptions {
+    /// Gaussian σ for the background filter, in pixels.
+    /// `None` → adaptive pyFAI-style `max(5, max(dim) / 50)`.
+    pub valley_size: Option<f64>,
+    /// Pixels are flagged as foreground when
+    /// `image > background + threshold_factor * std(image - background)`.
+    /// A value of 2-4 works well in practice; lower picks up more spotty
+    /// peaks at the cost of more outliers.
+    pub threshold_factor: f64,
+    /// Cap on returned peaks.
+    pub max_peaks: usize,
+}
+
+impl Default for ImagePeakOptions {
+    fn default() -> Self {
+        Self {
+            valley_size: None,
+            threshold_factor: 3.0,
+            max_peaks: 5000,
+        }
+    }
+}
+
+/// Image-wide peak extraction without a seed.
+///
+/// Subtract a Gaussian-blurred background, threshold the residual to flag
+/// foreground pixels, then return every 3×3 local maximum within the
+/// foreground mask, sub-pixel refined. Unlike a one-centroid-per-blob
+/// approach, this yields many peaks along the length of each Debye-Scherrer
+/// ring (which is what RANSAC ellipse clustering needs).
+pub fn find_peaks_image(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    options: &ImagePeakOptions,
+) -> Vec<(f64, f64)> {
+    assert_eq!(image.len(), dim1 * dim2, "image size mismatch");
+    let sigma = match options.valley_size {
+        Some(v) => v,
+        None => 5.0_f64.max(dim1.max(dim2) as f64 / 50.0),
+    };
+    let bg = gaussian_blur(image, dim1, dim2, sigma);
+    // Residual image and its std (over the whole frame).
+    let residual: Vec<f64> = image.iter().zip(&bg).map(|(i, b)| i - b).collect();
+    let n = image.len() as f64;
+    let mean_r = residual.iter().sum::<f64>() / n;
+    let var_r = residual
+        .iter()
+        .map(|r| (r - mean_r) * (r - mean_r))
+        .sum::<f64>()
+        / n;
+    let std_r = var_r.sqrt();
+    let threshold = mean_r + options.threshold_factor * std_r;
+
+    // A pixel is a peak if (a) it's above threshold in the residual image
+    // and (b) it's a strict local max over a 3×3 neighbourhood of the *raw*
+    // image. Iterate over the interior of the frame; the border is rarely
+    // useful for diffraction calibration anyway.
+    let mut peaks: Vec<(f64, f64)> = Vec::new();
+    let max_steps = 4; // tiny — the seed is already on the peak ridge
+    for i in 1..(dim1.saturating_sub(1)) {
+        for j in 1..(dim2.saturating_sub(1)) {
+            let idx = i * dim2 + j;
+            if residual[idx] <= threshold {
+                continue;
+            }
+            let v = image[idx];
+            // Strict local max over 3×3.
+            let mut is_max = true;
+            for di in -1isize..=1 {
+                for dj in -1isize..=1 {
+                    if di == 0 && dj == 0 {
+                        continue;
+                    }
+                    let ni = (i as isize + di) as usize;
+                    let nj = (j as isize + dj) as usize;
+                    if image[ni * dim2 + nj] > v {
+                        is_max = false;
+                        break;
+                    }
+                }
+                if !is_max {
+                    break;
+                }
+            }
+            if !is_max {
+                continue;
+            }
+            if let Some(p) = uphill_subpixel(image, dim1, dim2, (i, j), max_steps) {
+                peaks.push(p);
+                if peaks.len() >= options.max_peaks {
+                    return peaks;
+                }
+            }
+        }
+    }
+    peaks
 }

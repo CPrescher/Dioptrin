@@ -7,8 +7,9 @@ pub mod results;
 pub mod utils;
 
 use calibration::{
-    PyCalibrant, PyCalibrationPoints, PyCalibrationResult, PyEllipseFit, PyRansacEllipseResult,
-    PyRingIdResult, find_peaks_massif_py, identify_rings_py, ransac_ellipses_py, refine_py,
+    PyAutoCalibrateResult, PyCalibrant, PyCalibrationPoints, PyCalibrationResult, PyEllipseFit,
+    PyRansacEllipseResult, PyRingIdResult, auto_calibrate_py, find_peaks_image_py,
+    find_peaks_massif_py, identify_rings_py, ransac_ellipses_py, refine_py,
 };
 use integrator::PyIntegrator;
 use multi_integrator::PyMultiIntegrator;
@@ -48,6 +49,8 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_peaks_massif_py, m)?)?;
     m.add_function(wrap_pyfunction!(ransac_ellipses_py, m)?)?;
     m.add_function(wrap_pyfunction!(identify_rings_py, m)?)?;
+    m.add_function(wrap_pyfunction!(find_peaks_image_py, m)?)?;
+    m.add_function(wrap_pyfunction!(auto_calibrate_py, m)?)?;
     m.add_class::<PyIntegrator>()?;
     m.add_class::<PyMultiIntegrator>()?;
     m.add_class::<PyIntegrationResult>()?;
@@ -59,6 +62,7 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEllipseFit>()?;
     m.add_class::<PyRansacEllipseResult>()?;
     m.add_class::<PyRingIdResult>()?;
+    m.add_class::<PyAutoCalibrateResult>()?;
     m.add("LicenseError", m.py().get_type::<LicenseError>())?;
     m.add(
         "LicenseNotFoundError",

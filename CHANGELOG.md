@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **End-to-end auto calibration (`dioptrin.auto_calibrate`).** Wires the
+  RANSAC ellipse clustering, ring-identity matching, and L-M refinement
+  into a single call: given a list of picked peaks plus a calibrant,
+  wavelength, and pixel size, returns a refined PONI with no manual
+  seed clicks and no geometry hint. Internal pipeline: RANSAC →
+  shared-center filter (drops spurious cross-ring ghost ellipses) →
+  identify rings by tan(2θ) ratio matching → bootstrap PONI from
+  matched-ellipse centers + s_i / tan(2θ_k) → L-M refine. A Rust unit
+  test (`auto_calibrate_recovers_synthetic_geometry`) recovers a known
+  synthetic LaB6 geometry to numerical precision.
+  Known limitation: on dense calibrants like LaB6 (91 d-spacings),
+  when the innermost ring is weakly detected, the ratio-only anchor
+  disambiguation can lock onto a self-consistent chain at the wrong
+  scaled distance. A follow-up will add an optional distance hint to
+  resolve the ambiguity. The slice-2 and slice-3a/3b pipelines are
+  unaffected.
+- **Image-wide peak extraction (`dioptrin.find_peaks_image`).** A no-seed
+  variant of Massif: subtract a Gaussian background, threshold by
+  `mean + k·std` of the residual, return every 3×3 local maximum with
+  sub-pixel parabolic refinement. Intended as the peak source for the
+  auto-calibration pipeline.
+- **RANSAC ellipse deduplication.** `ransac_ellipses` now merges fits
+  with similar centers and similar semi-major axes (configurable
+  thresholds), unioning their inlier sets and refitting. Defaults
+  `5 px` center distance and `2 %` size, which removes the manual
+  Python-side dedup that the slice-3b test used to do.
 - **Ring identity matching (`dioptrin.identify_rings`).** Given a list of
   detected ellipses (sorted ascending by semi-major axis) and a known
   calibrant, identify which calibrant ring each ellipse corresponds to —

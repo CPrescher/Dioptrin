@@ -6,8 +6,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
-    Calibrant, CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss,
-    MassifOptions, ParamMask, RansacOptions, RansacResult, RingIdOptions, RingIdResult, find_peaks,
+    AutoCalibrateOptions, Calibrant, CalibrationError, CalibrationOptions, CalibrationPoints,
+    CalibrationResult, ImagePeakOptions, Loss, MassifOptions, ParamMask, RansacOptions,
+    RansacResult, RingIdOptions, RingIdResult, auto_calibrate, find_peaks, find_peaks_image,
     identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
@@ -447,7 +448,7 @@ impl PyRansacEllipseResult {
 /// * `rng_seed`          — for reproducibility
 #[pyfunction]
 #[pyo3(name = "ransac_ellipses")]
-#[pyo3(signature = (points, inlier_threshold=1.5, min_inliers=10, max_iterations=2000, max_ellipses=12, max_axis_ratio=None, rng_seed=0xC0FF_EEC0_DE12_3456_u64))]
+#[pyo3(signature = (points, inlier_threshold=1.5, min_inliers=10, max_iterations=2000, max_ellipses=12, max_axis_ratio=None, dedupe_center_dist=5.0, dedupe_size_rel=0.02, rng_seed=0xC0FF_EEC0_DE12_3456_u64))]
 #[allow(clippy::too_many_arguments)]
 pub fn ransac_ellipses_py(
     points: Vec<(f64, f64)>,
@@ -456,6 +457,8 @@ pub fn ransac_ellipses_py(
     max_iterations: usize,
     max_ellipses: usize,
     max_axis_ratio: Option<f64>,
+    dedupe_center_dist: f64,
+    dedupe_size_rel: f64,
     rng_seed: u64,
 ) -> PyRansacEllipseResult {
     let opts = RansacOptions {
@@ -464,6 +467,8 @@ pub fn ransac_ellipses_py(
         max_iterations,
         max_ellipses,
         max_axis_ratio,
+        dedupe_center_dist,
+        dedupe_size_rel,
         rng_seed,
     };
     let result = ransac_ellipses(&points, &opts);
@@ -547,4 +552,203 @@ pub fn identify_rings_py(
     };
     let result = identify_rings(&ell_list, &calibrant.inner, wavelength, &opts);
     PyRingIdResult { inner: result }
+}
+
+// ---------- image-wide peak finder ----------
+
+/// Image-wide peak extraction without a seed. Returns sub-pixel
+/// `(d1, d2)` peak centers for every above-background blob.
+///
+/// # Arguments
+///
+/// * `image`            — 2D `float64` numpy array
+/// * `valley_size`      — Gaussian σ for the background filter (pyFAI-adaptive default if `None`)
+/// * `threshold_factor` — pixels flagged as foreground when value exceeds
+///                        `mean + threshold_factor · std` of the residual (default 3.0)
+/// * `max_peaks`        — cap on returned peaks (default 5000)
+#[pyfunction]
+#[pyo3(name = "find_peaks_image")]
+#[pyo3(signature = (image, valley_size=None, threshold_factor=3.0, max_peaks=5000))]
+pub fn find_peaks_image_py(
+    image: PyReadonlyArray2<'_, f64>,
+    valley_size: Option<f64>,
+    threshold_factor: f64,
+    max_peaks: usize,
+) -> PyResult<Vec<(f64, f64)>> {
+    let view = image.as_array();
+    if !view.is_standard_layout() {
+        return Err(PyValueError::new_err(
+            "image must be C-contiguous (row-major) float64",
+        ));
+    }
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+    let slice = image
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(format!("image must be contiguous: {}", e)))?;
+    let opts = ImagePeakOptions {
+        valley_size,
+        threshold_factor,
+        max_peaks,
+    };
+    Ok(find_peaks_image(slice, dim1, dim2, &opts))
+}
+
+// ---------- end-to-end auto calibration ----------
+
+#[pyclass(name = "AutoCalibrateResult")]
+pub struct PyAutoCalibrateResult {
+    refined: CalibrationResult,
+    n_detected_ellipses: usize,
+    n_identified_ellipses: usize,
+    bootstrap_distance: f64,
+    bootstrap_poni1: f64,
+    bootstrap_poni2: f64,
+}
+
+#[pymethods]
+impl PyAutoCalibrateResult {
+    #[getter]
+    fn n_iter(&self) -> usize {
+        self.refined.n_iter
+    }
+    #[getter]
+    fn chi2(&self) -> f64 {
+        self.refined.chi2
+    }
+    #[getter]
+    fn rms_rad(&self) -> f64 {
+        self.refined.rms_rad
+    }
+    #[getter]
+    fn n_detected_ellipses(&self) -> usize {
+        self.n_detected_ellipses
+    }
+    #[getter]
+    fn n_identified_ellipses(&self) -> usize {
+        self.n_identified_ellipses
+    }
+    #[getter]
+    fn bootstrap_distance(&self) -> f64 {
+        self.bootstrap_distance
+    }
+    #[getter]
+    fn bootstrap_poni1(&self) -> f64 {
+        self.bootstrap_poni1
+    }
+    #[getter]
+    fn bootstrap_poni2(&self) -> f64 {
+        self.bootstrap_poni2
+    }
+    #[getter]
+    fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let p = &self.refined.poni;
+        d.set_item("pixel1", p.pixel1)?;
+        d.set_item("pixel2", p.pixel2)?;
+        d.set_item("distance", p.distance)?;
+        d.set_item("poni1", p.poni1)?;
+        d.set_item("poni2", p.poni2)?;
+        d.set_item("rot1", p.rot1)?;
+        d.set_item("rot2", p.rot2)?;
+        d.set_item("rot3", p.rot3)?;
+        d.set_item("wavelength", p.wavelength)?;
+        Ok(d)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "AutoCalibrateResult(n_iter={}, rms_rad={:.3e}, detected={}, identified={})",
+            self.refined.n_iter,
+            self.refined.rms_rad,
+            self.n_detected_ellipses,
+            self.n_identified_ellipses
+        )
+    }
+}
+
+/// End-to-end automatic calibration: peaks → ellipses → ring identity →
+/// bootstrap PONI → L-M refine. No manual seeds, no geometry hint.
+///
+/// # Arguments
+///
+/// * `peaks`            — list of `(d1, d2)` peak coordinates (e.g. from
+///                        `find_peaks_image`)
+/// * `calibrant`        — reference powder
+/// * `wavelength`       — beam wavelength in metres
+/// * `pixel1`, `pixel2` — detector pixel pitch in metres
+///
+/// RANSAC / ring-id / refine sub-options can be tuned via the optional
+/// keyword arguments; defaults are sensible for typical lab/synchrotron
+/// data (near-perpendicular detector, Huber loss for the bootstrap).
+#[pyfunction]
+#[pyo3(name = "auto_calibrate")]
+#[pyo3(signature = (
+    peaks, calibrant, wavelength, pixel1, pixel2,
+    ransac_inlier_threshold=1.5, ransac_min_inliers=10, ransac_max_iterations=2000,
+    ransac_max_ellipses=12, ransac_max_axis_ratio=1.2,
+    ransac_dedupe_center_dist=5.0, ransac_dedupe_size_rel=0.02,
+    ratio_tolerance=0.03, min_matches=3,
+    center_consistency_px=30.0,
+    fix=None, huber_c=2.0e-3, max_iter=200, tol=1e-9,
+    rng_seed=0xC0FF_EEC0_DE12_3456_u64,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn auto_calibrate_py(
+    peaks: Vec<(f64, f64)>,
+    calibrant: &PyCalibrant,
+    wavelength: f64,
+    pixel1: f64,
+    pixel2: f64,
+    ransac_inlier_threshold: f64,
+    ransac_min_inliers: usize,
+    ransac_max_iterations: usize,
+    ransac_max_ellipses: usize,
+    ransac_max_axis_ratio: f64,
+    ransac_dedupe_center_dist: f64,
+    ransac_dedupe_size_rel: f64,
+    ratio_tolerance: f64,
+    min_matches: usize,
+    center_consistency_px: f64,
+    fix: Option<&Bound<'_, PyList>>,
+    huber_c: f64,
+    max_iter: usize,
+    tol: f64,
+    rng_seed: u64,
+) -> PyResult<PyAutoCalibrateResult> {
+    let opts = AutoCalibrateOptions {
+        ransac: RansacOptions {
+            inlier_threshold: ransac_inlier_threshold,
+            min_inliers: ransac_min_inliers,
+            max_iterations: ransac_max_iterations,
+            max_ellipses: ransac_max_ellipses,
+            max_axis_ratio: Some(ransac_max_axis_ratio),
+            dedupe_center_dist: ransac_dedupe_center_dist,
+            dedupe_size_rel: ransac_dedupe_size_rel,
+            rng_seed,
+        },
+        ring_id: RingIdOptions {
+            ratio_tolerance,
+            max_anchor_ring: 8,
+            min_matches,
+        },
+        refine_mask: parse_mask(fix)?,
+        refine_loss: Loss::Huber { c: huber_c },
+        max_iter,
+        tol,
+        center_consistency_px,
+    };
+
+    let (refined, diag) =
+        auto_calibrate(&peaks, &calibrant.inner, wavelength, pixel1, pixel2, &opts)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyAutoCalibrateResult {
+        refined,
+        n_detected_ellipses: diag.n_detected_ellipses,
+        n_identified_ellipses: diag.n_identified_ellipses,
+        bootstrap_distance: diag.bootstrap_distance,
+        bootstrap_poni1: diag.bootstrap_poni1,
+        bootstrap_poni2: diag.bootstrap_poni2,
+    })
 }
