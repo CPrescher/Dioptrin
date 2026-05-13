@@ -1,12 +1,13 @@
 //! Python bindings for the calibration module.
 
+use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
     Calibrant, CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss,
-    ParamMask, refine,
+    MassifOptions, ParamMask, find_peaks, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -301,4 +302,53 @@ pub fn refine_py(
     let result = refine(&geometry, &points.inner, &calibrant.inner, &options)
         .map_err(calibration_err_to_py)?;
     Ok(PyCalibrationResult { result })
+}
+
+// ---------- find_peaks_massif (peak picking) ----------
+
+/// Massif-based peak picking from a seed.
+///
+/// Given a 2D image (any float dtype convertible to f64) and an integer
+/// (d1, d2) seed, return a list of sub-pixel (d1, d2) peaks that belong to
+/// the same connected "above-local-background" region as the seed. This is
+/// the same algorithm Dioptas's `find_peaks_automatic` uses via pyFAI's
+/// Massif.
+///
+/// # Arguments
+///
+/// * `image`        — 2D `float64` numpy array
+/// * `seed`         — `(d1, d2)` pixel indices near a peak
+/// * `valley_size`  — Gaussian σ for the background filter, in pixels.
+///                    Pass `None` (default) to use pyFAI's adaptive value
+///                    `max(5, max(dim1, dim2) / 50)`.
+/// * `max_peaks`    — cap on returned sub-peaks (default 200)
+/// * `dedup_dist`   — merge peaks closer than this in pixel space (default 1.0)
+#[pyfunction]
+#[pyo3(name = "find_peaks_massif")]
+#[pyo3(signature = (image, seed, valley_size=None, max_peaks=200, dedup_dist=1.0))]
+pub fn find_peaks_massif_py(
+    image: PyReadonlyArray2<'_, f64>,
+    seed: (usize, usize),
+    valley_size: Option<f64>,
+    max_peaks: usize,
+    dedup_dist: f64,
+) -> PyResult<Vec<(f64, f64)>> {
+    let view = image.as_array();
+    if !view.is_standard_layout() {
+        return Err(PyValueError::new_err(
+            "image must be C-contiguous (row-major) float64",
+        ));
+    }
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+    let slice = image
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(format!("image must be contiguous: {}", e)))?;
+    let opts = MassifOptions {
+        valley_size,
+        max_peaks,
+        dedup_dist,
+    };
+    Ok(find_peaks(slice, dim1, dim2, seed, &opts))
 }

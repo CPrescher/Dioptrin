@@ -25,12 +25,14 @@
 //! Dioptrin's `Geometry`. Both are `f64` so sub-pixel centroids are fine.
 
 mod calibrant;
+mod massif;
 mod refinement;
 
 #[cfg(test)]
 mod tests;
 
 pub use calibrant::{Calibrant, CalibrantError};
+pub use massif::{MassifOptions, find_peaks};
 pub use refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,
     refine,
