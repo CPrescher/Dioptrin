@@ -23,7 +23,10 @@ pub enum CalibrantError {
     /// File parsed but contained no d-spacing entries.
     Empty,
     /// A data line could not be parsed as a number.
-    Parse { line: usize, content: String },
+    Parse {
+        line: usize,
+        content: String,
+    },
 }
 
 impl fmt::Display for CalibrantError {
@@ -32,7 +35,11 @@ impl fmt::Display for CalibrantError {
             CalibrantError::Io(err) => write!(f, "I/O error: {}", err),
             CalibrantError::Empty => write!(f, "no d-spacing entries found in file"),
             CalibrantError::Parse { line, content } => {
-                write!(f, "could not parse d-spacing on line {}: {:?}", line, content)
+                write!(
+                    f,
+                    "could not parse d-spacing on line {}: {:?}",
+                    line, content
+                )
             }
         }
     }

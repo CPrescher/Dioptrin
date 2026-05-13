@@ -32,7 +32,8 @@ fn tth_truth(poni: &Poni, d1: f64, d2: f64) -> f64 {
     let (sr1, cr1) = poni.rot1.sin_cos();
     let (sr2, cr2) = poni.rot2.sin_cos();
     let (sr3, cr3) = poni.rot3.sin_cos();
-    let x = p1 * cr2 * cr3 + p2 * (cr3 * sr1 * sr2 - cr1 * sr3) - p3 * (cr1 * cr3 * sr2 + sr1 * sr3);
+    let x =
+        p1 * cr2 * cr3 + p2 * (cr3 * sr1 * sr2 - cr1 * sr3) - p3 * (cr1 * cr3 * sr2 + sr1 * sr3);
     let y =
         p1 * cr2 * sr3 + p2 * (cr1 * cr3 + sr1 * sr2 * sr3) - p3 * (-(cr3 * sr1) + cr1 * sr2 * sr3);
     let z = p1 * sr2 - p2 * cr2 * sr1 + p3 * cr1 * cr2;
@@ -208,10 +209,11 @@ fn refine_handles_off_detector_beam_center() {
     for (k, &t) in ring_tth.iter().enumerate() {
         for j in 0..120 {
             let az = 2.0 * std::f64::consts::PI * (j as f64) / 120.0;
-            if let Some((d1, d2)) = pixel_on_ring(&truth, t, az) {
-                if (0.0..2048.0).contains(&d1) && (0.0..2048.0).contains(&d2) {
-                    pts.push(d1, d2, Some(k));
-                }
+            if let Some((d1, d2)) = pixel_on_ring(&truth, t, az)
+                && (0.0..2048.0).contains(&d1)
+                && (0.0..2048.0).contains(&d2)
+            {
+                pts.push(d1, d2, Some(k));
             }
         }
     }
@@ -300,7 +302,11 @@ fn huber_loss_resists_outliers() {
         l2_err
     );
     // And it should recover distance reasonably well — within ~0.5 mm.
-    assert!(robust_err < 5.0e-4, "robust distance error too large: {:e}", robust_err);
+    assert!(
+        robust_err < 5.0e-4,
+        "robust distance error too large: {:e}",
+        robust_err
+    );
 }
 
 #[test]

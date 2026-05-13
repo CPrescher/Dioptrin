@@ -133,7 +133,7 @@ fn parse_loss(loss: Option<&Bound<'_, PyAny>>) -> PyResult<Loss> {
                 other
             ))),
         }
-    } else if let Ok(dict) = obj.downcast::<PyDict>() {
+    } else if let Ok(dict) = obj.cast::<PyDict>() {
         let kind: String = dict
             .get_item("type")?
             .ok_or_else(|| PyValueError::new_err("loss dict needs a 'type' key"))?
@@ -277,7 +277,7 @@ pub fn refine_py(
     // or a dict.
     let start_poni: Poni = if let Ok(integrator) = start.extract::<PyRef<PyIntegrator>>() {
         integrator.inner().geometry().poni.clone()
-    } else if let Ok(dict) = start.downcast::<PyDict>() {
+    } else if let Ok(dict) = start.cast::<PyDict>() {
         poni_from_dict(dict)?
     } else {
         return Err(PyValueError::new_err(

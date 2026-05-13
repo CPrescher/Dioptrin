@@ -1,3 +1,7 @@
+// Most of the inner loops here are small dense linear-algebra / Jacobian
+// kernels — indexing is the natural way to express them.
+#![allow(clippy::needless_range_loop)]
+
 //! Levenberg–Marquardt geometry refinement with optional Huber IRLS.
 //!
 //! Parameter vector (7 entries, any subset can be fixed):
@@ -54,6 +58,7 @@ impl CalibrationPoints {
         self.d1.is_empty()
     }
 
+    #[allow(dead_code)] // kept as a helper for future per-iteration weight code
     fn point_weight(&self, i: usize) -> f64 {
         if self.weight.is_empty() {
             1.0
@@ -68,6 +73,9 @@ impl Default for CalibrationPoints {
         Self::new()
     }
 }
+
+// Default for ParamMask is `fix_wavelength` — that's a meaningful default, not
+// just `all_false`, so we can't `#[derive(Default)]`.
 
 /// Which PONI parameters are free during refinement.
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +110,7 @@ impl ParamMask {
         m
     }
 
+    #[allow(dead_code)] // useful for diagnostics / future ParamMask API
     fn count_free(&self) -> usize {
         [
             self.distance,
@@ -125,22 +134,15 @@ impl Default for ParamMask {
 }
 
 /// Loss function applied to per-point 2θ residuals.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum Loss {
     /// Plain least squares.
+    #[default]
     L2,
     /// Huber loss with threshold `c` (in radians of 2θ). Residuals with
     /// `|r| ≤ c` keep weight 1; larger residuals are down-weighted as `c/|r|`.
     /// Typical c: 3× the expected per-point 2θ error (e.g. 1–3 mrad).
-    Huber {
-        c: f64,
-    },
-}
-
-impl Default for Loss {
-    fn default() -> Self {
-        Loss::L2
-    }
+    Huber { c: f64 },
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +283,7 @@ impl TrigConsts {
 /// Uses pyFAI/Dioptas pixel-center convention: integer index i refers to
 /// the lower-left corner of pixel i, so the pixel center is at i + 0.5.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn tth_at(
     d1: f64,
     d2: f64,
@@ -295,11 +298,9 @@ fn tth_at(
     let p2 = (d2 + 0.5) * pixel2 - poni2;
     let p3 = distance;
 
-    let x = p1 * tc.cr2 * tc.cr3
-        + p2 * (tc.cr3 * tc.sr1 * tc.sr2 - tc.cr1 * tc.sr3)
+    let x = p1 * tc.cr2 * tc.cr3 + p2 * (tc.cr3 * tc.sr1 * tc.sr2 - tc.cr1 * tc.sr3)
         - p3 * (tc.cr1 * tc.cr3 * tc.sr2 + tc.sr1 * tc.sr3);
-    let y = p1 * tc.cr2 * tc.sr3
-        + p2 * (tc.cr1 * tc.cr3 + tc.sr1 * tc.sr2 * tc.sr3)
+    let y = p1 * tc.cr2 * tc.sr3 + p2 * (tc.cr1 * tc.cr3 + tc.sr1 * tc.sr2 * tc.sr3)
         - p3 * (-(tc.cr3 * tc.sr1) + tc.cr1 * tc.sr2 * tc.sr3);
     let z = p1 * tc.sr2 - p2 * tc.cr2 * tc.sr1 + p3 * tc.cr1 * tc.cr2;
 
@@ -378,7 +379,12 @@ impl ParamPack {
 // ---------- residuals + Jacobian ----------
 
 /// Compute the 2θ predicted by the model at every control point.
-fn predicted_2theta(points: &CalibrationPoints, pack: &ParamPack, pixel1: f64, pixel2: f64) -> Vec<f64> {
+fn predicted_2theta(
+    points: &CalibrationPoints,
+    pack: &ParamPack,
+    pixel1: f64,
+    pixel2: f64,
+) -> Vec<f64> {
     let tc = TrigConsts::new(pack.full[P_ROT1], pack.full[P_ROT2], pack.full[P_ROT3]);
     let distance = pack.full[P_DIST];
     let poni1 = pack.full[P_PONI1];
@@ -437,10 +443,10 @@ fn auto_assign(
                 }
             }
         }
-        if let Some((k, d)) = best {
-            if d <= tolerance {
-                *slot = Some(k);
-            }
+        if let Some((k, d)) = best
+            && d <= tolerance
+        {
+            *slot = Some(k);
         }
     }
     out
@@ -495,10 +501,10 @@ fn finite_diff_jacobian(
     // `eps * scale`; choosing scale ~ O(1) of the parameter's natural range
     // keeps FD on the right side of cancellation noise.
     let scales = [
-        pack.full[P_DIST].abs().max(1e-2),      // distance ~ 0.1-1 m
-        pack.full[P_PONI1].abs().max(1e-2),     // poni ~ 0.05-0.2 m
+        pack.full[P_DIST].abs().max(1e-2),  // distance ~ 0.1-1 m
+        pack.full[P_PONI1].abs().max(1e-2), // poni ~ 0.05-0.2 m
         pack.full[P_PONI2].abs().max(1e-2),
-        1.0,                                     // rotations: ~1 rad typical range
+        1.0, // rotations: ~1 rad typical range
         1.0,
         1.0,
         pack.full[P_WAVELENGTH].abs().max(1e-11), // wavelength ~ 0.1-1 Å
@@ -713,9 +719,7 @@ pub fn refine(
     let mut last_iter = 0;
     for iter in 0..options.max_iter {
         last_iter = iter;
-        let jac = finite_diff_jacobian(
-            points, &pack, &assignments, calibrant, pixel1, pixel2, &r,
-        );
+        let jac = finite_diff_jacobian(points, &pack, &assignments, calibrant, pixel1, pixel2, &r);
         let (mut a, g) = normal_equations(&jac, &r, &w, n_free);
         // Apply Marquardt damping to the diagonal.
         for k in 0..n_free {
