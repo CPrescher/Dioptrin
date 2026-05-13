@@ -5,6 +5,38 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Geometry calibration (`dioptrin.calibration`).** A Levenberg–Marquardt
+  refinement that takes picked control points and a known calibrant and
+  refines the detector PONI. Highlights:
+  - Hand-rolled L-M with finite-difference Jacobian (no `nalgebra` /
+    `argmin` dependency).
+  - Optional Huber IRLS loss for robustness against spotty / single-crystal
+    contamination on rings.
+  - Auto ring-assignment by predicted-2θ-nearest-d-spacing each iteration.
+  - Free / fixed parameter mask (`distance`, `poni1`, `poni2`, `rot1`,
+    `rot2`, `rot3`, `wavelength`).
+  - Off-detector primary beam works correctly (PONI may lie outside the
+    detector window).
+  - Rotations wrap to `(-π, π]` after each accepted step to prevent drift
+    along under-constrained periodic directions.
+  - pyFAI/Dioptas pixel-center convention (`(d + 0.5) * pixel`) so picked
+    points from those tools feed in directly.
+- pyFAI-compatible `.D` calibrant parser; `LaB6_SRM660b.D` and `CeO2.D`
+  shipped in `test_data/calibrants/`.
+- Python API: `dioptrin.Calibrant`, `dioptrin.CalibrationPoints`,
+  `dioptrin.CalibrationResult`, `dioptrin.refine(...)`.
+- `LaB6_40keV_MarCCD.tif` + `.poni` test fixture from Dioptas's test corpus.
+- `python_examples/test_calibration_lab6.py` — pyFAI-forward-model round-trip
+  integration test (recovers a known LaB6 PONI to numerical precision).
+- `python_examples/test_calibration_dioptas_parity.py` — cross-validates
+  against Dioptas + pyFAI on the same 271 real Massif-picked points across
+  10 LaB6 rings; refined PONIs agree at the picking-noise floor (distance
+  to 0.4 ppm, PONI to 18 µm, rotations to 93 µrad).
+
 ## [0.5.2] - 2026-05-12
 
 ### Fixed

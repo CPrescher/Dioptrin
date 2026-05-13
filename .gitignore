@@ -5,6 +5,7 @@
 
 test_data/*.tif
 !test_data/CeO2_Pilatus1M.tif
+!test_data/LaB6_40keV_MarCCD.tif
 test_data/*.tiff
 test_data/*.h5
 test_data/test_output/*.png
