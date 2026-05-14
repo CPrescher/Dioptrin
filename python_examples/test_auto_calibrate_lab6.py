@@ -115,7 +115,8 @@ def main():
     print(result)
     print(f"  detected={result.n_detected_ellipses}, identified={result.n_identified_ellipses}")
     print(f"  bootstrap: dist={result.bootstrap_distance:.6f} "
-          f"poni=({result.bootstrap_poni1:.6f}, {result.bootstrap_poni2:.6f})")
+          f"ring_center=({result.bootstrap_ring_center_d1:.6f}, "
+          f"{result.bootstrap_ring_center_d2:.6f})")
     print(f"  refined:   dist={result.poni['distance']:.6f} "
           f"poni=({result.poni['poni1']:.6f}, {result.poni['poni2']:.6f})  "
           f"rot=({result.poni['rot1']:.3e}, {result.poni['rot2']:.3e})")

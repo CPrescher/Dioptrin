@@ -40,7 +40,7 @@ pub use auto::{
     AutoCalibrateDiagnostics, AutoCalibrateError, AutoCalibrateOptions, AutoMethod, auto_calibrate,
 };
 pub use calibrant::{Calibrant, CalibrantError};
-pub use center::{BeamCenter, BeamCenterOptions, estimate_beam_center, fit_circle_3point};
+pub use center::{RingCenter, RingCenterOptions, estimate_ring_center, fit_circle_3point};
 pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
 pub use massif::{ImagePeakOptions, MassifOptions, find_peaks, find_peaks_image};
 pub use radial::{RadialExtractOptions, RadialExtractResult, extract_rings_radial};

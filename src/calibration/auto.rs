@@ -24,7 +24,7 @@ use crate::geometry::Geometry;
 use crate::poni::Poni;
 
 use super::calibrant::Calibrant;
-use super::center::{BeamCenterOptions, estimate_beam_center};
+use super::center::{RingCenterOptions, estimate_ring_center};
 use super::ellipse::{RansacOptions, ransac_ellipses};
 use super::radial::{RadialExtractOptions, extract_rings_radial};
 use super::refinement::{
@@ -51,7 +51,7 @@ pub enum AutoMethod {
 #[derive(Debug, Clone)]
 pub struct AutoCalibrateOptions {
     pub method: AutoMethod,
-    pub center: BeamCenterOptions,
+    pub center: RingCenterOptions,
     pub radial: RadialExtractOptions,
     pub ransac: RansacOptions,
     pub ring_id: RingIdOptions,
@@ -81,7 +81,7 @@ impl Default for AutoCalibrateOptions {
         };
         Self {
             method: AutoMethod::default(),
-            center: BeamCenterOptions::default(),
+            center: RingCenterOptions::default(),
             radial: RadialExtractOptions::default(),
             ransac,
             ring_id,
@@ -128,9 +128,17 @@ fn consensus_center_filter(ellipses: &[crate::calibration::Ellipse], tol_px: f64
 pub struct AutoCalibrateDiagnostics {
     pub n_detected_ellipses: usize,
     pub n_identified_ellipses: usize,
+    /// Mean of `semi_minor_k · pixel / tan(2θ_k)` across matched (ellipse,
+    /// ring) pairs. For tilted detectors this is unbiased (semi_minor is
+    /// the perpendicular-projection radius); for the perpendicular case
+    /// it equals the geometric distance.
     pub bootstrap_distance: f64,
-    pub bootstrap_poni1: f64,
-    pub bootstrap_poni2: f64,
+    /// Mean ring-center fed into the bootstrap PONI fields. **Caveat: this
+    /// is the geometric center of the projected ellipses (≈ PONI only for
+    /// near-perpendicular detectors), not the actual PONI in the tilted
+    /// case.** See `center.rs` for the distinction.
+    pub bootstrap_ring_center_d1: f64,
+    pub bootstrap_ring_center_d2: f64,
 }
 
 #[derive(Debug)]
@@ -189,7 +197,7 @@ pub fn auto_calibrate(
             // off-detector beams), then bin peaks radially and fit one
             // ellipse per ring with least-squares (no Monte Carlo over
             // 5-point ellipse samples).
-            let center = estimate_beam_center(peaks, &options.center)
+            let center = estimate_ring_center(peaks, &options.center)
                 .ok_or(AutoCalibrateError::NoEllipses)?;
             let radial = extract_rings_radial(peaks, (center.d1, center.d2), &options.radial);
             if radial.ellipses.is_empty() {
@@ -254,10 +262,13 @@ pub fn auto_calibrate(
             let e = &ransac.ellipses[e_idx];
             centers_d1.push(e.center.0);
             centers_d2.push(e.center.1);
-            // Use the ellipse's "circle-equivalent" radius for the
-            // distance estimate. Geometric mean of axes is robust to
-            // small ellipticity.
-            let r = (e.semi_major * e.semi_minor).sqrt();
+            // Use the **semi-minor** axis for the distance estimate.
+            // Geometrically, on a tilted detector the minor axis of each
+            // Debye-Scherrer ring's projected ellipse is the perpendicular-
+            // projection radius `D·tan(2θ)` (un-tilted), while the major
+            // axis picks up a `1/cos(tilt)` stretch. Using semi_minor gives
+            // an unbiased distance estimate from 0° up through heavy tilts.
+            let r = e.semi_minor;
             let tan_2th = t.tan();
             if tan_2th > 0.0 {
                 // r is in pixels; convert to meters via the geometric mean
@@ -271,20 +282,31 @@ pub fn auto_calibrate(
     if distances.is_empty() {
         return Err(AutoCalibrateError::NoConfidentIdentity);
     }
-    // Beam center in pixels → meters via per-axis pixel size.
+    // Ring-center in pixels (mean of matched ellipses' geometric centers).
     let cx = centers_d1.iter().sum::<f64>() / centers_d1.len() as f64;
     let cy = centers_d2.iter().sum::<f64>() / centers_d2.len() as f64;
     let dist = distances.iter().sum::<f64>() / distances.len() as f64;
-    // Apply pyFAI/Dioptas pixel-center convention: integer pixel index is
-    // the corner, so the geometric center of pixel i sits at (i + 0.5)·px.
-    let bootstrap_poni1 = (cx + 0.5) * pixel1;
-    let bootstrap_poni2 = (cy + 0.5) * pixel2;
+    // Convert to PONI in metres using the pyFAI/Dioptas pixel-center
+    // convention (integer index = pixel corner; cell center at i + 0.5).
+    //
+    // CAVEAT: we initialise PONI = ring-center here. This is only correct
+    // for near-perpendicular detectors, where ring-center ≈ PONI ≈ beam
+    // center. For tilted detectors the three points are distinct (see
+    // `center.rs`) and the bootstrap PONI is off by `~D · tan(tilt)`.
+    // The downstream L-M refine will pull PONI back toward truth provided
+    // rot1, rot2 are unmasked and the starting basin is right; for heavy
+    // tilt (rot1, rot2 ≳ 10°) the basin is too small and the refine can
+    // fall into a local minimum. A future "tilt-aware" bootstrap (closed-
+    // form geometry inversion from ellipse parameters + 2θ_k) is the
+    // proper fix.
+    let bootstrap_ring_center_d1 = (cx + 0.5) * pixel1;
+    let bootstrap_ring_center_d2 = (cy + 0.5) * pixel2;
     let mut poni = Poni::new();
     poni.pixel1 = pixel1;
     poni.pixel2 = pixel2;
     poni.distance = dist;
-    poni.poni1 = bootstrap_poni1;
-    poni.poni2 = bootstrap_poni2;
+    poni.poni1 = bootstrap_ring_center_d1;
+    poni.poni2 = bootstrap_ring_center_d2;
     poni.rot1 = 0.0;
     poni.rot2 = 0.0;
     poni.rot3 = 0.0;
@@ -321,8 +343,8 @@ pub fn auto_calibrate(
         n_detected_ellipses: ransac.ellipses.len(),
         n_identified_ellipses: ident.n_matched,
         bootstrap_distance: dist,
-        bootstrap_poni1,
-        bootstrap_poni2,
+        bootstrap_ring_center_d1,
+        bootstrap_ring_center_d2,
     };
     Ok((result, diagnostics))
 }

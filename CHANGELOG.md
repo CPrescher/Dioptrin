@@ -10,20 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Radial-binning ring extraction (`dioptrin.extract_rings_radial`).**
-  Given a beam center, compute peak radii, build a smoothed radial
-  histogram, pick local maxima as ring radii, and fit each ring's peaks
-  with a single least-squares ellipse. Avoids the 5-of-5-same-ring Monte
-  Carlo coincidence that crippled RANSAC on dense multi-ring patterns —
-  every peak from each ring goes directly into that ring's clean fit.
-- **Robust beam-center estimation (`dioptrin.estimate_beam_center`).**
-  3-point circle RANSAC + radial-band consistency scoring: sample triples
-  of peaks, fit the circle they define, score the candidate center by
-  how concentrated peaks are in radial bins from it. Works on:
-  - full-coverage multi-ring patterns
-  - **partial arcs** (single ring fragment in one quadrant — centroid
-    estimators fail here)
-  - **off-detector beams** (beam projection well outside the image)
-  Verified by 5 Rust unit tests covering each case.
+  Given an approximate **ring center**, compute peak radii, build a
+  smoothed radial histogram, pick local maxima as ring radii, and fit each
+  ring's peaks with a single least-squares ellipse. Avoids the
+  5-of-5-same-ring Monte Carlo coincidence that crippled RANSAC on dense
+  multi-ring patterns — every peak from each ring goes directly into that
+  ring's clean fit. Only valid when rings are approximately circular
+  (low detector tilt); for heavily tilted detectors a tilt-aware
+  ellipse-center estimator is needed instead.
+- **Ring-center estimation (`dioptrin.estimate_ring_center`).** 3-point
+  circle RANSAC + radial-band consistency scoring: sample triples of
+  peaks, fit the circle they define, score the candidate center by how
+  concentrated peaks are in radial bins from it. The function name is
+  deliberately **not** "beam_center" or "PONI" — those three geometric
+  points coincide only for a perpendicular detector and are distinct
+  in general. This module's docstring covers the distinction in detail;
+  the short version: for near-perpendicular detectors, ring-center ≈ PONI
+  ≈ beam center to within a few pixels, and the estimator is a useful
+  starting guess for the bootstrap PONI. For heavily tilted detectors
+  the three differ by `~D · tan(tilt)` and a separate ellipse-based
+  inversion is required.
+  Works robustly on full-coverage multi-ring patterns, partial arcs
+  (centroid estimators fail here), and off-detector beams — but only
+  when the near-circular assumption holds. 5 Rust unit tests cover
+  each case.
 - **`AutoMethod::Radial`** is now the default for `auto_calibrate`,
   replacing the old 5-point RANSAC-ellipse approach. End-to-end real-data
   recovery on LaB6_40keV_MarCCD with no clicks and no geometry hint:
@@ -31,12 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.016 %), rot1 4.27 mrad (truth 4.3 mrad, essentially exact),
   RMS residual 0.4 mrad in 8 L-M iterations. The old method is still
   selectable via `method="ransac"`.
-  Known limitation: heavily tilted detectors (rot1/rot2 > ~10°) break
-  the radial-binning assumption because rings become eccentric ellipses
-  rather than concentric circles around the beam-foot pixel. The
-  shipped `ceo2_side.tif` test fixture (31° tilt) is a known failure
-  case that will be addressed by a separate "tilted detector" path
-  with ellipse-center estimation.
+  Known limitations:
+  - The bootstrap initialises PONI to the estimated ring center. This
+    is correct only for near-perpendicular detectors (where ring center
+    ≈ PONI ≈ beam center). For tilted detectors PONI is at the foot
+    of the perpendicular from sample to detector and is displaced from
+    the ring center by `~D · tan(tilt)`; the radial method has no way
+    to recover that displacement on its own.
+  - The radial-binning assumption (rings are concentric circles around
+    one center) breaks for tilted detectors because each ring becomes
+    an ellipse with its own geometric center.
+  Both issues are addressed by a future tilt-aware "geometry inversion"
+  bootstrap that algebraically solves for `(D, PONI, rot1, rot2)` from
+  one or more fitted ellipses + the calibrant's known `2θ_k`. The
+  shipped `ceo2_side.tif` test fixture (Pilatus300kw strip detector at
+  31° tilt) is a known failure case for the current bootstrap.
 - **End-to-end auto calibration (`dioptrin.auto_calibrate`).** Wires the
   RANSAC ellipse clustering, ring-identity matching, and L-M refinement
   into a single call: given a list of picked peaks plus a calibrant,

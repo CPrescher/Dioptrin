@@ -1,8 +1,15 @@
-//! Radial-binning ring extraction from peaks given a beam center.
+//! Radial-binning ring extraction from peaks given a ring center.
 //!
-//! Once the beam center is known (e.g. via [`super::center::estimate_beam_center`])
-//! the per-peak distance from it forms a clean radial histogram with one
-//! sharp peak per Debye-Scherrer ring. We:
+//! Once an approximate **ring center** is known (e.g. via
+//! [`super::center::estimate_ring_center`]) the per-peak distance from it
+//! forms a clean radial histogram with one sharp peak per Debye-Scherrer
+//! ring — *provided the rings are approximately circular* (i.e. the
+//! detector tilt is small). For tilted detectors each ring becomes an
+//! eccentric ellipse and the radial-distance distribution per ring smears
+//! over `~(a − b)`; in that regime this extractor breaks down and a
+//! tilt-aware approach is needed instead.
+//!
+//! We:
 //!
 //! 1. Compute the radial distance of each peak from the given center.
 //! 2. Build a smoothed histogram and pick local maxima above a count
@@ -116,7 +123,7 @@ fn local_maxima_above(values: &[f64], min_val: f64) -> Vec<usize> {
 }
 
 /// Extract one ellipse per Debye-Scherrer ring from a set of peaks and a
-/// known beam center.
+/// known approximate ring center (e.g. from [`super::center::estimate_ring_center`]).
 pub fn extract_rings_radial(
     peaks: &[(f64, f64)],
     center: (f64, f64),

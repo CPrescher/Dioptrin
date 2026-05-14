@@ -1,24 +1,44 @@
-//! Robust beam-center estimation from peak coordinates.
+//! Robust **ring-center** estimation from peak coordinates.
 //!
-//! Approach: **3-point circle RANSAC**. Three points on the same Debye-Scherrer
-//! ring uniquely determine the circle they lie on (closed form), and that
-//! circle's center is the beam center. Sampling triples of peaks and scoring
-//! each candidate center by radial-band consistency (how many peaks fall in
-//! tight radial annuli) finds the right center even when:
+//! "Ring center" here is **not** the same as PONI (point of normal incidence)
+//! and **not** the same as beam center on a tilted detector — be careful.
+//! Specifically, this module finds a point `C` such that many peaks fall at
+//! roughly the same distance from `C`, treating each ring as a circle in
+//! pixel space. The three geometric points are distinct in general:
+//!
+//! | Quantity        | Definition                                                          | Equal to ring-center when…       |
+//! |-----------------|---------------------------------------------------------------------|----------------------------------|
+//! | PONI            | foot of the perpendicular from the sample onto the detector plane   | detector is perpendicular        |
+//! | Beam center     | intersection of the un-scattered beam with the detector plane       | detector is perpendicular        |
+//! | Ring center     | the *common* center of the visible Debye–Scherrer ellipses, treated as circles | rings are approximately circular |
+//!
+//! For a perpendicular detector the three coincide. For a tilted detector
+//! they don't: each Debye-Scherrer ring becomes an ellipse, the ellipses'
+//! geometric centers depend on the ring's 2θ (and so differ from ring to
+//! ring), and neither is PONI. This module's output is a useful starting
+//! point only when those displacements are small — i.e. for detectors with
+//! rot1, rot2 of a few degrees at most.
+//!
+//! Approach: **3-point circle RANSAC**. Three points on the same ring,
+//! treated as a circle, uniquely determine the circle (closed form).
+//! Sampling triples of peaks and scoring each candidate center by radial-
+//! band consistency (how many peaks fall in tight radial annuli from it)
+//! finds the right consensus center even when:
 //!
 //! - the beam is off the detector (only partial arcs visible),
 //! - only one ring's peaks are visible (every triple is then "same ring"),
 //! - many peaks are spread across many rings (a few % of triples will be
 //!   same-ring → still enough for RANSAC consensus).
 //!
-//! This is more general than centroid-based estimators, which fail whenever
-//! peaks are not azimuthally uniform around the beam.
+//! More general than centroid-based estimators, which fail whenever peaks
+//! are not azimuthally uniform around the beam.
 //!
 //! # API
 //!
 //! - [`fit_circle_3point`]: closed-form circle through three points.
-//! - [`estimate_beam_center`]: RANSAC over 3-point samples + radial-band
-//!   scoring. Returns `(cx, cy)` or `None` if too few peaks / no consensus.
+//! - [`estimate_ring_center`]: RANSAC over 3-point samples + radial-band
+//!   scoring. Returns the ring-center estimate or `None` if too few peaks
+//!   / no consensus.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -54,7 +74,7 @@ pub fn fit_circle_3point(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BeamCenterOptions {
+pub struct RingCenterOptions {
     /// Number of 3-point RANSAC trials.
     pub max_trials: usize,
     /// Width of each radial bin (pixels) used for scoring.
@@ -70,7 +90,7 @@ pub struct BeamCenterOptions {
     pub rng_seed: u64,
 }
 
-impl Default for BeamCenterOptions {
+impl Default for RingCenterOptions {
     fn default() -> Self {
         Self {
             max_trials: 500,
@@ -83,7 +103,7 @@ impl Default for BeamCenterOptions {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BeamCenter {
+pub struct RingCenter {
     pub d1: f64,
     pub d2: f64,
     /// Score of the chosen candidate (sum of top-K radial-bin counts).
@@ -164,10 +184,10 @@ fn radial_band_score(
 ///
 /// Returns `None` if fewer than 3 peaks are provided, or if no trial
 /// produced a valid (non-colinear) circle fit.
-pub fn estimate_beam_center(
+pub fn estimate_ring_center(
     peaks: &[(f64, f64)],
-    options: &BeamCenterOptions,
-) -> Option<BeamCenter> {
+    options: &RingCenterOptions,
+) -> Option<RingCenter> {
     if peaks.len() < 3 {
         return None;
     }
@@ -197,7 +217,7 @@ pub fn estimate_beam_center(
             best = Some((center, score));
         }
     }
-    best.map(|(center, score)| BeamCenter {
+    best.map(|(center, score)| RingCenter {
         d1: center.0,
         d2: center.1,
         score,
@@ -249,14 +269,14 @@ mod tests {
         for r in [80.0, 140.0, 200.0] {
             peaks.extend(ring_points(200.0, 300.0, r, 60, 0.0, 2.0 * PI));
         }
-        let opts = BeamCenterOptions {
+        let opts = RingCenterOptions {
             max_trials: 300,
             radial_bin_width_px: 3.0,
             top_k_bins: 5,
             max_radius_px: 800.0,
             rng_seed: 42,
         };
-        let c = estimate_beam_center(&peaks, &opts).expect("center ok");
+        let c = estimate_ring_center(&peaks, &opts).expect("center ok");
         assert!((c.d1 - 200.0).abs() < 0.5, "cx got {}", c.d1);
         assert!((c.d2 - 300.0).abs() < 0.5, "cy got {}", c.d2);
     }
@@ -281,14 +301,14 @@ mod tests {
             centroid_err
         );
 
-        let opts = BeamCenterOptions {
+        let opts = RingCenterOptions {
             max_trials: 200,
             radial_bin_width_px: 2.0,
             top_k_bins: 3,
             max_radius_px: 500.0,
             rng_seed: 7,
         };
-        let c = estimate_beam_center(&peaks, &opts).expect("center ok");
+        let c = estimate_ring_center(&peaks, &opts).expect("center ok");
         assert!(
             (c.d1 - truth.0).abs() < 1.0 && (c.d2 - truth.1).abs() < 1.0,
             "got ({}, {}) vs truth ({}, {})  centroid was ({}, {})",
@@ -311,14 +331,14 @@ mod tests {
         for r in [400.0, 500.0, 600.0] {
             peaks.extend(ring_points(truth.0, truth.1, r, 30, -PI / 3.0, PI / 3.0));
         }
-        let opts = BeamCenterOptions {
+        let opts = RingCenterOptions {
             max_trials: 300,
             radial_bin_width_px: 3.0,
             top_k_bins: 5,
             max_radius_px: 1000.0,
             rng_seed: 13,
         };
-        let c = estimate_beam_center(&peaks, &opts).expect("center ok");
+        let c = estimate_ring_center(&peaks, &opts).expect("center ok");
         assert!((c.d1 - truth.0).abs() < 1.0, "cx {}", c.d1);
         assert!((c.d2 - truth.1).abs() < 1.0, "cy {}", c.d2);
     }

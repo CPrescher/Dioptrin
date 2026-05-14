@@ -8,8 +8,8 @@ use pyo3::types::{PyDict, PyList};
 use crate::calibration::{
     AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError, CalibrationOptions,
     CalibrationPoints, CalibrationResult, ImagePeakOptions, Loss, MassifOptions, ParamMask,
-    RansacOptions, RansacResult, RingIdOptions, RingIdResult, auto_calibrate, find_peaks,
-    find_peaks_image, identify_rings, ransac_ellipses, refine,
+    RansacOptions, RansacResult, RingCenterOptions, RingIdOptions, RingIdResult, auto_calibrate,
+    estimate_ring_center, find_peaks, find_peaks_image, identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -603,8 +603,8 @@ pub struct PyAutoCalibrateResult {
     n_detected_ellipses: usize,
     n_identified_ellipses: usize,
     bootstrap_distance: f64,
-    bootstrap_poni1: f64,
-    bootstrap_poni2: f64,
+    bootstrap_ring_center_d1: f64,
+    bootstrap_ring_center_d2: f64,
 }
 
 #[pymethods]
@@ -633,13 +633,17 @@ impl PyAutoCalibrateResult {
     fn bootstrap_distance(&self) -> f64 {
         self.bootstrap_distance
     }
+    /// Mean ring-center (d1, meters) used to initialise the bootstrap PONI.
+    /// **Caveat: equals PONI only for near-perpendicular detectors.** For
+    /// tilted detectors PONI and ring-center are distinct (see
+    /// `dioptrin.estimate_ring_center` docstring).
     #[getter]
-    fn bootstrap_poni1(&self) -> f64 {
-        self.bootstrap_poni1
+    fn bootstrap_ring_center_d1(&self) -> f64 {
+        self.bootstrap_ring_center_d1
     }
     #[getter]
-    fn bootstrap_poni2(&self) -> f64 {
-        self.bootstrap_poni2
+    fn bootstrap_ring_center_d2(&self) -> f64 {
+        self.bootstrap_ring_center_d2
     }
     #[getter]
     fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -763,7 +767,55 @@ pub fn auto_calibrate_py(
         n_detected_ellipses: diag.n_detected_ellipses,
         n_identified_ellipses: diag.n_identified_ellipses,
         bootstrap_distance: diag.bootstrap_distance,
-        bootstrap_poni1: diag.bootstrap_poni1,
-        bootstrap_poni2: diag.bootstrap_poni2,
+        bootstrap_ring_center_d1: diag.bootstrap_ring_center_d1,
+        bootstrap_ring_center_d2: diag.bootstrap_ring_center_d2,
     })
+}
+
+// ---------- ring-center estimation ----------
+
+/// Estimate the **ring center** from a list of peak coordinates via 3-point
+/// circle RANSAC + radial-band consistency scoring.
+///
+/// IMPORTANT: "ring center" is *not* the same as **PONI** (point of normal
+/// incidence) or **beam center** on a tilted detector. The three coincide
+/// only for a perpendicular detector. For tilted detectors each ring's
+/// projected ellipse has its own geometric center (depending on the ring's
+/// 2θ); this function returns a consensus from circle fits that's a useful
+/// starting guess only when rings are approximately circular (rot1, rot2
+/// at most a few degrees).
+///
+/// Robust to partial arcs and off-detector beams as long as the
+/// near-circular assumption holds. For heavily tilted detectors a
+/// tilt-aware ellipse-based center estimator is required (planned).
+///
+/// Returns `(d1, d2)` or `None` if too few peaks / no consensus.
+///
+/// # Arguments
+///
+/// * `peaks`           — list of `(d1, d2)` peak coordinates
+/// * `max_trials`      — number of 3-point RANSAC samples (default 500)
+/// * `radial_bin_width`— width (px) of radial histogram bins for scoring
+/// * `top_k_bins`      — score = sum of the top-K bin counts
+/// * `max_radius_px`   — radii beyond this are ignored
+/// * `rng_seed`        — for reproducibility
+#[pyfunction]
+#[pyo3(name = "estimate_ring_center")]
+#[pyo3(signature = (peaks, max_trials=500, radial_bin_width=4.0, top_k_bins=10, max_radius_px=5000.0, rng_seed=0xBEAC_0CEF_F00D_F00D_u64))]
+pub fn estimate_ring_center_py(
+    peaks: Vec<(f64, f64)>,
+    max_trials: usize,
+    radial_bin_width: f64,
+    top_k_bins: usize,
+    max_radius_px: f64,
+    rng_seed: u64,
+) -> Option<(f64, f64)> {
+    let opts = RingCenterOptions {
+        max_trials,
+        radial_bin_width_px: radial_bin_width,
+        top_k_bins,
+        max_radius_px,
+        rng_seed,
+    };
+    estimate_ring_center(&peaks, &opts).map(|c| (c.d1, c.d2))
 }
