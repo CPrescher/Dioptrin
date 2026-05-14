@@ -16,3 +16,4 @@ test_data/test_output/*.txt
 notebooks/.ipynb_checkpoints
 
 keys/private.key
+license.key
