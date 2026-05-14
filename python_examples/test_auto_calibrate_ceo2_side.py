@@ -103,12 +103,14 @@ def main():
 
     cal = dioptrin.Calibrant.from_file(find_calibrant_file())
 
-    print("\nRunning auto_calibrate (method='grid', wide tilt range)…")
+    # Use the default "auto" method — runs Radial and Grid in parallel and
+    # returns whichever produced the lower refined RMS. On this strip
+    # detector Radial fails (only short arcs visible) and Grid wins.
+    print("\nRunning auto_calibrate (method='auto', defaults)…")
     try:
         result = dioptrin.auto_calibrate(
             peaks, cal, wavelength=WAVELENGTH,
             pixel1=PIXEL, pixel2=PIXEL,
-            method="grid",
             grid_distance_min=0.05,
             grid_distance_max=0.6,
             grid_distance_steps=18,

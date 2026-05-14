@@ -690,7 +690,7 @@ impl PyAutoCalibrateResult {
 #[pyo3(name = "auto_calibrate")]
 #[pyo3(signature = (
     peaks, calibrant, wavelength, pixel1, pixel2,
-    method="radial",
+    method="auto",
     ransac_inlier_threshold=1.5, ransac_min_inliers=10, ransac_max_iterations=2000,
     ransac_max_ellipses=12, ransac_max_axis_ratio=1.2,
     ransac_dedupe_center_dist=5.0, ransac_dedupe_size_rel=0.02,
@@ -740,12 +740,13 @@ pub fn auto_calibrate_py(
     rng_seed: u64,
 ) -> PyResult<PyAutoCalibrateResult> {
     let auto_method = match method.to_lowercase().as_str() {
+        "auto" => AutoMethod::Auto,
         "radial" => AutoMethod::Radial,
         "ransac" => AutoMethod::Ransac,
         "grid" => AutoMethod::Grid,
         other => {
             return Err(PyValueError::new_err(format!(
-                "unknown method '{}'; valid: 'radial' (default), 'ransac', or 'grid'",
+                "unknown method '{}'; valid: 'auto' (default), 'radial', 'ransac', or 'grid'",
                 other
             )));
         }

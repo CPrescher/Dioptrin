@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`AutoMethod::Auto` (`method="auto"`) — now the default.** Runs
+  `Radial`, `Ransac`, and `Grid` concurrently via nested `rayon::join`
+  and returns whichever produced the lowest refined RMS. Threshold-free
+  fallback: on near-perpendicular detectors one of the cheap
+  ellipse-fit paths typically wins; on strip / heavy-tilt detectors
+  Grid wins because ellipse fitting on short arcs is degenerate. Total
+  wall time is `max(t_radial, t_ransac, t_grid)` ≈ 1 s typical (Grid
+  dominates); none of the inner methods serialise on the others. Callers
+  who know their geometry can still pin a specific method via
+  `method="radial"`, `"ransac"`, or `"grid"` to skip the others.
+
 - **Grid-search auto-calibration bootstrap (`AutoMethod::Grid`,
   `method="grid"`).** Bypasses ellipse fitting entirely: samples a coarse
   `(distance, rot1, rot2, poni1, poni2)` grid, scores each cell by how

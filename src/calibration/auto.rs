@@ -40,11 +40,17 @@ use super::ring_identity::{RingIdOptions, identify_rings};
 /// Strategy for clustering peaks into ring ellipses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AutoMethod {
+    /// Run `Radial` and `Grid` in parallel via `rayon::join` and return
+    /// whichever produced the lower refined RMS. Threshold-free fallback
+    /// for cases where ellipse fitting fails (strip detectors, heavy
+    /// tilt). This is the default.
+    #[default]
+    Auto,
     /// 3-point circle RANSAC to estimate the beam center, then radial
     /// histogram binning to assign each peak to a ring, then a per-ring
     /// ellipse least-squares fit. Robust to off-detector beams, partial
-    /// arcs, dense rings, and noisy peak sets. This is the default.
-    #[default]
+    /// arcs, dense rings, and noisy peak sets — fast (~50 ms typical)
+    /// but assumes nearly-circular rings.
     Radial,
     /// 5-point ellipse RANSAC (the original primitive, kept for cases
     /// where the user wants per-ring outlier rejection on extremely
@@ -53,7 +59,8 @@ pub enum AutoMethod {
     /// Coarse grid search in `(distance, rot1, rot2, poni1, poni2)` followed
     /// by L-M refinement with auto-assigned ring labels. Bypasses ellipse
     /// fitting entirely — the right choice for strip detectors or any
-    /// geometry where only short ring arcs are visible.
+    /// geometry where only short ring arcs are visible. Slower than
+    /// `Radial` (~1 s typical) but works on heavy tilts.
     Grid,
 }
 
@@ -202,6 +209,46 @@ pub fn auto_calibrate(
     pixel2: f64,
     options: &AutoCalibrateOptions,
 ) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError> {
+    // Auto: run Radial, Ransac, and Grid concurrently and pick the
+    // lower-RMS result. Threshold-free fallback; on near-perpendicular
+    // detectors one of the ellipse-fit methods wins by being faster and
+    // tighter, while on strip / heavy-tilt detectors Grid wins because
+    // ellipse fitting on short arcs is degenerate.
+    if matches!(options.method, AutoMethod::Auto) {
+        let mut radial_opts = options.clone();
+        radial_opts.method = AutoMethod::Radial;
+        let mut ransac_opts = options.clone();
+        ransac_opts.method = AutoMethod::Ransac;
+        let mut grid_opts = options.clone();
+        grid_opts.method = AutoMethod::Grid;
+
+        let ((radial, ransac), grid) = rayon::join(
+            || {
+                rayon::join(
+                    || auto_calibrate(peaks, calibrant, wavelength_m, pixel1, pixel2, &radial_opts),
+                    || auto_calibrate(peaks, calibrant, wavelength_m, pixel1, pixel2, &ransac_opts),
+                )
+            },
+            || auto_calibrate(peaks, calibrant, wavelength_m, pixel1, pixel2, &grid_opts),
+        );
+
+        let mut best: Option<(CalibrationResult, AutoCalibrateDiagnostics)> = None;
+        let mut last_err: Option<AutoCalibrateError> = None;
+        for r in [radial, ransac, grid] {
+            match r {
+                Ok(res) => {
+                    if best.as_ref().is_none_or(|b| res.0.rms_rad < b.0.rms_rad) {
+                        best = Some(res);
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+        return best.ok_or(last_err.unwrap_or(AutoCalibrateError::NoEllipses));
+    }
+
     // Grid-search path: skip ellipse fitting, score peaks directly against
     // a coarse (D, rot, PONI) grid, then L-M refine with auto-assigned rings.
     if matches!(options.method, AutoMethod::Grid) {
@@ -253,7 +300,9 @@ pub fn auto_calibrate(
                 .collect();
             (kept_ellipses, kept_assignments)
         }
-        AutoMethod::Grid => unreachable!("AutoMethod::Grid handled by fast path above"),
+        AutoMethod::Auto | AutoMethod::Grid => {
+            unreachable!("AutoMethod::{{Auto, Grid}} handled by fast paths above")
+        }
     };
 
     // Wrap into a result-like view for the rest of the pipeline.
