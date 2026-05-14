@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Grid-search auto-calibration bootstrap (`AutoMethod::Grid`,
+  `method="grid"`).** Bypasses ellipse fitting entirely: samples a coarse
+  `(distance, rot1, rot2, poni1, poni2)` grid, scores each cell by how
+  many peaks land within a 2θ tolerance of any calibrant ring, ranked
+  primarily by *number of distinct rings populated* (so wrong-anchor
+  cells that coincidentally pile peaks onto a few sub-multiple-2θ rings
+  lose to the true cell that distributes peaks across many rings), then
+  L-M-refines the top-K candidates and returns the one with the lowest
+  RMS. The refine-and-pick step disambiguates between ring-index
+  aliases that single-cell scoring cannot.
+
+  End-to-end recovery on the heavy-tilt `ceo2_side.tif` fixture
+  (Pilatus300kw strip detector at 31.6° tilt, 630 raw peaks, no clicks,
+  no geometry hint): distance recovered to 0.07 %, rotations within
+  5 mrad of pyFAI truth, RMS 0.097 mrad of 2θ (picking-noise floor) —
+  the same answer L-M reaches when started from the truth PONI.
+  `test_auto_calibrate_ceo2_side.py` is now a strict-gate test rather
+  than a diagnostic. The grid method is opt-in (`method="grid"`); the
+  default remains `radial` for near-perpendicular detectors where the
+  cheaper ellipse-fit bootstrap already works.
+
 - **Tilt-aware geometry inversion (`src/calibration/inversion.rs`).** Given
   a fitted Debye-Scherrer ellipse on the detector plane plus the
   calibrant's known `2θ_k`, closed-form algebra recovers `(D, PONI,
@@ -31,15 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - median axis_ratio ≥ 1.05 → tilt-aware inversion (above).
   This restores the near-perpendicular L-M convergence on real LaB6 (poni
   recovered to ~0.1 %) while giving a physically meaningful starting
-  point for tilted cases.
-  Known limitation: on strip detectors like the Pilatus300kw in
-  `test_data/ceo2_side.tif` (195 × 1475, 31° tilt), each ring contributes
-  only a short arc and the 5-point ellipse RANSAC produces unreliable
-  ellipses; the inversion then correctly inverts unreliable data into
-  unreliable geometry. Closing this case requires constrained
-  arc-to-ellipse fitting that enforces the physical axis-ratio prior — a
-  separate follow-up slice. The shipped `test_auto_calibrate_ceo2_side.py`
-  diagnostic documents the current behavior.
+  point for tilted cases where ellipse fitting still produces usable
+  ellipses. For strip detectors (e.g. `ceo2_side.tif`) where short arcs
+  defeat ellipse fitting entirely, use `AutoMethod::Grid` (see above).
 - **Radial-binning ring extraction (`dioptrin.extract_rings_radial`).**
   Given an approximate **ring center**, compute peak radii, build a
   smoothed radial histogram, pick local maxima as ring radii, and fit each

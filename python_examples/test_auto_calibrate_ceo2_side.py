@@ -103,29 +103,34 @@ def main():
 
     cal = dioptrin.Calibrant.from_file(find_calibrant_file())
 
-    print("\nRunning auto_calibrate (method='ransac', axis_ratio<=1.5 for 31° tilt)…")
+    print("\nRunning auto_calibrate (method='grid', wide tilt range)…")
     try:
         result = dioptrin.auto_calibrate(
             peaks, cal, wavelength=WAVELENGTH,
             pixel1=PIXEL, pixel2=PIXEL,
-            method="ransac",
-            ransac_inlier_threshold=1.5,
-            ransac_min_inliers=10,
-            ransac_max_axis_ratio=1.5,     # heavy tilt → wider ratio band
-            ransac_max_iterations=5000,
-            ratio_tolerance=0.04,
-            min_matches=3,
-            center_consistency_px=120.0,   # rings don't share a center under tilt
+            method="grid",
+            grid_distance_min=0.05,
+            grid_distance_max=0.6,
+            grid_distance_steps=18,
+            grid_rot_max_deg=45.0,
+            grid_rot_steps=15,
+            grid_poni_search_radius_px=400.0,
+            grid_poni_steps=13,
+            grid_tolerance_rad=8.0e-3,
+            grid_max_peaks=400,
+            grid_max_ring_index=12,
+            grid_top_k=50,
             fix=["wavelength", "rot3"],
         )
     except Exception as e:
-        print(f"❌ auto_calibrate failed: {e}")
+        print(f"auto_calibrate failed: {e}")
         return 1
 
-    print(f"\nDetected ellipses: {result.n_detected_ellipses}, "
-          f"identified: {result.n_identified_ellipses}")
+    # Note: for the grid path n_identified_ellipses is the grid-cell inlier count,
+    # and the "bootstrap ring center" fields hold the grid PONI in meters.
+    print(f"\nGrid: n_inliers={result.n_identified_ellipses}")
     print(f"Bootstrap distance: {result.bootstrap_distance:.6f}")
-    print(f"Bootstrap ring-center (m): ({result.bootstrap_ring_center_d1:.6f}, "
+    print(f"Bootstrap PONI (m):  ({result.bootstrap_ring_center_d1:.6f}, "
           f"{result.bootstrap_ring_center_d2:.6f})")
     print(f"Refined PONI:")
     for k in ("distance", "poni1", "poni2", "rot1", "rot2"):
@@ -138,26 +143,31 @@ def main():
     for k, dv in deltas.items():
         print(f"  Δ{k:<10} = {dv:+.3e}")
 
+    # Compare PONI deltas to the detector distance (a real length scale)
+    # rather than to PONI's own magnitude — `poni1` here is only ~1.7 cm,
+    # so a 1 px error inflates the relative number while still being noise-
+    # floor in absolute terms.
     rel_dist = abs(deltas["distance"]) / abs(truth["distance"])
-    rel_poni = max(abs(deltas["poni1"]) / max(abs(truth["poni1"]), 1e-9),
-                   abs(deltas["poni2"]) / max(abs(truth["poni2"]), 1e-9))
+    poni_vs_D = max(abs(deltas["poni1"]), abs(deltas["poni2"])) / truth["distance"]
     abs_rot = max(abs(deltas["rot1"]), abs(deltas["rot2"]))
-    print(f"\n  Δdistance/distance   = {rel_dist:.2e}  (want < 5e-3)")
-    print(f"  max ΔPONI / PONI     = {rel_poni:.2e}  (want < 5e-2)")
-    print(f"  max |Δrot1, Δrot2|   = {abs_rot:.2e} rad  (want < 1e-2)")
+    print(f"\n  Δdistance / distance     = {rel_dist:.2e}  (want < 5e-3)")
+    print(f"  max ΔPONI / distance     = {poni_vs_D:.2e}  (want < 5e-3)")
+    print(f"  max |Δrot1, Δrot2|       = {abs_rot:.2e} rad  (want < 1e-2)")
+    print(f"  RMS                      = {result.rms_rad * 1e3:.3f} mrad")
 
-    if rel_dist < 5e-3 and rel_poni < 5e-2 and abs_rot < 1e-2:
-        print("\n[OK] auto_calibrate recovers the heavily-tilted CeO2 geometry.")
+    if rel_dist < 5e-3 and poni_vs_D < 5e-3 and abs_rot < 1e-2:
+        print(
+            "\n[OK] auto_calibrate recovers the heavily-tilted CeO2 "
+            "geometry from raw peaks alone."
+        )
         return 0
     print(
         "\n[diagnostic] auto_calibrate ran end-to-end but did not converge "
         "to truth.\n"
-        "   Known limitation on strip detectors: 5-point ellipse RANSAC on "
-        "short arcs\n"
-        "   produces unreliable ellipses; a constrained arc-to-ellipse "
-        "primitive is needed."
+        "   Try a finer PONI grid (grid_poni_steps), more candidates "
+        "(grid_top_k), or a wider rotation range."
     )
-    return 0
+    return 1
 
 
 if __name__ == "__main__":

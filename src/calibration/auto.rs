@@ -29,6 +29,7 @@ use crate::poni::Poni;
 use super::calibrant::Calibrant;
 use super::center::{RingCenterOptions, estimate_ring_center};
 use super::ellipse::{RansacOptions, ransac_ellipses};
+use super::grid_search::{GridSearchOptions, grid_search_top_k};
 use super::radial::{RadialExtractOptions, extract_rings_radial};
 use super::refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,
@@ -49,6 +50,11 @@ pub enum AutoMethod {
     /// where the user wants per-ring outlier rejection on extremely
     /// noisy data, or for diagnostics).
     Ransac,
+    /// Coarse grid search in `(distance, rot1, rot2, poni1, poni2)` followed
+    /// by L-M refinement with auto-assigned ring labels. Bypasses ellipse
+    /// fitting entirely — the right choice for strip detectors or any
+    /// geometry where only short ring arcs are visible.
+    Grid,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +64,8 @@ pub struct AutoCalibrateOptions {
     pub radial: RadialExtractOptions,
     pub ransac: RansacOptions,
     pub ring_id: RingIdOptions,
+    /// Knobs for `AutoMethod::Grid`. Ignored otherwise.
+    pub grid: GridSearchOptions,
     /// Parameter mask for the final L-M refinement.
     pub refine_mask: ParamMask,
     /// Loss function for the final refinement. `Huber` is the right default
@@ -88,6 +96,7 @@ impl Default for AutoCalibrateOptions {
             radial: RadialExtractOptions::default(),
             ransac,
             ring_id,
+            grid: GridSearchOptions::default(),
             refine_mask: ParamMask::default(), // wavelength fixed
             refine_loss: Loss::Huber { c: 2.0e-3 },
             max_iter: 200,
@@ -193,6 +202,12 @@ pub fn auto_calibrate(
     pixel2: f64,
     options: &AutoCalibrateOptions,
 ) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError> {
+    // Grid-search path: skip ellipse fitting, score peaks directly against
+    // a coarse (D, rot, PONI) grid, then L-M refine with auto-assigned rings.
+    if matches!(options.method, AutoMethod::Grid) {
+        return auto_calibrate_grid(peaks, calibrant, wavelength_m, pixel1, pixel2, options);
+    }
+
     // 1. Cluster peaks into ring ellipses.
     let (ellipses, point_assignments) = match options.method {
         AutoMethod::Radial => {
@@ -238,6 +253,7 @@ pub fn auto_calibrate(
                 .collect();
             (kept_ellipses, kept_assignments)
         }
+        AutoMethod::Grid => unreachable!("AutoMethod::Grid handled by fast path above"),
     };
 
     // Wrap into a result-like view for the rest of the pipeline.
@@ -369,6 +385,81 @@ pub fn auto_calibrate(
         bootstrap_distance: dist,
         bootstrap_ring_center_d1,
         bootstrap_ring_center_d2,
+    };
+    Ok((result, diagnostics))
+}
+
+/// Grid-search bootstrap path for `auto_calibrate`.
+///
+/// Coarse `(distance, rot1, rot2, poni1, poni2)` grid → top-K candidates by
+/// (ring-count, inlier-count) → L-M refine each → pick the result with the
+/// lowest RMS. The refine-and-pick step disambiguates between ring-index
+/// aliases (e.g. peaks fluking onto sub-multiple-2θ rings at a wrong scaled
+/// distance) — only the basin closest to truth converges to a small RMS.
+fn auto_calibrate_grid(
+    peaks: &[(f64, f64)],
+    calibrant: &Calibrant,
+    wavelength_m: f64,
+    pixel1: f64,
+    pixel2: f64,
+    options: &AutoCalibrateOptions,
+) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError> {
+    if peaks.is_empty() {
+        return Err(AutoCalibrateError::NoEllipses);
+    }
+
+    let cx = peaks.iter().map(|p| p.0).sum::<f64>() / peaks.len() as f64;
+    let cy = peaks.iter().map(|p| p.1).sum::<f64>() / peaks.len() as f64;
+
+    let candidates = grid_search_top_k(
+        peaks,
+        cx,
+        cy,
+        calibrant,
+        wavelength_m,
+        pixel1,
+        pixel2,
+        &options.grid,
+    );
+    if candidates.is_empty() {
+        return Err(AutoCalibrateError::NoConfidentIdentity);
+    }
+
+    let mut pts = CalibrationPoints::new();
+    for &(d1, d2) in peaks {
+        pts.push(d1, d2, None);
+    }
+
+    let refine_opts = CalibrationOptions {
+        mask: options.refine_mask,
+        loss: options.refine_loss,
+        auto_assign_rings: true,
+        assign_tolerance_rad: options.grid.tolerance_rad.max(5.0e-3),
+        max_iter: options.max_iter,
+        tol: options.tol,
+    };
+
+    let mut best: Option<(CalibrationResult, &super::grid_search::GridSearchCandidate)> = None;
+    for cand in &candidates {
+        let geometry = Geometry::new(0, 0, cand.poni.clone());
+        if let Ok(res) = refine(&geometry, &pts, calibrant, &refine_opts) {
+            let better = match &best {
+                None => true,
+                Some((b, _)) => res.rms_rad < b.rms_rad,
+            };
+            if better {
+                best = Some((res, cand));
+            }
+        }
+    }
+    let (result, winning) = best.ok_or(AutoCalibrateError::NoConfidentIdentity)?;
+
+    let diagnostics = AutoCalibrateDiagnostics {
+        n_detected_ellipses: candidates.len(),
+        n_identified_ellipses: winning.n_inliers,
+        bootstrap_distance: winning.poni.distance,
+        bootstrap_ring_center_d1: winning.poni.poni1,
+        bootstrap_ring_center_d2: winning.poni.poni2,
     };
     Ok((result, diagnostics))
 }

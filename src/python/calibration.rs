@@ -7,9 +7,10 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
     AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError, CalibrationOptions,
-    CalibrationPoints, CalibrationResult, ImagePeakOptions, Loss, MassifOptions, ParamMask,
-    RansacOptions, RansacResult, RingCenterOptions, RingIdOptions, RingIdResult, auto_calibrate,
-    estimate_ring_center, find_peaks, find_peaks_image, identify_rings, ransac_ellipses, refine,
+    CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions, Loss, MassifOptions,
+    ParamMask, RansacOptions, RansacResult, RingCenterOptions, RingIdOptions, RingIdResult,
+    auto_calibrate, estimate_ring_center, find_peaks, find_peaks_image, identify_rings,
+    ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -695,6 +696,11 @@ impl PyAutoCalibrateResult {
     ransac_dedupe_center_dist=5.0, ransac_dedupe_size_rel=0.02,
     ratio_tolerance=0.03, min_matches=3,
     center_consistency_px=30.0,
+    grid_distance_min=0.05, grid_distance_max=0.6, grid_distance_steps=14,
+    grid_rot_max_deg=60.0, grid_rot_steps=13,
+    grid_poni_search_radius_px=200.0, grid_poni_steps=5,
+    grid_tolerance_rad=8.0e-3, grid_max_peaks=400, grid_max_ring_index=12,
+    grid_top_k=8,
     fix=None, huber_c=2.0e-3, max_iter=200, tol=1e-9,
     rng_seed=0xC0FF_EEC0_DE12_3456_u64,
 ))]
@@ -716,6 +722,17 @@ pub fn auto_calibrate_py(
     ratio_tolerance: f64,
     min_matches: usize,
     center_consistency_px: f64,
+    grid_distance_min: f64,
+    grid_distance_max: f64,
+    grid_distance_steps: usize,
+    grid_rot_max_deg: f64,
+    grid_rot_steps: usize,
+    grid_poni_search_radius_px: f64,
+    grid_poni_steps: usize,
+    grid_tolerance_rad: f64,
+    grid_max_peaks: usize,
+    grid_max_ring_index: usize,
+    grid_top_k: usize,
     fix: Option<&Bound<'_, PyList>>,
     huber_c: f64,
     max_iter: usize,
@@ -725,9 +742,10 @@ pub fn auto_calibrate_py(
     let auto_method = match method.to_lowercase().as_str() {
         "radial" => AutoMethod::Radial,
         "ransac" => AutoMethod::Ransac,
+        "grid" => AutoMethod::Grid,
         other => {
             return Err(PyValueError::new_err(format!(
-                "unknown method '{}'; valid: 'radial' (default) or 'ransac'",
+                "unknown method '{}'; valid: 'radial' (default), 'ransac', or 'grid'",
                 other
             )));
         }
@@ -750,6 +768,19 @@ pub fn auto_calibrate_py(
             ratio_tolerance,
             max_anchor_ring: 8,
             min_matches,
+        },
+        grid: GridSearchOptions {
+            distance_min: grid_distance_min,
+            distance_max: grid_distance_max,
+            distance_steps: grid_distance_steps,
+            rot_max: grid_rot_max_deg.to_radians(),
+            rot_steps: grid_rot_steps,
+            poni_search_radius_px: grid_poni_search_radius_px,
+            poni_grid_steps: grid_poni_steps,
+            tolerance_rad: grid_tolerance_rad,
+            max_peaks_for_grid: grid_max_peaks,
+            max_ring_index: grid_max_ring_index,
+            top_k: grid_top_k,
         },
         refine_mask: parse_mask(fix)?,
         refine_loss: Loss::Huber { c: huber_c },
