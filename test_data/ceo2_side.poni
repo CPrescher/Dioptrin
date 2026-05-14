@@ -1,0 +1,12 @@
+# Nota: C-Order, 1 refers to the Y axis, 2 to the X axis
+# Calibration done on Fri Apr 10 20:07:01 2026
+poni_version: 2.1
+Detector: Pilatus300kw
+Detector_config: {"pixel1": 0.00017199999999999998, "pixel2": 0.00017199999999999998, "orientation": 2}
+Distance: 0.24606645615098455
+Poni1: 0.01774462135283096
+Poni2: 0.10067579535192549
+Rot1: -0.5523616625507498
+Rot2: -0.003900457347510846
+Rot3: 2.743681741506961e-06
+Wavelength: 2.91385e-11

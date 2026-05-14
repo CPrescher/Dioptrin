@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Radial-binning ring extraction (`dioptrin.extract_rings_radial`).**
+  Given a beam center, compute peak radii, build a smoothed radial
+  histogram, pick local maxima as ring radii, and fit each ring's peaks
+  with a single least-squares ellipse. Avoids the 5-of-5-same-ring Monte
+  Carlo coincidence that crippled RANSAC on dense multi-ring patterns —
+  every peak from each ring goes directly into that ring's clean fit.
+- **Robust beam-center estimation (`dioptrin.estimate_beam_center`).**
+  3-point circle RANSAC + radial-band consistency scoring: sample triples
+  of peaks, fit the circle they define, score the candidate center by
+  how concentrated peaks are in radial bins from it. Works on:
+  - full-coverage multi-ring patterns
+  - **partial arcs** (single ring fragment in one quadrant — centroid
+    estimators fail here)
+  - **off-detector beams** (beam projection well outside the image)
+  Verified by 5 Rust unit tests covering each case.
+- **`AutoMethod::Radial`** is now the default for `auto_calibrate`,
+  replacing the old 5-point RANSAC-ellipse approach. End-to-end real-data
+  recovery on LaB6_40keV_MarCCD with no clicks and no geometry hint:
+  refined distance 0.196656 m (truth 0.196687 m, Δ = 31 µm =
+  0.016 %), rot1 4.27 mrad (truth 4.3 mrad, essentially exact),
+  RMS residual 0.4 mrad in 8 L-M iterations. The old method is still
+  selectable via `method="ransac"`.
+  Known limitation: heavily tilted detectors (rot1/rot2 > ~10°) break
+  the radial-binning assumption because rings become eccentric ellipses
+  rather than concentric circles around the beam-foot pixel. The
+  shipped `ceo2_side.tif` test fixture (31° tilt) is a known failure
+  case that will be addressed by a separate "tilted detector" path
+  with ellipse-center estimation.
 - **End-to-end auto calibration (`dioptrin.auto_calibrate`).** Wires the
   RANSAC ellipse clustering, ring-identity matching, and L-M refinement
   into a single call: given a list of picked peaks plus a calibrant,

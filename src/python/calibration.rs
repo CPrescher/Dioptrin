@@ -6,10 +6,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
-    AutoCalibrateOptions, Calibrant, CalibrationError, CalibrationOptions, CalibrationPoints,
-    CalibrationResult, ImagePeakOptions, Loss, MassifOptions, ParamMask, RansacOptions,
-    RansacResult, RingIdOptions, RingIdResult, auto_calibrate, find_peaks, find_peaks_image,
-    identify_rings, ransac_ellipses, refine,
+    AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError, CalibrationOptions,
+    CalibrationPoints, CalibrationResult, ImagePeakOptions, Loss, MassifOptions, ParamMask,
+    RansacOptions, RansacResult, RingIdOptions, RingIdResult, auto_calibrate, find_peaks,
+    find_peaks_image, identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -685,6 +685,7 @@ impl PyAutoCalibrateResult {
 #[pyo3(name = "auto_calibrate")]
 #[pyo3(signature = (
     peaks, calibrant, wavelength, pixel1, pixel2,
+    method="radial",
     ransac_inlier_threshold=1.5, ransac_min_inliers=10, ransac_max_iterations=2000,
     ransac_max_ellipses=12, ransac_max_axis_ratio=1.2,
     ransac_dedupe_center_dist=5.0, ransac_dedupe_size_rel=0.02,
@@ -700,6 +701,7 @@ pub fn auto_calibrate_py(
     wavelength: f64,
     pixel1: f64,
     pixel2: f64,
+    method: &str,
     ransac_inlier_threshold: f64,
     ransac_min_inliers: usize,
     ransac_max_iterations: usize,
@@ -716,7 +718,20 @@ pub fn auto_calibrate_py(
     tol: f64,
     rng_seed: u64,
 ) -> PyResult<PyAutoCalibrateResult> {
+    let auto_method = match method.to_lowercase().as_str() {
+        "radial" => AutoMethod::Radial,
+        "ransac" => AutoMethod::Ransac,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown method '{}'; valid: 'radial' (default) or 'ransac'",
+                other
+            )));
+        }
+    };
     let opts = AutoCalibrateOptions {
+        method: auto_method,
+        center: Default::default(),
+        radial: Default::default(),
         ransac: RansacOptions {
             inlier_threshold: ransac_inlier_threshold,
             min_inliers: ransac_min_inliers,

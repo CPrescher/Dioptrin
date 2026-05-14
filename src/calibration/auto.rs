@@ -24,15 +24,35 @@ use crate::geometry::Geometry;
 use crate::poni::Poni;
 
 use super::calibrant::Calibrant;
+use super::center::{BeamCenterOptions, estimate_beam_center};
 use super::ellipse::{RansacOptions, ransac_ellipses};
+use super::radial::{RadialExtractOptions, extract_rings_radial};
 use super::refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,
     refine,
 };
 use super::ring_identity::{RingIdOptions, identify_rings};
 
+/// Strategy for clustering peaks into ring ellipses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AutoMethod {
+    /// 3-point circle RANSAC to estimate the beam center, then radial
+    /// histogram binning to assign each peak to a ring, then a per-ring
+    /// ellipse least-squares fit. Robust to off-detector beams, partial
+    /// arcs, dense rings, and noisy peak sets. This is the default.
+    #[default]
+    Radial,
+    /// 5-point ellipse RANSAC (the original primitive, kept for cases
+    /// where the user wants per-ring outlier rejection on extremely
+    /// noisy data, or for diagnostics).
+    Ransac,
+}
+
 #[derive(Debug, Clone)]
 pub struct AutoCalibrateOptions {
+    pub method: AutoMethod,
+    pub center: BeamCenterOptions,
+    pub radial: RadialExtractOptions,
     pub ransac: RansacOptions,
     pub ring_id: RingIdOptions,
     /// Parameter mask for the final L-M refinement.
@@ -43,12 +63,9 @@ pub struct AutoCalibrateOptions {
     pub refine_loss: Loss,
     pub max_iter: usize,
     pub tol: f64,
-    /// Maximum distance (pixels) of an ellipse center from the consensus
-    /// center for it to be kept. Real Debye-Scherrer rings share a beam
-    /// apex; spurious ellipses fit through cross-ring peaks usually have
-    /// centers far from the consensus. Set to `0.0` to disable this filter
-    /// (useful when intentionally calibrating multiple detector positions
-    /// in one image, which Dioptrin does not currently support anyway).
+    /// Used only for the legacy `AutoMethod::Ransac` path. Maximum distance
+    /// (pixels) of an ellipse center from the consensus center for it to be
+    /// kept. Set to `0.0` to disable.
     pub center_consistency_px: f64,
 }
 
@@ -63,6 +80,9 @@ impl Default for AutoCalibrateOptions {
             ..RingIdOptions::default()
         };
         Self {
+            method: AutoMethod::default(),
+            center: BeamCenterOptions::default(),
+            radial: RadialExtractOptions::default(),
             ransac,
             ring_id,
             refine_mask: ParamMask::default(), // wavelength fixed
@@ -162,43 +182,57 @@ pub fn auto_calibrate(
     pixel2: f64,
     options: &AutoCalibrateOptions,
 ) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError> {
-    // 1. Cluster peaks into ellipses.
-    let ransac = ransac_ellipses(peaks, &options.ransac);
-    if ransac.ellipses.is_empty() {
-        return Err(AutoCalibrateError::NoEllipses);
-    }
-
-    // 1b. Shared-center filter: real Debye-Scherrer rings from a single
-    // calibration must share a beam apex. After RANSAC, find the consensus
-    // center (median of detected ellipse centers) and drop ellipses whose
-    // centers fall outside `center_consistency_px` of the consensus. This
-    // is what cleans up the "spurious ellipse passing through cross-ring
-    // peaks" failure mode common on image-wide peak detection.
-    let kept_indices = if ransac.ellipses.len() >= 3 && options.center_consistency_px > 0.0 {
-        consensus_center_filter(&ransac.ellipses, options.center_consistency_px)
-    } else {
-        (0..ransac.ellipses.len()).collect()
+    // 1. Cluster peaks into ring ellipses.
+    let (ellipses, point_assignments) = match options.method {
+        AutoMethod::Radial => {
+            // Estimate beam center robustly (handles partial arcs &
+            // off-detector beams), then bin peaks radially and fit one
+            // ellipse per ring with least-squares (no Monte Carlo over
+            // 5-point ellipse samples).
+            let center = estimate_beam_center(peaks, &options.center)
+                .ok_or(AutoCalibrateError::NoEllipses)?;
+            let radial = extract_rings_radial(peaks, (center.d1, center.d2), &options.radial);
+            if radial.ellipses.is_empty() {
+                return Err(AutoCalibrateError::NoEllipses);
+            }
+            (radial.ellipses, radial.assignments)
+        }
+        AutoMethod::Ransac => {
+            let ransac = ransac_ellipses(peaks, &options.ransac);
+            if ransac.ellipses.is_empty() {
+                return Err(AutoCalibrateError::NoEllipses);
+            }
+            // Shared-center filter: drop spurious ellipses whose centers
+            // are far from the consensus.
+            let kept_indices = if ransac.ellipses.len() >= 3 && options.center_consistency_px > 0.0
+            {
+                consensus_center_filter(&ransac.ellipses, options.center_consistency_px)
+            } else {
+                (0..ransac.ellipses.len()).collect()
+            };
+            let kept_ellipses: Vec<crate::calibration::Ellipse> =
+                kept_indices.iter().map(|&i| ransac.ellipses[i]).collect();
+            if kept_ellipses.is_empty() {
+                return Err(AutoCalibrateError::NoEllipses);
+            }
+            let old_to_new: std::collections::HashMap<usize, usize> = kept_indices
+                .iter()
+                .enumerate()
+                .map(|(new_idx, &old_idx)| (old_idx, new_idx))
+                .collect();
+            let kept_assignments: Vec<Option<usize>> = ransac
+                .assignments
+                .iter()
+                .map(|a| a.and_then(|k| old_to_new.get(&k).copied()))
+                .collect();
+            (kept_ellipses, kept_assignments)
+        }
     };
-    let kept_ellipses: Vec<crate::calibration::Ellipse> =
-        kept_indices.iter().map(|&i| ransac.ellipses[i]).collect();
-    if kept_ellipses.is_empty() {
-        return Err(AutoCalibrateError::NoEllipses);
-    }
-    // Remap point assignments: only points belonging to a kept ellipse
-    // remain assigned (re-indexed); others become unassigned.
-    let old_to_new: std::collections::HashMap<usize, usize> = kept_indices
-        .iter()
-        .enumerate()
-        .map(|(new_idx, &old_idx)| (old_idx, new_idx))
-        .collect();
-    let kept_assignments: Vec<Option<usize>> = ransac
-        .assignments
-        .iter()
-        .map(|a| a.and_then(|k| old_to_new.get(&k).copied()))
-        .collect();
+
+    // Wrap into a result-like view for the rest of the pipeline.
     let ransac = super::ellipse::RansacResult {
-        ellipses: kept_ellipses,
-        assignments: kept_assignments,
+        ellipses,
+        assignments: point_assignments,
     };
 
     // 2. Identify which calibrant ring each ellipse is.

@@ -26,8 +26,10 @@
 
 mod auto;
 mod calibrant;
+mod center;
 mod ellipse;
 mod massif;
+mod radial;
 mod refinement;
 mod ring_identity;
 
@@ -35,11 +37,13 @@ mod ring_identity;
 mod tests;
 
 pub use auto::{
-    AutoCalibrateDiagnostics, AutoCalibrateError, AutoCalibrateOptions, auto_calibrate,
+    AutoCalibrateDiagnostics, AutoCalibrateError, AutoCalibrateOptions, AutoMethod, auto_calibrate,
 };
 pub use calibrant::{Calibrant, CalibrantError};
+pub use center::{BeamCenter, BeamCenterOptions, estimate_beam_center, fit_circle_3point};
 pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
 pub use massif::{ImagePeakOptions, MassifOptions, find_peaks, find_peaks_image};
+pub use radial::{RadialExtractOptions, RadialExtractResult, extract_rings_radial};
 pub use refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,
     refine,
