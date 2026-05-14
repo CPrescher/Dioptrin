@@ -11,10 +11,13 @@
 //!    near-perpendicular axis-ratio constraint and dedup).
 //! 2. `identify_rings` — assign each ellipse to a calibrant ring index by
 //!    matching tan(2θ) ratios. Returns `None` for spurious ellipses.
-//! 3. Build a starting PONI:
-//!    - beam center = mean of matched-ellipse centers
-//!    - distance = mean of `s_i / tan(2θ_k)` across matched (ellipse, ring) pairs
-//!    - rotations = 0 (the L-M refinement will recover them)
+//! 3. Build a starting PONI. Two regimes:
+//!    - **near-perpendicular** (median ellipse axis-ratio < 1.05):
+//!      `(D = mean(s_i·px / tan(2θ_k)), PONI = ring-center, rot = 0)`.
+//!      The L-M refinement picks up the small rotations.
+//!    - **visibly tilted** (median axis-ratio ≥ 1.05): per-ring closed-form
+//!      geometry inversion (see `inversion`) → median over rings yields
+//!      `(D, PONI, rot1, rot2)` exactly for a flat tilted detector.
 //! 4. Convert each matched ellipse's inlier points into
 //!    `CalibrationPoints` with the ring index from step 2.
 //! 5. Call `refine` with the bootstrapped PONI and a sensible default
@@ -249,12 +252,29 @@ pub fn auto_calibrate(
         return Err(AutoCalibrateError::NoConfidentIdentity);
     }
 
-    // 3. Bootstrap starting PONI from the matched ellipses.
+    // 3. Bootstrap PONI from the matched ellipses.
+    //
+    // Two regimes:
+    //
+    // - **Near-perpendicular** (median axis_ratio < ~1.05): the
+    //   tilt-aware inversion is numerically degenerate because it
+    //   solves `sin²(τ) = (1-C)/(1+tan²(2θ))` with `C = (b/a)²`, which
+    //   amplifies ellipse-fit noise in `b/a` into spurious tilt
+    //   estimates. The simple "PONI = ring center, rot = 0,
+    //   D = mean(b·px/tan(2θ))" bootstrap is more robust here and the
+    //   L-M refiner picks up the small rotations.
+    //
+    // - **Visibly tilted** (median axis_ratio ≥ 1.05): the closed-form
+    //   inversion in `super::inversion` recovers (D, poni1, poni2,
+    //   rot1, rot2) exactly for a flat tilted detector and we take the
+    //   median across rings.
     let ring_tth = calibrant.two_theta_rad(wavelength_m);
     let mut centers_d1: Vec<f64> = Vec::new();
     let mut centers_d2: Vec<f64> = Vec::new();
-    let mut distances: Vec<f64> = Vec::new();
-    let mut matched_rings: Vec<(usize, usize)> = Vec::new(); // (ellipse_idx, ring_idx)
+    let mut axis_ratios: Vec<f64> = Vec::new();
+    let mut perp_distances: Vec<f64> = Vec::new();
+    let mut inversions: Vec<super::inversion::InvertedGeometry> = Vec::new();
+    let pixel_mean = (pixel1 * pixel2).sqrt();
     for (e_idx, ring) in ident.ring_index.iter().enumerate() {
         if let Some(k) = ring
             && let Some(Some(t)) = ring_tth.get(*k)
@@ -262,53 +282,57 @@ pub fn auto_calibrate(
             let e = &ransac.ellipses[e_idx];
             centers_d1.push(e.center.0);
             centers_d2.push(e.center.1);
-            // Use the **semi-minor** axis for the distance estimate.
-            // Geometrically, on a tilted detector the minor axis of each
-            // Debye-Scherrer ring's projected ellipse is the perpendicular-
-            // projection radius `D·tan(2θ)` (un-tilted), while the major
-            // axis picks up a `1/cos(tilt)` stretch. Using semi_minor gives
-            // an unbiased distance estimate from 0° up through heavy tilts.
-            let r = e.semi_minor;
+            axis_ratios.push(e.semi_major / e.semi_minor);
             let tan_2th = t.tan();
             if tan_2th > 0.0 {
-                // r is in pixels; convert to meters via the geometric mean
-                // pixel size (the forward model expects physical units).
-                let px_mean = (pixel1 * pixel2).sqrt();
-                distances.push((r * px_mean) / tan_2th);
+                perp_distances.push((e.semi_minor * pixel_mean) / tan_2th);
             }
-            matched_rings.push((e_idx, *k));
+            if let Some(inv) = super::inversion::invert(e, *t, pixel1, pixel2) {
+                inversions.push(inv);
+            }
         }
     }
-    if distances.is_empty() {
+    if centers_d1.is_empty() || perp_distances.is_empty() {
         return Err(AutoCalibrateError::NoConfidentIdentity);
     }
-    // Ring-center in pixels (mean of matched ellipses' geometric centers).
+
+    // Median axis-ratio decides which bootstrap regime to use.
+    let median_axis_ratio = {
+        let mut ratios = axis_ratios.clone();
+        ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ratios[ratios.len() / 2]
+    };
+    const TILT_THRESHOLD: f64 = 1.05;
+
     let cx = centers_d1.iter().sum::<f64>() / centers_d1.len() as f64;
     let cy = centers_d2.iter().sum::<f64>() / centers_d2.len() as f64;
-    let dist = distances.iter().sum::<f64>() / distances.len() as f64;
-    // Convert to PONI in metres using the pyFAI/Dioptas pixel-center
-    // convention (integer index = pixel corner; cell center at i + 0.5).
-    //
-    // CAVEAT: we initialise PONI = ring-center here. This is only correct
-    // for near-perpendicular detectors, where ring-center ≈ PONI ≈ beam
-    // center. For tilted detectors the three points are distinct (see
-    // `center.rs`) and the bootstrap PONI is off by `~D · tan(tilt)`.
-    // The downstream L-M refine will pull PONI back toward truth provided
-    // rot1, rot2 are unmasked and the starting basin is right; for heavy
-    // tilt (rot1, rot2 ≳ 10°) the basin is too small and the refine can
-    // fall into a local minimum. A future "tilt-aware" bootstrap (closed-
-    // form geometry inversion from ellipse parameters + 2θ_k) is the
-    // proper fix.
     let bootstrap_ring_center_d1 = (cx + 0.5) * pixel1;
     let bootstrap_ring_center_d2 = (cy + 0.5) * pixel2;
+
+    let (dist, poni1, poni2, rot1, rot2) = if median_axis_ratio >= TILT_THRESHOLD
+        && !inversions.is_empty()
+        && let Some(agg) = super::inversion::aggregate(&inversions)
+    {
+        (agg.distance, agg.poni1, agg.poni2, agg.rot1, agg.rot2)
+    } else {
+        let d = perp_distances.iter().sum::<f64>() / perp_distances.len() as f64;
+        (
+            d,
+            bootstrap_ring_center_d1,
+            bootstrap_ring_center_d2,
+            0.0,
+            0.0,
+        )
+    };
+
     let mut poni = Poni::new();
     poni.pixel1 = pixel1;
     poni.pixel2 = pixel2;
     poni.distance = dist;
-    poni.poni1 = bootstrap_ring_center_d1;
-    poni.poni2 = bootstrap_ring_center_d2;
-    poni.rot1 = 0.0;
-    poni.rot2 = 0.0;
+    poni.poni1 = poni1;
+    poni.poni2 = poni2;
+    poni.rot1 = rot1;
+    poni.rot2 = rot2;
     poni.rot3 = 0.0;
     poni.wavelength = wavelength_m;
 

@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tilt-aware geometry inversion (`src/calibration/inversion.rs`).** Given
+  a fitted Debye-Scherrer ellipse on the detector plane plus the
+  calibrant's known `2θ_k`, closed-form algebra recovers `(D, PONI,
+  rot1, rot2)` exactly for a flat tilted detector — no L-M required.
+  Math: `axis_ratio = 1/√(cos²τ - sin²τ·tan²(2θ))` solves for the tilt
+  magnitude τ, `semi_minor·px / (a·tan(2θ))` gives D, and the
+  PONI-ring-center offset along the ellipse major axis closes the
+  system. Aggregating across multiple rings (median per parameter)
+  is robust to one bad ellipse fit. Verified on synthetic perpendicular
+  and 31.6°-tilt cases to 10⁻⁹ precision (4 unit tests). Used as the
+  bootstrap step in `auto_calibrate` for visibly tilted geometries (see
+  next entry).
+- **Hybrid bootstrap in `auto_calibrate`.** Replaces the rotation-zero
+  bootstrap with a regime switch:
+    - median ellipse axis_ratio < 1.05 → perpendicular bootstrap
+      (PONI = ring-center, rot = 0, D = mean(b·px / tan(2θ))). More
+      robust than tilt inversion when the geometry is near-perpendicular,
+      because the `(1-C)/(1+tan²(2θ))` term that sets τ amplifies tiny
+      ellipse-fit noise into spurious tilts.
+    - median axis_ratio ≥ 1.05 → tilt-aware inversion (above).
+  This restores the near-perpendicular L-M convergence on real LaB6 (poni
+  recovered to ~0.1 %) while giving a physically meaningful starting
+  point for tilted cases.
+  Known limitation: on strip detectors like the Pilatus300kw in
+  `test_data/ceo2_side.tif` (195 × 1475, 31° tilt), each ring contributes
+  only a short arc and the 5-point ellipse RANSAC produces unreliable
+  ellipses; the inversion then correctly inverts unreliable data into
+  unreliable geometry. Closing this case requires constrained
+  arc-to-ellipse fitting that enforces the physical axis-ratio prior — a
+  separate follow-up slice. The shipped `test_auto_calibrate_ceo2_side.py`
+  diagnostic documents the current behavior.
 - **Radial-binning ring extraction (`dioptrin.extract_rings_radial`).**
   Given an approximate **ring center**, compute peak radii, build a
   smoothed radial histogram, pick local maxima as ring radii, and fit each
