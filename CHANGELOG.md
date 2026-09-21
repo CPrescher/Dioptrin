@@ -18,16 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged; the statistic and its difference from pyFAI variance propagation
   are documented in the README.
 
-- **`AutoMethod::Auto` (`method="auto"`) — now the default.** Runs
-  `Radial`, `Ransac`, and `Grid` concurrently via nested `rayon::join`
-  and returns whichever produced the lowest refined RMS. Threshold-free
-  fallback: on near-perpendicular detectors one of the cheap
-  ellipse-fit paths typically wins; on strip / heavy-tilt detectors
-  Grid wins because ellipse fitting on short arcs is degenerate. Total
-  wall time is `max(t_radial, t_ransac, t_grid)` ≈ 1 s typical (Grid
-  dominates); none of the inner methods serialise on the others. Callers
-  who know their geometry can still pin a specific method via
-  `method="radial"`, `"ransac"`, or `"grid"` to skip the others.
+- **Experimental `AutoMethod::Auto` (`method="auto"`).** Runs `Radial`,
+  `Ransac`, and `Grid` concurrently and selects the lowest refined RMS.
+  Available explicitly for further development; `method="radial"` remains
+  the default in both Rust and Python while automatic selection is improved.
 
 - **Grid-search auto-calibration bootstrap (`AutoMethod::Grid`,
   `method="grid"`).** Bypasses ellipse fitting entirely: samples a coarse

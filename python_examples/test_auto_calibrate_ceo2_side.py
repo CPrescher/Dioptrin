@@ -103,14 +103,14 @@ def main():
 
     cal = dioptrin.Calibrant.from_file(find_calibrant_file())
 
-    # Use the default "auto" method — runs Radial and Grid in parallel and
-    # returns whichever produced the lower refined RMS. On this strip
+    # Opt into experimental "auto": runs Radial, Ransac and Grid in parallel
+    # and returns the lowest refined RMS. On this strip
     # detector Radial fails (only short arcs visible) and Grid wins.
-    print("\nRunning auto_calibrate (method='auto', defaults)…")
+    print("\nRunning auto_calibrate (method='auto', opt-in)…")
     try:
         result = dioptrin.auto_calibrate(
             peaks, cal, wavelength=WAVELENGTH,
-            pixel1=PIXEL, pixel2=PIXEL,
+            pixel1=PIXEL, pixel2=PIXEL, method="auto",
             grid_distance_min=0.05,
             grid_distance_max=0.6,
             grid_distance_steps=18,

@@ -40,17 +40,17 @@ use super::ring_identity::{RingIdOptions, identify_rings};
 /// Strategy for clustering peaks into ring ellipses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AutoMethod {
-    /// Run `Radial` and `Grid` in parallel via `rayon::join` and return
+    /// Run `Radial`, `Ransac`, and `Grid` in parallel via `rayon::join` and return
     /// whichever produced the lower refined RMS. Threshold-free fallback
     /// for cases where ellipse fitting fails (strip detectors, heavy
-    /// tilt). This is the default.
-    #[default]
+    /// tilt). Experimental and opt-in while the selection is refined.
     Auto,
     /// 3-point circle RANSAC to estimate the beam center, then radial
     /// histogram binning to assign each peak to a ring, then a per-ring
     /// ellipse least-squares fit. Robust to off-detector beams, partial
     /// arcs, dense rings, and noisy peak sets — fast (~50 ms typical)
-    /// but assumes nearly-circular rings.
+    /// but assumes nearly-circular rings. This is the default.
+    #[default]
     Radial,
     /// 5-point ellipse RANSAC (the original primitive, kept for cases
     /// where the user wants per-ring outlier rejection on extremely
