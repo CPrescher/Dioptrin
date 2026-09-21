@@ -66,21 +66,8 @@ def read_truth_poni():
 
 
 def find_calibrant_file():
-    """Prefer Dioptas's calibrants dir if available; otherwise look in the repo."""
-    try:
-        from dioptas import calibrants_path as p
-        f = os.path.join(p, "CeO2.D")
-        if os.path.exists(f):
-            return f
-    except ImportError:
-        pass
-    for cand in (
-        os.path.join(REPO, "test_data", "CeO2.D"),
-        "/usr/share/pyFAI/calibrant/CeO2.D",
-    ):
-        if os.path.exists(cand):
-            return cand
-    raise FileNotFoundError("CeO2.D not findable; install dioptas or place CeO2.D in test_data")
+    """Use the checked-in reference so CI and local runs share a calibrant."""
+    return os.path.join(REPO, "test_data", "calibrants", "CeO2.D")
 
 
 def main():
