@@ -6,7 +6,9 @@
 //! For a flat detector at distance `D` (no tilt), the projected radius of
 //! the Debye-Scherrer cone for ring `k` is
 //!
-//!     r_k = D · tan(2θ_k)
+//! ```text
+//! r_k = D · tan(2θ_k)
+//! ```
 //!
 //! Therefore `r_k / r_0 = tan(2θ_k) / tan(2θ_0)`. The distance `D` cancels
 //! and the *ratio sequence* of ring sizes is determined entirely by the

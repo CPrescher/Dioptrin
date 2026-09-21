@@ -20,6 +20,9 @@
 //! - `supersampled.rs`: supersampled CSR LUT builders (`build_lut1d_ss_csr`, `build_lut2d_ss_csr`).
 //! - `integrate.rs`: shared integrators (`integrate1d`, `integrate2d`) that work with any CSR LUT.
 
+mod azimuthal;
+pub use azimuthal::{AzimuthalIntegrationResult, integrate1d_with_azimuthal_std};
+
 pub mod common;
 mod counting_csr;
 mod integrate;

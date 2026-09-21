@@ -10,6 +10,102 @@ impl Integrator {
             .map(|(min, max)| RadialRangeKey::new(min, max))
     }
 
+    /// Integrate with the weighted population spread of corrected pixel intensities.
+    /// `errors` independently enables the existing Poisson uncertainty estimate.
+    /// See [`crate::lut::integrate1d_with_azimuthal_std`] for the precise statistic.
+    pub fn integrate1d_with_azimuthal_std(
+        &self,
+        frame: &Frame,
+        n_points: usize,
+        errors: bool,
+    ) -> crate::lut::AzimuthalIntegrationResult {
+        self.integrate1d_with_azimuthal_std_from_slice(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            n_points,
+            errors,
+        )
+    }
+
+    /// Zero-copy input counterpart of [`Self::integrate1d_with_azimuthal_std`].
+    pub fn integrate1d_with_azimuthal_std_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+        errors: bool,
+    ) -> crate::lut::AzimuthalIntegrationResult {
+        assert!(n_points > 0, "n_points must be positive");
+        assert_eq!(data.len(), dim1 * dim2, "Image dimensions must match data");
+        self.update_geometry_arrays(dim1, dim2);
+        let normalization = self.get_normalization();
+        let mask = self.mask.as_ref().map(|m| {
+            m.assert_compatible(dim1, dim2);
+            m.data.as_slice()
+        });
+        let variance = errors.then(|| data.iter().map(|&s| s.max(0.0)).collect::<Vec<_>>());
+        if matches!(self.method, IntegrationMethod::Histogram) {
+            // Preserve Histogram's legacy mean of pre-corrected intensities and
+            // its automatic radial range, rather than changing its weighting.
+            let radial = self
+                .state
+                .read()
+                .expect("geometry state lock poisoned")
+                .radial
+                .clone();
+            let lut = crate::lut::build_lut1d_csr(&radial, n_points);
+            let corrected: Vec<_> = data
+                .iter()
+                .zip(normalization.iter())
+                .map(|(&s, &n)| if n > 0.0 { s / n } else { f64::NAN })
+                .collect();
+            let corrected_variance = variance.map(|v| {
+                v.iter()
+                    .zip(normalization.iter())
+                    .map(|(&v, &n)| v / (n * n))
+                    .collect::<Vec<_>>()
+            });
+            return crate::lut::integrate1d_with_azimuthal_std(
+                &corrected,
+                &lut,
+                mask,
+                &vec![1.0; data.len()],
+                corrected_variance.as_deref(),
+            );
+        }
+        let unit = self.radial_unit;
+        let radial_range = self.radial_range_key();
+        let key = match self.method {
+            IntegrationMethod::Counting => OneDKey::Counting {
+                n_points,
+                unit,
+                radial_range,
+            },
+            IntegrationMethod::PixelSplit => OneDKey::PixelSplit {
+                n_points,
+                unit,
+                radial_range,
+            },
+            IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
+                n_points,
+                n_ss,
+                unit,
+                radial_range,
+            },
+            IntegrationMethod::Histogram => unreachable!(),
+        };
+        let lut = self.ensure_lut1d(key);
+        crate::lut::integrate1d_with_azimuthal_std(
+            data,
+            &lut,
+            mask,
+            &normalization,
+            variance.as_deref(),
+        )
+    }
+
     /// Integrate a frame to 1D using the configured integration method.
     /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///

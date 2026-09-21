@@ -62,6 +62,7 @@ class IntegrationResult:
         azimuthal: Azimuthal bin centers (present for 2D integration, None for 1D)
         intensity: Integrated intensity values
         errors: Error estimates (present if errors=True was specified)
+        azimuthal_std: Weighted population spread (1D, when explicitly requested)
         n_radial: Number of radial bins (for reshaping 2D data)
         n_azimuthal: Number of azimuthal bins (for reshaping 2D data)
     """
@@ -84,6 +85,11 @@ class IntegrationResult:
     @property
     def errors(self) -> Optional[list[float]]:
         """Error estimates (if errors=True was specified)."""
+        ...
+
+    @property
+    def azimuthal_std(self) -> Optional[list[float]]:
+        """Corrected pixel population standard deviation; NaN for empty bins."""
         ...
 
     @property
@@ -263,7 +269,9 @@ class Integrator:
         self,
         image: Union[str, np.ndarray],
         n_points: int,
-        errors: bool = False
+        errors: bool = False,
+        *,
+        azimuthal_std: bool = False,
     ) -> IntegrationResult:
         """
         Perform 1D radial integration.
@@ -271,7 +279,8 @@ class Integrator:
         Args:
             image: Path to the TIFF image file or 2D NumPy array
             n_points: Number of bins for the 1D integration output
-            errors: Whether to compute error estimates (default: False)
+            errors: Whether to compute Poisson error estimates (default: False)
+            azimuthal_std: Also compute weighted population spread (default: False)
 
         Returns:
             IntegrationResult with radial values, intensities, and optional errors
@@ -424,11 +433,13 @@ class Integrator:
 
     def batch1d(
         self,
-        tiff_paths: list[str],
+        images: Union[list[str], list[np.ndarray]],
         n_points: int,
         errors: bool = False,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        azimuthal_std: bool = False,
     ) -> list[BatchResult]:
         """
         Perform batch 1D integration.
@@ -437,9 +448,10 @@ class Integrator:
         optional error estimates.
 
         Args:
-            tiff_paths: List of TIFF file paths to process
+            images: List of TIFF file paths or 2D float64 NumPy arrays
             n_points: Number of bins for the 1D integration output
-            errors: Whether to compute error estimates (default: False)
+            errors: Whether to compute Poisson error estimates (default: False)
+            azimuthal_std: Also compute weighted population spread (default: False)
             num_workers: Number of parallel workers (optional)
             num_threads: Threads per worker (optional)
 
@@ -463,6 +475,8 @@ class Integrator:
         errors: bool = False,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        azimuthal_std: bool = False,
     ) -> BatchIterator:
         """
         Perform streaming batch 1D integration.
@@ -474,7 +488,8 @@ class Integrator:
             images: List of TIFF file paths, list of NumPy arrays (2D float64),
                 or a generator/iterator yielding file paths or NumPy arrays
             n_points: Number of bins for the 1D integration output
-            errors: Whether to compute error estimates (default: False)
+            errors: Whether to compute Poisson error estimates (default: False)
+            azimuthal_std: Also compute weighted population spread (default: False)
             num_workers: Number of parallel workers (optional)
             num_threads: Threads per worker (optional)
 

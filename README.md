@@ -56,6 +56,63 @@ fn main() {
 }
 ```
 
+## Azimuthal standard deviation (spottiness)
+
+For single-detector 1D integration, request the spread of corrected pixel
+intensities within each radial bin independently of Poisson uncertainties:
+
+```python
+result = integrator.integrate1d(image, 1000, errors=True, azimuthal_std=True)
+mean = result.intensity
+spread = result.azimuthal_std
+poisson_uncertainty = result.errors
+
+# Also available for TIFF paths, array batches, and streaming generators:
+results = integrator.batch1d(images, 1000, azimuthal_std=True)
+for item in integrator.batch1d_iter(frame_generator(), 1000, azimuthal_std=True):
+    if item.is_ok():
+        process(item.result.azimuthal_std)
+```
+
+In Rust, use `Integrator::integrate1d_with_azimuthal_std(&frame, n_points, errors)`
+or `integrate1d_with_azimuthal_std_from_slice`. These return
+`dioptrin::lut::AzimuthalIntegrationResult`. The batch task is
+`dioptrin::batch::Integration1DWithAzimuthalStd`.
+
+For raw signal `s`, solid-angle/polarization normalization `n`, and pixel fraction
+`c`, the corrected intensity is `x = s/n` and its weight is `w = c*n`:
+
+```text
+mean     = sum(w*x) / sum(w) = sum(c*s) / sum(c*n)
+variance = sum(w*(x-mean)^2) / sum(w)
+azimuthal_std = sqrt(variance)
+```
+
+This is a **population standard deviation**, not RMS or an error bar on the
+mean. It uses the same weighting as the integrated intensity. Counting,
+pixel-split and supersampled methods reuse the cached CSR lookup table.
+The legacy Histogram method retains its equal weighting of pre-corrected pixels
+and automatic radial range. The spread uses a shifted two-pass calculation to
+avoid cancellation for large backgrounds with small variations. Poisson errors
+continue to use squared pixel fractions and are calculated independently.
+
+Masked or nonfinite signals, nonpositive/nonfinite normalizations and zero-weight
+contributions are excluded. Empty bins have **NaN spread** (intensity and errors
+remain zero); one contributing pixel has zero spread. Without the option,
+`result.azimuthal_std` is `None` and the existing integration path is unchanged.
+This option is not currently exposed by `MultiIntegrator` or 2D integration.
+
+The statistic is pixel-weighted, not an equal-angle average of a cake image.
+Noise, radial gradients and artifacts can contribute alongside texture; changing
+binning or masks can change the result. pyFAI's `error_model="azimuthal"` agrees
+for equal weights, but its variance propagation uses squared normalization and
+pixel-fraction weights. Its `std` is **not a drop-in equivalent** under unequal
+weights. Backends must use the formula above for a consistent spottiness measure.
+
+Validation: `python -m unittest discover -s python_examples -p test_azimuthal_std.py`.
+The optional pyFAI comparison requires the `test` extras. Benchmark the enabled
+and disabled paths with `python python_examples/bench_azimuthal_std.py`.
+
 ## 2D integration example (azimuthal range)
 
 ```rust

@@ -14,7 +14,8 @@ use std::sync::mpsc::Receiver;
 /// * `radial` - Radial bin centers (present for 1D integration, None for 2D)
 /// * `azimuthal` - Azimuthal bin centers (present for 2D integration, None for 1D)
 /// * `intensity` - Integrated intensity values
-/// * `errors` - Error estimates (present if errors=True was specified)
+/// * `errors` - Poisson error estimates (present if errors=True was specified)
+/// * `azimuthal_std` - Weighted population spread (1D, when requested)
 /// * `n_radial` - Number of radial bins (for reshaping 2D data)
 /// * `n_azimuthal` - Number of azimuthal bins (for reshaping 2D data)
 #[pyclass(name = "IntegrationResult")]
@@ -28,6 +29,8 @@ pub struct PyIntegrationResult {
     pub intensity: Vec<f64>,
     #[pyo3(get)]
     pub errors: Option<Vec<f64>>,
+    #[pyo3(get)]
+    pub azimuthal_std: Option<Vec<f64>>,
     #[pyo3(get)]
     pub n_radial: Option<usize>,
     #[pyo3(get)]
@@ -57,12 +60,25 @@ impl PyIntegrationResult {
 }
 
 impl PyIntegrationResult {
+    pub(crate) fn from_azimuthal(result: crate::lut::AzimuthalIntegrationResult) -> Self {
+        Self {
+            radial: Some(result.radial),
+            azimuthal: None,
+            intensity: result.intensity,
+            errors: result.errors,
+            azimuthal_std: Some(result.azimuthal_std),
+            n_radial: None,
+            n_azimuthal: None,
+        }
+    }
+
     pub(crate) fn from_1d(radial: Vec<f64>, intensity: Vec<f64>) -> Self {
         Self {
             radial: Some(radial),
             azimuthal: None,
             intensity,
             errors: None,
+            azimuthal_std: None,
             n_radial: None,
             n_azimuthal: None,
         }
@@ -78,6 +94,7 @@ impl PyIntegrationResult {
             azimuthal: None,
             intensity,
             errors: Some(errors),
+            azimuthal_std: None,
             n_radial: None,
             n_azimuthal: None,
         }
@@ -89,6 +106,7 @@ impl PyIntegrationResult {
             azimuthal: None,
             intensity,
             errors: None,
+            azimuthal_std: None,
             n_radial: Some(n_radial),
             n_azimuthal: Some(n_azimuthal),
         }
@@ -105,6 +123,7 @@ impl PyIntegrationResult {
             azimuthal: None,
             intensity,
             errors: Some(errors),
+            azimuthal_std: None,
             n_radial: Some(n_radial),
             n_azimuthal: Some(n_azimuthal),
         }
@@ -153,6 +172,15 @@ impl PyBatchResult {
 /// Internal enum to hold different receiver types for the iterator
 #[allow(clippy::type_complexity)]
 pub(crate) enum BatchReceiver {
+    Integration1DWithAzimuthalStd(
+        Mutex<
+            Receiver<(
+                usize,
+                String,
+                Result<crate::lut::AzimuthalIntegrationResult, String>,
+            )>,
+        >,
+    ),
     Integration1D(Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>), String>)>>),
     Integration1DWithErrors(
         Mutex<
@@ -215,6 +243,31 @@ impl PyBatchIterator {
 
             // Receive the next result from the channel
             let (index, batch_result) = match &self.receiver {
+                BatchReceiver::Integration1DWithAzimuthalStd(rx) => {
+                    let received = py.detach(|| {
+                        rx.lock().map_err(|e| e.to_string()).and_then(|guard| {
+                            guard.recv().map_err(|_| "channel closed".to_string())
+                        })
+                    });
+                    match received {
+                        Ok((index, filename, result)) => (
+                            index,
+                            match result {
+                                Ok(result) => PyBatchResult {
+                                    filename,
+                                    result: Some(PyIntegrationResult::from_azimuthal(result)),
+                                    error: None,
+                                },
+                                Err(error) => PyBatchResult {
+                                    filename,
+                                    result: None,
+                                    error: Some(error),
+                                },
+                            },
+                        ),
+                        Err(_) => return Err(PyStopIteration::new_err(())),
+                    }
+                }
                 BatchReceiver::Integration1D(rx) => {
                     let recv_result = py.detach(|| {
                         rx.lock().map_err(|e| e.to_string()).and_then(|guard| {

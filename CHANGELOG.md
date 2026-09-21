@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-21
+
 ### Added
+
+- Optional `azimuthal_std=True` for `Integrator.integrate1d`, `batch1d`, and
+  `batch1d_iter`, returning weighted population spread separately from Poisson
+  errors. Includes Rust frame/slice and batch APIs, mask/correction handling,
+  stable accumulation, and NaN spread for empty bins. Existing defaults are
+  unchanged; the statistic and its difference from pyFAI variance propagation
+  are documented in the README.
 
 - **`AutoMethod::Auto` (`method="auto"`) — now the default.** Runs
   `Radial`, `Ransac`, and `Grid` concurrently via nested `rayon::join`
@@ -317,7 +326,8 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/CPrescher/Dioptrin/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/CPrescher/Dioptrin/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/CPrescher/Dioptrin/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/CPrescher/Dioptrin/compare/v0.4.4...v0.5.0

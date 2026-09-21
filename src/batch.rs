@@ -88,6 +88,21 @@ impl IntegrationTask for Integration1DWithErrors {
     }
 }
 
+/// 1D integration with azimuthal population spread and optional Poisson errors.
+#[derive(Clone, Copy, Debug)]
+pub struct Integration1DWithAzimuthalStd {
+    pub n_bins: usize,
+    pub errors: bool,
+}
+
+impl IntegrationTask for Integration1DWithAzimuthalStd {
+    type Output = crate::lut::AzimuthalIntegrationResult;
+
+    fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
+        integrator.integrate1d_with_azimuthal_std(frame, self.n_bins, self.errors)
+    }
+}
+
 /// 2D integration task without error propagation.
 ///
 /// Returns a flat vector of intensities `[n_radial * n_azimuthal]`.
@@ -228,7 +243,7 @@ where
     let num_files = filenames.len();
 
     // Distribute files across workers
-    let chunk_size = num_files.div_ceil(num_workers);
+    let chunk_size = num_files.div_ceil(num_workers).max(1);
     let mut handles = Vec::new();
     let mut file_chunks = Vec::new();
 
@@ -411,7 +426,7 @@ where
     let (tx, rx): (Sender<(usize, String, Result<T::Output, String>)>, _) = mpsc::channel();
 
     // Distribute files across workers
-    let chunk_size = num_files.div_ceil(num_workers);
+    let chunk_size = num_files.div_ceil(num_workers).max(1);
     let mut handles = Vec::new();
     let mut chunk_start = 0usize;
 
@@ -695,6 +710,22 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn empty_file_batches_finish_without_workers() {
+        let integrator = Arc::new(Integrator::new(Geometry::new(2, 2, test_poni())));
+        let task = Integration1DWithAzimuthalStd {
+            n_bins: 4,
+            errors: true,
+        };
+        assert!(process_files(&[], Arc::clone(&integrator), task, 2, 1).is_empty());
+        assert_eq!(
+            process_files_streaming(&[], integrator, task, 2, 1)
+                .into_iter()
+                .count(),
+            0
+        );
     }
 
     #[test]

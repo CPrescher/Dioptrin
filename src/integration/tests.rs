@@ -1044,3 +1044,62 @@ fn test_multi_integrator_error_propagation() {
         }
     }
 }
+
+#[test]
+fn azimuthal_std_preserves_patterns_errors_and_units() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 1e-4;
+    poni.pixel2 = 1e-4;
+    poni.distance = 0.03;
+    poni.poni1 = 0.001;
+    poni.poni2 = 0.001;
+    poni.wavelength = 1e-10;
+    let frame = Frame {
+        name: "synthetic".into(),
+        dim1: 20,
+        dim2: 20,
+        data: (0..400).map(|i| 20.0 + (i % 17) as f64).collect(),
+    };
+    for method in [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+        IntegrationMethod::Histogram,
+    ] {
+        for unit in [
+            RadialUnit::TthRad,
+            RadialUnit::TthDeg,
+            RadialUnit::QAngstrom,
+            RadialUnit::QNm,
+        ] {
+            let integrator = Integrator::new(Geometry::new(20, 20, poni.clone()))
+                .with_method(method)
+                .with_radial_unit(unit)
+                .with_polarization_factor(0.8);
+            let (radial, intensity, errors) = integrator.integrate1d_with_errors(&frame, 12);
+            let result = integrator.integrate1d_with_azimuthal_std(&frame, 12, true);
+            assert_eq!(radial, result.radial);
+            for (a, b) in intensity.iter().zip(&result.intensity) {
+                assert!((a - b).abs() < 1e-10);
+            }
+            for (a, b) in errors.iter().zip(result.errors.as_ref().unwrap()) {
+                assert!((a - b).abs() < 1e-10);
+            }
+            assert!(
+                result
+                    .azimuthal_std
+                    .iter()
+                    .all(|s| s.is_finite() && *s > 0.0)
+            );
+            let slice = integrator.integrate1d_with_azimuthal_std_from_slice(
+                &frame.data,
+                20,
+                20,
+                12,
+                false,
+            );
+            assert_eq!(slice.azimuthal_std, result.azimuthal_std);
+            assert!(slice.errors.is_none());
+        }
+    }
+}

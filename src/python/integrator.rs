@@ -6,9 +6,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::batch::{
-    Integration1D, Integration1DWithErrors, Integration2D, Integration2DWithAzimuthalRange,
-    Integration2DWithAzimuthalRangeAndErrors, Integration2DWithErrors, WorkItem, process_files,
-    process_files_streaming, process_queue_streaming,
+    Integration1D, Integration1DWithAzimuthalStd, Integration1DWithErrors, Integration2D,
+    Integration2DWithAzimuthalRange, Integration2DWithAzimuthalRangeAndErrors,
+    Integration2DWithErrors, WorkItem, process_files, process_files_streaming,
+    process_queue_streaming,
 };
 use crate::frame::Frame;
 use crate::geometry::Geometry;
@@ -172,7 +173,8 @@ impl PyIntegrator {
     ///
     /// * `image` - Path to the TIFF image file or 2D NumPy array
     /// * `n_points` - Number of bins for the 1D integration output
-    /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `errors` - Whether to compute Poisson errors (default: False)
+    /// * `azimuthal_std` - Also return weighted population spread (default: False)
     ///
     /// # Returns
     ///
@@ -185,18 +187,28 @@ impl PyIntegrator {
     /// result = integrator.integrate1d("pattern.tif", n_points=1000)
     /// result = integrator.integrate1d("pattern.tif", n_points=1000, errors=True)
     /// ```
-    #[pyo3(signature = (image, n_points, errors=false))]
+    #[pyo3(signature = (image, n_points, errors=false, *, azimuthal_std=false))]
     fn integrate1d(
         &self,
         image: ImageInput,
         n_points: usize,
         errors: bool,
+        azimuthal_std: bool,
     ) -> PyResult<PyIntegrationResult> {
+        if n_points == 0 {
+            return Err(PyValueError::new_err("n_points must be positive"));
+        }
         match image {
             ImageInput::Path(tiff_path) => {
                 let frame = Frame::from_tiff(tiff_path).map_err(|err| {
                     PyValueError::new_err(format!("Failed to load TIFF: {}", err))
                 })?;
+                if azimuthal_std {
+                    return Ok(PyIntegrationResult::from_azimuthal(
+                        self.integrator
+                            .integrate1d_with_azimuthal_std(&frame, n_points, errors),
+                    ));
+                }
                 if errors {
                     let (radial, intensity, errs) =
                         self.integrator.integrate1d_with_errors(&frame, n_points);
@@ -213,6 +225,13 @@ impl PyIntegrator {
                 let slice = array.as_slice().map_err(|err| {
                     PyValueError::new_err(format!("Array must be contiguous: {}", err))
                 })?;
+                if azimuthal_std {
+                    return Ok(PyIntegrationResult::from_azimuthal(
+                        self.integrator.integrate1d_with_azimuthal_std_from_slice(
+                            slice, dim1, dim2, n_points, errors,
+                        ),
+                    ));
+                }
                 if errors {
                     let (radial, intensity, errs) = self
                         .integrator
@@ -570,7 +589,8 @@ impl PyIntegrator {
     ///
     /// * `images` - List of TIFF file paths (strings) or NumPy arrays (2D float64)
     /// * `n_points` - Number of bins for the 1D integration output
-    /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `errors` - Whether to compute Poisson errors (default: False)
+    /// * `azimuthal_std` - Also return weighted population spread (default: False)
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
@@ -594,7 +614,7 @@ impl PyIntegrator {
     ///     if r.is_ok():
     ///         print(r.result.intensity)
     /// ```
-    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None))]
+    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None, *, azimuthal_std=false))]
     fn batch1d(
         &self,
         images: BatchImageInput,
@@ -602,11 +622,42 @@ impl PyIntegrator {
         errors: bool,
         num_workers: Option<usize>,
         num_threads: Option<usize>,
+        azimuthal_std: bool,
     ) -> PyResult<Vec<PyBatchResult>> {
+        if n_points == 0 {
+            return Err(PyValueError::new_err("n_points must be positive"));
+        }
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match images {
             BatchImageInput::Paths(tiff_paths) => {
+                if azimuthal_std {
+                    let task = Integration1DWithAzimuthalStd {
+                        n_bins: n_points,
+                        errors,
+                    };
+                    return Ok(process_files(
+                        &tiff_paths,
+                        Arc::clone(&self.integrator),
+                        task,
+                        num_workers,
+                        num_threads,
+                    )
+                    .into_iter()
+                    .map(|(filename, result)| match result {
+                        Ok(result) => PyBatchResult {
+                            filename,
+                            result: Some(PyIntegrationResult::from_azimuthal(result)),
+                            error: None,
+                        },
+                        Err(error) => PyBatchResult {
+                            filename,
+                            result: None,
+                            error: Some(error),
+                        },
+                    })
+                    .collect());
+                }
                 // Original file-based processing
                 if errors {
                     let task = Integration1DWithErrors { n_bins: n_points };
@@ -693,7 +744,12 @@ impl PyIntegrator {
                     .into_par_iter()
                     .map(|i| {
                         let frame = &frames[i];
-                        let integration_result = if errors {
+                        let integration_result = if azimuthal_std {
+                            PyIntegrationResult::from_azimuthal(
+                                self.integrator
+                                    .integrate1d_with_azimuthal_std(frame, n_points, errors),
+                            )
+                        } else if errors {
                             let (radial, intensity, errs) =
                                 self.integrator.integrate1d_with_errors(frame, n_points);
                             PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
@@ -725,7 +781,8 @@ impl PyIntegrator {
     /// * `images` - List of TIFF file paths, list of NumPy arrays, or a generator/iterator
     ///   yielding file paths (str) or NumPy arrays (2D float64)
     /// * `n_points` - Number of bins for the 1D integration output
-    /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `errors` - Whether to compute Poisson errors (default: False)
+    /// * `azimuthal_std` - Also return weighted population spread (default: False)
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
@@ -750,7 +807,7 @@ impl PyIntegrator {
     /// for result in integrator.batch1d_iter(frame_gen(), n_points=1000):
     ///     process(result.result)
     /// ```
-    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None))]
+    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None, *, azimuthal_std=false))]
     fn batch1d_iter(
         &self,
         images: &Bound<'_, PyAny>,
@@ -758,7 +815,11 @@ impl PyIntegrator {
         errors: bool,
         num_workers: Option<usize>,
         num_threads: Option<usize>,
+        azimuthal_std: bool,
     ) -> PyResult<PyBatchIterator> {
+        if n_points == 0 {
+            return Err(PyValueError::new_err("n_points must be positive"));
+        }
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match classify_batch_input(images)? {
@@ -766,6 +827,28 @@ impl PyIntegrator {
                 // File-based streaming
                 let total = tiff_paths.len();
 
+                if azimuthal_std {
+                    let task = Integration1DWithAzimuthalStd {
+                        n_bins: n_points,
+                        errors,
+                    };
+                    let batch = process_files_streaming(
+                        &tiff_paths,
+                        Arc::clone(&self.integrator),
+                        task,
+                        num_workers,
+                        num_threads,
+                    );
+                    return Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
+                            batch.into_receiver(),
+                        )),
+                        total,
+                        completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
+                    });
+                }
                 if errors {
                     let task = Integration1DWithErrors { n_bins: n_points };
                     let batch = process_files_streaming(
@@ -831,6 +914,24 @@ impl PyIntegrator {
                 use std::sync::mpsc;
                 let integrator = Arc::clone(&self.integrator);
 
+                if azimuthal_std {
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        use rayon::prelude::*;
+                        frames.par_iter().enumerate().for_each(|(i, frame)| {
+                            let result =
+                                integrator.integrate1d_with_azimuthal_std(frame, n_points, errors);
+                            let _ = tx.send((i, format!("array[{}]", i), Ok(result)));
+                        });
+                    });
+                    return Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(rx)),
+                        total: num_arrays,
+                        completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
+                    });
+                }
                 if errors {
                     let (tx, rx) = mpsc::channel();
 
@@ -940,6 +1041,28 @@ impl PyIntegrator {
                 });
 
                 let integrator = Arc::clone(&self.integrator);
+                if azimuthal_std {
+                    let task = Integration1DWithAzimuthalStd {
+                        n_bins: n_points,
+                        errors,
+                    };
+                    let batch = process_queue_streaming(
+                        work_rx,
+                        integrator,
+                        task,
+                        num_workers,
+                        num_threads,
+                    );
+                    return Ok(PyBatchIterator {
+                        receiver: BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
+                            batch.into_receiver(),
+                        )),
+                        total: 0,
+                        completed: 0,
+                        buffer: BTreeMap::new(),
+                        next_index: 0,
+                    });
+                }
                 if errors {
                     let task = Integration1DWithErrors { n_bins: n_points };
                     let batch = process_queue_streaming(
