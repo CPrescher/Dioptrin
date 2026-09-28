@@ -18,7 +18,7 @@ use std::sync::mpsc::Receiver;
 /// * `azimuthal_std` - Weighted population spread (1D, when requested)
 /// * `n_radial` - Number of radial bins (for reshaping 2D data)
 /// * `n_azimuthal` - Number of azimuthal bins (for reshaping 2D data)
-#[pyclass(name = "IntegrationResult")]
+#[pyclass(name = "IntegrationResult", from_py_object)]
 #[derive(Clone)]
 pub struct PyIntegrationResult {
     #[pyo3(get)]
@@ -137,7 +137,7 @@ impl PyIntegrationResult {
 /// * `filename` - Path to the processed file
 /// * `result` - IntegrationResult if successful, None if failed
 /// * `error` - Error message if failed, None if successful
-#[pyclass(name = "BatchResult")]
+#[pyclass(name = "BatchResult", from_py_object)]
 #[derive(Clone)]
 pub struct PyBatchResult {
     #[pyo3(get)]

@@ -3,132 +3,86 @@ name: Python Build
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*'
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  wheels:
+    name: Wheels (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        target: [x86_64]
-        python-version: ['3.11', '3.12', '3.13']
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14, macos-15-intel]
+        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
     steps:
-      - uses: actions/checkout@v4
-      - name: Build wheels
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Build licensed wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --features python,licensed -i ${{ matrix.python-version }}
+          args: --release --out dist --features python,licensed -i ${{ matrix.python }}
           sccache: 'true'
-          manylinux: auto
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+          manylinux: '2_28'
+      - name: Check publication contents
+        run: python scripts/check_release_wheels.py dist
+      - name: Install and check licensed wheel
+        shell: bash
+        run: |
+          python -m pip install --only-binary=:all: dist/*.whl
+          python scripts/check_licensed_install.py
+      - uses: actions/upload-artifact@v7
         with:
-          name: wheels-linux-${{ matrix.target }}-${{ matrix.python-version }}
-          path: dist
-
-  linux-cross:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [aarch64]
-        python-version: ['3.11', '3.12', '3.13']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --features python,licensed -i ${{ matrix.python-version }}
-          sccache: 'true'
-          manylinux: 2_28
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-${{ matrix.target }}-${{ matrix.python-version }}
-          path: dist
-
-  windows:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        target: [x64]
-        python-version: ['3.11', '3.12', '3.13']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          architecture: ${{ matrix.target }}
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --features python,licensed
-          sccache: 'true'
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-windows-${{ matrix.target }}-${{ matrix.python-version }}
-          path: dist
-
-  macos:
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        target: [x86_64, aarch64]
-        python-version: ['3.11', '3.12', '3.13']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --features python,licensed
-          sccache: 'true'
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-macos-${{ matrix.target }}-${{ matrix.python-version }}
-          path: dist
-
-  sdist:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
-        with:
-          name: sdist
-          path: dist
+          name: wheels-${{ matrix.os }}-${{ matrix.python }}
+          path: dist/*.whl
+          if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, linux-cross, windows, macos, sdist]
+    needs: wheels
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
+          pattern: wheels-*
           path: dist
           merge-multiple: true
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - run: python scripts/check_release_wheels.py dist
+      - name: Create private GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*.whl
+
+  pypi-publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [wheels, release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dioptrin/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
-          files: dist/*
-          generate_release_notes: true
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - run: python scripts/check_release_wheels.py dist
+      - name: Publish wheels only
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          # OIDC works for this private repository; public attestations do not.
+          attestations: false

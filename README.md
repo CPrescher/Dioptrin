@@ -451,7 +451,7 @@ results = integrator.batch1d(
 
 ## Licensing
 
-Dioptrin uses offline ed25519-signed license keys for its distributed Python wheels. The Rust library itself is always unrestricted. Dioptrin is **not published to PyPI** — licensed wheels are distributed privately to authorized users.
+Dioptrin uses offline ed25519-signed license keys for its distributed Python wheels. The Rust library itself is always unrestricted. The public distribution is wheel-only and license-activated; see [the package README](README-pypi.md). The source repository remains private.
 
 ### When is a license required?
 
@@ -465,7 +465,7 @@ The `licensed` Cargo feature controls this. Building from source uses `features 
 
 ### Installing a pre-built wheel
 
-Licensed wheels are provided as `.whl` files. Install directly:
+Licensed wheels can be installed from PyPI after publication, or supplied as `.whl` files. Install directly:
 
 ```bash
 pip install dioptrin-0.3.0-cp312-cp312-manylinux_2_17_x86_64.whl
