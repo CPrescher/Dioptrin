@@ -199,7 +199,9 @@ def main():
         run(target, "positive", license_content("2099-12-31"))
         license_file = home / ".dioptrin" / "license.key"
         license_file.parent.mkdir()
-        license_file.write_text(license_content("2099-12-31"))
+        # The issuer writes LF bytes. Text-mode writing on Windows would alter
+        # the signed payload and separator to CRLF before the package reads it.
+        license_file.write_bytes(license_content("2099-12-31").encode("utf-8"))
         try:
             run(target, "positive", None)
         finally:
