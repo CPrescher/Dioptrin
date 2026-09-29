@@ -94,3 +94,23 @@ licensed builds respectively took 12.51 / 38.03 microseconds for 64x64 frames an
 181.76 / 215.95 microseconds for 512x512 frames. This is a local observational
 measurement, not a portable performance guarantee. Signature checks add tens of
 microseconds per direct call; batches amortize one check across their frames.
+
+## Independent blind follow-up
+
+A separate agent tested the compiled candidate from commit `b1e8da4`, SHA-256
+`e8b88b4fbb9a50c2f41d5dfe3355d4eceecd1ffe3d976ed61408e72890ef5f4c`, without source
+access, implementation explanations, or the earlier audit transcript. It achieved
+and reproduced genuine unlicensed numerical integration in **5 minutes 39 seconds**
+from initial checksum verification. Two eight-byte native edits bypassed the two
+verification paths. One patch alone permitted construction but left integration
+blocked; both together permitted integration with a fabricated zero-signature
+license. A nonuniform 64x64 image matched an independent NumPy reference within
+2.14e-14 absolute error; scaling by 7.25 and a zero-image check also passed.
+
+This result demonstrates that the added layer does not prevent a capable local
+LLM-assisted attacker from reaching numerical computation. The targeted regression
+tests above check individual barriers, not resistance after both are modified.
+The elapsed times are observations, not a controlled comparison across agents.
+The confirmed bypass covers this macOS ARM64 CPython 3.13 build and 1D counting;
+other methods and builds were not exhaustively attacked. No valid license,
+signature forgery, or private key was involved.
