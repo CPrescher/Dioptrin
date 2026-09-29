@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Rank grid-search auto-calibration candidates by Gaussian-weighted ring
+  residuals instead of distinct-ring and inlier counts.
+- Expand the Python grid-search defaults: 18 distance steps, 15 rotation
+  steps over ±45°, 13 PONI steps over ±400 pixels, and 50 refinement
+  candidates. The default calibration method remains `radial`; Rust
+  `GridSearchOptions` defaults are unchanged.
+
 ## [0.5.3] - 2026-09-21
 
 ### Added
