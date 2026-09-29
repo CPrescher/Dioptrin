@@ -1,6 +1,6 @@
 [project]
 name = "dioptrin"
-version = "0.5.4"
+version = "0.5.5"
 description = "Fast, license-activated diffraction integration powered by Rust"
 readme = "README-pypi.md"
 requires-python = ">=3.11,<3.16"

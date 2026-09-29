@@ -33,6 +33,11 @@ Verify activation with:
 python -c "import dioptrin; dioptrin.validate_license()"
 ```
 
+Activation and integration remain fully offline. An integrator retains the license
+loaded when it was constructed, so create a new integrator after renewing a
+license. New operations check expiration; a batch that has already started may
+finish after expiry.
+
 ## Use with Dioptas
 
 Install Dioptrin in the same Python environment as Dioptas, activate the license,
