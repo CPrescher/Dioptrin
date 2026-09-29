@@ -41,6 +41,63 @@ impl fmt::Display for LicenseError {
 
 impl std::error::Error for LicenseError {}
 
+/// Signed evidence retained by a native Python integrator, not a cached boolean.
+///
+/// Fields are private and there is deliberately no Default implementation. A
+/// fabricated successful diagnostic result cannot produce this evidence. Keep
+/// checks at operation boundaries, outside numerical kernels and pixel loops.
+#[cfg(any(feature = "python", test))]
+#[derive(Clone)]
+pub(crate) struct LicenseGrant {
+    payload: std::sync::Arc<str>,
+    signature: Signature,
+}
+
+#[cfg(any(feature = "python", test))]
+impl LicenseGrant {
+    /// Acquire evidence independently of the public diagnostic verifier.
+    #[inline(always)]
+    #[cfg(feature = "python")]
+    pub(crate) fn acquire() -> Result<Self, LicenseError> {
+        let content = read_license_content()?;
+        let (payload, signature) = parse_license(&content)?;
+        let grant = Self {
+            payload: payload.into(),
+            signature,
+        };
+        // Acquisition and operation admission deliberately use independent
+        // verification implementations. A forced-success return from one
+        // cryptographic backend must not authorize both stages.
+        let key = VerifyingKey::from_bytes(PUBLIC_KEY_BYTES)
+            .map_err(|_| LicenseError::InvalidFormat("corrupted public key".into()))?;
+        key.verify_strict(grant.payload.as_bytes(), &grant.signature)
+            .map_err(|_| LicenseError::InvalidSignature)?;
+        let license = parse_payload(&grant.payload)?;
+        check_expiration(&license.expires)?;
+        Ok(grant)
+    }
+
+    /// Revalidate retained evidence rather than trusting constructor success.
+    ///
+    /// Inline at the individual Python entry points so the release build does
+    /// not introduce another shared high-level success-return switch. This is
+    /// defense in depth, not a security boundary against arbitrary native edits.
+    #[inline(always)]
+    #[cfg(feature = "python")]
+    pub(crate) fn check(&self) -> Result<(), LicenseError> {
+        self.check_with_key_at(PUBLIC_KEY_BYTES, SystemTime::now())
+    }
+
+    #[inline(always)]
+    fn check_with_key_at(&self, key: &[u8; 32], now: SystemTime) -> Result<(), LicenseError> {
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+            .verify(self.payload.as_bytes(), &self.signature.to_bytes())
+            .map_err(|_| LicenseError::InvalidSignature)?;
+        let license = parse_payload(&self.payload)?;
+        check_expiration_at(&license.expires, now)
+    }
+}
+
 /// Top-level license verification using the compiled-in public key.
 pub fn verify_license() -> Result<License, LicenseError> {
     let content = read_license_content()?;
@@ -104,9 +161,8 @@ fn verify_signature(
     signature: &Signature,
     public_key: &VerifyingKey,
 ) -> Result<(), LicenseError> {
-    use ed25519_dalek::Verifier;
     public_key
-        .verify(payload, signature)
+        .verify_strict(payload, signature)
         .map_err(|_| LicenseError::InvalidSignature)
 }
 
@@ -136,6 +192,10 @@ fn parse_payload(payload: &str) -> Result<License, LicenseError> {
 }
 
 fn check_expiration(expires: &str) -> Result<(), LicenseError> {
+    check_expiration_at(expires, SystemTime::now())
+}
+
+fn check_expiration_at(expires: &str, now: SystemTime) -> Result<(), LicenseError> {
     let exp_parts: Vec<&str> = expires.split('-').collect();
     if exp_parts.len() != 3 {
         return Err(LicenseError::InvalidFormat(
@@ -152,7 +212,7 @@ fn check_expiration(expires: &str) -> Result<(), LicenseError> {
         .parse()
         .map_err(|_| LicenseError::InvalidFormat("invalid day".into()))?;
 
-    let now = SystemTime::now()
+    let now = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|e| LicenseError::IoError(e.to_string()))?;
     let secs = now.as_secs();
@@ -266,6 +326,48 @@ mod tests {
         let content = sign_license(payload, &signing);
         let err = verify_with_key(&content, &verifying).unwrap_err();
         assert!(matches!(err, LicenseError::InvalidFormat(_)));
+    }
+
+    #[test]
+    fn retained_grant_rechecks_signature_and_expiration() {
+        let (signing, verifying) = test_keypair();
+        let content = sign_license("email=test@example.com\nexpires=2024-01-01", &signing);
+        let (payload, signature) = parse_license(&content).unwrap();
+        let grant = LicenseGrant {
+            payload: payload.into(),
+            signature,
+        };
+        let jan_1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_704_067_200);
+        let jan_2 = jan_1 + std::time::Duration::from_secs(86_400);
+        assert!(grant.check_with_key_at(verifying.as_bytes(), jan_1).is_ok());
+        // The same retained proof stops authorizing new operations after expiry.
+        assert!(matches!(
+            grant.check_with_key_at(verifying.as_bytes(), jan_2),
+            Err(LicenseError::Expired { .. })
+        ));
+        let mut tampered = grant.clone();
+        tampered.payload = "email=test@example.com\nexpires=2099-12-31".into();
+        assert!(matches!(
+            tampered.check_with_key_at(verifying.as_bytes(), jan_2),
+            Err(LicenseError::InvalidSignature)
+        ));
+        // A snapshot is independent of edits to another object's evidence.
+        assert!(grant.check_with_key_at(verifying.as_bytes(), jan_1).is_ok());
+    }
+
+    #[test]
+    fn fabricated_grants_do_not_authorize_operations() {
+        let (_, verifying) = test_keypair();
+        for payload in ["", "email=test@example.com\nexpires=2099-12-31"] {
+            let grant = LicenseGrant {
+                payload: payload.into(),
+                signature: Signature::from_bytes(&[0; 64]),
+            };
+            assert!(matches!(
+                grant.check_with_key_at(verifying.as_bytes(), SystemTime::now()),
+                Err(LicenseError::InvalidSignature)
+            ));
+        }
     }
 
     #[test]
