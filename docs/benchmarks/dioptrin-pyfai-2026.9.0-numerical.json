@@ -1,0 +1,582 @@
+{
+  "version_differences": [
+    {
+      "dataset": "Pilatus1M",
+      "method": "full",
+      "errors": false,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "method": "full",
+      "errors": true,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "method": "bbox",
+      "errors": false,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "method": "bbox",
+      "errors": true,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "method": "full",
+      "errors": false,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "method": "full",
+      "errors": true,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "method": "bbox",
+      "errors": false,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "method": "bbox",
+      "errors": true,
+      "old_version": "2025.12.1",
+      "new_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": true,
+        "differing_finite_values": 0,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0,
+        "max_abs": 0.0,
+        "max_abs_over_peak": 0.0,
+        "max_relative_above_peak_1e6": 0.0
+      }
+    }
+  ],
+  "dioptrin_comparison": [
+    {
+      "dataset": "Pilatus1M",
+      "method": "full",
+      "pyfai_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": false,
+        "differing_finite_values": 2000,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 1.1920928947487507e-07,
+        "max_abs": 3.6766871787108357e-06,
+        "max_abs_over_peak": 1.1920928947669123e-07,
+        "max_relative_above_peak_1e6": 1.1920928976357877e-07
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 111944,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.0024274495292339686,
+        "max_abs": 5.636019844564089,
+        "max_abs_over_peak": 0.005732189585042078,
+        "max_relative_above_peak_1e6": 0.01644238853717198
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 111944,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.01788819536770086,
+        "max_abs": 0.5760001897684237,
+        "max_abs_over_peak": 0.05224136055443434,
+        "max_relative_above_peak_1e6": 0.10197257244256785
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "method": "bbox",
+      "pyfai_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": false,
+        "differing_finite_values": 2000,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 1.1920928947487507e-07,
+        "max_abs": 3.6766871787108357e-06,
+        "max_abs_over_peak": 1.1920928947669123e-07,
+        "max_relative_above_peak_1e6": 1.1920928976357877e-07
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 112000,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.053198546549180006,
+        "max_abs": 162.493796226874,
+        "max_abs_over_peak": 0.16526649516041197,
+        "max_relative_above_peak_1e6": 0.21300916151541682
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 112000,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.25264655383391266,
+        "max_abs": 7.487070083618164,
+        "max_abs_over_peak": 0.6790531230412753,
+        "max_relative_above_peak_1e6": 0.2699756711972586
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "method": "full",
+      "pyfai_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": false,
+        "differing_finite_values": 2000,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 1.1920928959456624e-07,
+        "max_abs": 5.273692309515354e-06,
+        "max_abs_over_peak": 1.1920928954307174e-07,
+        "max_relative_above_peak_1e6": 1.1920928985827062e-07
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 111832,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.011872525942695833,
+        "max_abs": 190.32955657379367,
+        "max_abs_over_peak": 0.060658256561254335,
+        "max_relative_above_peak_1e6": 1.9617153320717347
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 111832,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 2.951699059732078,
+        "max_abs": 86.52849246841107,
+        "max_abs_over_peak": 5.9367475980733655,
+        "max_relative_above_peak_1e6": 30.93498233094571
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "method": "bbox",
+      "pyfai_version": "2026.9.0",
+      "axis": {
+        "shape": [
+          2000
+        ],
+        "dtype": "float64",
+        "bitwise_equal": false,
+        "differing_finite_values": 2000,
+        "finite_values": 2000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 1.1920928959456624e-07,
+        "max_abs": 5.273692309515354e-06,
+        "max_abs_over_peak": 1.1920928954307174e-07,
+        "max_relative_above_peak_1e6": 1.1920928985827062e-07
+      },
+      "intensity": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 111832,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.016373234893637147,
+        "max_abs": 179.45676177138694,
+        "max_abs_over_peak": 0.05719308389687862,
+        "max_relative_above_peak_1e6": 0.08775881854238528
+      },
+      "sigma": {
+        "shape": [
+          56,
+          2000
+        ],
+        "dtype": "float32",
+        "bitwise_equal": false,
+        "differing_finite_values": 111832,
+        "finite_values": 112000,
+        "finite_mask_equal": true,
+        "nan_mask_equal": true,
+        "rel_l2": 0.07504717824063299,
+        "max_abs": 1.3946955304623874,
+        "max_abs_over_peak": 0.09569050730357977,
+        "max_relative_above_peak_1e6": 0.20011522955613925
+      }
+    }
+  ]
+}

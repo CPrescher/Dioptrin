@@ -105,6 +105,33 @@ settings, all worker counts, memory details and numerical differences.
 
 <!-- end-measured-060 -->
 
+<!-- latest-pyfai-release-060 -->
+### Latest stable pyFAI follow-up
+
+The comparison was extended to pyFAI 2026.9.0. Both 2025.12.1 and 2026.9.0 were rerun with identical dependencies and 1/2/4/8 Python workers; the original results are retained above.
+
+| Detector | Library / method | Poisson fps | Workers ready (s) | First result (s) | Peak RSS (GiB) | Live heap (MiB) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Pilatus1M | Dioptrin 0.6.0 supersampled | 1746.2 | 0.370 | 0.370 | 0.549 | 105.5 |
+| Pilatus1M | Dioptrin 0.6.0 pixel-split | 1693.8 | 0.099 | 0.099 | 0.796 | 108.2 |
+| Pilatus1M | azint generic | 574.0 | 0.768 | 0.768 | 0.592 | 75.2 |
+| Pilatus1M | azint CPU/LTO/fast-math | 891.6 | 0.757 | 0.757 | 0.592 | 75.2 |
+| Pilatus1M | pyFAI 2026.9.0 full CSR | 647.2 | 1.309 | 0.572 | 1.440 | 1002.2 |
+| Pilatus1M | pyFAI 2026.9.0 bbox CSR | 644.1 | 0.905 | 0.530 | 0.990 | 525.1 |
+| Eiger9M | Dioptrin 0.6.0 supersampled | 284.2 | 0.679 | 0.679 | 2.528 | 697.3 |
+| Eiger9M | Dioptrin 0.6.0 pixel-split | 264.3 | 0.561 | 0.561 | 3.598 | 722.4 |
+| Eiger9M | azint generic | 102.6 | 1.860 | 1.860 | 3.255 | 431.3 |
+| Eiger9M | azint CPU/LTO/fast-math | 146.3 | 1.924 | 1.924 | 3.253 | 431.3 |
+| Eiger9M | pyFAI 2026.9.0 full CSR | 90.6 | 7.163 | 1.730 | 10.054 | 8138.7 |
+| Eiger9M | pyFAI 2026.9.0 bbox CSR | 91.7 | 3.638 | 1.475 | 5.158 | 3265.7 |
+
+See the [latest pyFAI version control](docs/benchmarks/2026-10-24-pyfai-2026.9.0.md) for all worker counts, setup/memory details and numerical checks. Dioptrin and azint measurements come from the earlier qualified sweep.
+
+At eight Python workers with Poisson errors, the new/old throughput factors were 1.008–1.019 (about 1–2% faster). Setup and memory were similar. Other worker counts showed small changes in both directions. Two trials per point do not establish a general performance gain; this test shows no large speed jump between these versions on this Mac/CPU backend.
+
+Axes, intensities and Poisson sigmas were byte-identical between the two pyFAI versions on the tested patterns. For both pyFAI versions, setup starts before pyFAI.load: top-level imports and input warm-up are excluded, but lazy imports reached during construction remain included. Constructor and post-constructor components are recorded separately in the latest-version CSV.
+<!-- end-latest-pyfai-release-060 -->
+
 ## [0.5.5] - 2026-09-29
 
 ### Changed
