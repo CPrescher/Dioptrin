@@ -16,6 +16,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates. The default calibration method remains `radial`; Rust
   `GridSearchOptions` defaults are unchanged.
 
+
+## [0.5.5] - 2026-09-29
+
+### Changed
+
+- Retain signed license evidence inside native Python integrators and revalidate
+  it before 1D, 2D, batch, streaming-batch, and multi-detector operations.
+  Construction and operation admission use independent Ed25519 verifiers.
+  Offline activation, existing license format, and numerical kernels are unchanged.
+- Check expiry for new operations. Existing objects retain their original license;
+  construct a new integrator after renewal. Already admitted batches may finish
+  after expiry. Verification adds per-call overhead, amortized across batch frames.
+
+### Added
+
+- Cross-platform tests with ephemeral licenses and deliberately bypassed native
+  checks, plus numerical-reference and isolated release-wheel checks.
+
+### Security limitations
+
+- This is additional defense in depth, not tamper-proof license enforcement.
+  A separate blind assessment still bypassed the hardened macOS ARM64 candidate
+  with two native patches and performed genuine numerical integration. See
+  `docs/offline-licensing.md` for the scope, evidence, and operational behavior.
+
 ## [0.5.3] - 2026-09-21
 
 ### Added
@@ -329,7 +354,8 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/CPrescher/Dioptrin/compare/v0.5.4...v0.5.5
 [0.5.3]: https://github.com/CPrescher/Dioptrin/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/CPrescher/Dioptrin/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/CPrescher/Dioptrin/compare/v0.5.0...v0.5.1
