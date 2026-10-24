@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- unreleased-file-pipeline -->
+## [0.6.1] - 2026-10-24
+
 ### Changed
 
 - Reuse typed TIFF decoding buffers within and between file batches, and integrate
@@ -22,11 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-Fresh paired Python file-processing benchmark, up to eight workers, with Poisson
-errors and a warm OS filesystem cache. The candidate is unreleased; these figures
-do not describe a change to the already published 0.6.0 wheel.
+The implementation in 0.6.1 was measured against a fresh 0.6.0 baseline build
+on an Apple M4 Pro (48 GiB), through Python 3.13.5, at 1/2/4/8 workers.
+Each task reopens and decodes its TIFF before integration. The table below uses
+eight workers, 2,000 bins, Poisson errors, solid-angle correction and polarization
+0.965. Supersampling uses n=15 for Pilatus1M and n=5 for Eiger9M; pixel-split has
+no subpixel count. Both builds use the same compiler, generic CPU target, LTO and
+`fast_math=True`. Three fresh-process trials per point; the normal macOS file
+cache is warm. These are file-processing rates, not cold-SSD bandwidth.
 
-| Detector / method | File fps before → after | Speedup | Calibration s before → after | First 32-file batch s before → after | Peak RSS GiB before → after |
+| Detector / method | File fps 0.6.0 → 0.6.1 | Speedup | Calibration s before → after | First 32-file batch s before → after | Peak RSS GiB before → after |
 | --- | --- | --- | --- | --- | --- |
 | Pilatus1M / pixel-split | 1331.4 → 1820.4 | 1.37× | 0.107 → 0.108 | 0.024 → 0.019 | 0.616 → 0.599 |
 | Pilatus1M / supersampled | 1361.9 → 1885.9 | 1.38× | 0.373 → 0.371 | 0.024 → 0.018 | 0.409 → 0.356 |
@@ -39,7 +45,18 @@ heap are reported separately; pixel-split setup still dominates its total peak.
 All 6,144 primary frame results match the archived 0.6.0 references byte-for-byte.
 See the [file-pipeline optimization benchmark](docs/benchmarks/2026-10-24-file-pipeline-optimization.md)
 for all worker counts, the array control, setup time and validation.
-<!-- end-unreleased-file-pipeline -->
+
+Calibration setup is essentially unchanged; the matched float64 NumPy-array
+control differs by less than 1% at eight workers. These gains apply to file-based
+processing. Fast CSR arithmetic remains enabled by default; float64 weights,
+strict/fast reduction order and Poisson formulas are unchanged. The standalone
+Python regression suite checks 13,744 results across ten sample types, both byte
+orders, uncompressed/Deflate/LZW TIFFs, strips/tiles, strict/fast arithmetic,
+alternating images and streaming lifetimes.
+
+The existing offline license format and activation remain compatible. Distribution
+remains wheel-only for CPython 3.11–3.15 on Windows x86-64, macOS Intel/Apple
+silicon and Linux x86-64/ARM64.
 
 ## [0.6.0] - 2026-10-24
 
@@ -526,7 +543,9 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/CPrescher/Dioptrin/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/CPrescher/Dioptrin/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/CPrescher/Dioptrin/compare/v0.5.4...v0.5.5
 [0.5.3]: https://github.com/CPrescher/Dioptrin/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/CPrescher/Dioptrin/compare/v0.5.1...v0.5.2

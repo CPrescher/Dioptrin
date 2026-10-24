@@ -12,7 +12,7 @@ python -m pip install dioptrin
 
 Dioptrin is distributed as binary wheels for standard CPython 3.11–3.15 on
 Windows x86-64, macOS Intel and Apple silicon, and Linux x86-64 and ARM64.
-Python 3.15 is currently a prerelease. Free-threaded Python is not supported.
+Free-threaded Python is not supported.
 No source distribution is provided; installation requires a compatible wheel.
 
 ## License activation
@@ -53,3 +53,13 @@ multiply-add where available. Set `fast_math=False` in `Integrator` or
 differ in floating-point rounding. Geometry, float64 pixel weights and correction
 formulas are unchanged. Histogram and azimuthal-spread algorithms keep their
 existing behavior.
+
+
+### File-batch workers
+
+Starting in 0.6.1, file batches reuse typed TIFF decoding buffers and retain their
+workers between calls. Standard 1D/2D CSR file tasks convert individual pixel
+values to float64 inside the existing arithmetic. `Integrator.clear_file_workers()`
+releases cached workers and buffers; already admitted streams finish normally.
+Changing the worker/thread configuration replaces the pool. Cached workers retain
+one decoded image buffer each until cleared or the integrator is released.

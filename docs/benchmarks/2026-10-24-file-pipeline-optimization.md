@@ -1,6 +1,6 @@
-# Dioptrin file-pipeline optimization — unreleased candidate
+# Dioptrin 0.6.1 file-pipeline optimization
 
-Measured 24 October 2026. Three file-path changes, with the arithmetic policy unchanged.
+Measured 24 October 2026 on the release candidate whose implementation is included in 0.6.1. Three file-path changes, with the arithmetic policy unchanged. The archived measurement record retains the candidate’s original build identity.
 
 ## Eight Python workers
 
@@ -24,7 +24,7 @@ Persistent workers deliberately retain one typed decoding buffer each. For eight
 
 ## Implementation
 
-The decoder writes into a reusable typed buffer owned by each worker. Grayscale strips and tiles, including padded edge tiles, use TIFF read_chunk_to_buffer; row reversal happens in that compact typed buffer. Standard 1D/2D CSR file tasks load the native sample type and convert each used value to float64 immediately before the existing weight and accumulation operations. Float64 weights, strict/fast lane order, normalization and Poisson formulas are unchanged. The Python Integrator retains one worker pool for its current worker/thread configuration, including each worker’s decoding buffer; changing configuration replaces the pool. List, streaming-list and generator file APIs use the pool. clear_file_workers() releases cached workers and buffers; already admitted streaming work finishes safely. The public float64 Frame/NumPy interfaces remain compatible. Histogram, azimuthal spread and custom IntegrationTask implementations use a float64 compatibility adapter. The 2D array-stream producer also now feeds its bounded queue concurrently, avoiding a pre-existing deadlock when the input list exceeds the queue capacity. This candidate is unreleased; the published 0.6.0 wheel and tag are unchanged.
+The decoder writes into a reusable typed buffer owned by each worker. Grayscale strips and tiles, including padded edge tiles, use TIFF read_chunk_to_buffer; row reversal happens in that compact typed buffer. Standard 1D/2D CSR file tasks load the native sample type and convert each used value to float64 immediately before the existing weight and accumulation operations. Float64 weights, strict/fast lane order, normalization and Poisson formulas are unchanged. The Python Integrator retains one worker pool for its current worker/thread configuration, including each worker’s decoding buffer; changing configuration replaces the pool. List, streaming-list and generator file APIs use the pool. clear_file_workers() releases cached workers and buffers; already admitted streaming work finishes safely. The public float64 Frame/NumPy interfaces remain compatible. Histogram, azimuthal spread and custom IntegrationTask implementations use a float64 compatibility adapter. The 2D array-stream producer also now feeds its bounded queue concurrently, avoiding a pre-existing deadlock when the input list exceeds the queue capacity. This measured implementation is included in 0.6.1; the archived 0.6.0 baseline is retained for comparison.
 
 ## Numerical validation
 
