@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- unreleased-file-pipeline -->
+### Changed
+
+- Reuse typed TIFF decoding buffers within and between file batches, and integrate
+  standard 1D/2D CSR file inputs directly from their native sample type. Pixel values
+  convert to float64 before the existing arithmetic; weights, accumulation order
+  and each strict/fast mode’s results are preserved.
+- Retain Python file-batch workers and their buffers for the current worker/thread
+  configuration. Add `Integrator.clear_file_workers()` to release cached workers
+  and buffers without cancelling already admitted streams.
+- Feed 2D array streams concurrently so a full bounded input queue cannot block
+  consumer creation.
+
+### Performance
+
+Fresh paired Python file-processing benchmark, up to eight workers, with Poisson
+errors and a warm OS filesystem cache. The candidate is unreleased; these figures
+do not describe a change to the already published 0.6.0 wheel.
+
+| Detector / method | File fps before → after | Speedup | Calibration s before → after | First 32-file batch s before → after | Peak RSS GiB before → after |
+| --- | --- | --- | --- | --- | --- |
+| Pilatus1M / pixel-split | 1331.4 → 1820.4 | 1.37× | 0.107 → 0.108 | 0.024 → 0.019 | 0.616 → 0.599 |
+| Pilatus1M / supersampled | 1361.9 → 1885.9 | 1.38× | 0.373 → 0.371 | 0.024 → 0.018 | 0.409 → 0.356 |
+| Eiger9M / pixel-split | 192.9 → 248.0 | 1.29× | 0.603 → 0.613 | 0.171 → 0.136 | 2.901 → 2.742 |
+| Eiger9M / supersampled | 201.7 → 259.6 | 1.29× | 0.702 → 0.701 | 0.170 → 0.127 | 2.168 → 1.640 |
+
+Persistent Eiger workers retain about 310 MiB of additional live decoding buffers at
+eight workers. `clear_file_workers()` releases those buffers. Peak RSS and live
+heap are reported separately; pixel-split setup still dominates its total peak.
+All 6,144 primary frame results match the archived 0.6.0 references byte-for-byte.
+See the [file-pipeline optimization benchmark](docs/benchmarks/2026-10-24-file-pipeline-optimization.md)
+for all worker counts, the array control, setup time and validation.
+<!-- end-unreleased-file-pipeline -->
+
 ## [0.6.0] - 2026-10-24
 
 ### Added

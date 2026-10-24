@@ -1,0 +1,74 @@
+[
+  {
+    "dataset": "Pilatus1M",
+    "method": "dioptrin_ps",
+    "build": "baseline",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Pilatus1M",
+    "method": "dioptrin_ps",
+    "build": "candidate",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Pilatus1M",
+    "method": "dioptrin_ss",
+    "build": "baseline",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Pilatus1M",
+    "method": "dioptrin_ss",
+    "build": "candidate",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Eiger9M",
+    "method": "dioptrin_ps",
+    "build": "baseline",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Eiger9M",
+    "method": "dioptrin_ps",
+    "build": "candidate",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Eiger9M",
+    "method": "dioptrin_ss",
+    "build": "baseline",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  },
+  {
+    "dataset": "Eiger9M",
+    "method": "dioptrin_ss",
+    "build": "candidate",
+    "batch_cases": 24,
+    "frame_results": 768,
+    "byte_identical_to_archived_060_reference": true,
+    "max_relative_l2": 0.0
+  }
+]
