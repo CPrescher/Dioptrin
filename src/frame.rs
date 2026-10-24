@@ -3,6 +3,22 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+mod tiff_input;
+#[doc(hidden)]
+pub use self::tiff_input::TiffFrame;
+
+/// Conversion performed before the existing f64 arithmetic in CSR kernels.
+pub(crate) trait Pixel: Copy + Send + Sync {
+    fn to_f64(self) -> f64;
+}
+macro_rules! pixels {
+    ($($ty:ty),*) => {$(impl Pixel for $ty {
+        #[inline(always)]
+        fn to_f64(self) -> f64 { self as f64 }
+    })*};
+}
+pixels!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+
 pub struct Frame {
     pub name: String,
     pub data: Vec<f64>,

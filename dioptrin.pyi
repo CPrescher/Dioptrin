@@ -278,6 +278,10 @@ class Integrator:
         """Toggle fast accumulation; rejects changes during an async batch."""
         ...
 
+    def clear_file_workers(self) -> None:
+        """Release cached file workers and TIFF buffers; admitted streams finish normally."""
+        ...
+
     def integrate1d(
         self,
         image: Union[str, np.ndarray],

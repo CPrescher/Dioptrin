@@ -4,6 +4,7 @@
 //! preserved. Only column storage and frame-independent normalization change.
 use std::sync::OnceLock;
 
+use crate::frame::Pixel;
 use rayon::prelude::*;
 
 use super::{IntermediateResult1d, IntermediateResult2d, Lut1d, Lut2d};
@@ -117,7 +118,7 @@ impl PreparedCsr {
                 ($cols:expr) => {
                     (0..self.row_ptr.len() - 1)
                         .map(|i| {
-                            self.sum::<_, FAST, false, true, false, false>(
+                            self.sum::<_, f64, FAST, false, true, false, false>(
                                 i,
                                 $cols,
                                 mask,
@@ -146,6 +147,7 @@ impl PreparedCsr {
     #[inline(always)]
     fn sum<
         I: PixelIndex,
+        P: Pixel,
         const FAST: bool,
         const SIGNAL: bool,
         const NORM: bool,
@@ -156,16 +158,16 @@ impl PreparedCsr {
         i: usize,
         cols: &[I],
         mask: Option<&[u8]>,
-        signal: &[f64],
+        signal: &[P],
         norm: &[f64],
     ) -> [f64; 4] {
         let start = self.row_ptr[i];
         let end = self.row_ptr[i + 1];
         match (self.values.as_deref(), mask) {
-            (Some(w), Some(m)) => row::<I, FAST, SIGNAL, NORM, VAR, COUNT, true, true>(
+            (Some(w), Some(m)) => row::<I, P, FAST, SIGNAL, NORM, VAR, COUNT, true, true>(
                 start, end, cols, w, m, signal, norm,
             ),
-            (Some(w), None) => row::<I, FAST, SIGNAL, NORM, VAR, COUNT, true, false>(
+            (Some(w), None) => row::<I, P, FAST, SIGNAL, NORM, VAR, COUNT, true, false>(
                 start,
                 end,
                 cols,
@@ -174,7 +176,7 @@ impl PreparedCsr {
                 signal,
                 norm,
             ),
-            (None, Some(m)) => row::<I, FAST, SIGNAL, NORM, VAR, COUNT, false, true>(
+            (None, Some(m)) => row::<I, P, FAST, SIGNAL, NORM, VAR, COUNT, false, true>(
                 start,
                 end,
                 cols,
@@ -183,7 +185,7 @@ impl PreparedCsr {
                 signal,
                 norm,
             ),
-            (None, None) => row::<I, FAST, SIGNAL, NORM, VAR, COUNT, false, false>(
+            (None, None) => row::<I, P, FAST, SIGNAL, NORM, VAR, COUNT, false, false>(
                 start,
                 end,
                 cols,
@@ -195,9 +197,9 @@ impl PreparedCsr {
         }
     }
 
-    fn results<const FAST: bool, const VAR: bool, const COUNT: bool>(
+    fn results<const FAST: bool, const VAR: bool, const COUNT: bool, P: Pixel>(
         &self,
-        signal: &[f64],
+        signal: &[P],
         mask: Option<&[u8]>,
         norm: &[f64],
     ) -> Vec<[f64; 4]> {
@@ -207,7 +209,7 @@ impl PreparedCsr {
                 (0..self.row_ptr.len() - 1)
                     .into_par_iter()
                     .map(|i| {
-                        let mut sums = self.sum::<_, FAST, true, false, VAR, COUNT>(
+                        let mut sums = self.sum::<_, P, FAST, true, false, VAR, COUNT>(
                             i,
                             $cols,
                             mask,
@@ -226,13 +228,13 @@ impl PreparedCsr {
         }
     }
 
-    fn normalized<const FAST: bool, const VAR: bool>(
+    fn normalized<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
-        s: &[f64],
+        s: &[P],
         m: Option<&[u8]>,
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
-        let rows = self.results::<FAST, VAR, false>(s, m, n);
+        let rows = self.results::<FAST, VAR, false, P>(s, m, n);
         let mut intensity = Vec::with_capacity(rows.len());
         let mut errors = Vec::with_capacity(if VAR { rows.len() } else { 0 });
         for [signal, norm, variance, _] in rows {
@@ -257,7 +259,7 @@ impl PreparedCsr {
         m: Option<&[u8]>,
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>, Vec<f64>) {
-        let rows = self.results::<FAST, VAR, true>(s, m, n);
+        let rows = self.results::<FAST, VAR, true, f64>(s, m, n);
         let mut signal = Vec::with_capacity(rows.len());
         let mut norm = Vec::with_capacity(rows.len());
         let mut variance = VAR.then(|| Vec::with_capacity(rows.len()));
@@ -294,7 +296,15 @@ impl Prepared1d {
         m: Option<&[u8]>,
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        let (y, e) = self.normalized::<FAST, VAR>(s, m, n);
+        self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
+    }
+    pub(crate) fn integrate_pixels<const FAST: bool, const VAR: bool, P: Pixel>(
+        &self,
+        s: &[P],
+        m: Option<&[u8]>,
+        n: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let (y, e) = self.normalized::<FAST, VAR, P>(s, m, n);
         (self.bins(), y, e)
     }
     pub(crate) fn raw1d<const FAST: bool, const VAR: bool>(
@@ -330,7 +340,15 @@ impl Prepared2d {
         m: Option<&[u8]>,
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
-        self.normalized::<FAST, VAR>(s, m, n)
+        self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
+    }
+    pub(crate) fn integrate_pixels<const FAST: bool, const VAR: bool, P: Pixel>(
+        &self,
+        s: &[P],
+        m: Option<&[u8]>,
+        n: &[f64],
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.normalized::<FAST, VAR, P>(s, m, n)
     }
     pub(crate) fn raw2d<const FAST: bool, const VAR: bool>(
         &self,
@@ -365,6 +383,7 @@ fn madd(a: f64, b: f64, c: f64) -> f64 {
 #[inline(always)]
 fn row<
     I: PixelIndex,
+    P: Pixel,
     const FAST: bool,
     const SIGNAL: bool,
     const NORM: bool,
@@ -378,7 +397,7 @@ fn row<
     cols: &[I],
     weights: &[f64],
     mask: &[u8],
-    signal: &[f64],
+    signal: &[P],
     norm: &[f64],
 ) -> [f64; 4] {
     let mut s = [0.0; 4];
@@ -401,7 +420,7 @@ fn row<
                         1.0
                     };
                     if SIGNAL {
-                        let x = *signal.get_unchecked(j);
+                        let x = signal.get_unchecked(j).to_f64();
                         if WEIGHT {
                             s[lane] = if FAST {
                                 madd(w, x, s[lane])

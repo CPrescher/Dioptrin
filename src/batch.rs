@@ -39,8 +39,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use crate::frame::Frame;
+use crate::frame::{Frame, TiffFrame};
 use crate::integration::Integrator;
+
+mod file_workers;
+#[cfg(feature = "python")]
+pub(crate) use file_workers::{
+    FileWorkers, process_files_streaming_with_pool, process_files_with_pool,
+    process_queue_with_pool,
+};
 
 /// Trait for defining integration tasks that can be executed on frames.
 ///
@@ -54,6 +61,13 @@ pub trait IntegrationTask: Send + Sync {
     ///
     /// This method is called by workers in a thread pool context.
     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output;
+
+    /// Compatibility adapter for custom tasks. Standard CSR tasks override this
+    /// to consume the decoder's typed buffer without a full f64 image copy.
+    #[doc(hidden)]
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        self.execute(integrator, &frame.to_frame())
+    }
 }
 
 /// 1D integration task without error propagation.
@@ -70,6 +84,10 @@ impl IntegrationTask for Integration1D {
     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
         integrator.integrate1d(frame, self.n_bins)
     }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        let (x, y, _) = integrator.integrate_tiff1d::<false>(frame, self.n_bins);
+        (x, y)
+    }
 }
 
 /// 1D integration task with per-bin error estimation.
@@ -85,6 +103,9 @@ impl IntegrationTask for Integration1DWithErrors {
 
     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
         integrator.integrate1d_with_errors(frame, self.n_bins)
+    }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        integrator.integrate_tiff1d::<true>(frame, self.n_bins)
     }
 }
 
@@ -118,6 +139,11 @@ impl IntegrationTask for Integration2D {
     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
         integrator.integrate2d(frame, self.n_radial, self.n_azimuthal)
     }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        integrator
+            .integrate_tiff2d::<false>(frame, self.n_radial, self.n_azimuthal, None)
+            .0
+    }
 }
 
 /// 2D integration task with per-bin error estimation.
@@ -134,6 +160,9 @@ impl IntegrationTask for Integration2DWithErrors {
 
     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
         integrator.integrate2d_with_errors(frame, self.n_radial, self.n_azimuthal)
+    }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        integrator.integrate_tiff2d::<true>(frame, self.n_radial, self.n_azimuthal, None)
     }
 }
 
@@ -160,6 +189,16 @@ impl IntegrationTask for Integration2DWithAzimuthalRange {
             self.azimuthal_max,
         )
     }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        integrator
+            .integrate_tiff2d::<false>(
+                frame,
+                self.n_radial,
+                self.n_azimuthal,
+                Some((self.azimuthal_min, self.azimuthal_max)),
+            )
+            .0
+    }
 }
 
 /// 2D integration with azimuthal range restriction and error estimation.
@@ -183,6 +222,14 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
             self.n_azimuthal,
             self.azimuthal_min,
             self.azimuthal_max,
+        )
+    }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        integrator.integrate_tiff2d::<true>(
+            frame,
+            self.n_radial,
+            self.n_azimuthal,
+            Some((self.azimuthal_min, self.azimuthal_max)),
         )
     }
 }

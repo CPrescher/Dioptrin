@@ -5,6 +5,7 @@ mod corrections;
 mod methods;
 #[cfg(test)]
 mod tests;
+mod tiff_input;
 
 use std::f64::consts::PI;
 use std::sync::{Arc, RwLock};
