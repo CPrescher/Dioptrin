@@ -1,0 +1,582 @@
+{
+  "defaults": [
+    {
+      "dataset": "Pilatus1M",
+      "variant": "dioptrin_055_ss",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "variant": "dioptrin_060_ss",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": false,
+        "max_rel_l2": 2.276744537824805e-15,
+        "max_abs": 5.059064278611913e-12,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": false,
+        "max_rel_l2": 7.027447198384781e-16,
+        "max_abs": 2.4424906541753444e-15,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "variant": "dioptrin_055_ps",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "variant": "dioptrin_060_ps",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": false,
+        "max_rel_l2": 1.8931246956192935e-15,
+        "max_abs": 2.9558577807620168e-12,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": false,
+        "max_rel_l2": 6.675730427887529e-16,
+        "max_abs": 2.609024107869118e-15,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "dioptrin_055_ss",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "dioptrin_060_ss",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": false,
+        "max_rel_l2": 7.056116229476166e-15,
+        "max_abs": 4.865796654485166e-11,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": false,
+        "max_rel_l2": 1.3209760396456817e-15,
+        "max_abs": 1.1102230246251565e-14,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "dioptrin_055_ps",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "dioptrin_060_ps",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "max_abs": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": false,
+        "max_rel_l2": 4.652825579691314e-15,
+        "max_abs": 3.0468072509393096e-11,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": false,
+        "max_rel_l2": 1.2067599767751517e-15,
+        "max_abs": 9.2148511043888e-15,
+        "finite_masks_equal": true
+      }
+    }
+  ],
+  "strict_and_switching": [
+    {
+      "variant": "dioptrin_060_ss",
+      "dataset": "Pilatus1M",
+      "strict_checks": [
+        {
+          "errors": false,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Pilatus1M-ss-eFalse.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        },
+        {
+          "errors": true,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Pilatus1M-ss-eTrue.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "sigma": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        }
+      ],
+      "alternating_checks": 0,
+      "method": "supersampled",
+      "real_distinct_images": false,
+      "both_arithmetic_modes": true
+    },
+    {
+      "variant": "dioptrin_060_ps",
+      "dataset": "Pilatus1M",
+      "strict_checks": [
+        {
+          "errors": false,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Pilatus1M-ps-eFalse.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        },
+        {
+          "errors": true,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Pilatus1M-ps-eTrue.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "sigma": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        }
+      ],
+      "alternating_checks": 0,
+      "method": "pixel_split",
+      "real_distinct_images": false,
+      "both_arithmetic_modes": true
+    },
+    {
+      "variant": "dioptrin_060_ss",
+      "dataset": "Eiger9M",
+      "strict_checks": [
+        {
+          "errors": false,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Eiger9M-ss-eFalse.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        },
+        {
+          "errors": true,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Eiger9M-ss-eTrue.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "sigma": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        }
+      ],
+      "alternating_checks": 48,
+      "method": "supersampled",
+      "real_distinct_images": true,
+      "both_arithmetic_modes": true
+    },
+    {
+      "variant": "dioptrin_060_ps",
+      "dataset": "Eiger9M",
+      "strict_checks": [
+        {
+          "errors": false,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Eiger9M-ps-eFalse.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        },
+        {
+          "errors": true,
+          "frames": 56,
+          "reference": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/dioptrin-release/references/Eiger9M-ps-eTrue.npz",
+          "intensity": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "axis": {
+            "shape": [
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 2000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          },
+          "sigma": {
+            "shape": [
+              56,
+              2000
+            ],
+            "dtype": "float64",
+            "bitwise_equal": true,
+            "differing_finite_values": 0,
+            "finite_values": 112000,
+            "finite_mask_equal": true,
+            "nan_mask_equal": true,
+            "rel_l2": 0.0,
+            "max_abs": 0.0,
+            "max_abs_over_peak": 0.0,
+            "max_relative_above_peak_1e6": 0.0
+          }
+        }
+      ],
+      "alternating_checks": 48,
+      "method": "pixel_split",
+      "real_distinct_images": true,
+      "both_arithmetic_modes": true
+    }
+  ]
+}

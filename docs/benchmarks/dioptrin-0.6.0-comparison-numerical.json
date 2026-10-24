@@ -1,0 +1,310 @@
+{
+  "self_reference": [
+    {
+      "dataset": "Pilatus1M",
+      "variant": "azint_base",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "variant": "azint_fast",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "variant": "pyfai_full",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "variant": "pyfai_bbox",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "azint_base",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "azint_fast",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "pyfai_full",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "variant": "pyfai_bbox",
+      "cases": 16,
+      "axis": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "intensity": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      },
+      "sigma": {
+        "bitwise_equal": true,
+        "max_rel_l2": 0.0,
+        "finite_masks_equal": true
+      }
+    }
+  ],
+  "inter_library_patterns": [
+    {
+      "dataset": "Pilatus1M",
+      "competitor": "azint_base",
+      "dioptrin_method": "ss",
+      "max_axis_difference_deg": 3.552713678800501e-15,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.011682272181365458,
+        "interpolated_rel_l2": 0.011682272181366143,
+        "max_abs": 22.910126015021888
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.004787595937163467,
+        "interpolated_rel_l2": 0.004787595937164636,
+        "max_abs": 0.02725935050837447
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "competitor": "azint_fast",
+      "dioptrin_method": "ss",
+      "max_axis_difference_deg": 3.552713678800501e-15,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.011682247539126006,
+        "interpolated_rel_l2": 0.011682247539126691,
+        "max_abs": 22.898956581428138
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.004786768274256604,
+        "interpolated_rel_l2": 0.004786768274257777,
+        "max_abs": 0.027146220892590778
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "competitor": "pyfai_full",
+      "dioptrin_method": "ps",
+      "max_axis_difference_deg": 3.6766871787108357e-06,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.0024274495292339686,
+        "interpolated_rel_l2": 0.0024260573366046297,
+        "max_abs": 5.636019844564089
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.01788819536770086,
+        "interpolated_rel_l2": 0.017888315430381628,
+        "max_abs": 0.5760001897684237
+      }
+    },
+    {
+      "dataset": "Pilatus1M",
+      "competitor": "pyfai_bbox",
+      "dioptrin_method": "ps",
+      "max_axis_difference_deg": 3.6766871787108357e-06,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.05319854654918001,
+        "interpolated_rel_l2": 0.05319718911359793,
+        "max_abs": 162.493796226874
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.25264655383391266,
+        "interpolated_rel_l2": 0.25264841640133295,
+        "max_abs": 7.487070083618164
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "competitor": "azint_base",
+      "dioptrin_method": "ss",
+      "max_axis_difference_deg": 7.105427357601002e-15,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.029425271686789697,
+        "interpolated_rel_l2": 0.029425271686796216,
+        "max_abs": 226.43563347812005
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.0028159700183550446,
+        "interpolated_rel_l2": 0.0028159700183551938,
+        "max_abs": 0.04774775481115001
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "competitor": "azint_fast",
+      "dioptrin_method": "ss",
+      "max_axis_difference_deg": 7.105427357601002e-15,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.029424963166878912,
+        "interpolated_rel_l2": 0.029424963166885473,
+        "max_abs": 226.45150261874505
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.002816910442474576,
+        "interpolated_rel_l2": 0.0028169104424747254,
+        "max_abs": 0.0477501986015858
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "competitor": "pyfai_full",
+      "dioptrin_method": "ps",
+      "max_axis_difference_deg": 5.273692309515354e-06,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.01331463839001071,
+        "interpolated_rel_l2": 0.013320674699290286,
+        "max_abs": 106.73812235741103
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 3.1616732834730583,
+        "interpolated_rel_l2": 3.161672675720055,
+        "max_abs": 85.85189702829743
+      }
+    },
+    {
+      "dataset": "Eiger9M",
+      "competitor": "pyfai_bbox",
+      "dioptrin_method": "ps",
+      "max_axis_difference_deg": 5.273692309515354e-06,
+      "dioptrin_dtype": "float64",
+      "competitor_dtype": "float32",
+      "intensity": {
+        "corresponding_bin_rel_l2": 0.012547469434308811,
+        "interpolated_rel_l2": 0.012547347122071797,
+        "max_abs": 103.3711035985848
+      },
+      "sigma": {
+        "corresponding_bin_rel_l2": 0.07553699387590598,
+        "interpolated_rel_l2": 0.07557169924096768,
+        "max_abs": 1.2714797394276314
+      }
+    }
+  ]
+}
