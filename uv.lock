@@ -146,7 +146,7 @@ wheels = [
 
 [[package]]
 name = "dioptrin"
-version = "0.5.5"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

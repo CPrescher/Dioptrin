@@ -8,6 +8,126 @@ use crate::integration::RadialUnit;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
 use crate::math::histogram;
 
+/// An exact integer count for one unique pixel/output-bin intersection.
+struct Contribution {
+    bin: usize,
+    pixel: usize,
+    count: usize,
+}
+
+struct RadialConversion {
+    unit: RadialUnit,
+    q_scale: f64,
+}
+
+impl RadialConversion {
+    fn new(unit: RadialUnit, wavelength: f64) -> Self {
+        let q_scale = match unit {
+            RadialUnit::QAngstrom | RadialUnit::QNm => {
+                assert!(
+                    wavelength > 0.0,
+                    "Wavelength must be positive for q conversion"
+                );
+                let wavelength = wavelength
+                    * if unit == RadialUnit::QAngstrom {
+                        1e10
+                    } else {
+                        1e9
+                    };
+                4.0 * std::f64::consts::PI / wavelength
+            }
+            _ => 0.0,
+        };
+        Self { unit, q_scale }
+    }
+
+    fn convert(&self, tth: f64) -> f64 {
+        match self.unit {
+            RadialUnit::TthRad => tth,
+            RadialUnit::TthDeg => tth.to_degrees(),
+            RadialUnit::QAngstrom | RadialUnit::QNm => self.q_scale * (tth / 2.0).sin(),
+        }
+    }
+}
+
+/// Count samples per pixel/bin immediately, then transpose the compact records
+/// into CSR. Detector rows and pixels remain ordered, so each CSR row has exactly
+/// the legacy sorted pixel order, integer totals and floating-point weights.
+fn build_counted_csr<F>(
+    geometry: &Geometry,
+    n_ss: usize,
+    n_bins: usize,
+    sample_bin: F,
+) -> (Vec<usize>, Vec<usize>, Vec<f64>)
+where
+    F: Fn(f64, f64) -> usize + Sync,
+{
+    let rows: Vec<Box<[Contribution]>> = (0..geometry.dim1)
+        .into_par_iter()
+        .map(|row| {
+            let mut entries = Vec::with_capacity(geometry.dim2 * 2);
+            let mut counts: Vec<(usize, usize)> = Vec::new();
+            for col in 0..geometry.dim2 {
+                counts.clear();
+                for i in 0..n_ss {
+                    let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;
+                    for j in 0..n_ss {
+                        // Preserve subgrid's original global-column arithmetic;
+                        // col + (j + .5)/n can round differently near an edge.
+                        let d2 = ((col * n_ss + j) as f64 + 0.5) / n_ss as f64;
+                        let bin = sample_bin(d1, d2);
+                        match counts.iter_mut().find(|(b, _)| *b == bin) {
+                            Some((_, count)) => *count += 1,
+                            None => counts.push((bin, 1)),
+                        }
+                    }
+                }
+                let pixel = row * geometry.dim2 + col;
+                entries.extend(counts.iter().map(|&(bin, count)| Contribution {
+                    bin,
+                    pixel,
+                    count,
+                }));
+            }
+            entries.into_boxed_slice()
+        })
+        .collect();
+
+    let mut row_ptr = vec![0usize; n_bins + 1];
+    let mut totals = vec![0usize; n_bins];
+    for entries in &rows {
+        for entry in entries.iter() {
+            row_ptr[entry.bin + 1] += 1;
+            totals[entry.bin] += entry.count;
+        }
+    }
+    for bin in 0..n_bins {
+        row_ptr[bin + 1] += row_ptr[bin];
+    }
+    let mut col_idx = vec![0usize; row_ptr[n_bins]];
+    let mut values = vec![0.0; row_ptr[n_bins]];
+    let mut next = row_ptr[..n_bins].to_vec();
+    // Consume/free row buffers during assembly. No global record concatenation,
+    // sort, unsafe parallel writes, or duplicated subpixel events are needed.
+    for entries in rows {
+        for entry in entries.iter() {
+            let slot = next[entry.bin];
+            col_idx[slot] = entry.pixel;
+            values[slot] = entry.count as f64;
+            next[entry.bin] += 1;
+        }
+    }
+    for bin in 0..n_bins {
+        if totals[bin] != 0 {
+            let denom = totals[bin] as f64;
+            for value in &mut values[row_ptr[bin]..row_ptr[bin + 1]] {
+                *value /= denom;
+            }
+        }
+    }
+    (row_ptr, col_idx, values)
+}
+
 /// Build a supersampled 1D CSR LUT directly (no HashMap in the public type).
 ///
 /// The `radial` array contains pixel center values in the selected radial unit.
@@ -43,70 +163,12 @@ pub fn build_lut1d_ss_csr(
     let (hist_min, _hist_max, hist_step) =
         histogram::ss_tth_min_max_step(geometry, radial, n_points, n_ss, unit);
 
-    let wavelength = geometry.poni.wavelength;
-
-    // Collect all (bin, pixel) occurrences from supersampling
-    let per_row = geometry.dim2 * n_ss * n_ss;
-    let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
-        .into_par_iter()
-        .fold(
-            || Vec::with_capacity(per_row),
-            |mut acc, row| {
-                let (d1, d2, actual_index) = crate::lut::common::subgrid(row, geometry.dim2, n_ss);
-                let tth_ss = geometry.calc_tth(&d1, &d2);
-                let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
-                for (i, &v) in radial_ss.iter().enumerate() {
-                    let b = histogram::get_bin_clamped(v, hist_min, hist_step, n_points);
-                    acc.push((b, actual_index[i]));
-                }
-                acc
-            },
-        )
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
-
-    // Sort by (bin, pixel) and compress to unique with counts
-    pairs.par_sort_unstable();
-
-    let mut row_ptr = Vec::with_capacity(n_points + 1);
-    let mut col_idx: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-    row_ptr.push(0);
-
-    let mut i = 0usize;
-    while i < pairs.len() {
-        let current_bin = pairs[i].0;
-        while row_ptr.len() - 1 < current_bin {
-            row_ptr.push(row_ptr.last().copied().unwrap());
-        }
-        let mut bin_total: usize = 0;
-        let bin_start = col_idx.len();
-        while i < pairs.len() && pairs[i].0 == current_bin {
-            let pixel = pairs[i].1;
-            let mut cnt = 1usize;
-            i += 1;
-            while i < pairs.len() && pairs[i].0 == current_bin && pairs[i].1 == pixel {
-                cnt += 1;
-                i += 1;
-            }
-            col_idx.push(pixel);
-            values.push(cnt as f64);
-            bin_total += cnt;
-        }
-        if bin_total > 0 {
-            let denom = bin_total as f64;
-            for w in &mut values[bin_start..] {
-                *w /= denom;
-            }
-        }
-        row_ptr.push(col_idx.len());
-    }
-
-    while row_ptr.len() < n_points + 1 {
-        row_ptr.push(col_idx.len());
-    }
+    let transform = geometry.subpixel_transform();
+    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let (row_ptr, col_idx, values) = build_counted_csr(geometry, n_ss, n_points, |d1, d2| {
+        let radial = conversion.convert(transform.tth(d1, d2));
+        histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
+    });
 
     Lut1d {
         row_ptr,
@@ -130,68 +192,12 @@ pub fn build_lut1d_ss_csr_with_range(
     let (hist_min, _hist_max, hist_step) =
         histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
-    let wavelength = geometry.poni.wavelength;
-
-    let per_row = geometry.dim2 * n_ss * n_ss;
-    let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
-        .into_par_iter()
-        .fold(
-            || Vec::with_capacity(per_row),
-            |mut acc, row| {
-                let (d1, d2, actual_index) = crate::lut::common::subgrid(row, geometry.dim2, n_ss);
-                let tth_ss = geometry.calc_tth(&d1, &d2);
-                let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
-                for (i, &v) in radial_ss.iter().enumerate() {
-                    let b = histogram::get_bin_clamped(v, hist_min, hist_step, n_points);
-                    acc.push((b, actual_index[i]));
-                }
-                acc
-            },
-        )
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        });
-
-    pairs.par_sort_unstable();
-
-    let mut row_ptr = Vec::with_capacity(n_points + 1);
-    let mut col_idx: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-    row_ptr.push(0);
-
-    let mut i = 0usize;
-    while i < pairs.len() {
-        let current_bin = pairs[i].0;
-        while row_ptr.len() - 1 < current_bin {
-            row_ptr.push(row_ptr.last().copied().unwrap());
-        }
-        let mut bin_total: usize = 0;
-        let bin_start = col_idx.len();
-        while i < pairs.len() && pairs[i].0 == current_bin {
-            let pixel = pairs[i].1;
-            let mut cnt = 1usize;
-            i += 1;
-            while i < pairs.len() && pairs[i].0 == current_bin && pairs[i].1 == pixel {
-                cnt += 1;
-                i += 1;
-            }
-            col_idx.push(pixel);
-            values.push(cnt as f64);
-            bin_total += cnt;
-        }
-        if bin_total > 0 {
-            let denom = bin_total as f64;
-            for w in &mut values[bin_start..] {
-                *w /= denom;
-            }
-        }
-        row_ptr.push(col_idx.len());
-    }
-
-    while row_ptr.len() < n_points + 1 {
-        row_ptr.push(col_idx.len());
-    }
+    let transform = geometry.subpixel_transform();
+    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let (row_ptr, col_idx, values) = build_counted_csr(geometry, n_ss, n_points, |d1, d2| {
+        let radial = conversion.convert(transform.tth(d1, d2));
+        histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
+    });
 
     Lut1d {
         row_ptr,
@@ -244,73 +250,20 @@ pub fn build_lut2d_ss_csr(
     let (azimuthal_min, _azimuthal_max, azimuthal_step) =
         histogram::supersampled_azimuthal_min_max_step(geometry, azimuthal, n_azimuthal, n_ss);
 
-    let wavelength = geometry.poni.wavelength;
-
-    let rows = n_radial * n_azimuthal;
-    let per_row = geometry.dim2 * n_ss * n_ss;
-    let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
-        .into_par_iter()
-        .fold(
-            || Vec::with_capacity(per_row),
-            |mut acc, r| {
-                let (d1, d2, actual_index) = crate::lut::common::subgrid(r, geometry.dim2, n_ss);
-                let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
-                let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
-                for i in 0..radial_ss.len() {
-                    let rb =
-                        histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
-                    let ab = histogram::get_bin(azimuthal_ss[i], azimuthal_min, azimuthal_step)
-                        % n_azimuthal;
-                    let row = ab * n_radial + rb;
-                    acc.push((row, actual_index[i]));
-                }
-                acc
-            },
-        )
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
+    let transform = geometry.subpixel_transform();
+    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let (row_ptr, col_idx, values) =
+        build_counted_csr(geometry, n_ss, n_radial * n_azimuthal, |d1, d2| {
+            let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
+            let rb = histogram::get_bin_clamped(
+                conversion.convert(tth),
+                radial_min,
+                radial_step,
+                n_radial,
+            );
+            let ab = histogram::get_bin(azimuth, azimuthal_min, azimuthal_step) % n_azimuthal;
+            ab * n_radial + rb
         });
-
-    pairs.par_sort_unstable();
-
-    let mut row_ptr = Vec::with_capacity(rows + 1);
-    let mut col_idx: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-    row_ptr.push(0);
-
-    let mut i = 0usize;
-    while i < pairs.len() {
-        let current_row = pairs[i].0;
-        while row_ptr.len() - 1 < current_row {
-            row_ptr.push(col_idx.len());
-        }
-        let bin_start = col_idx.len();
-        let mut bin_total = 0usize;
-        while i < pairs.len() && pairs[i].0 == current_row {
-            let pixel = pairs[i].1;
-            let mut cnt = 1usize;
-            i += 1;
-            while i < pairs.len() && pairs[i].0 == current_row && pairs[i].1 == pixel {
-                cnt += 1;
-                i += 1;
-            }
-            col_idx.push(pixel);
-            values.push(cnt as f64);
-            bin_total += cnt;
-        }
-        if bin_total > 0 {
-            let denom = bin_total as f64;
-            for w in &mut values[bin_start..] {
-                *w /= denom;
-            }
-        }
-        row_ptr.push(col_idx.len());
-    }
-
-    while row_ptr.len() < rows + 1 {
-        row_ptr.push(col_idx.len());
-    }
 
     Lut2d {
         row_ptr,
@@ -533,77 +486,21 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
         histogram::ss_tth_min_max_step(geometry, radial, n_radial, n_ss, unit);
     let min_azimuthal = azimuthal_start - 0.5 * azimuthal_step;
 
-    let wavelength = geometry.poni.wavelength;
-
-    let rows = n_radial * n_azimuthal;
-    let per_row = geometry.dim2 * n_ss * n_ss;
-    let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
-        .into_par_iter()
-        .fold(
-            || Vec::with_capacity(per_row),
-            |mut acc, r| {
-                let (d1, d2, actual_index) = crate::lut::common::subgrid(r, geometry.dim2, n_ss);
-                let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
-                let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
-                for i in 0..radial_ss.len() {
-                    let rb =
-                        histogram::get_bin_clamped(radial_ss[i], radial_min, radial_step, n_radial);
-                    let ab = histogram::get_bin_wrapped(
-                        azimuthal_ss[i],
-                        min_azimuthal,
-                        azimuthal_step,
-                        n_azimuthal,
-                    );
-                    let row = ab * n_radial + rb;
-                    acc.push((row, actual_index[i]));
-                }
-                acc
-            },
-        )
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
+    let transform = geometry.subpixel_transform();
+    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let (row_ptr, col_idx, values) =
+        build_counted_csr(geometry, n_ss, n_radial * n_azimuthal, |d1, d2| {
+            let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
+            let rb = histogram::get_bin_clamped(
+                conversion.convert(tth),
+                radial_min,
+                radial_step,
+                n_radial,
+            );
+            let ab =
+                histogram::get_bin_wrapped(azimuth, min_azimuthal, azimuthal_step, n_azimuthal);
+            ab * n_radial + rb
         });
-
-    pairs.par_sort_unstable();
-
-    let mut row_ptr = Vec::with_capacity(rows + 1);
-    let mut col_idx: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-    row_ptr.push(0);
-
-    let mut i = 0usize;
-    while i < pairs.len() {
-        let current_row = pairs[i].0;
-        while row_ptr.len() - 1 < current_row {
-            row_ptr.push(col_idx.len());
-        }
-        let bin_start = col_idx.len();
-        let mut bin_total = 0usize;
-        while i < pairs.len() && pairs[i].0 == current_row {
-            let pixel = pairs[i].1;
-            let mut cnt = 1usize;
-            i += 1;
-            while i < pairs.len() && pairs[i].0 == current_row && pairs[i].1 == pixel {
-                cnt += 1;
-                i += 1;
-            }
-            col_idx.push(pixel);
-            values.push(cnt as f64);
-            bin_total += cnt;
-        }
-        if bin_total > 0 {
-            let denom = bin_total as f64;
-            for w in &mut values[bin_start..] {
-                *w /= denom;
-            }
-        }
-        row_ptr.push(col_idx.len());
-    }
-
-    while row_ptr.len() < rows + 1 {
-        row_ptr.push(col_idx.len());
-    }
 
     Lut2d {
         row_ptr,
@@ -613,3 +510,7 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
         n_azimuthal,
     }
 }
+
+#[cfg(test)]
+#[path = "supersampled_parity_tests.rs"]
+mod parity_tests;

@@ -3,8 +3,8 @@
 //!
 //! Bypasses ellipse fitting entirely. Given a set of peak coordinates and a
 //! calibrant, we sample a coarse grid in `(distance, rot1, rot2, poni1, poni2)`
-//! and score each candidate by counting how many peaks land within a 2θ
-//! tolerance of any calibrant ring. The grid winner is then handed to L-M
+//! and score each candidate by summing Gaussian weights of peak residuals
+//! within a 2θ tolerance of the nearest calibrant ring. The grid winner is then handed to L-M
 //! refinement which can recover the exact geometry from a reasonable basin.
 //!
 //! Why this works where ellipse-fit-based bootstraps fail:
@@ -14,8 +14,8 @@
 //!   many ellipses with very different eccentricities to within tolerance.
 //! - The 2θ forward model is well-behaved everywhere on the detector, so a
 //!   direct "is this peak near a predicted ring?" score is robust.
-//! - Cost is moderate (a few thousand cells × a few hundred peaks) and
-//!   embarrassingly parallel.
+//! - Scoring is parallel across grid cells; cost scales with the number of
+//!   cells, sampled peaks, and calibrant rings.
 
 use super::calibrant::Calibrant;
 use crate::poni::Poni;
@@ -43,7 +43,7 @@ pub struct GridSearchOptions {
     pub max_peaks_for_grid: usize,
     /// Maximum calibrant ring index considered when scoring.
     pub max_ring_index: usize,
-    /// Return the top-N grid cells (by ring-count then inlier count) for
+    /// Return the top-N grid cells (by Gaussian-weighted residual score) for
     /// downstream L-M refine-and-pick disambiguation.
     pub top_k: usize,
 }
@@ -211,43 +211,41 @@ pub fn grid_search(
     }
 
     let tol = options.tolerance_rad;
-    // Score = (number of distinct rings hit) << 24 + (total inliers).
-    // Ranking primarily by ring-count avoids ring-index ambiguities (e.g.
-    // a wrong-anchor at 2× distance can pile many peaks onto few rings
-    // by coincidence; the correct geometry distributes peaks across many
-    // calibrant rings simultaneously).
-    let scored: Vec<(u64, usize, (f64, f64, f64, f64, f64))> = cells
+    // Gaussian-weighted score: each peak with residual `r` to its nearest
+    // ring contributes `exp(-r² / 2σ²)` with `σ = 0.4 · tol`. Peaks at
+    // residual ~0 score ≈ 1; peaks at residual tol score ≈ 0.044. This
+    // rewards tight concentration around predicted rings (the true basin)
+    // over loose "many peaks within tolerance" (wrong-anchor basins).
+    let sigma = (0.4 * tol).max(1.0e-6);
+    let two_sigma2 = 2.0 * sigma * sigma;
+    let scored: Vec<(f64, usize, (f64, f64, f64, f64, f64))> = cells
         .par_iter()
         .map(|&(d, p1, p2, r1, r2)| {
             let tc = TrigConsts::new(r1, r2);
-            let mut ring_hits = vec![false; tth_targets.len()];
+            let mut weight_sum = 0.0_f64;
             let mut count = 0usize;
             for &(d1, d2) in &working {
                 let tth = tth_at(d1, d2, d, p1, p2, pixel1, pixel2, &tc);
-                let mut best_k = usize::MAX;
                 let mut best_r = tol;
-                for (k, &t) in tth_targets.iter().enumerate() {
+                for &t in &tth_targets {
                     let r = (tth - t).abs();
                     if r < best_r {
                         best_r = r;
-                        best_k = k;
                     }
                 }
-                if best_k != usize::MAX {
-                    if !ring_hits[best_k] {
-                        ring_hits[best_k] = true;
-                    }
+                if best_r < tol {
+                    weight_sum += (-(best_r * best_r) / two_sigma2).exp();
                     count += 1;
                 }
             }
-            let n_rings = ring_hits.iter().filter(|&&b| b).count() as u64;
-            let score = (n_rings << 24) | (count as u64);
-            (score, count, (d, p1, p2, r1, r2))
+            (weight_sum, count, (d, p1, p2, r1, r2))
         })
         .collect();
 
-    let &(_, best_count, (d, p1, p2, r1, r2)) =
-        scored.iter().max_by_key(|s| s.0).filter(|s| s.1 > 0)?;
+    let &(_, best_count, (d, p1, p2, r1, r2)) = scored
+        .iter()
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|s| s.1 > 0)?;
 
     let mut poni = Poni::new();
     poni.pixel1 = pixel1;
@@ -268,7 +266,7 @@ pub fn grid_search(
 }
 
 /// Like `grid_search` but returns the top-K cells (sorted best-first by
-/// `(n_rings_hit, n_inliers)`). Each candidate is independent of the others;
+/// Gaussian-weighted residual score). Each candidate is independent of the others;
 /// the caller is expected to L-M refine each and pick the lowest-residual
 /// result to disambiguate between basins with similar grid-score.
 #[allow(clippy::too_many_arguments)]
@@ -330,11 +328,24 @@ pub fn grid_search_top_k(
     }
 
     let tol = options.tolerance_rad;
-    let scored: Vec<(usize, usize, (f64, f64, f64, f64, f64))> = cells
+    // Gaussian-weighted scoring: each peak contributes
+    //     exp(-r² / 2σ²) with σ = 0.4 · tol
+    // capped at residual < tol. Peaks at residual 0 score ≈ 1; peaks at
+    // residual tol score ≈ exp(-3.125) ≈ 0.044. The right basin (where
+    // *all* peaks cluster tightly at the calibrant rings) is preferred
+    // over wrong-anchor basins (where peaks scatter across the tolerance
+    // band). This dramatically improves disambiguation on dense
+    // calibrants like LaB6 where many cells score the same count-based
+    // metric by coincidence.
+    let sigma = (0.4 * tol).max(1.0e-6);
+    let two_sigma2 = 2.0 * sigma * sigma;
+    // (weight_sum, n_rings_hit, n_inliers, params)
+    let scored: Vec<(f64, usize, usize, (f64, f64, f64, f64, f64))> = cells
         .par_iter()
         .map(|&(d, p1, p2, r1, r2)| {
             let tc = TrigConsts::new(r1, r2);
             let mut ring_hits = vec![false; tth_targets.len()];
+            let mut weight_sum = 0.0_f64;
             let mut count = 0usize;
             for &(d1, d2) in &working {
                 let tth = tth_at(d1, d2, d, p1, p2, pixel1, pixel2, &tc);
@@ -349,22 +360,23 @@ pub fn grid_search_top_k(
                 }
                 if best_k != usize::MAX {
                     ring_hits[best_k] = true;
+                    weight_sum += (-(best_r * best_r) / two_sigma2).exp();
                     count += 1;
                 }
             }
             let n_rings = ring_hits.iter().filter(|&&b| b).count();
-            (n_rings, count, (d, p1, p2, r1, r2))
+            (weight_sum, n_rings, count, (d, p1, p2, r1, r2))
         })
         .collect();
 
-    // Sort by (n_rings desc, count desc).
+    // Sort by weight_sum (concentration) desc; n_rings is informational.
     let mut sorted = scored;
-    sorted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     sorted
         .into_iter()
-        .filter(|s| s.1 > 0)
+        .filter(|s| s.2 > 0)
         .take(options.top_k.max(1))
-        .map(|(n_rings, n_inliers, (d, p1, p2, r1, r2))| {
+        .map(|(_weight, n_rings, n_inliers, (d, p1, p2, r1, r2))| {
             let mut poni = Poni::new();
             poni.pixel1 = pixel1;
             poni.pixel2 = pixel2;

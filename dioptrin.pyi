@@ -195,6 +195,8 @@ class Integrator:
         n_ss: Optional[int] = None,
         unit: Optional[str] = None,
         radial_range: Optional[Tuple[float, float]] = None,
+        *,
+        fast_math: bool = True,
     ) -> None:
         """
         Create a new Integrator instance.
@@ -233,6 +235,8 @@ class Integrator:
         n_ss: Optional[int] = None,
         unit: Optional[str] = None,
         radial_range: Optional[Tuple[float, float]] = None,
+        *,
+        fast_math: bool = True,
     ) -> "Integrator":
         """
         Create an Integrator from a PONI dictionary.
@@ -263,6 +267,15 @@ class Integrator:
             ... }
             >>> integrator = dioptrin.Integrator.from_poni_dict(poni_dict)
         """
+        ...
+
+    @property
+    def fast_math(self) -> bool:
+        """Reassociated CSR accumulation; geometry/LUT construction is unchanged."""
+        ...
+
+    def set_fast_math(self, enabled: bool) -> None:
+        """Toggle fast accumulation; rejects changes during an async batch."""
         ...
 
     def integrate1d(
@@ -446,6 +459,11 @@ class Integrator:
 
         Returns a list of BatchResult objects with IntegrationResult containing
         optional error estimates.
+
+        C-contiguous float64 NumPy images are borrowed without copying their
+        pixels for this synchronous call. Keep inputs unchanged until it returns;
+        they must not be mutated concurrently. Native workers finish before the
+        input borrow guards are released. Streaming APIs retain owned frames.
 
         Args:
             images: List of TIFF file paths or 2D float64 NumPy arrays

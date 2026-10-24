@@ -1,6 +1,7 @@
 use std::sync::RwLockReadGuard;
 
 use crate::lut;
+use crate::lut::prepared::{Prepared1d, Prepared2d};
 
 use super::{Integrator, RadialUnit};
 
@@ -107,8 +108,8 @@ impl<K, L> LutCache<K, L> {
     }
 }
 
-pub(super) type Lut1dCache = LutCache<OneDKey, lut::Lut1d>;
-pub(super) type Lut2dCache = LutCache<TwoDKey, lut::Lut2d>;
+pub(super) type Lut1dCache = LutCache<OneDKey, Prepared1d>;
+pub(super) type Lut2dCache = LutCache<TwoDKey, Prepared2d>;
 
 /// A mapped read guard that provides access to the LUT inside the cache.
 pub(super) struct Lut1dGuard<'a> {
@@ -116,7 +117,7 @@ pub(super) struct Lut1dGuard<'a> {
 }
 
 impl<'a> std::ops::Deref for Lut1dGuard<'a> {
-    type Target = lut::Lut1d;
+    type Target = Prepared1d;
     fn deref(&self) -> &Self::Target {
         self._guard
             .lut
@@ -130,7 +131,7 @@ pub(super) struct Lut2dGuard<'a> {
 }
 
 impl<'a> std::ops::Deref for Lut2dGuard<'a> {
-    type Target = lut::Lut2d;
+    type Target = Prepared2d;
     fn deref(&self) -> &Self::Target {
         self._guard
             .lut
@@ -140,6 +141,61 @@ impl<'a> std::ops::Deref for Lut2dGuard<'a> {
 }
 
 impl Integrator {
+    /// Mask/correction changes preserve sampling tables but invalidate both
+    /// arithmetic policies' frame-independent denominators.
+    pub(super) fn invalidate_normalization(&self) {
+        if let Some(lut) = self
+            .cache_1d
+            .write()
+            .expect("1D LUT cache lock poisoned")
+            .lut
+            .as_mut()
+        {
+            lut.invalidate_normalization();
+        }
+        if let Some(lut) = self
+            .cache_2d
+            .write()
+            .expect("2D LUT cache lock poisoned")
+            .lut
+            .as_mut()
+        {
+            lut.invalidate_normalization();
+        }
+    }
+
+    /// Initialize a common batch geometry/LUT before entering parallel frame work.
+    /// Lazy initialization itself uses Rayon; completing it first avoids nested
+    /// frame jobs waiting on geometry or cache write locks held by their callers.
+    pub(crate) fn prepare1d(&self, dim1: usize, dim2: usize, n_points: usize) {
+        self.update_geometry_arrays(dim1, dim2);
+        if let Some(mask) = &self.mask {
+            mask.assert_compatible(dim1, dim2);
+        }
+        let unit = self.radial_unit;
+        let radial_range = self.radial_range_key();
+        let key = match self.method {
+            super::IntegrationMethod::Counting => OneDKey::Counting {
+                n_points,
+                unit,
+                radial_range,
+            },
+            super::IntegrationMethod::PixelSplit => OneDKey::PixelSplit {
+                n_points,
+                unit,
+                radial_range,
+            },
+            super::IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
+                n_points,
+                n_ss,
+                unit,
+                radial_range,
+            },
+            super::IntegrationMethod::Histogram => return,
+        };
+        drop(self.ensure_lut1d(key));
+    }
+
     /// Ensures the 1D LUT is built for the given key, using double-checked locking.
     /// Thread-safe: uses RwLock for interior mutability.
     pub(super) fn ensure_lut1d(&self, key: OneDKey) -> Lut1dGuard<'_> {
@@ -221,14 +277,20 @@ impl Integrator {
             let mut cache = self.cache_1d.write().expect("1D LUT cache lock poisoned");
             if cache.key.as_ref() != Some(&key) {
                 cache.key = Some(key);
-                cache.lut = Some(lut1d);
+                cache.lut = Some(Prepared1d::new(lut1d));
             }
         }
 
         // Return read guard
-        Lut1dGuard {
+        let guard = Lut1dGuard {
             _guard: self.cache_1d.read().expect("1D LUT cache lock poisoned"),
-        }
+        };
+        guard.prepare_normalization(
+            self.mask.as_ref().map(|m| m.data.as_slice()),
+            &self.get_normalization(),
+            self.fast_math,
+        );
+        guard
     }
 
     /// Ensures the 2D LUT is built for the given key, using double-checked locking.
@@ -329,13 +391,19 @@ impl Integrator {
             let mut cache = self.cache_2d.write().expect("2D LUT cache lock poisoned");
             if cache.key.as_ref() != Some(&key) {
                 cache.key = Some(key);
-                cache.lut = Some(lut2d);
+                cache.lut = Some(Prepared2d::new(lut2d));
             }
         }
 
         // Return read guard
-        Lut2dGuard {
+        let guard = Lut2dGuard {
             _guard: self.cache_2d.read().expect("2D LUT cache lock poisoned"),
-        }
+        };
+        guard.prepare_normalization(
+            self.mask.as_ref().map(|m| m.data.as_slice()),
+            &self.get_normalization(),
+            self.fast_math,
+        );
+        guard
     }
 }

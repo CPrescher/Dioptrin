@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-24
+
+### Added
+
+- Configurable `fast_math` for the Python integrator and `with_fast_math` in Rust.
+  Reassociate CSR accumulation into four partial float64 sums, using hardware
+  fused multiply-add where available. Cover normalized and raw 1D/2D sums,
+  Poisson errors and batches. Calibration geometry and CSR weights remain
+  unchanged; histogram and azimuthal-spread calculations
+  keep their existing algorithms. The option can change rounding. Mode changes reuse calibration caches and
+  are rejected while an asynchronous batch holds the Python integrator.
+
+### Changed
+
+- Enable fast CSR accumulation by default for new Python and Rust integrators
+  in 0.6.0. Both Python constructors default to `fast_math=True`;
+  use `fast_math=False`, `set_fast_math(False)` or Rust's
+  `with_fast_math(false)` to select strict accumulation and retain its previous
+  rounding. Existing explicit mode selections and calibration formulas are
+  unchanged.
+
+- Reduce standard CSR integration memory traffic without changing each arithmetic
+  mode's results: evaluate Poisson variance in the integration loop, cache
+  per-bin normalization with mask/correction invalidation, and store internal
+  pixel indices as checked u32 values with a usize fallback. Keep float64 weights,
+  reduction order and the public Rust LUT API. Apply to normalized/raw 1D/2D
+  integrations and Python batches; retain histogram and azimuthal-spread formulas.
+
+- Build supersampled 1D and 2D CSR tables from per-pixel bin counts instead of
+  collecting and sorting every subpixel event. Reuse a scalar geometry transform
+  and per-row counting scratch, and allocate final CSR buffers at their exact
+  size. Preserve the original float64 sampling arithmetic, pixel ordering,
+  normalization, masks and Poisson propagation; regression tests compare CSR
+  arrays bit-for-bit against the previous builders across units and ranges.
+- Borrow contiguous float64 NumPy image buffers in synchronous Python `batch1d`
+  calls instead of copying every image into an owned frame. Input borrow guards
+  remain alive until all native workers finish, including optional Poisson and
+  azimuthal-spread calculations. Asynchronous streaming retains owned buffers.
+  Initialize common geometry/LUTs before parallel array work, and process mixed
+  image shapes sequentially to avoid concurrent changes to the shared geometry.
+- Rank grid-search auto-calibration candidates by Gaussian-weighted ring
+  residuals instead of distinct-ring and inlier counts.
+- Expand the Python grid-search defaults: 18 distance steps, 15 rotation
+  steps over ±45°, 13 PONI steps over ±400 pixels, and 50 refinement
+  candidates. The default calibration method remains `radial`; Rust
+  `GridSearchOptions` defaults are unchanged.
+
+<!-- measured-060 -->
+### Measured Python integration performance
+
+Published 0.5.5 versus the licensed 0.6.0 release build on an Apple M4 Pro
+(48 GiB), with 8 workers, Poisson errors, 2,000 bins and warmed float64 images.
+The fast-math argument is omitted to measure each version's default behavior.
+Supersampling uses n=15 for Pilatus1M and n=5 for Eiger9M.
+
+| Detector / method | 0.5.5 fps | 0.6.0 fps | Speed factor | Setup old → new (s) | Peak RSS old → new (GiB) |
+| --- | --- | --- | --- | --- | --- |
+| Pilatus1M / supersampled | 815.4 | 1746.2 | 2.14× | 2.223 → 0.370 | 14.263 → 0.549 |
+| Pilatus1M / pixel-split | 799.6 | 1693.8 | 2.12× | 0.093 → 0.099 | 1.250 → 0.796 |
+| Eiger9M / supersampled | 114.8 | 284.2 | 2.48× | 2.805 → 0.679 | 18.249 → 2.528 |
+| Eiger9M / pixel-split | 110.8 | 264.3 | 2.38× | 0.548 → 0.561 | 8.050 → 3.598 |
+
+The measurements include all cumulative integration changes since 0.5.5.
+These are integration-only rates; disk decoding and acquisition are excluded.
+Two qualified fresh-process trials per point cover 1/2/4/8 workers and both
+error modes. Setup includes the first Poisson result; peak RSS includes input
+pages and allocator retention. Fast mode can change rounding; explicit
+`fast_math=False` retains strict accumulation. Explicit strict-mode results
+were byte-identical to 0.5.5 on the tested patterns. The default-mode maximum
+relative L2 differences were 7.1e-15 for intensity and 1.3e-15 for Poisson sigma.
+All 96 release-wheel alternating-image checks passed exactly within each mode.
+
+| Detector | Library / method | Poisson fps | Workers ready (s) | First result (s) | Peak RSS (GiB) | Live heap (MiB) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Pilatus1M | Dioptrin 0.6.0 supersampled | 1746.2 | 0.370 | 0.370 | 0.549 | 105.5 |
+| Pilatus1M | Dioptrin 0.6.0 pixel-split | 1693.8 | 0.099 | 0.099 | 0.796 | 108.2 |
+| Pilatus1M | azint generic | 574.0 | 0.768 | 0.768 | 0.592 | 75.2 |
+| Pilatus1M | azint CPU/LTO/fast-math | 891.6 | 0.757 | 0.757 | 0.592 | 75.2 |
+| Pilatus1M | pyFAI full CSR | 635.8 | 1.319 | 0.570 | 1.440 | 1002.1 |
+| Pilatus1M | pyFAI bbox CSR | 641.4 | 0.902 | 0.534 | 0.987 | 525.0 |
+| Eiger9M | Dioptrin 0.6.0 supersampled | 284.2 | 0.679 | 0.679 | 2.528 | 697.3 |
+| Eiger9M | Dioptrin 0.6.0 pixel-split | 264.3 | 0.561 | 0.561 | 3.598 | 722.4 |
+| Eiger9M | azint generic | 102.6 | 1.860 | 1.860 | 3.255 | 431.3 |
+| Eiger9M | azint CPU/LTO/fast-math | 146.3 | 1.924 | 1.924 | 3.253 | 431.3 |
+| Eiger9M | pyFAI full CSR | 89.7 | 7.305 | 1.835 | 10.063 | 8138.6 |
+| Eiger9M | pyFAI bbox CSR | 89.6 | 3.561 | 1.438 | 5.158 | 3265.6 |
+
+The competitor rows use the same data and corrections. azint's generic and
+CPU/LTO/fast-math builds are separate. pyFAI 2025.12.1 uses its full CSR and
+default bbox CSR methods with a separate engine per Python worker; setup includes
+all initialized engines. Algorithms and internal precision differ, so these
+rates are not claims of identical numerical tasks at the kernel level.
+See the [release benchmark](docs/benchmarks/2026-10-24-0.6.0.md) and
+[azint/pyFAI comparison](docs/benchmarks/2026-10-24-0.6.0-comparison.md) for
+settings, all worker counts, memory details and numerical differences.
+
+<!-- end-measured-060 -->
+
 ## [0.5.5] - 2026-09-29
 
 ### Changed
