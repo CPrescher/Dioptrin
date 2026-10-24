@@ -1,0 +1,218 @@
+[
+  {
+    "dataset": "Pilatus1M",
+    "variant": "dioptrin_ps",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Pilatus1M",
+    "variant": "dioptrin_ss",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Pilatus1M",
+    "variant": "azint_base",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Pilatus1M",
+    "variant": "azint_fast",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Pilatus1M",
+    "variant": "pyfai_full",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Pilatus1M",
+    "variant": "pyfai_bbox",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Eiger9M",
+    "variant": "dioptrin_ps",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Eiger9M",
+    "variant": "dioptrin_ss",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Eiger9M",
+    "variant": "azint_base",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Eiger9M",
+    "variant": "azint_fast",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Eiger9M",
+    "variant": "pyfai_full",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  },
+  {
+    "dataset": "Eiger9M",
+    "variant": "pyfai_bbox",
+    "batch_cases": 16,
+    "frame_results": 512,
+    "axis": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "intensity": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    },
+    "sigma": {
+      "byte_identical": true,
+      "max_rel_l2": 0.0
+    }
+  }
+]

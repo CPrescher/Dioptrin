@@ -132,6 +132,29 @@ At eight Python workers with Poisson errors, the new/old throughput factors were
 Axes, intensities and Poisson sigmas were byte-identical between the two pyFAI versions on the tested patterns. For both pyFAI versions, setup starts before pyFAI.load: top-level imports and input warm-up are excluded, but lazy imports reached during construction remain included. Constructor and post-constructor components are recorded separately in the latest-version CSV.
 <!-- end-latest-pyfai-release-060 -->
 
+<!-- file-pipeline-release-060 -->
+### File-backed Python benchmark
+
+The end-to-end TIFF comparison reopens and decodes every image inside its worker before integration. The published 0.6.0 native file-batch API is compared with azint and pyFAI 2026.9.0, using 1/2/4/8 workers and Poisson errors.
+
+| Detector | Library / method | File fps | Array-control fps | File/array rate | Logical TIFF MiB/s |
+| --- | --- | --- | --- | --- | --- |
+| Pilatus1M | Dioptrin 0.6.0 pixel-split | 1307.5 | 1636.5 | 79.9% | 5108 |
+| Pilatus1M | Dioptrin 0.6.0 supersampled | 1343.1 | 1722.2 | 78.0% | 5248 |
+| Pilatus1M | azint generic | 488.0 | 614.1 | 79.5% | 1907 |
+| Pilatus1M | azint CPU/LTO/fast-math | 690.3 | 972.1 | 71.0% | 2697 |
+| Pilatus1M | pyFAI 2026.9.0 full CSR | 495.0 | 644.2 | 76.8% | 1934 |
+| Pilatus1M | pyFAI 2026.9.0 bbox CSR | 504.6 | 630.2 | 80.1% | 1971 |
+| Eiger9M | Dioptrin 0.6.0 pixel-split | 183.8 | 262.5 | 70.0% | 7110 |
+| Eiger9M | Dioptrin 0.6.0 supersampled | 197.3 | 281.5 | 70.1% | 7631 |
+| Eiger9M | azint generic | 99.1 | 124.7 | 79.5% | 3833 |
+| Eiger9M | azint CPU/LTO/fast-math | 127.2 | 174.3 | 73.0% | 4921 |
+| Eiger9M | pyFAI 2026.9.0 full CSR | 77.9 | 89.7 | 86.9% | 3013 |
+| Eiger9M | pyFAI 2026.9.0 bbox CSR | 76.1 | 92.3 | 82.4% | 2944 |
+
+The normal macOS file cache is warm; these are logical file-processing rates, not cold-SSD bandwidth. Each batch has 32 tasks. The matched array control uses the same calibrated pixels, with backend-appropriate dtypes. All 6,144 file/array frame results were byte-identical to their own backend references. Algorithms and internal precision still differ across libraries. Memory and setup, per-worker stage diagnostics and proposed future improvements are in the [file-pipeline benchmark](docs/benchmarks/2026-10-24-file-pipeline.md). The integration engine is unchanged; these measurements describe an additional workflow, not another code-speed upgrade.
+<!-- end-file-pipeline-release-060 -->
+
 ## [0.5.5] - 2026-09-29
 
 ### Changed
