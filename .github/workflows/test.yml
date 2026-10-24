@@ -108,6 +108,11 @@ jobs:
           source .venv/bin/activate
           python -m unittest python_examples.test_fast_math python_examples.test_batch_array_borrowing python_examples.test_image_switching python_examples.test_azimuthal_std
 
+      - name: Test typed TIFF input and persistent file workers
+        run: |
+          source .venv/bin/activate
+          python scripts/check_file_pipeline.py
+
       - name: Run Python examples
         run: |
           source .venv/bin/activate
