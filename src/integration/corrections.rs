@@ -78,6 +78,8 @@ impl Integrator {
                     .collect(),
             );
         }
+        drop(state);
+        self.invalidate_normalization();
     }
 
     /// Get the normalization array (pol * sa) for weighted-average integration.

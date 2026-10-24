@@ -103,6 +103,11 @@ jobs:
       - name: Generate test output data
         run: cargo test --all-features
 
+      - name: Test integration and array batch regressions
+        run: |
+          source .venv/bin/activate
+          python -m unittest python_examples.test_fast_math python_examples.test_batch_array_borrowing python_examples.test_image_switching python_examples.test_azimuthal_std
+
       - name: Run Python examples
         run: |
           source .venv/bin/activate

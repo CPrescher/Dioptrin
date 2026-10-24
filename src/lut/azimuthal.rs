@@ -31,17 +31,41 @@ pub fn integrate1d_with_azimuthal_std(
     normalization: &[f64],
     variance: Option<&[f64]>,
 ) -> AzimuthalIntegrationResult {
-    let rows: Vec<(f64, f64, f64)> = (0..lut.n_points())
+    integrate_with_columns(
+        signal,
+        &lut.row_ptr,
+        |k| lut.col_idx[k],
+        lut.values.as_deref(),
+        lut.bins(),
+        mask,
+        normalization,
+        variance,
+    )
+}
+
+// Pass the existing CSR components directly so both index widths share one kernel.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn integrate_with_columns(
+    signal: &[f64],
+    row_ptr: &[usize],
+    column: impl Fn(usize) -> usize + Sync,
+    values: Option<&[f64]>,
+    bins: Vec<f64>,
+    mask: Option<&[u8]>,
+    normalization: &[f64],
+    variance: Option<&[f64]>,
+) -> AzimuthalIntegrationResult {
+    let rows: Vec<(f64, f64, f64)> = (0..row_ptr.len() - 1)
         .into_par_iter()
         .map(|i| {
             let contributions = || {
-                (lut.row_ptr[i]..lut.row_ptr[i + 1]).filter_map(|k| {
-                    let j = lut.col_idx[k];
+                (row_ptr[i]..row_ptr[i + 1]).filter_map(|k| {
+                    let j = column(k);
                     if mask.is_some_and(|m| m[j] != 0) {
                         return None;
                     }
                     let n = normalization[j];
-                    let c = lut.values.as_ref().map_or(1.0, |v| v[k]);
+                    let c = values.map_or(1.0, |v| v[k]);
                     let s = signal[j];
                     let x = s / n;
                     let w = c * n;
@@ -86,7 +110,7 @@ pub fn integrate1d_with_azimuthal_std(
         })
         .collect();
     AzimuthalIntegrationResult {
-        radial: lut.bins(),
+        radial: bins,
         intensity: rows.iter().map(|r| r.0).collect(),
         errors: variance.map(|_| rows.iter().map(|r| r.1).collect()),
         azimuthal_std: rows.iter().map(|r| r.2).collect(),

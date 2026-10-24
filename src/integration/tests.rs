@@ -1103,3 +1103,182 @@ fn azimuthal_std_preserves_patterns_errors_and_units() {
         }
     }
 }
+#[test]
+fn fast_math_toggle_reuses_calibration_and_restores_exact_strict_results() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 0.001;
+    poni.pixel2 = 0.001;
+    poni.distance = 0.2;
+    let geometry = Geometry::new(8, 9, poni);
+    let frame = Frame {
+        name: "fast-math".into(),
+        dim1: 8,
+        dim2: 9,
+        data: (0..72)
+            .map(|i| 0.1 + (i as f64 * 0.31).sin().abs() * 100.0)
+            .collect(),
+    };
+    let mut ai = Integrator::new(geometry).with_method(IntegrationMethod::Supersampled { n_ss: 3 });
+    assert!(ai.fast_math());
+    ai.set_fast_math(false);
+    let reference = ai.integrate1d_with_errors(&frame, 13);
+    let snapshot = {
+        let cache = ai.cache_1d.read().unwrap();
+        let lut = cache.lut.as_ref().unwrap();
+        (
+            lut.row_ptr.clone(),
+            lut.col_idx.clone(),
+            lut.values
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|x| x.to_bits())
+                .collect::<Vec<_>>(),
+            lut.col_idx.as_ptr(),
+        )
+    };
+    ai.set_fast_math(true);
+    assert!(ai.fast_math());
+    let fast = ai.integrate1d_with_errors(&frame, 13);
+    assert_eq!(fast.0, reference.0);
+    for (a, b) in fast
+        .1
+        .iter()
+        .chain(&fast.2)
+        .zip(reference.1.iter().chain(&reference.2))
+    {
+        assert!((a - b).abs() < 1e-11 * b.abs().max(1.0));
+    }
+    {
+        let cache = ai.cache_1d.read().unwrap();
+        let lut = cache.lut.as_ref().unwrap();
+        assert_eq!(lut.row_ptr, snapshot.0);
+        assert_eq!(lut.col_idx, snapshot.1);
+        assert_eq!(
+            lut.values
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|x| x.to_bits())
+                .collect::<Vec<_>>(),
+            snapshot.2
+        );
+        assert_eq!(lut.col_idx.as_ptr(), snapshot.3);
+    }
+    ai.set_fast_math(false);
+    let restored = ai.integrate1d_with_errors(&frame, 13);
+    for (a, b) in restored
+        .0
+        .iter()
+        .chain(&restored.1)
+        .chain(&restored.2)
+        .zip(reference.0.iter().chain(&reference.1).chain(&reference.2))
+    {
+        assert_eq!(a.to_bits(), b.to_bits());
+    }
+}
+
+#[test]
+fn prepared_denominators_follow_mask_correction_range_and_unit_changes() {
+    let mut poni = Poni::new();
+    poni.pixel1 = 0.001;
+    poni.pixel2 = 0.001;
+    poni.distance = 0.2;
+    poni.wavelength = 1e-10;
+    let g = Geometry::new(7, 9, poni);
+    let data: Vec<_> = (0..63)
+        .map(|j| 0.1 + (j as f64 * 0.7).sin() * 100.0)
+        .collect();
+    let mask: Vec<_> = (0..63).map(|j| u8::from(j % 7 == 0)).collect();
+    // PixelSplit's existing atomic scatter can change entry order between
+    // independent parallel builds. Fix construction order for this cache test;
+    // prepared-kernel tests compare a single table at arbitrary row lengths.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap()
+        .install(|| {
+            for method in [
+                IntegrationMethod::Counting,
+                IntegrationMethod::PixelSplit,
+                IntegrationMethod::Supersampled { n_ss: 3 },
+            ] {
+                for fast in [false, true] {
+                    let mut ai = Integrator::new(g.clone())
+                        .with_method(method)
+                        .with_fast_math(fast);
+                    ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+                    ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+                    for step in 0..6 {
+                        match step {
+                            0 => ai
+                                .set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap()),
+                            1 => ai.set_polarization_factor(Some(0.965)),
+                            2 => ai.clear_mask(),
+                            3 => ai.set_radial_range(Some((0.0, 0.1))),
+                            4 => ai.set_radial_unit(RadialUnit::TthDeg),
+                            _ => ai.set_polarization_factor(None),
+                        }
+                        let mut fresh = Integrator::new(g.clone())
+                            .with_method(method)
+                            .with_fast_math(fast)
+                            .with_radial_unit(ai.radial_unit());
+                        fresh.set_radial_range(ai.radial_range());
+                        fresh.set_polarization_factor(ai.polarization_factor());
+                        if ai.mask().is_some() {
+                            fresh
+                                .set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap());
+                        }
+                        let a = ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+                        let b = fresh.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+                        for (a, b) in
+                            a.0.iter()
+                                .chain(&a.1)
+                                .chain(&a.2)
+                                .zip(b.0.iter().chain(&b.1).chain(&b.2))
+                        {
+                            assert_eq!(
+                                a.to_bits(),
+                                b.to_bits(),
+                                "method={method:?}, fast={fast}, step={step}, a={a}, b={b}"
+                            );
+                        }
+                        let a = ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+                        let b = fresh.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+                        for (a, b) in a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1)) {
+                            assert_eq!(
+                                a.to_bits(),
+                                b.to_bits(),
+                                "method={method:?}, fast={fast}, step={step}, a={a}, b={b}"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+}
+
+#[test]
+fn concurrent_first_use_prepares_one_shared_denominator_without_blocking_the_pool() {
+    use rayon::prelude::*;
+    let mut poni = Poni::new();
+    poni.pixel1 = 0.001;
+    poni.pixel2 = 0.001;
+    poni.distance = 0.2;
+    let ai = Integrator::new(Geometry::new(7, 9, poni))
+        .with_method(IntegrationMethod::Supersampled { n_ss: 3 });
+    let data = vec![3.0; 63];
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let out: Vec<_> = pool.install(|| {
+        (0..8)
+            .into_par_iter()
+            .map(|_| ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11))
+            .collect()
+    });
+    for x in &out[1..] {
+        assert_eq!(x, &out[0]);
+    }
+}

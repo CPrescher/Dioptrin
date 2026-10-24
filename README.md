@@ -5,6 +5,15 @@ It supports counting, pixel-splitting, and supersampled integration methods, and
 of two-theta (tth) and azimuthal coordinates. The `Integrator` handles geometry updates,
 polarization/solid-angle corrections, and optional masking for each frame.
 
+## Supersampling setup
+
+Supersampling counts a pixel's repeated contributions to each output bin while
+generating its subpixels, then assembles the unique contributions into an exactly
+sized CSR table. It avoids a detector-wide list of all `pixels × n_ss²` events
+and the associated global sort. The same float64 geometry arithmetic, bin-edge
+rules, sorted pixel order and normalized weights are preserved in 1D and 2D.
+Geometry and the completed table remain shared by native batch workers.
+
 ## 1D integration example
 
 ```rust
@@ -308,9 +317,51 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
+### Fast accumulation (default)
+
+```python
+integrator = dioptrin.Integrator(
+    "calibration.poni", method="supersampled", n_ss=5  # fast_math=True by default
+)
+result = integrator.integrate1d(data, 2000, errors=True)
+integrator.set_fast_math(False)  # select strict accumulation
+```
+
+`fast_math` is enabled by default starting in 0.6.0. Set `fast_math=False`
+when constructing an integrator to retain strict accumulation. Fast accumulation
+uses four partial float64 sums and fused multiply-add where hardware support
+is available. This changes summation order
+and rounding, so results need not be bit-identical. Geometry, subpixel sampling,
+CSR weights, correction formulas and Poisson propagation are unchanged. No
+finite-only assumptions or global compiler fast-math flags are enabled.
+
+The option applies to CSR 1D/2D integration, batches and intermediate sums used
+by `MultiIntegrator`. Histogram and `azimuthal_std` retain their existing
+algorithms. `fast_math` is readable as a property and can be changed with
+`set_fast_math`; changing it is rejected while an asynchronous batch holds the
+integrator. Calibration caches are reused when switching modes.
+
 ### Batch Processing
 
 For processing multiple files, use the batch methods which efficiently share geometry and LUT cache:
+
+For synchronous `batch1d` calls with C-contiguous float64 NumPy arrays, image
+pixels are borrowed directly until all native workers finish. This avoids an
+additional full copy of the input batch. Inputs must remain unchanged during the
+call and must not be mutated concurrently. Array batches use the global Rayon
+pool; configure it before the first integration with `set_rayon_threads` or
+`RAYON_NUM_THREADS`. File and asynchronous streaming paths retain ownership of
+their frame buffers. Standard CSR integrations compute Poisson variance directly
+from each pixel, without a full variance-image temporary. Output arrays are
+allocated for each result. Histogram and azimuthal-spread paths keep their
+existing temporary-buffer behavior.
+
+Internal CSR execution tables use checked 32-bit pixel indices when possible,
+with a full-width fallback for larger indices. Float64 weights and public Rust
+LUT types are unchanged. Per-bin normalization is cached separately for strict
+and fast accumulation, preserving each mode's reduction order. Mask and
+polarization changes invalidate these denominators; geometry and grid changes
+rebuild the execution table.
 
 ```python
 files = ["image1.tif", "image2.tif", "image3.tif"]

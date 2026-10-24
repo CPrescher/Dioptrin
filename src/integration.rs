@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+mod arithmetic;
 mod cache;
 mod corrections;
 mod methods;
@@ -152,6 +153,7 @@ pub struct Integrator {
     polarization_factor: Option<f64>,
     radial_unit: RadialUnit,
     radial_range: Option<(f64, f64)>,
+    fast_math: bool,
 }
 
 impl Integrator {
@@ -166,7 +168,26 @@ impl Integrator {
             polarization_factor: None,
             radial_unit: RadialUnit::default(),
             radial_range: None,
+            fast_math: true,
         }
+    }
+
+    // builder pattern for method
+    /// Select reassociated CSR accumulation (and hardware FMA where available).
+    /// Geometry, LUT weights, histogram and azimuthal-spread algorithms are unchanged.
+    /// Enabled by default. Use false for strict accumulation; rounding can differ.
+    pub fn with_fast_math(mut self, enabled: bool) -> Self {
+        self.fast_math = enabled;
+        self
+    }
+
+    pub fn fast_math(&self) -> bool {
+        self.fast_math
+    }
+
+    /// Changes accumulation without rebuilding the calibration/LUT.
+    pub fn set_fast_math(&mut self, enabled: bool) {
+        self.fast_math = enabled;
     }
 
     // builder pattern for method
@@ -216,12 +237,14 @@ impl Integrator {
     // builder pattern for mask
     pub fn with_mask(mut self, mask: Mask) -> Self {
         self.mask = Some(mask);
+        self.invalidate_normalization();
         self
     }
 
     // clearing current mask
     pub fn clear_mask(&mut self) {
         self.mask = None;
+        self.invalidate_normalization();
     }
 
     // getter for mask
@@ -232,6 +255,7 @@ impl Integrator {
     // setter for mask
     pub fn set_mask(&mut self, mask: Mask) {
         self.mask = Some(mask);
+        self.invalidate_normalization();
     }
 
     // builder pattern for radial range

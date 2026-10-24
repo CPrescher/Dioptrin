@@ -7,15 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-24
+
+### Added
+
+- Configurable `fast_math` for the Python integrator and `with_fast_math` in Rust.
+  Reassociate CSR accumulation into four partial float64 sums, using hardware
+  fused multiply-add where available. Cover normalized and raw 1D/2D sums,
+  Poisson errors and batches. Calibration geometry and CSR weights remain
+  unchanged; histogram and azimuthal-spread calculations
+  keep their existing algorithms. The option can change rounding. Mode changes reuse calibration caches and
+  are rejected while an asynchronous batch holds the Python integrator.
+
 ### Changed
 
+- Enable fast CSR accumulation by default for new Python and Rust integrators
+  in 0.6.0. Both Python constructors default to `fast_math=True`;
+  use `fast_math=False`, `set_fast_math(False)` or Rust's
+  `with_fast_math(false)` to select strict accumulation and retain its previous
+  rounding. Existing explicit mode selections and calibration formulas are
+  unchanged.
+
+- Reduce standard CSR integration memory traffic without changing each arithmetic
+  mode's results: evaluate Poisson variance in the integration loop, cache
+  per-bin normalization with mask/correction invalidation, and store internal
+  pixel indices as checked u32 values with a usize fallback. Keep float64 weights,
+  reduction order and the public Rust LUT API. Apply to normalized/raw 1D/2D
+  integrations and Python batches; retain histogram and azimuthal-spread formulas.
+
+- Build supersampled 1D and 2D CSR tables from per-pixel bin counts instead of
+  collecting and sorting every subpixel event. Reuse a scalar geometry transform
+  and per-row counting scratch, and allocate final CSR buffers at their exact
+  size. Preserve the original float64 sampling arithmetic, pixel ordering,
+  normalization, masks and Poisson propagation; regression tests compare CSR
+  arrays bit-for-bit against the previous builders across units and ranges.
+- Borrow contiguous float64 NumPy image buffers in synchronous Python `batch1d`
+  calls instead of copying every image into an owned frame. Input borrow guards
+  remain alive until all native workers finish, including optional Poisson and
+  azimuthal-spread calculations. Asynchronous streaming retains owned buffers.
+  Initialize common geometry/LUTs before parallel array work, and process mixed
+  image shapes sequentially to avoid concurrent changes to the shared geometry.
 - Rank grid-search auto-calibration candidates by Gaussian-weighted ring
   residuals instead of distinct-ring and inlier counts.
 - Expand the Python grid-search defaults: 18 distance steps, 15 rotation
   steps over ±45°, 13 PONI steps over ±400 pixels, and 50 refinement
   candidates. The default calibration method remains `radial`; Rust
   `GridSearchOptions` defaults are unchanged.
-
 
 ## [0.5.5] - 2026-09-29
 

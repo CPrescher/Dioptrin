@@ -12,7 +12,52 @@ pub struct Geometry {
     pub poni: Poni,
 }
 
+/// Scalar sampling transform with the same operation order as the vector geometry
+/// routines. Supersampling reuses this transform instead of allocating coordinate
+/// arrays for every detector row.
+pub(crate) struct SubpixelTransform {
+    pixel1: f64,
+    pixel2: f64,
+    poni1: f64,
+    poni2: f64,
+    distance: f64,
+    trig: math::TrigonometricConstants,
+}
+
+impl SubpixelTransform {
+    fn position(&self, d1: f64, d2: f64) -> (f64, f64, f64) {
+        let p1 = d1 * self.pixel1 - self.poni1;
+        let p2 = d2 * self.pixel2 - self.poni2;
+        (
+            math::f_x1(&p1, &p2, &self.distance, &self.trig),
+            math::f_x2(&p1, &p2, &self.distance, &self.trig),
+            math::f_x3(&p1, &p2, &self.distance, &self.trig),
+        )
+    }
+
+    pub(crate) fn tth(&self, d1: f64, d2: f64) -> f64 {
+        let (x, y, z) = self.position(d1, d2);
+        math::f_tth(&x, &y, &z)
+    }
+
+    pub(crate) fn tth_and_azimuth(&self, d1: f64, d2: f64) -> (f64, f64) {
+        let (x, y, z) = self.position(d1, d2);
+        (math::f_tth(&x, &y, &z), math::f_azimuth(&x, &y))
+    }
+}
+
 impl Geometry {
+    pub(crate) fn subpixel_transform(&self) -> SubpixelTransform {
+        SubpixelTransform {
+            pixel1: self.poni.pixel1,
+            pixel2: self.poni.pixel2,
+            poni1: self.poni.poni1,
+            poni2: self.poni.poni2,
+            distance: self.poni.distance,
+            trig: math::TrigonometricConstants::new(&self.poni),
+        }
+    }
+
     pub fn new(dim1: usize, dim2: usize, poni: Poni) -> Geometry {
         Geometry { dim1, dim2, poni }
     }

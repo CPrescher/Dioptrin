@@ -4,10 +4,12 @@
 ///   * `row` - column index for the sub grid
 ///   * `dim2` - number of points in horizontal direction (-)
 ///   * `n_ss` - supersampling factor -> number of subpixels in each direction (e.g. 2 - will result in 2x2 pixel per original point)
+#[cfg(test)]
 pub(crate) fn subgrid(row: usize, dim2: usize, n_ss: usize) -> (Vec<f64>, Vec<f64>, Vec<usize>) {
-    let mut d1 = Vec::with_capacity(dim2 * n_ss);
-    let mut d2 = Vec::with_capacity(dim2 * n_ss);
-    let mut actual_index = Vec::with_capacity(dim2 * n_ss);
+    let size = dim2 * n_ss * n_ss;
+    let mut d1 = Vec::with_capacity(size);
+    let mut d2 = Vec::with_capacity(size);
+    let mut actual_index = Vec::with_capacity(size);
 
     let dim_sub = dim2 * n_ss;
 

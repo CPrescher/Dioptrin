@@ -43,3 +43,13 @@ finish after expiry.
 Install Dioptrin in the same Python environment as Dioptas, activate the license,
 and restart Dioptas. The **Use Dioptrin** checkbox becomes available in its
 integration options. Dioptas continues to work with pyFAI without Dioptrin.
+
+### Integration arithmetic
+
+Fast CSR accumulation is enabled by default starting in 0.6.0
+(`fast_math=True`). It uses four partial float64 sums and hardware fused
+multiply-add where available. Set `fast_math=False` in `Integrator` or
+`Integrator.from_poni_dict` to select strict accumulation. The two modes may
+differ in floating-point rounding. Geometry, float64 pixel weights and correction
+formulas are unchanged. Histogram and azimuthal-spread algorithms keep their
+existing behavior.

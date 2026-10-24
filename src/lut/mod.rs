@@ -20,13 +20,16 @@
 //! - `supersampled.rs`: supersampled CSR LUT builders (`build_lut1d_ss_csr`, `build_lut2d_ss_csr`).
 //! - `integrate.rs`: shared integrators (`integrate1d`, `integrate2d`) that work with any CSR LUT.
 
-mod azimuthal;
+pub(crate) mod azimuthal;
 pub use azimuthal::{AzimuthalIntegrationResult, integrate1d_with_azimuthal_std};
 
 pub mod common;
 mod counting_csr;
+#[cfg(test)]
+pub(crate) mod fast;
 mod integrate;
 mod pixel_split;
+pub(crate) mod prepared;
 mod supersampled;
 
 // Re-export RadialUnit from integration module for use in LUT builders

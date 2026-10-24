@@ -75,7 +75,7 @@ impl PyIntegrator {
     /// )
     /// ```
     #[new]
-    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None))]
+    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true))]
     fn new(
         poni_path: &str,
         method: Option<&str>,
@@ -83,6 +83,7 @@ impl PyIntegrator {
         n_ss: Option<usize>,
         unit: Option<&str>,
         radial_range: Option<(f64, f64)>,
+        fast_math: bool,
     ) -> PyResult<Self> {
         #[cfg(feature = "licensed")]
         let entitlement =
@@ -92,7 +93,8 @@ impl PyIntegrator {
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry)
             .with_method(parse_method(method, n_ss)?)
-            .with_radial_unit(parse_unit(unit)?);
+            .with_radial_unit(parse_unit(unit)?)
+            .with_fast_math(fast_math);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -139,7 +141,8 @@ impl PyIntegrator {
     /// integrator = dioptrin.Integrator.from_poni_dict(poni_dict)
     /// ```
     #[classmethod]
-    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None))]
+    #[allow(clippy::too_many_arguments)] // Python keyword options plus the class receiver.
+    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true))]
     fn from_poni_dict(
         _cls: &Bound<'_, PyType>,
         poni_dict: &Bound<'_, PyDict>,
@@ -148,6 +151,7 @@ impl PyIntegrator {
         n_ss: Option<usize>,
         unit: Option<&str>,
         radial_range: Option<(f64, f64)>,
+        fast_math: bool,
     ) -> PyResult<Self> {
         #[cfg(feature = "licensed")]
         let entitlement =
@@ -156,7 +160,8 @@ impl PyIntegrator {
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry)
             .with_method(parse_method(method, n_ss)?)
-            .with_radial_unit(parse_unit(unit)?);
+            .with_radial_unit(parse_unit(unit)?)
+            .with_fast_math(fast_math);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -419,6 +424,22 @@ impl PyIntegrator {
 
     /// Set the integration method.
     ///
+    /// Whether reassociated CSR accumulation is enabled (default: true).
+    #[getter]
+    fn fast_math(&self) -> bool {
+        self.integrator.fast_math()
+    }
+
+    /// Opt into reassociated CSR sums and hardware FMA where available.
+    /// LUTs/geometry are unchanged. Histogram and azimuthal_std keep their
+    /// existing algorithms. Cannot be changed while an async batch is in use.
+    fn set_fast_math(&mut self, enabled: bool) -> PyResult<()> {
+        let integrator = Arc::get_mut(&mut self.integrator)
+            .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
+        integrator.set_fast_math(enabled);
+        Ok(())
+    }
+
     /// Changes the integration method used for subsequent integrations.
     /// Available methods: "pixel_split", "counting", "histogram", or "supersampled".
     ///
@@ -609,6 +630,9 @@ impl PyIntegrator {
     /// # Returns
     ///
     /// List of BatchResult objects, each containing filename/index and IntegrationResult.
+    /// NumPy inputs are borrowed for this synchronous call without copying image
+    /// pixels. Their read-only borrow guards and the GIL remain held until all
+    /// native workers finish; input arrays must not be mutated concurrently.
     ///
     /// # Example
     ///
@@ -728,11 +752,10 @@ impl PyIntegrator {
                 }
             }
             BatchImageInput::Arrays(arrays) => {
-                // Array-based processing: convert arrays to frames then integrate
-                let num_arrays = arrays.len();
-
-                // Convert all arrays to owned Frame objects
-                let frames: Result<Vec<Frame>, PyErr> = arrays
+                // Keep every PyReadonlyArray guard alive until Rayon finishes.
+                // Only plain Rust slices/dimensions cross into native workers;
+                // no Python objects or borrowed data escape this synchronous call.
+                let frames: Result<Vec<_>, PyErr> = arrays
                     .iter()
                     .enumerate()
                     .map(|(i, array)| {
@@ -743,12 +766,7 @@ impl PyIntegrator {
                                 i, err
                             ))
                         })?;
-                        Ok(Frame {
-                            name: format!("array[{}]", i),
-                            data: slice.to_vec(),
-                            dim1,
-                            dim2,
-                        })
+                        Ok((slice, dim1, dim2))
                     })
                     .collect();
 
@@ -756,31 +774,42 @@ impl PyIntegrator {
 
                 // Process frames in parallel using rayon
                 use rayon::prelude::*;
-                let results: Vec<PyBatchResult> = (0..num_arrays)
-                    .into_par_iter()
-                    .map(|i| {
-                        let frame = &frames[i];
-                        let integration_result = if azimuthal_std {
-                            PyIntegrationResult::from_azimuthal(
-                                self.integrator
-                                    .integrate1d_with_azimuthal_std(frame, n_points, errors),
-                            )
-                        } else if errors {
-                            let (radial, intensity, errs) =
-                                self.integrator.integrate1d_with_errors(frame, n_points);
-                            PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
-                        } else {
-                            let (radial, intensity) = self.integrator.integrate1d(frame, n_points);
-                            PyIntegrationResult::from_1d(radial, intensity)
-                        };
+                let integrate = |(i, &(data, dim1, dim2))| {
+                    let integration_result = if azimuthal_std {
+                        PyIntegrationResult::from_azimuthal(
+                            self.integrator.integrate1d_with_azimuthal_std_from_slice(
+                                data, dim1, dim2, n_points, errors,
+                            ),
+                        )
+                    } else if errors {
+                        let (radial, intensity, errs) = self
+                            .integrator
+                            .integrate1d_with_errors_from_slice(data, dim1, dim2, n_points);
+                        PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+                    } else {
+                        let (radial, intensity) = self
+                            .integrator
+                            .integrate1d_from_slice(data, dim1, dim2, n_points);
+                        PyIntegrationResult::from_1d(radial, intensity)
+                    };
 
-                        PyBatchResult {
-                            filename: format!("array[{}]", i),
-                            result: Some(integration_result),
-                            error: None,
-                        }
-                    })
-                    .collect();
+                    PyBatchResult {
+                        filename: format!("array[{}]", i),
+                        result: Some(integration_result),
+                        error: None,
+                    }
+                };
+                let results = if let Some(&(_, dim1, dim2)) = frames.first() {
+                    if frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2)) {
+                        self.integrator.prepare1d(dim1, dim2, n_points);
+                        frames.par_iter().enumerate().map(integrate).collect()
+                    } else {
+                        // One shared geometry cannot change dimensions in parallel.
+                        frames.iter().enumerate().map(integrate).collect()
+                    }
+                } else {
+                    Vec::new()
+                };
 
                 Ok(results)
             }
