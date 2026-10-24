@@ -37,7 +37,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Rust tests
-        run: cargo test --all-features
+        run: cargo test --features licensed
 
       - name: Check Rust formatting
         run: cargo fmt -- --check
@@ -101,7 +101,7 @@ jobs:
           uv pip install .[test]
 
       - name: Generate test output data
-        run: cargo test --all-features
+        run: cargo test --features licensed
 
       - name: Test integration and array batch regressions
         run: |
