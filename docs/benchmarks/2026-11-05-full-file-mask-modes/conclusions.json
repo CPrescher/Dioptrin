@@ -1,0 +1,140 @@
+{
+  "frames": 625,
+  "file_bytes": 5687072680,
+  "mask": "same fixed detector mask",
+  "primary": [
+    {
+      "label": "h5py stream \u2192 Dioptrin",
+      "workflow": "dioptrin_h5py_stream",
+      "intensity_fps": 23.422886570884693,
+      "poisson_fps": 23.654166099502483,
+      "intensity_seconds_per_file": 26.683303874975536,
+      "poisson_seconds_per_file": 26.42240683399723
+    },
+    {
+      "label": "Parallel decode \u2192 Dioptrin",
+      "workflow": "dioptrin_parallel_decode",
+      "intensity_fps": 182.04767665306602,
+      "poisson_fps": 156.46363482191128,
+      "intensity_seconds_per_file": 3.433166583010461,
+      "poisson_seconds_per_file": 3.9945384159800597
+    },
+    {
+      "label": "Reusable-buffer decode \u2192 Dioptrin",
+      "workflow": "dioptrin_reusable_decode",
+      "intensity_fps": 193.08468736818256,
+      "poisson_fps": 172.34641948797392,
+      "intensity_seconds_per_file": 3.236921625008108,
+      "poisson_seconds_per_file": 3.6264170840149745
+    },
+    {
+      "label": "Jon: fused decode + CSC",
+      "workflow": "bslz4_mmap_stream",
+      "intensity_fps": 222.30804300733453,
+      "poisson_fps": 161.14096220858607,
+      "intensity_seconds_per_file": 2.8114142499980517,
+      "poisson_seconds_per_file": 3.878591708984459
+    }
+  ],
+  "read_decode_float64_only_fps": 358.32908859316814,
+  "cache": "Repeated warm OS-cache passes, with all frame reads and decompression inside timings; cold physical-storage performance not measured.",
+  "weights": "Dioptrin float64; unmodified Jon float32 weights, float64 accumulation/output; identical float64 normalization denominators.",
+  "checks": {
+    "w8-intensity": {
+      "bslz4_array": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        }
+      },
+      "bslz4_compressed": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        }
+      },
+      "dioptrin_parallel_decode": {
+        "relative_l2": 0.0,
+        "frames_checked": 625
+      },
+      "bslz4_mmap_stream": {
+        "relative_l2": 1.2906015139581295e-08,
+        "frames_checked": 625
+      }
+    },
+    "w8-poisson": {
+      "bslz4_array": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        },
+        "poisson_sigma": {
+          "relative_l2": 7.097522458366164e-09,
+          "max_absolute": 2.04793291658234e-07
+        }
+      },
+      "bslz4_compressed": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        },
+        "poisson_sigma": {
+          "relative_l2": 7.097522458366164e-09,
+          "max_absolute": 2.04793291658234e-07
+        }
+      },
+      "dioptrin_parallel_decode": {
+        "relative_l2": 0.0,
+        "frames_checked": 625
+      },
+      "bslz4_mmap_stream": {
+        "relative_l2": 1.2906015102537456e-08,
+        "frames_checked": 625
+      }
+    },
+    "w8-paired-intensity": {
+      "bslz4_array": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        }
+      },
+      "bslz4_compressed": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        }
+      },
+      "bslz4_mmap_stream": {
+        "relative_l2": 1.2906015139581295e-08,
+        "frames_checked": 625
+      }
+    },
+    "w8-paired-poisson": {
+      "bslz4_array": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        },
+        "poisson_sigma": {
+          "relative_l2": 7.097522458366164e-09,
+          "max_absolute": 2.04793291658234e-07
+        }
+      },
+      "bslz4_compressed": {
+        "intensity": {
+          "relative_l2": 4.63195895525206e-09,
+          "max_absolute": 6.283664333750494e-05
+        },
+        "poisson_sigma": {
+          "relative_l2": 7.097522458366164e-09,
+          "max_absolute": 2.04793291658234e-07
+        }
+      },
+      "bslz4_mmap_stream": {
+        "relative_l2": 1.2906015102537456e-08,
+        "frames_checked": 625
+      }
+    }
+  }
+}

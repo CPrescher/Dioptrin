@@ -1,0 +1,237 @@
+{
+  "protocol": {
+    "implementation_commit": "10435d6",
+    "thread_budget": "8 decoding/integration workers, OPENBLAS_NUM_THREADS=1, OMP_NUM_THREADS=1",
+    "settings": "2000 uniform two-theta degree bins, full pixel splitting, solid angle, polarization0.965, same detector mask and geometry weights; all625frames in file order.",
+    "sampling": "Three alternating whole-file passes for h5py/parallel/reusable/fused comparison. Five additional alternating direct paired passes of reusable Dioptrin and fused Jon supply primary optimized numbers. All results and host CPU load retained.",
+    "full_validation": "Parallel-decoded Dioptrin and Jon outputs checked against all625h5py-derived Dioptrin outputs. Direct paired625-frame Jon/reusable-Dioptrin results checked independently in each error mode. Sampled uncompressed versus compressed decoding also checked.",
+    "setup_excluded": "HDF5 chunk-index discovery, calibration/LUT/plan initialization, mmap opening and initial buffer allocation. h5py stream opens its dataset inside each timed pass. Fixed calibration/mask reused for every frame.",
+    "cache": "No cache purge. Every workflow is warmed with a full625-frame pass before timing. Includes file-backed accesses, decoding, orientation conversion where needed, integration, normalization and output allocation/materialization. Not cold-device I/O or first-file initialization.",
+    "precision": "Jon coefficient storage is float32; Dioptrin is float64. Poisson Jon adapter stacks signal and squared-weight rows; Dioptrin accumulates variance in its integration traversal. Both use identical exported float64 normalization.",
+    "scope": "Dioptas remains unchanged. These are measured input-pipeline prototypes, not a new native HDF5 API shipped by Dioptrin."
+  },
+  "source_hashes": {
+    "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-full-file-mask-modes/run.py": "87fc170ba9d6bb4d279933f2164cf0fae0a35e42e46d98d6b4825fb76fdd8f9d",
+    "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-full-file-mask-modes/run_paired.py": "166881cdde727bac30627efdcd926f44ee0936598628d2fa2486b77eff772baf",
+    "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-full-file-mask-modes/bench_full_file.py": "2ef395e29d08098a78815918b74432f826c9d4a50dcfcbba42511b627bec3ead",
+    "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-full-file-mask-modes/summarize.py": "e8e76a0b3fe4f576ebd97e30b9eebd8f60e5a4506ab5032698d717b2085e4feb"
+  },
+  "builds": {
+    "w8-intensity": {
+      "versions": {
+        "dioptrin": "0.7.0",
+        "bslz4_to_sparse": "0.0.22a3",
+        "numpy": "2.4.2",
+        "scipy": "1.16.3",
+        "h5py": "3.15.1",
+        "hdf5plugin": "6.0.0"
+      },
+      "bslz4_build": {
+        "built_utc": "2026-11-05T12:08:28Z",
+        "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+        "git": "v0.0.22.a3-12-g94264db",
+        "modified": [],
+        "platform": "darwin_arm64",
+        "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+        "version": "0.0.22a3"
+      },
+      "binaries": {
+        "dioptrin": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+            "sha256": "448cd261eef61dbebf249bf3abc0921be42a464564fbdce1ac80ad8cb3d90aa0"
+          }
+        ],
+        "bslz4": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+            "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+          }
+        ]
+      },
+      "file_reading_protocol": {
+        "mask_mode": "fixed",
+        "file_frames": 625,
+        "h5py": "Open dataset and read/decode each frame, flip/convert to float64 inside timed producer; integrate via streaming batch.",
+        "parallel_decode": "Read chunks through read-only mmap, decode in eight threads, allocate flipped float64 frames, integrate bounded groups32.",
+        "reusable_decode": "Same chunk decoder, per-thread uint32 buffers and eight reusable float64 frames; all read/decode/convert/integration timed.",
+        "jon": "Read chunks from the same mapping, fused bitshuffle-LZ4 decode plus CSC integration, float32 weights and float64 output/normalization.",
+        "setup_excluded": "HDF5 chunk-index discovery, calibration/LUT/plan construction, opening the raw mmap, sampled validation and buffer allocation before the timed passes.",
+        "cache": "Warm/repeated whole-file passes; OS page cache is not flushed. Physical cold-disk bandwidth is not measured.",
+        "decode_control": "Reading mapped chunks, decompressing to uint32 and flipping/copying to reusable float64; no integration. Optional diagnostic, not an integration result."
+      }
+    },
+    "w8-poisson": {
+      "versions": {
+        "dioptrin": "0.7.0",
+        "bslz4_to_sparse": "0.0.22a3",
+        "numpy": "2.4.2",
+        "scipy": "1.16.3",
+        "h5py": "3.15.1",
+        "hdf5plugin": "6.0.0"
+      },
+      "bslz4_build": {
+        "built_utc": "2026-11-05T12:08:28Z",
+        "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+        "git": "v0.0.22.a3-12-g94264db",
+        "modified": [],
+        "platform": "darwin_arm64",
+        "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+        "version": "0.0.22a3"
+      },
+      "binaries": {
+        "dioptrin": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+            "sha256": "448cd261eef61dbebf249bf3abc0921be42a464564fbdce1ac80ad8cb3d90aa0"
+          }
+        ],
+        "bslz4": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+            "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+          }
+        ]
+      },
+      "file_reading_protocol": {
+        "mask_mode": "fixed",
+        "file_frames": 625,
+        "h5py": "Open dataset and read/decode each frame, flip/convert to float64 inside timed producer; integrate via streaming batch.",
+        "parallel_decode": "Read chunks through read-only mmap, decode in eight threads, allocate flipped float64 frames, integrate bounded groups32.",
+        "reusable_decode": "Same chunk decoder, per-thread uint32 buffers and eight reusable float64 frames; all read/decode/convert/integration timed.",
+        "jon": "Read chunks from the same mapping, fused bitshuffle-LZ4 decode plus CSC integration, float32 weights and float64 output/normalization.",
+        "setup_excluded": "HDF5 chunk-index discovery, calibration/LUT/plan construction, opening the raw mmap, sampled validation and buffer allocation before the timed passes.",
+        "cache": "Warm/repeated whole-file passes; OS page cache is not flushed. Physical cold-disk bandwidth is not measured.",
+        "decode_control": "Reading mapped chunks, decompressing to uint32 and flipping/copying to reusable float64; no integration. Optional diagnostic, not an integration result."
+      }
+    },
+    "w8-paired-intensity": {
+      "versions": {
+        "dioptrin": "0.7.0",
+        "bslz4_to_sparse": "0.0.22a3",
+        "numpy": "2.4.2",
+        "scipy": "1.16.3",
+        "h5py": "3.15.1",
+        "hdf5plugin": "6.0.0"
+      },
+      "bslz4_build": {
+        "built_utc": "2026-11-05T12:08:28Z",
+        "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+        "git": "v0.0.22.a3-12-g94264db",
+        "modified": [],
+        "platform": "darwin_arm64",
+        "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+        "version": "0.0.22a3"
+      },
+      "binaries": {
+        "dioptrin": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+            "sha256": "448cd261eef61dbebf249bf3abc0921be42a464564fbdce1ac80ad8cb3d90aa0"
+          }
+        ],
+        "bslz4": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+            "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+          }
+        ]
+      },
+      "file_reading_protocol": {
+        "mask_mode": "fixed",
+        "file_frames": 625,
+        "h5py": "Open dataset and read/decode each frame, flip/convert to float64 inside timed producer; integrate via streaming batch.",
+        "parallel_decode": "Read chunks through read-only mmap, decode in eight threads, allocate flipped float64 frames, integrate bounded groups32.",
+        "reusable_decode": "Same chunk decoder, per-thread uint32 buffers and eight reusable float64 frames; all read/decode/convert/integration timed.",
+        "jon": "Read chunks from the same mapping, fused bitshuffle-LZ4 decode plus CSC integration, float32 weights and float64 output/normalization.",
+        "setup_excluded": "HDF5 chunk-index discovery, calibration/LUT/plan construction, opening the raw mmap, sampled validation and buffer allocation before the timed passes.",
+        "cache": "Warm/repeated whole-file passes; OS page cache is not flushed. Physical cold-disk bandwidth is not measured.",
+        "decode_control": "Reading mapped chunks, decompressing to uint32 and flipping/copying to reusable float64; no integration. Optional diagnostic, not an integration result."
+      }
+    },
+    "w8-paired-poisson": {
+      "versions": {
+        "dioptrin": "0.7.0",
+        "bslz4_to_sparse": "0.0.22a3",
+        "numpy": "2.4.2",
+        "scipy": "1.16.3",
+        "h5py": "3.15.1",
+        "hdf5plugin": "6.0.0"
+      },
+      "bslz4_build": {
+        "built_utc": "2026-11-05T12:08:28Z",
+        "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+        "git": "v0.0.22.a3-12-g94264db",
+        "modified": [],
+        "platform": "darwin_arm64",
+        "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+        "version": "0.0.22a3"
+      },
+      "binaries": {
+        "dioptrin": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+            "sha256": "448cd261eef61dbebf249bf3abc0921be42a464564fbdce1ac80ad8cb3d90aa0"
+          }
+        ],
+        "bslz4": [
+          {
+            "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+            "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+          }
+        ]
+      },
+      "file_reading_protocol": {
+        "mask_mode": "fixed",
+        "file_frames": 625,
+        "h5py": "Open dataset and read/decode each frame, flip/convert to float64 inside timed producer; integrate via streaming batch.",
+        "parallel_decode": "Read chunks through read-only mmap, decode in eight threads, allocate flipped float64 frames, integrate bounded groups32.",
+        "reusable_decode": "Same chunk decoder, per-thread uint32 buffers and eight reusable float64 frames; all read/decode/convert/integration timed.",
+        "jon": "Read chunks from the same mapping, fused bitshuffle-LZ4 decode plus CSC integration, float32 weights and float64 output/normalization.",
+        "setup_excluded": "HDF5 chunk-index discovery, calibration/LUT/plan construction, opening the raw mmap, sampled validation and buffer allocation before the timed passes.",
+        "cache": "Warm/repeated whole-file passes; OS page cache is not flushed. Physical cold-disk bandwidth is not measured.",
+        "decode_control": "Reading mapped chunks, decompressing to uint32 and flipping/copying to reusable float64; no integration. Optional diagnostic, not an integration result."
+      }
+    }
+  },
+  "input": {
+    "path": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3",
+    "bytes": 5687072680,
+    "shape": [
+      625,
+      3262,
+      3108
+    ],
+    "dtype": "uint32",
+    "filters": [
+      "(32008, 0, (0, 5, 4, 0, 2), b'bitshuffle; see https://github.com/kiyo-masui/bitshuffle')"
+    ],
+    "sample_indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "sample_nonzero_fraction": 0.9994061995230756,
+    "unmasked_min": 0,
+    "unmasked_max": 11338893,
+    "first_frame_unmasked_sentinels": 0,
+    "masked_pixels": 887588,
+    "sampled_compressed_bytes": 145354198,
+    "poni_sha256": "5999ef2e03bf1ef2db21e6ab042f3170bc86f81e99ce59488d1bd896ddf1b00e",
+    "mask_sha256": "65801632091fd5b0198cc32127056590ee789121b0fe6ff5ef67c034f513bb5d"
+  }
+}

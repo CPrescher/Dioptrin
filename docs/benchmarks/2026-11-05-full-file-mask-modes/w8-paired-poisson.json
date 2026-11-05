@@ -1,0 +1,336 @@
+{
+  "arguments": {
+    "hdf5": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "dataset": "entry_0000/instrument/eiger/data",
+    "poni": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/calibration.poni",
+    "mask": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.mask",
+    "lut": "/tmp/dioptrin-bslz4-lut-20261105/pixel_split",
+    "output": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-full-file-mask-modes/w8-paired-poisson.json",
+    "workers": 8,
+    "errors": true,
+    "samples": 16,
+    "repeats": 5,
+    "target_seconds": 1.0,
+    "full_file": true,
+    "compute_only": false,
+    "file_only": false,
+    "include_reusable": false,
+    "include_decode_control": false,
+    "tune_only": false,
+    "reuse_control_only": true,
+    "pipeline_json": {
+      "dot": "csc"
+    },
+    "input_sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3"
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Pro",
+  "versions": {
+    "dioptrin": "0.7.0",
+    "bslz4_to_sparse": "0.0.22a3",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3",
+    "h5py": "3.15.1",
+    "hdf5plugin": "6.0.0"
+  },
+  "bslz4_build": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "binaries": {
+    "dioptrin": [
+      {
+        "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+        "sha256": "448cd261eef61dbebf249bf3abc0921be42a464564fbdce1ac80ad8cb3d90aa0"
+      }
+    ],
+    "bslz4": [
+      {
+        "path": "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+        "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+      }
+    ]
+  },
+  "measurements": [
+    {
+      "name": "dioptrin_reusable_decode",
+      "repeat": 0,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.427847707993351,
+      "fps": 182.33015385793573,
+      "other_busy_cores": 1.3710332022751905,
+      "process_cores": 7.622334253377713,
+      "checksum": 294778539.63115704
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 0,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.878591708984459,
+      "fps": 161.14096220858607,
+      "other_busy_cores": 1.3773641754104342,
+      "process_cores": 7.8014942717244,
+      "checksum": 294778539.74228144
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 1,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 4.048160833015572,
+      "fps": 154.39109901530827,
+      "other_busy_cores": 3.2379416749193854,
+      "process_cores": 7.85729676068867,
+      "checksum": 294778539.74228144
+    },
+    {
+      "name": "dioptrin_reusable_decode",
+      "repeat": 1,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.8595614160003606,
+      "fps": 161.9354980099484,
+      "other_busy_cores": 2.608877062107438,
+      "process_cores": 7.262087055747833,
+      "checksum": 294778539.63115704
+    },
+    {
+      "name": "dioptrin_reusable_decode",
+      "repeat": 2,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.639423209009692,
+      "fps": 171.73050895888144,
+      "other_busy_cores": 2.5822304415533748,
+      "process_cores": 7.4863384759844385,
+      "checksum": 294778539.63115704
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 2,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.7894445419951808,
+      "fps": 164.93182393188718,
+      "other_busy_cores": 1.5559664657069425,
+      "process_cores": 7.903108138437582,
+      "checksum": 294778539.74228144
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 3,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.7543803330045193,
+      "fps": 166.47221233972078,
+      "other_busy_cores": 1.5399841273867296,
+      "process_cores": 7.907213006371842,
+      "checksum": 294778539.74228144
+    },
+    {
+      "name": "dioptrin_reusable_decode",
+      "repeat": 3,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.500551125005586,
+      "fps": 178.54331437567637,
+      "other_busy_cores": 1.5889225328740135,
+      "process_cores": 7.5819164046511816,
+      "checksum": 294778539.63115704
+    },
+    {
+      "name": "dioptrin_reusable_decode",
+      "repeat": 4,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 3.6264170840149745,
+      "fps": 172.34641948797392,
+      "other_busy_cores": 1.57466114148068,
+      "process_cores": 7.4739535944366,
+      "checksum": 294778539.63115704
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 4,
+      "frames": 625,
+      "loops": 1,
+      "seconds": 4.144557207997423,
+      "fps": 150.80018651787148,
+      "other_busy_cores": 2.2561380598045444,
+      "process_cores": 7.6838271018552255,
+      "checksum": 294778539.74228144
+    }
+  ],
+  "input": {
+    "path": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3",
+    "bytes": 5687072680,
+    "shape": [
+      625,
+      3262,
+      3108
+    ],
+    "dtype": "uint32",
+    "filters": [
+      "(32008, 0, (0, 5, 4, 0, 2), b'bitshuffle; see https://github.com/kiyo-masui/bitshuffle')"
+    ],
+    "sample_indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "sample_nonzero_fraction": 0.9994061995230756,
+    "unmasked_min": 0,
+    "unmasked_max": 11338893,
+    "first_frame_unmasked_sentinels": 0,
+    "masked_pixels": 887588,
+    "sampled_compressed_bytes": 145354198,
+    "poni_sha256": "5999ef2e03bf1ef2db21e6ab042f3170bc86f81e99ce59488d1bd896ddf1b00e",
+    "mask_sha256": "65801632091fd5b0198cc32127056590ee789121b0fe6ff5ef67c034f513bb5d"
+  },
+  "matrix": {
+    "bins": 2000,
+    "nnz": 19243209,
+    "bslz4_nnz": 38486418,
+    "bslz4_weights": "float32 (required by unmodified upstream)",
+    "dioptrin_weights": "float64",
+    "normalization": "identical exported float64 denominator",
+    "errors": "squared-weight rows in same pass"
+  },
+  "dioptrin_first_result_s": 0.5923871250124648,
+  "bslz4_plan_s": 0.8125158329785336,
+  "numerical": {
+    "bslz4_array": {
+      "intensity": {
+        "relative_l2": 4.63195895525206e-09,
+        "max_absolute": 6.283664333750494e-05
+      },
+      "poisson_sigma": {
+        "relative_l2": 7.097522458366164e-09,
+        "max_absolute": 2.04793291658234e-07
+      }
+    },
+    "bslz4_compressed": {
+      "intensity": {
+        "relative_l2": 4.63195895525206e-09,
+        "max_absolute": 6.283664333750494e-05
+      },
+      "poisson_sigma": {
+        "relative_l2": 7.097522458366164e-09,
+        "max_absolute": 2.04793291658234e-07
+      }
+    },
+    "bslz4_mmap_stream": {
+      "relative_l2": 1.2906015102537456e-08,
+      "frames_checked": 625
+    }
+  },
+  "file_reading_protocol": {
+    "mask_mode": "fixed",
+    "file_frames": 625,
+    "h5py": "Open dataset and read/decode each frame, flip/convert to float64 inside timed producer; integrate via streaming batch.",
+    "parallel_decode": "Read chunks through read-only mmap, decode in eight threads, allocate flipped float64 frames, integrate bounded groups32.",
+    "reusable_decode": "Same chunk decoder, per-thread uint32 buffers and eight reusable float64 frames; all read/decode/convert/integration timed.",
+    "jon": "Read chunks from the same mapping, fused bitshuffle-LZ4 decode plus CSC integration, float32 weights and float64 output/normalization.",
+    "setup_excluded": "HDF5 chunk-index discovery, calibration/LUT/plan construction, opening the raw mmap, sampled validation and buffer allocation before the timed passes.",
+    "cache": "Warm/repeated whole-file passes; OS page cache is not flushed. Physical cold-disk bandwidth is not measured.",
+    "decode_control": "Reading mapped chunks, decompressing to uint32 and flipping/copying to reusable float64; no integration. Optional diagnostic, not an integration result."
+  },
+  "bslz4_pipelines": [
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ]
+  ],
+  "summary": {
+    "dioptrin_reusable_decode": {
+      "median_fps": 172.34641948797392,
+      "median_other_busy_cores": 1.5889225328740135
+    },
+    "bslz4_mmap_stream": {
+      "median_fps": 161.14096220858607,
+      "median_other_busy_cores": 1.5559664657069425
+    }
+  }
+}
