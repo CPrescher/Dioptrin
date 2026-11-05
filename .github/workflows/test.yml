@@ -37,7 +37,7 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Rust tests
-        run: cargo test --features licensed
+        run: cargo test
 
       - name: Check Rust formatting
         run: cargo fmt -- --check
@@ -101,7 +101,7 @@ jobs:
           uv pip install .[test]
 
       - name: Generate test output data
-        run: cargo test --features licensed
+        run: cargo test
 
       - name: Test integration and array batch regressions
         run: |
@@ -117,23 +117,6 @@ jobs:
         run: |
           source .venv/bin/activate
           python test_examples.py
-
-  license-hardening:
-    name: License hardening (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-      - uses: dtolnay/rust-toolchain@stable
-      - run: python -m pip install maturin numpy cryptography
-      - name: Test offline entitlement and native bypass regressions
-        run: python scripts/test_license_hardening.py
 
   benchmarks:
     name: Benchmarks (no regression check)

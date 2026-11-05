@@ -16,27 +16,15 @@ use multi_integrator::PyMultiIntegrator;
 use results::{PyBatchIterator, PyBatchResult, PyIntegrationResult};
 use utils::{rayon_num_threads, set_rayon_threads};
 
+// Compatibility names for applications that supported license-activated wheels.
+// The open-source package never raises these exceptions.
 pyo3::create_exception!(dioptrin, LicenseError, pyo3::exceptions::PyException);
 pyo3::create_exception!(dioptrin, LicenseNotFoundError, LicenseError);
 pyo3::create_exception!(dioptrin, LicenseExpiredError, LicenseError);
 
-#[cfg(feature = "licensed")]
-pub fn license_error_to_py(e: crate::license::LicenseError) -> PyErr {
-    match &e {
-        crate::license::LicenseError::NotFound => LicenseNotFoundError::new_err(e.to_string()),
-        crate::license::LicenseError::Expired { .. } => LicenseExpiredError::new_err(e.to_string()),
-        _ => LicenseError::new_err(e.to_string()),
-    }
-}
-
-/// Validate the current license. Returns None if valid, raises LicenseError otherwise.
-/// In unlicensed builds, always returns None (no check performed).
+/// Compatibility no-op. Dioptrin no longer requires license activation.
 #[pyfunction]
 fn validate_license() -> PyResult<()> {
-    #[cfg(feature = "licensed")]
-    {
-        crate::license::verify_license().map_err(license_error_to_py)?;
-    }
     Ok(())
 }
 

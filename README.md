@@ -500,86 +500,20 @@ results = integrator.batch1d(
 # Total threads used: num_workers * num_threads
 ```
 
-## Licensing
+## License
 
-Dioptrin uses offline ed25519-signed license keys for its distributed Python wheels. The Rust library itself is always unrestricted. The public distribution is wheel-only and license-activated; see [the package README](README-pypi.md). The source repository remains private.
+Dioptrin is open-source software released under the [MIT license](LICENSE).
+Both the Rust library and Python wheels can be used without activation,
+license keys, or expiration checks.
 
-### When is a license required?
+Install a pre-built wheel with `python -m pip install dioptrin`, or build the
+Python extension from this repository with `maturin develop --release`.
+Source archives are also included in new releases.
 
-| Install method | License required? |
-|---|---|
-| `cargo build` / `cargo test` (Rust) | No — never |
-| `pip install .` / `maturin develop` (from source) | No |
-| Pre-built wheel (from CI / private distribution) | **Yes** |
-
-The `licensed` Cargo feature controls this. Building from source uses `features = ["python"]` (see `pyproject.toml`), so no license check is compiled in. The CI release workflow builds wheels with `features = ["python", "licensed"]`, which embeds the license check.
-
-### Installing a pre-built wheel
-
-Licensed wheels can be installed from PyPI after publication, or supplied as `.whl` files. Install directly:
-
-```bash
-pip install dioptrin-0.3.0-cp312-cp312-manylinux_2_17_x86_64.whl
-```
-
-### Activating a license
-
-A license file looks like this:
-
-```
-email=user@university.edu
-expires=2027-01-01
----
-<base64-encoded ed25519 signature>
-```
-
-There are two ways to provide it:
-
-**Option 1: Environment variable** (recommended for HPC/beamline)
-
-```bash
-export DIOPTRIN_LICENSE="$(cat /path/to/license.key)"
-```
-
-**Option 2: File** (recommended for workstations)
-
-Place the license file at `~/.dioptrin/license.key`.
-
-If no valid license is found, creating an `Integrator` raises `dioptrin.LicenseError`. Downstream applications like Dioptas can catch this to fall back gracefully:
-
-```python
-try:
-    integrator = dioptrin.Integrator("calibration.poni")
-except (dioptrin.LicenseError, ImportError):
-    # Fall back to pyFAI
-    import pyFAI
-    integrator = pyFAI.load("calibration.poni")
-```
-
-### Generating licenses (developers only)
-
-The `keygen` binary signs license files. It requires the `licensed` feature:
-
-```bash
-# Generate a new ed25519 keypair (only needed once, writes to keys/)
-cargo run --features licensed --bin keygen -- --generate-keypair
-
-# Sign a license for a user
-cargo run --features licensed --bin keygen -- \
-    --email user@university.edu \
-    --expires 2027-01-01 \
-    --output license.key
-
-# Use a custom private key location
-cargo run --features licensed --bin keygen -- \
-    --email user@university.edu \
-    --expires 2027-01-01 \
-    --private-key /path/to/private.key
-```
-
-The `keys/` directory contains:
-- `public.key` — 32-byte ed25519 public key (committed to repo, compiled into the binary)
-- `private.key` — 32-byte ed25519 private key (**gitignored**, keep this secret)
+The Python names `LicenseError`, `LicenseNotFoundError`, `LicenseExpiredError`,
+and `validate_license()` remain available for compatibility with existing
+applications. `validate_license()` is a no-op; integration never raises these
+legacy exceptions. Versions before 0.7.0 retain their original activation behavior.
 
 ## Benchmarks
 

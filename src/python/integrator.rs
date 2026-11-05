@@ -35,8 +35,6 @@ pub enum MaskInput<'p> {
 pub struct PyIntegrator {
     integrator: Arc<Integrator>,
     file_workers: Mutex<Option<Arc<FileWorkers>>>,
-    #[cfg(feature = "licensed")]
-    pub(super) entitlement: crate::license::LicenseGrant,
 }
 
 impl PyIntegrator {
@@ -155,9 +153,6 @@ impl PyIntegrator {
         radial_range: Option<(f64, f64)>,
         fast_math: bool,
     ) -> PyResult<Self> {
-        #[cfg(feature = "licensed")]
-        let entitlement =
-            crate::license::LicenseGrant::acquire().map_err(crate::python::license_error_to_py)?;
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
         let geometry = Geometry::new(0, 0, poni);
@@ -175,8 +170,6 @@ impl PyIntegrator {
         Ok(Self {
             integrator: Arc::new(integrator),
             file_workers: Mutex::new(None),
-            #[cfg(feature = "licensed")]
-            entitlement,
         })
     }
 
@@ -224,9 +217,6 @@ impl PyIntegrator {
         radial_range: Option<(f64, f64)>,
         fast_math: bool,
     ) -> PyResult<Self> {
-        #[cfg(feature = "licensed")]
-        let entitlement =
-            crate::license::LicenseGrant::acquire().map_err(crate::python::license_error_to_py)?;
         let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry)
@@ -243,8 +233,6 @@ impl PyIntegrator {
         Ok(Self {
             integrator: Arc::new(integrator),
             file_workers: Mutex::new(None),
-            #[cfg(feature = "licensed")]
-            entitlement,
         })
     }
 
@@ -276,10 +264,6 @@ impl PyIntegrator {
         errors: bool,
         azimuthal_std: bool,
     ) -> PyResult<PyIntegrationResult> {
-        #[cfg(feature = "licensed")]
-        self.entitlement
-            .check()
-            .map_err(crate::python::license_error_to_py)?;
         if n_points == 0 {
             return Err(PyValueError::new_err("n_points must be positive"));
         }
@@ -375,10 +359,6 @@ impl PyIntegrator {
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
     ) -> PyResult<PyIntegrationResult> {
-        #[cfg(feature = "licensed")]
-        self.entitlement
-            .check()
-            .map_err(crate::python::license_error_to_py)?;
         match image {
             ImageInput::Path(tiff_path) => {
                 let frame = Frame::from_tiff(tiff_path).map_err(|err| {
@@ -737,10 +717,6 @@ impl PyIntegrator {
         num_threads: Option<usize>,
         azimuthal_std: bool,
     ) -> PyResult<Vec<PyBatchResult>> {
-        #[cfg(feature = "licensed")]
-        self.entitlement
-            .check()
-            .map_err(crate::python::license_error_to_py)?;
         if n_points == 0 {
             return Err(PyValueError::new_err("n_points must be positive"));
         }
@@ -940,10 +916,6 @@ impl PyIntegrator {
         num_threads: Option<usize>,
         azimuthal_std: bool,
     ) -> PyResult<PyBatchIterator> {
-        #[cfg(feature = "licensed")]
-        self.entitlement
-            .check()
-            .map_err(crate::python::license_error_to_py)?;
         if n_points == 0 {
             return Err(PyValueError::new_err("n_points must be positive"));
         }
@@ -1270,10 +1242,6 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
     ) -> PyResult<Vec<PyBatchResult>> {
-        #[cfg(feature = "licensed")]
-        self.entitlement
-            .check()
-            .map_err(crate::python::license_error_to_py)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match (errors, azimuthal_range) {
@@ -1460,10 +1428,6 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
     ) -> PyResult<PyBatchIterator> {
-        #[cfg(feature = "licensed")]
-        self.entitlement
-            .check()
-            .map_err(crate::python::license_error_to_py)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         let classified = classify_batch_input(images)?;

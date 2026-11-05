@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-05
+
+### Changed
+
+- Release the Rust library and Python package as open-source software under MIT.
+- Remove license activation, signature verification, expiration checks, and
+  license-signing tools from every build and distribution.
+- Build unrestricted Python wheels and publish source distributions alongside them.
+- Preserve legacy Python license exception names and `validate_license()` as
+  compatibility APIs; validation is now a no-op.
+
+Integration algorithms, corrections, and numerical results are unchanged.
+
 ## [0.6.1] - 2026-10-24
 
 ### Changed
@@ -543,7 +556,8 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/CPrescher/Dioptrin/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/CPrescher/Dioptrin/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/CPrescher/Dioptrin/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/CPrescher/Dioptrin/compare/v0.5.4...v0.5.5

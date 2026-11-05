@@ -11,8 +11,6 @@ use super::utils::{ImageInput, extract_array_dims};
 #[pyclass(name = "MultiIntegrator", unsendable)]
 pub struct PyMultiIntegrator {
     multi: MultiIntegrator,
-    #[cfg(feature = "licensed")]
-    entitlements: Vec<crate::license::LicenseGrant>,
 }
 
 #[pymethods]
@@ -43,18 +41,6 @@ impl PyMultiIntegrator {
             ));
         }
 
-        #[cfg(feature = "licensed")]
-        let entitlements = integrators
-            .iter()
-            .map(|integrator| {
-                integrator
-                    .entitlement
-                    .check()
-                    .map_err(crate::python::license_error_to_py)?;
-                Ok(integrator.entitlement.clone())
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-
         let arcs: Vec<_> = integrators
             .iter()
             .map(|py_int| py_int.inner().clone())
@@ -62,11 +48,7 @@ impl PyMultiIntegrator {
 
         let multi = MultiIntegrator::from_arcs(arcs).map_err(PyValueError::new_err)?;
 
-        Ok(Self {
-            multi,
-            #[cfg(feature = "licensed")]
-            entitlements,
-        })
+        Ok(Self { multi })
     }
 
     /// Integrate one image per detector and merge into a single 1D pattern.
@@ -87,12 +69,6 @@ impl PyMultiIntegrator {
         n_points: usize,
         errors: bool,
     ) -> PyResult<PyIntegrationResult> {
-        #[cfg(feature = "licensed")]
-        for entitlement in &self.entitlements {
-            entitlement
-                .check()
-                .map_err(crate::python::license_error_to_py)?;
-        }
         let n_det = self.multi.integrators().len();
         if images.len() != n_det {
             return Err(PyValueError::new_err(format!(
@@ -181,12 +157,6 @@ impl PyMultiIntegrator {
         n_points: usize,
         errors: bool,
     ) -> PyResult<Vec<PyIntegrationResult>> {
-        #[cfg(feature = "licensed")]
-        for entitlement in &self.entitlements {
-            entitlement
-                .check()
-                .map_err(crate::python::license_error_to_py)?;
-        }
         let mut results = Vec::with_capacity(images.len());
         for (frame_idx, image_set) in images.into_iter().enumerate() {
             let n_det = self.multi.integrators().len();

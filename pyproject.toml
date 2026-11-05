@@ -1,12 +1,18 @@
 [project]
 name = "dioptrin"
-version = "0.6.1"
-description = "Fast, license-activated diffraction integration powered by Rust"
+version = "0.7.0"
+description = "Fast open-source diffraction integration powered by Rust"
 readme = "README-pypi.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.16"
 dependencies = [
     "numpy>=1.23",
 ]
+
+[project.urls]
+Repository = "https://github.com/CPrescher/Dioptrin"
+Issues = "https://github.com/CPrescher/Dioptrin/issues"
 
 [project.optional-dependencies]
 test = ["h5py", "fabio", "tifffile", "pyfai>=2025.12.1", "matplotlib>=3.10.8"]

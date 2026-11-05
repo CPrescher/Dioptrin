@@ -12,7 +12,26 @@ __all__ = [
     "BatchIterator",
     "rayon_num_threads",
     "set_rayon_threads",
+    "validate_license",
+    "LicenseError",
+    "LicenseNotFoundError",
+    "LicenseExpiredError",
 ]
+
+
+class LicenseError(Exception):
+    """Legacy compatibility exception; the open-source package never raises it."""
+
+
+class LicenseNotFoundError(LicenseError): ...
+
+
+class LicenseExpiredError(LicenseError): ...
+
+
+def validate_license() -> None:
+    """Compatibility no-op; no activation or license file is required."""
+    ...
 
 
 def rayon_num_threads() -> int:
