@@ -1,0 +1,38 @@
+{
+  "full_file": [
+    {
+      "workflow": "HDF5 \u2192 Dioptrin stream",
+      "intensity_fps": 23.168157963618462,
+      "poisson_fps": 23.65940708787329
+    },
+    {
+      "workflow": "Parallel decode \u2192 Dioptrin (reused buffers)",
+      "intensity_fps": 154.43925284863943,
+      "poisson_fps": 147.03543192111962
+    },
+    {
+      "workflow": "Jon, best measured kernel",
+      "intensity_fps": 214.41994428327502,
+      "poisson_fps": 158.8759816623725
+    }
+  ],
+  "intensity_gain_over_h5py": 9.254941399311244,
+  "intensity_gain_over_reused_dioptrin": 1.3883772443099074,
+  "poisson_gain_over_h5py": 6.715129465091495,
+  "poisson_gain_over_reused_dioptrin": 1.0805285473477237,
+  "default_fused_intensity_fps": 157.7576089324516,
+  "compute_only_csc": {
+    "dioptrin_array": {
+      "median_fps": 259.53983497424747,
+      "median_other_busy_cores": 1.994495949552044
+    },
+    "bslz4_array": {
+      "median_fps": 362.94886012520226,
+      "median_other_busy_cores": 1.598293936837263
+    },
+    "bslz4_compressed": {
+      "median_fps": 233.89213529774221,
+      "median_other_busy_cores": 1.4684943600946014
+    }
+  }
+}

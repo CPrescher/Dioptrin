@@ -1,0 +1,401 @@
+{
+  "arguments": {
+    "hdf5": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "dataset": "entry_0000/instrument/eiger/data",
+    "poni": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/calibration.poni",
+    "mask": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.mask",
+    "lut": "/tmp/dioptrin-bslz4-lut-20261105/pixel_split",
+    "output": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/w4-intensity.json",
+    "workers": 4,
+    "errors": false,
+    "samples": 32,
+    "repeats": 3,
+    "target_seconds": 1.0,
+    "full_file": false,
+    "input_sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3"
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Pro",
+  "versions": {
+    "dioptrin": "0.6.1",
+    "bslz4_to_sparse": "0.0.22a3",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3",
+    "pyFAI": "2025.12.1",
+    "h5py": "3.15.1",
+    "hdf5plugin": "6.0.0"
+  },
+  "bslz4_build": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "binaries": {
+    "dioptrin": [
+      {
+        "path": "/tmp/dioptrin-bslz4-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+        "sha256": "5099650ed61a7e20f1c4f1970af028c8af22d1b98f83e242ffd4347d570b4bce"
+      }
+    ],
+    "bslz4": [
+      {
+        "path": "/tmp/dioptrin-bslz4-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+        "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+      }
+    ]
+  },
+  "measurements": [
+    {
+      "name": "dioptrin_array",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 5,
+      "seconds": 1.164418416999979,
+      "fps": 137.40765146280137,
+      "other_busy_cores": 1.9700066561211453,
+      "process_cores": 3.945098199181164,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_array",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 4,
+      "seconds": 1.1019448340230156,
+      "fps": 116.15826495841311,
+      "other_busy_cores": 1.7001747575322752,
+      "process_cores": 3.9782109454568575,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_compressed",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0799230410193559,
+      "fps": 88.89522341275739,
+      "other_busy_cores": 1.6954758167514867,
+      "process_cores": 3.985444181223704,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "dioptrin_h5py_stream",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 1,
+      "seconds": 1.3808963330229744,
+      "fps": 23.17335431686428,
+      "other_busy_cores": 1.730310598889961,
+      "process_cores": 1.625886713077866,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "dioptrin_parallel_decode",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0769844589813147,
+      "fps": 89.13777650125364,
+      "other_busy_cores": 1.7023172783151508,
+      "process_cores": 3.9553170563196676,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0801511669997126,
+      "fps": 88.87644890173557,
+      "other_busy_cores": 1.7212562822706785,
+      "process_cores": 3.9839868080253127,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0793054169917013,
+      "fps": 88.94609300449581,
+      "other_busy_cores": 1.4847234515587726,
+      "process_cores": 3.986770502823376,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "dioptrin_parallel_decode",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0681393749837298,
+      "fps": 89.87591156019532,
+      "other_busy_cores": 1.4162500619562175,
+      "process_cores": 3.9638993741472066,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "dioptrin_h5py_stream",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 1,
+      "seconds": 1.3651119580026716,
+      "fps": 23.441300775666765,
+      "other_busy_cores": 1.4626043477955772,
+      "process_cores": 1.6312874463851406,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_compressed",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0778197500039823,
+      "fps": 89.06869631925495,
+      "other_busy_cores": 1.3970763673530702,
+      "process_cores": 3.988189119733721,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_array",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 4,
+      "seconds": 1.0993247919832356,
+      "fps": 116.43510719801174,
+      "other_busy_cores": 1.3740283008388097,
+      "process_cores": 3.987003688048218,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "dioptrin_array",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 5,
+      "seconds": 1.1469802079955116,
+      "fps": 139.4967401221505,
+      "other_busy_cores": 1.429631071723222,
+      "process_cores": 3.9643160085093547,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "dioptrin_array",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 5,
+      "seconds": 1.1494087089959066,
+      "fps": 139.20200773471763,
+      "other_busy_cores": 0.4347444865245772,
+      "process_cores": 3.9631820816630228,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_array",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 4,
+      "seconds": 1.1018991250020918,
+      "fps": 116.16308343992651,
+      "other_busy_cores": 1.4277011963314499,
+      "process_cores": 3.983089649873039,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_compressed",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0766732080082875,
+      "fps": 89.16354496977607,
+      "other_busy_cores": 1.4460726991403077,
+      "process_cores": 3.9912184756128117,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "dioptrin_h5py_stream",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 1,
+      "seconds": 1.3605674999998882,
+      "fps": 23.519597520889356,
+      "other_busy_cores": 1.4604924261402286,
+      "process_cores": 1.6326628410572606,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "dioptrin_parallel_decode",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.0902003749797586,
+      "fps": 88.0572069164647,
+      "other_busy_cores": 2.3002658846503734,
+      "process_cores": 3.938582391406456,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_mmap_stream",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 3,
+      "seconds": 1.1713909590034746,
+      "fps": 81.95385090018887,
+      "other_busy_cores": 4.501958390122468,
+      "process_cores": 3.9638721507207935,
+      "checksum": 16267372.498087788
+    }
+  ],
+  "input": {
+    "path": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3",
+    "bytes": 5687072680,
+    "shape": [
+      625,
+      3262,
+      3108
+    ],
+    "dtype": "uint32",
+    "filters": [
+      "(32008, 0, (0, 5, 4, 0, 2), b'bitshuffle; see https://github.com/kiyo-masui/bitshuffle')"
+    ],
+    "sample_indices": [
+      0,
+      20,
+      40,
+      60,
+      80,
+      100,
+      120,
+      140,
+      161,
+      181,
+      201,
+      221,
+      241,
+      261,
+      281,
+      301,
+      322,
+      342,
+      362,
+      382,
+      402,
+      422,
+      442,
+      462,
+      483,
+      503,
+      523,
+      543,
+      563,
+      583,
+      603,
+      624
+    ],
+    "sample_nonzero_fraction": 0.9994071581407763,
+    "unmasked_min": 0,
+    "unmasked_max": 4294967295,
+    "first_frame_unmasked_sentinels": 0,
+    "masked_pixels": 887588,
+    "sampled_compressed_bytes": 291049178,
+    "poni_sha256": "5999ef2e03bf1ef2db21e6ab042f3170bc86f81e99ce59488d1bd896ddf1b00e",
+    "mask_sha256": "65801632091fd5b0198cc32127056590ee789121b0fe6ff5ef67c034f513bb5d"
+  },
+  "matrix": {
+    "bins": 2000,
+    "nnz": 19243209,
+    "bslz4_nnz": 19243209,
+    "bslz4_weights": "float32 (required by unmodified upstream)",
+    "dioptrin_weights": "float64",
+    "normalization": "identical exported float64 denominator",
+    "errors": "disabled"
+  },
+  "dioptrin_first_result_s": 0.6818932919995859,
+  "bslz4_plan_s": 0.3667698749923147,
+  "numerical": {
+    "bslz4_array": {
+      "intensity": {
+        "relative_l2": 9.745962440474205e-09,
+        "max_absolute": 0.02023793593980372
+      }
+    },
+    "bslz4_compressed": {
+      "intensity": {
+        "relative_l2": 9.745962440474205e-09,
+        "max_absolute": 0.02023793593980372
+      }
+    },
+    "dioptrin_parallel_decode": {
+      "relative_l2": 0.0,
+      "frames_checked": 32
+    },
+    "bslz4_mmap_stream": {
+      "relative_l2": 9.745962440474205e-09,
+      "frames_checked": 32
+    }
+  },
+  "bslz4_pipelines": [
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ]
+  ],
+  "summary": {
+    "dioptrin_array": {
+      "median_fps": 139.20200773471763,
+      "median_other_busy_cores": 1.429631071723222
+    },
+    "bslz4_array": {
+      "median_fps": 116.16308343992651,
+      "median_other_busy_cores": 1.4277011963314499
+    },
+    "bslz4_compressed": {
+      "median_fps": 89.06869631925495,
+      "median_other_busy_cores": 1.4460726991403077
+    },
+    "dioptrin_h5py_stream": {
+      "median_fps": 23.441300775666765,
+      "median_other_busy_cores": 1.4626043477955772
+    },
+    "dioptrin_parallel_decode": {
+      "median_fps": 89.13777650125364,
+      "median_other_busy_cores": 1.7023172783151508
+    },
+    "bslz4_mmap_stream": {
+      "median_fps": 88.87644890173557,
+      "median_other_busy_cores": 1.7212562822706785
+    }
+  }
+}

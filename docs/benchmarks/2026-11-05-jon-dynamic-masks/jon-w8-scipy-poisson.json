@@ -1,0 +1,207 @@
+{
+  "arguments": {
+    "workers": 8,
+    "errors": true,
+    "thresholds": [
+      230.0
+    ],
+    "repeats": 5,
+    "output": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-jon-dynamic-masks/jon-w8-scipy-poisson.json",
+    "smoke": false,
+    "variance_via_scipy": true
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "versions": {
+    "bslz4_to_sparse": "0.0.22a3",
+    "dioptrin": "0.7.0",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3"
+  },
+  "build_info": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "input_metadata": {
+    "indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "shape": [
+      16,
+      3262,
+      3108
+    ],
+    "bins": 2000,
+    "orientation": "bottom-up, as required by Dioptrin",
+    "version": "0.7.0"
+  },
+  "weights": "Jon float32, denominator float64 original weights",
+  "pipeline": {
+    "dot": "csc",
+    "route": "dense"
+  },
+  "measurements": [
+    {
+      "event": "measurement",
+      "workers": 8,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 1.1686285000178032,
+      "fps": 13.691262877600753,
+      "process_cores": 4.926209655089105,
+      "observed_other_busy_cores": 1.4385618500435828,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.008063466129897279,
+        "normalization_seconds": 0.045309924498724286,
+        "variance_seconds": 0.04215111187477305,
+        "matrix_plan_seconds": 0.4123992656259361,
+        "integration_output_seconds": 0.02878645569035143,
+        "job_seconds_before_cleanup": 0.5367102238196821
+      },
+      "rss_gib_after_batch": 5.51104736328125
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 1.0859099160006735,
+      "fps": 14.734187214098592,
+      "process_cores": 4.9866180612321065,
+      "observed_other_busy_cores": 1.4897016899506106,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.009083328248379985,
+        "normalization_seconds": 0.04136858862693771,
+        "variance_seconds": 0.044354203062539455,
+        "matrix_plan_seconds": 0.369424408998384,
+        "integration_output_seconds": 0.03290887743787607,
+        "job_seconds_before_cleanup": 0.49713940637411724
+      },
+      "rss_gib_after_batch": 5.67547607421875
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 1.155091375025222,
+      "fps": 13.851718007720931,
+      "process_cores": 4.889061698583532,
+      "observed_other_busy_cores": 1.4638240814188368,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.012609588564373553,
+        "normalization_seconds": 0.038491794188303174,
+        "variance_seconds": 0.04138429174963676,
+        "matrix_plan_seconds": 0.3999742108753708,
+        "integration_output_seconds": 0.03250446368656412,
+        "job_seconds_before_cleanup": 0.5249643490642484
+      },
+      "rss_gib_after_batch": 5.3207855224609375
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 1.20279800001299,
+      "fps": 13.302316764599876,
+      "process_cores": 4.779094245199877,
+      "observed_other_busy_cores": 1.5312200169763353,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.012930507809869596,
+        "normalization_seconds": 0.0439758878765133,
+        "variance_seconds": 0.04384082049909921,
+        "matrix_plan_seconds": 0.41313308330973086,
+        "integration_output_seconds": 0.03491925775415439,
+        "job_seconds_before_cleanup": 0.5487995572493674
+      },
+      "rss_gib_after_batch": 5.2775421142578125
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 1.1281188749999274,
+      "fps": 14.182902488889773,
+      "process_cores": 4.913432549384799,
+      "observed_other_busy_cores": 0.5169796019949301,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.014274270937676192,
+        "normalization_seconds": 0.041969994812461664,
+        "variance_seconds": 0.04330762749850692,
+        "matrix_plan_seconds": 0.3865230443116161,
+        "integration_output_seconds": 0.03121354962604528,
+        "job_seconds_before_cleanup": 0.5172884871863062
+      },
+      "rss_gib_after_batch": 5.7880096435546875
+    }
+  ],
+  "numerical": [
+    {
+      "event": "numerical",
+      "threshold": 230.0,
+      "errors": true,
+      "frames": 16,
+      "vs_float64": {
+        "intensity": {
+          "relative_l2": 5.291653202760925e-10,
+          "max_absolute": 4.647159073556395e-06
+        },
+        "sigma": {
+          "relative_l2": 5.011988161772891e-16,
+          "max_absolute": 1.7763568394002505e-15
+        }
+      },
+      "max_absolute_vs_rounded_weight_reference": 1.7763568394002505e-15,
+      "extra_masked_pixels": [
+        211776,
+        58609,
+        105321,
+        161433,
+        120953,
+        140203,
+        82292,
+        138250,
+        37345,
+        49575,
+        57370,
+        47293,
+        46398,
+        36095,
+        33608,
+        118964
+      ]
+    }
+  ],
+  "mask_stats": []
+}

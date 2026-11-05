@@ -1,0 +1,40 @@
+{
+  "primary_eight_thread_run": "w8-repeat",
+  "eight_thread": [
+    {
+      "variant": "production_csr_fast",
+      "label": "Current CSR",
+      "intensity_fps": 260.3578284097987,
+      "poisson_fps": 244.90234220151657,
+      "intensity_speedup": 1.0,
+      "poisson_speedup": 1.0
+    },
+    {
+      "variant": "folded_csr_fast",
+      "label": "CSR, static mask compiled",
+      "intensity_fps": 412.1368182246251,
+      "poisson_fps": 338.3254083537939,
+      "intensity_speedup": 1.582963034919499,
+      "poisson_speedup": 1.3814706928176483
+    },
+    {
+      "variant": "csc_f64_fma",
+      "label": "CSC, one histogram",
+      "intensity_fps": 382.8403921486378,
+      "poisson_fps": 282.59423149049707,
+      "intensity_speedup": 1.4704393353060763,
+      "poisson_speedup": 1.1539057934283288
+    },
+    {
+      "variant": "csc_f64_four_histograms",
+      "label": "CSC, four histograms",
+      "intensity_fps": 459.43499644593857,
+      "poisson_fps": 332.72695133788426,
+      "intensity_speedup": 1.7646290847179593,
+      "poisson_speedup": 1.358610735801382
+    }
+  ],
+  "strict_csr_csc_byte_identical": true,
+  "max_fast_intensity_relative_l2": 2.9680808966261777e-15,
+  "max_fast_sigma_relative_l2": 5.656622930746137e-16
+}

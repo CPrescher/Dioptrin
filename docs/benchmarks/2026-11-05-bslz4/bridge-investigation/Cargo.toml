@@ -1,0 +1,19 @@
+[package]
+name = "dioptrin-bridge-probe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dioptrin = { path = "/Users/clemens/Programming/Dioptrin" }
+rayon = "1.5"
+memmap2 = "0.9.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+
+[[bin]]
+name = "dioptrin-bridge-probe"
+path = "native_probe.rs"

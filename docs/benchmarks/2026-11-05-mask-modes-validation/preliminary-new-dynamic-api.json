@@ -1,0 +1,159 @@
+{
+  "mask_mode": "dynamic",
+  "dioptrin_version": "0.7.0",
+  "workers": 8,
+  "measurements": [
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 0.10151170799508691,
+      "fps": 157.61728687270625,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.011945827938689035,
+        "integration_seconds": 0.024268177126941737
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 0.090925625001546,
+      "fps": 175.96799581776813,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.0131217084981472,
+        "integration_seconds": 0.02439598949968058
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 0.08413066700450145,
+      "fps": 190.18035360570616,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.00943822906629066,
+        "integration_seconds": 0.023397583310725167
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 0.08077637499081902,
+      "fps": 198.07771767201174,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.00984718224935932,
+        "integration_seconds": 0.02519568762545532
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 0.07400291599333286,
+      "fps": 216.20769648376404,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.00822314849938266,
+        "integration_seconds": 0.023681351563936914
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 0.08604741698945872,
+      "fps": 185.94398948617,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.0072589245028211735,
+        "integration_seconds": 0.030170919309966848
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 0.08863841599668376,
+      "fps": 180.50864086513695,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007876533878516057,
+        "integration_seconds": 0.03063268499499827
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 0.08804529201006517,
+      "fps": 181.72465142339365,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.008536976374671212,
+        "integration_seconds": 0.029967692747959518
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 0.0804699579894077,
+      "fps": 198.83196660927905,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006857632693936466,
+        "integration_seconds": 0.030436685054155532
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 0.08760083399829455,
+      "fps": 182.6466629337284,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006847198006653343,
+        "integration_seconds": 0.031537627497527865
+      }
+    }
+  ],
+  "numerical": [
+    {
+      "errors": false,
+      "reference_file": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-mask-modes-validation/new-dynamic-api.intensity.npz",
+      "repeats_byte_identical": true
+    },
+    {
+      "errors": true,
+      "reference_file": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-mask-modes-validation/new-dynamic-api.poisson.npz",
+      "repeats_byte_identical": true
+    }
+  ]
+}

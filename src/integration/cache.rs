@@ -164,6 +164,27 @@ impl Integrator {
         }
     }
 
+    pub(super) fn invalidate_mask(&self) {
+        if let Some(lut) = self
+            .cache_1d
+            .write()
+            .expect("1D LUT cache lock poisoned")
+            .lut
+            .as_mut()
+        {
+            lut.invalidate_mask();
+        }
+        if let Some(lut) = self
+            .cache_2d
+            .write()
+            .expect("2D LUT cache lock poisoned")
+            .lut
+            .as_mut()
+        {
+            lut.invalidate_mask();
+        }
+    }
+
     /// Initialize a common batch geometry/LUT before entering parallel frame work.
     /// Lazy initialization itself uses Rayon; completing it first avoids nested
     /// frame jobs waiting on geometry or cache write locks held by their callers.
@@ -277,7 +298,9 @@ impl Integrator {
             let mut cache = self.cache_1d.write().expect("1D LUT cache lock poisoned");
             if cache.key.as_ref() != Some(&key) {
                 cache.key = Some(key);
-                cache.lut = Some(Prepared1d::new(lut1d));
+                let mut prepared = Prepared1d::new(lut1d);
+                prepared.set_mask_mode(self.mask_mode);
+                cache.lut = Some(prepared);
             }
         }
 
@@ -391,7 +414,9 @@ impl Integrator {
             let mut cache = self.cache_2d.write().expect("2D LUT cache lock poisoned");
             if cache.key.as_ref() != Some(&key) {
                 cache.key = Some(key);
-                cache.lut = Some(Prepared2d::new(lut2d));
+                let mut prepared = Prepared2d::new(lut2d);
+                prepared.set_mask_mode(self.mask_mode);
+                cache.lut = Some(prepared);
             }
         }
 

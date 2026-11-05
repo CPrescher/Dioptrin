@@ -335,11 +335,51 @@ and rounding, so results need not be bit-identical. Geometry, subpixel sampling,
 CSR weights, correction formulas and Poisson propagation are unchanged. No
 finite-only assumptions or global compiler fast-math flags are enabled.
 
-The option applies to CSR 1D/2D integration, batches and intermediate sums used
+The option applies to LUT-based 1D/2D integration, batches and intermediate sums used
 by `MultiIntegrator`. Histogram and `azimuthal_std` retain their existing
 algorithms. `fast_math` is readable as a property and can be changed with
 `set_fast_math`; changing it is rejected while an asynchronous batch holds the
 integrator. Calibration caches are reused when switching modes.
+
+### Fixed and dynamic masks
+
+Both modes retain float64 pixel-splitting weights, corrections and accumulators:
+
+```python
+integrator = dioptrin.Integrator("calibration.poni", mask_mode="fixed")
+integrator.set_mask(detector_mask)
+
+# For masks that depend on each image:
+integrator.set_mask_mode("dynamic")
+for image in images:
+    integrator.set_mask(make_mask(image))
+    result = integrator.integrate1d(image, 2000, errors=True)
+```
+
+`fixed` is the default. It removes masked entries from a cached CSR execution
+table and caches normalization. Editing or clearing the mask refreshes that
+execution table; detector geometry and original pixel weights remain available,
+so previously masked pixels can be restored correctly.
+
+`dynamic` retains a geometry-only CSC table and accumulates signal,
+normalization and Poisson variance together for each image. Four private
+histograms reduce dependent updates to nearby bins. Batches parallelize across
+frames; direct single-image calls can parallelize over pixel ranges. With
+`fast_math=False`, dynamic mode uses fused CSR to preserve strict summation
+order. Sparse tables too large for compact CSC also use fused CSR.
+
+Both policies apply to 1D/2D LUT integration and typed TIFF inputs. Histogram
+and azimuthal-std algorithms retain their existing behavior. Fast arithmetic
+can differ slightly with mask policy and thread count because of summation
+order. Switching policy is rejected while an asynchronous batch owns the
+integrator. A batch still uses one mask; dynamic mode lets callers replace it
+between frame integrations and does not generate masks itself.
+
+Compacted CSR or transposed CSC requires an additional execution table alongside
+the original geometry table. Inactive execution layouts are released when the
+policy changes. The `mask_mode` property reports the current choice. Applications
+can select a policy from their enabled masking tools; Dioptrin does not infer
+whether a supplied mask will change on the next image.
 
 ### Batch Processing
 

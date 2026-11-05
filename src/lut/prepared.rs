@@ -4,7 +4,9 @@
 //! preserved. Only column storage and frame-independent normalization change.
 use std::sync::OnceLock;
 
+use super::csc::Csc;
 use crate::frame::Pixel;
+use crate::integration::MaskMode;
 use rayon::prelude::*;
 
 use super::{IntermediateResult1d, IntermediateResult2d, Lut1d, Lut2d};
@@ -63,6 +65,9 @@ pub(crate) struct PreparedCsr {
     pub(crate) values: Option<Vec<f64>>,
     strict_norm: OnceLock<Vec<f64>>,
     fast_norm: OnceLock<Vec<f64>>,
+    mode: MaskMode,
+    fixed: OnceLock<Option<Box<PreparedCsr>>>,
+    csc: OnceLock<Option<Csc>>,
 }
 
 pub(crate) struct Prepared1d {
@@ -97,12 +102,74 @@ impl PreparedCsr {
             values,
             strict_norm: OnceLock::new(),
             fast_norm: OnceLock::new(),
+            mode: MaskMode::Fixed,
+            fixed: OnceLock::new(),
+            csc: OnceLock::new(),
         }
     }
 
     pub(crate) fn clear_normalization(&mut self) {
         self.strict_norm.take();
         self.fast_norm.take();
+        if let Some(Some(fixed)) = self.fixed.get_mut() {
+            fixed.clear_normalization();
+        }
+    }
+
+    pub(crate) fn invalidate_mask(&mut self) {
+        self.fixed.take();
+        self.clear_normalization();
+        // CSC contains geometry only and remains valid for a different mask.
+    }
+
+    pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.fixed.take();
+            self.csc.take();
+            self.clear_normalization();
+        }
+    }
+
+    fn fixed_table(&self, mask: Option<&[u8]>) -> &Self {
+        let Some(mask) = mask else {
+            return self;
+        };
+        self.fixed
+            .get_or_init(|| {
+                if mask.iter().all(|&x| x == 0) {
+                    return None;
+                }
+                let mut row_ptr = Vec::with_capacity(self.row_ptr.len());
+                let mut columns = Vec::with_capacity(self.col_idx_len());
+                let mut weights = self.values.as_ref().map(|w| Vec::with_capacity(w.len()));
+                row_ptr.push(0);
+                for row in self.row_ptr.windows(2) {
+                    for k in row[0]..row[1] {
+                        let pixel = self.col_idx.get(k);
+                        if mask[pixel] == 0 {
+                            columns.push(pixel);
+                            if let Some(w) = weights.as_mut() {
+                                w.push(self.values.as_ref().unwrap()[k]);
+                            }
+                        }
+                    }
+                    row_ptr.push(columns.len());
+                }
+                Some(Box::new(Self::new(row_ptr, columns, weights)))
+            })
+            .as_deref()
+            .unwrap_or(self)
+    }
+
+    fn col_idx_len(&self) -> usize {
+        *self.row_ptr.last().unwrap_or(&0)
+    }
+
+    fn dynamic_csc(&self, npix: usize) -> Option<&Csc> {
+        self.csc
+            .get_or_init(|| Csc::new(&self.row_ptr, &self.col_idx, self.values.as_deref(), npix))
+            .as_ref()
     }
 
     fn normalization<const FAST: bool>(&self, mask: Option<&[u8]>, norm: &[f64]) -> &[f64] {
@@ -137,10 +204,19 @@ impl PreparedCsr {
     }
 
     pub(crate) fn prepare_normalization(&self, mask: Option<&[u8]>, norm: &[f64], fast: bool) {
-        if fast {
-            self.normalization::<true>(mask, norm);
-        } else {
-            self.normalization::<false>(mask, norm);
+        match self.mode {
+            MaskMode::Fixed => {
+                let table = self.fixed_table(mask);
+                if fast {
+                    table.normalization::<true>(None, norm);
+                } else {
+                    table.normalization::<false>(None, norm);
+                }
+            }
+            MaskMode::Dynamic if fast => {
+                self.dynamic_csc(norm.len());
+            }
+            MaskMode::Dynamic => {}
         }
     }
 
@@ -197,7 +273,7 @@ impl PreparedCsr {
         }
     }
 
-    fn results<const FAST: bool, const VAR: bool, const COUNT: bool, P: Pixel>(
+    fn cached_results<const FAST: bool, const VAR: bool, const COUNT: bool, P: Pixel>(
         &self,
         signal: &[P],
         mask: Option<&[u8]>,
@@ -218,6 +294,37 @@ impl PreparedCsr {
                         );
                         sums[1] = cached[i];
                         sums
+                    })
+                    .collect()
+            };
+        }
+        match &self.col_idx {
+            Columns::Compact(c) => run!(c),
+            Columns::Wide(c) => run!(c),
+        }
+    }
+
+    fn results<const FAST: bool, const VAR: bool, const COUNT: bool, P: Pixel>(
+        &self,
+        signal: &[P],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> Vec<[f64; 4]> {
+        if self.mode == MaskMode::Fixed {
+            return self
+                .fixed_table(mask)
+                .cached_results::<FAST, VAR, COUNT, P>(signal, None, norm);
+        }
+        if FAST && let Some(csc) = self.dynamic_csc(norm.len()) {
+            return csc.results::<VAR, COUNT, P>(signal, mask, norm);
+        }
+        // Strict reduction order (or a table too large for compact CSC).
+        macro_rules! run {
+            ($cols:expr) => {
+                (0..self.row_ptr.len() - 1)
+                    .into_par_iter()
+                    .map(|i| {
+                        self.sum::<_, P, FAST, true, true, VAR, COUNT>(i, $cols, mask, signal, norm)
                     })
                     .collect()
             };
@@ -277,6 +384,13 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
+        self.csr.set_mask_mode(mode);
+    }
+    pub(crate) fn invalidate_mask(&mut self) {
+        self.csr.invalidate_mask();
+    }
+
     pub(crate) fn new(l: Lut1d) -> Self {
         Self {
             csr: PreparedCsr::new(l.row_ptr, l.col_idx, l.values),
@@ -324,6 +438,13 @@ impl Prepared1d {
     }
 }
 impl Prepared2d {
+    pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
+        self.csr.set_mask_mode(mode);
+    }
+    pub(crate) fn invalidate_mask(&mut self) {
+        self.csr.invalidate_mask();
+    }
+
     pub(crate) fn new(l: Lut2d) -> Self {
         Self {
             csr: PreparedCsr::new(l.row_ptr, l.col_idx, l.values),
@@ -369,7 +490,7 @@ impl Prepared2d {
 }
 
 #[inline(always)]
-fn madd(a: f64, b: f64, c: f64) -> f64 {
+pub(super) fn madd(a: f64, b: f64, c: f64) -> f64 {
     #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
     {
         a.mul_add(b, c)

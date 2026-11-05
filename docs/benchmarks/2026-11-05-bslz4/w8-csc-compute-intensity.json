@@ -1,0 +1,320 @@
+{
+  "arguments": {
+    "hdf5": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "dataset": "entry_0000/instrument/eiger/data",
+    "poni": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/calibration.poni",
+    "mask": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.mask",
+    "lut": "/tmp/dioptrin-bslz4-lut-20261105/pixel_split",
+    "output": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/w8-csc-compute-intensity.json",
+    "workers": 8,
+    "errors": false,
+    "samples": 32,
+    "repeats": 3,
+    "target_seconds": 1.0,
+    "full_file": false,
+    "compute_only": true,
+    "tune_only": false,
+    "reuse_control_only": false,
+    "pipeline_json": {
+      "dot": "csc"
+    },
+    "input_sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3"
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Pro",
+  "versions": {
+    "dioptrin": "0.6.1",
+    "bslz4_to_sparse": "0.0.22a3",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3",
+    "pyFAI": "2025.12.1",
+    "h5py": "3.15.1",
+    "hdf5plugin": "6.0.0"
+  },
+  "bslz4_build": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "binaries": {
+    "dioptrin": [
+      {
+        "path": "/tmp/dioptrin-bslz4-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+        "sha256": "5099650ed61a7e20f1c4f1970af028c8af22d1b98f83e242ffd4347d570b4bce"
+      }
+    ],
+    "bslz4": [
+      {
+        "path": "/tmp/dioptrin-bslz4-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+        "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+      }
+    ]
+  },
+  "measurements": [
+    {
+      "name": "dioptrin_array",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 9,
+      "seconds": 1.099870457983343,
+      "fps": 261.84901859084357,
+      "other_busy_cores": 1.9000874583269853,
+      "process_cores": 7.83997873332333,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_array",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 12,
+      "seconds": 1.049019958009012,
+      "fps": 366.0559525757861,
+      "other_busy_cores": 1.6242768871939117,
+      "process_cores": 7.792090071874282,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_compressed",
+      "repeat": 0,
+      "frames": 32,
+      "loops": 8,
+      "seconds": 1.0945216249965597,
+      "fps": 233.89213529774221,
+      "other_busy_cores": 1.4118927015302287,
+      "process_cores": 7.862608470643097,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_compressed",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 8,
+      "seconds": 1.0935979589994531,
+      "fps": 234.0896834099962,
+      "other_busy_cores": 1.4684943600946014,
+      "process_cores": 7.908480377846353,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_array",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 12,
+      "seconds": 1.058000292017823,
+      "fps": 362.94886012520226,
+      "other_busy_cores": 1.5230990644872702,
+      "process_cores": 7.83316418958076,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "dioptrin_array",
+      "repeat": 1,
+      "frames": 32,
+      "loops": 9,
+      "seconds": 1.1096562499878928,
+      "fps": 259.53983497424747,
+      "other_busy_cores": 1.994495949552044,
+      "process_cores": 7.849013602271001,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "dioptrin_array",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 7,
+      "seconds": 1.0655743340030313,
+      "fps": 210.21527344648186,
+      "other_busy_cores": 4.45174887629199,
+      "process_cores": 7.683097967688766,
+      "checksum": 16267372.464748288
+    },
+    {
+      "name": "bslz4_array",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 11,
+      "seconds": 1.0007021250203252,
+      "fps": 351.75302539989167,
+      "other_busy_cores": 1.598293936837263,
+      "process_cores": 7.813010289991335,
+      "checksum": 16267372.498087788
+    },
+    {
+      "name": "bslz4_compressed",
+      "repeat": 2,
+      "frames": 32,
+      "loops": 7,
+      "seconds": 1.112208583013853,
+      "fps": 201.40107118487322,
+      "other_busy_cores": 1.6683545140153917,
+      "process_cores": 7.412538552489582,
+      "checksum": 16267372.498087788
+    }
+  ],
+  "input": {
+    "path": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3",
+    "bytes": 5687072680,
+    "shape": [
+      625,
+      3262,
+      3108
+    ],
+    "dtype": "uint32",
+    "filters": [
+      "(32008, 0, (0, 5, 4, 0, 2), b'bitshuffle; see https://github.com/kiyo-masui/bitshuffle')"
+    ],
+    "sample_indices": [
+      0,
+      20,
+      40,
+      60,
+      80,
+      100,
+      120,
+      140,
+      161,
+      181,
+      201,
+      221,
+      241,
+      261,
+      281,
+      301,
+      322,
+      342,
+      362,
+      382,
+      402,
+      422,
+      442,
+      462,
+      483,
+      503,
+      523,
+      543,
+      563,
+      583,
+      603,
+      624
+    ],
+    "sample_nonzero_fraction": 0.9994071581407763,
+    "unmasked_min": 0,
+    "unmasked_max": 4294967295,
+    "first_frame_unmasked_sentinels": 0,
+    "masked_pixels": 887588,
+    "sampled_compressed_bytes": 291049178,
+    "poni_sha256": "5999ef2e03bf1ef2db21e6ab042f3170bc86f81e99ce59488d1bd896ddf1b00e",
+    "mask_sha256": "65801632091fd5b0198cc32127056590ee789121b0fe6ff5ef67c034f513bb5d"
+  },
+  "matrix": {
+    "bins": 2000,
+    "nnz": 19243209,
+    "bslz4_nnz": 19243209,
+    "bslz4_weights": "float32 (required by unmodified upstream)",
+    "dioptrin_weights": "float64",
+    "normalization": "identical exported float64 denominator",
+    "errors": "disabled"
+  },
+  "dioptrin_first_result_s": 0.6001701249915641,
+  "bslz4_plan_s": 0.16787583401310258,
+  "numerical": {
+    "bslz4_array": {
+      "intensity": {
+        "relative_l2": 9.745962440474205e-09,
+        "max_absolute": 0.02023793593980372
+      }
+    },
+    "bslz4_compressed": {
+      "intensity": {
+        "relative_l2": 9.745962440474205e-09,
+        "max_absolute": 0.02023793593980372
+      }
+    }
+  },
+  "bslz4_pipelines": [
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      1
+    ]
+  ],
+  "summary": {
+    "dioptrin_array": {
+      "median_fps": 259.53983497424747,
+      "median_other_busy_cores": 1.994495949552044
+    },
+    "bslz4_array": {
+      "median_fps": 362.94886012520226,
+      "median_other_busy_cores": 1.598293936837263
+    },
+    "bslz4_compressed": {
+      "median_fps": 233.89213529774221,
+      "median_other_busy_cores": 1.4684943600946014
+    }
+  }
+}

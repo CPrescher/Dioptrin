@@ -1,0 +1,53 @@
+{
+  "input_sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3",
+  "dioptrin_commit": "c6cb083de0510d6a3dbaa95b1a93b35be651e81a",
+  "upstream_commit": "94264db5e0f812aaa71b91af286f560b00efb368",
+  "protocol": {
+    "date": "2026-11-05",
+    "machine": "Apple M4 Pro, 10 performance + 4 efficiency cores, 48 GiB",
+    "integration": "1D full pixel split, 2000 uniform 2theta degree bins, solid angle, polarization 0.965",
+    "matrix": "Same Dioptrin lookup table and float64 normalization in both engines; upstream requires float32 weights",
+    "orientation": "Original PONI orientation 2: flip HDF5 frames for Dioptrin; remap CSC columns for raw chunks. Stored TIFF mask already bottom-up.",
+    "cache": "Warm macOS filesystem cache; no cache flush; no output-file writing timed",
+    "threading": "1/4/8 workers; no nested BLAS/OpenMP; Dioptrin global Rayon W for arrays, W one-thread file-stream workers; bslz4 W contexts sharing plan, 2 frames per native call",
+    "repeats": "Three warmed measurements, alternate forward/reverse workflow order; >=1 second per block",
+    "file_scope": "32 distinct frames spread across all 625 for worker scaling; all 625 at eight workers",
+    "baseline": "Current batch1d_iter HDF5 generator API; separate parallel bslz4 decompression + Dioptrin control uses bounded 32-frame stage batches",
+    "statistics": "Poisson variant uses stacked squared-weight rows in unmodified upstream; no errors requested from stock upstream API",
+    "background": "Other processes left running; competing CPU use recorded per block; no CPU pinning",
+    "limitations": "CPU only; no cold disk or network I/O, output writing, detector acquisition, 2D integration, supersampling, or azimuthal std timed",
+    "builds": "Dioptrin source release wheel: opt-level=3, LTO=true, codegen-units=1, generic CPU target. Upstream default Apple clang -O2 with runtime ARM kernels; no extra flags.",
+    "reusable_control": "Additional paired eight-worker runs: per-thread uint32 decode buffers, W reusable float64 buffers, direct compressed-buffer pointers, synchronous borrowed-array Dioptrin batches. Preloaded sample image arrays released before these timings.",
+    "tuning": "Batches 1/2/4/8 plus explicit CSC, CSC-run, NEON untranspose and stock LZ4 tested on 32 distributed frames repeated four times. CSC winner verified in five full-625-frame paired runs; compute-only CSC compared in three more runs."
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "exported_lut_sha256": {
+    "indices.u32": "7a86b69b3d1adb8615579d6b3c8a12b4046c50f29930e3b048ca9f2e4e99390f",
+    "radial.f64": "c6f1fdc63e9452db7d23831dd3f4695cc556c3d379dd62acf8d52a487f9a39fd",
+    "normalization.f64": "97ee74d0ced4232971133c81779119670e5d13b8991dce838008a646b41e6a46",
+    "indptr.u64": "82d5db43306434ea03c051dac24790b91f59e2dcc99ff6b50a1675aa5dbfe31f",
+    "weights.f64": "f087b75aa4bb3e7cb1af316454cd323e628cd0af8cb597430499062eaaa9599f"
+  },
+  "reproduction": [
+    "git clone --recursive https://github.com/jonwright/bslz4_to_sparse.git /tmp/bslz4_to_sparse",
+    "git -C /tmp/bslz4_to_sparse checkout 94264db5e0f812aaa71b91af286f560b00efb368",
+    "git -C /tmp/bslz4_to_sparse submodule update --init --recursive",
+    "maturin build --release --interpreter PYTHON --out /tmp/dioptrin-wheels",
+    "uv pip install --python PYTHON /tmp/dioptrin-wheels/dioptrin-0.6.1-*.whl /tmp/bslz4_to_sparse numpy scipy h5py hdf5plugin fabio psutil pyFAI",
+    "RAYON_NUM_THREADS=8 cargo run --release --example export_benchmark_lut -- docs/benchmarks/2026-11-05-bslz4/calibration.poni /tmp/dioptrin-lut 3262 3108 2000 pixel_split",
+    "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 PYTHON python_examples/bench_bslz4_matched.py --hdf5 test_data/eiger_0000.h5 --poni docs/benchmarks/2026-11-05-bslz4/calibration.poni --mask test_data/eiger_0000.mask --lut /tmp/dioptrin-lut --workers 8 --full-file --output /tmp/matched-results.json",
+    "Add --errors for Poisson propagation; --reuse-control-only for the reusable-buffer control; --tune-only for batch sizes 1/2/4/8."
+  ],
+  "source_sha256": {
+    "python_examples/bench_bslz4_matched.py": "8df30a26272077fca234bcbc5b45bae8c5b5d3d0f11cbc2891432120bd8611c8",
+    "examples/export_benchmark_lut.rs": "1d9c13e1bf272d687adda97843834b844a03d565e4e5a3fe2c22c15d1cf275a8"
+  },
+  "commit_text_formatting": [
+    {
+      "file": "summary.csv",
+      "measured_artifact_sha256": "4a432a6873929c94bb7b940d7cd232f029300bff0a0dddc2e4949e1e2df0005f",
+      "committed_artifact_sha256": "916982eeb63baf95da97513e80d717e08b9349929982a07b62f32ed47b774575",
+      "change": "Normalize text line endings and trailing blank lines only; numerical content unchanged."
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "production_source": "/Users/clemens/Programming/Dioptrin/src/lut/prepared.rs",
+  "production_sha256": "88e0de7f3835acc5058177a9b524a9781e90adeca3019ab53fdeacb959805224",
+  "copy_changes": "Removed the production test-module include and added a benchmark-only denominator-cache initializer. Execution functions are unchanged."
+}

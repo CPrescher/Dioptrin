@@ -1,0 +1,76 @@
+{
+  "primary_threads": 8,
+  "primary_threshold": 230,
+  "primary_mean_extra_mask_percent": 0.9766043042327138,
+  "primary": [
+    {
+      "variant": "current_csr_two_pass",
+      "label": "Current-style CSR, two passes",
+      "intensity_fps": 121.34540776642065,
+      "poisson_fps": 119.83825584151835,
+      "intensity_speedup": 1.0,
+      "poisson_speedup": 1.0
+    },
+    {
+      "variant": "fused_csr",
+      "label": "CSR, fused normalization",
+      "intensity_fps": 159.1497292031549,
+      "poisson_fps": 157.19090669782045,
+      "intensity_speedup": 1.3115430747037768,
+      "poisson_speedup": 1.3116922104215167
+    },
+    {
+      "variant": "csc_one_histogram",
+      "label": "CSC, one histogram",
+      "intensity_fps": 185.34323552093457,
+      "poisson_fps": 186.28572415885768,
+      "intensity_speedup": 1.527402140159306,
+      "poisson_speedup": 1.5544762634497422
+    },
+    {
+      "variant": "csc_four_histograms",
+      "label": "CSC, four histograms",
+      "intensity_fps": 266.408398350809,
+      "poisson_fps": 223.0781760607677,
+      "intensity_speedup": 2.195455133033316,
+      "poisson_speedup": 1.8614938484733985
+    },
+    {
+      "variant": "recompact_csr_each_frame",
+      "label": "Rebuild compacted CSR each frame",
+      "intensity_fps": 39.75842202964466,
+      "poisson_fps": 39.27809853127701,
+      "intensity_speedup": 0.3276466968257766,
+      "poisson_speedup": 0.327759263980117
+    }
+  ],
+  "all_strict_byte_identical": true,
+  "fused_csr_byte_identical_to_current": true,
+  "worst_fast_intensity_relative_l2": 4.422318919883232e-15,
+  "worst_fast_sigma_relative_l2": 1.2399108547055284e-15,
+  "four_histogram_worst_intensity_relative_l2": 3.9405547999204307e-16,
+  "mask_changes_verified_all_frames_including_wrap": true,
+  "thresholds": {
+    "230.0": {
+      "extra_mask_mean_percent": 0.9766043042327138,
+      "extra_mask_min_percent": 0.3633019224042095,
+      "extra_mask_max_percent": 2.289295046389963,
+      "changed_pixels_min": 47281,
+      "changed_pixels_max": 248846
+    },
+    "323.0": {
+      "extra_mask_mean_percent": 0.09846003138354383,
+      "extra_mask_min_percent": 0.02540346101076804,
+      "extra_mask_max_percent": 0.3192620499966057,
+      "changed_pixels_min": 3542,
+      "changed_pixels_max": 30490
+    },
+    "207.0": {
+      "extra_mask_mean_percent": 4.709479398766018,
+      "extra_mask_min_percent": 2.6029142850471554,
+      "extra_mask_max_percent": 7.889093461819355,
+      "changed_pixels_min": 389550,
+      "changed_pixels_max": 737843
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "version": "0.7.0",
+  "numpy": "2.4.2",
+  "mask_mode": "fixed",
+  "extension_hashes": {
+    "/tmp/dioptrin-mask-modes-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so": "448cd261eef61dbebf249bf3abc0921be42a464564fbdce1ac80ad8cb3d90aa0"
+  },
+  "measurements": [
+    {
+      "errors": false,
+      "repeat": 0,
+      "loops": 25,
+      "seconds": 1.0169322089932393,
+      "fps": 393.3398868308037
+    },
+    {
+      "errors": false,
+      "repeat": 1,
+      "loops": 24,
+      "seconds": 1.0178630000154953,
+      "fps": 377.260986983665
+    },
+    {
+      "errors": false,
+      "repeat": 2,
+      "loops": 24,
+      "seconds": 1.0123504999792203,
+      "fps": 379.3152668052044
+    },
+    {
+      "errors": false,
+      "repeat": 3,
+      "loops": 25,
+      "seconds": 1.0337359590048436,
+      "fps": 386.9460054239303
+    },
+    {
+      "errors": false,
+      "repeat": 4,
+      "loops": 24,
+      "seconds": 1.0489115829986986,
+      "fps": 366.09377398826615
+    },
+    {
+      "errors": true,
+      "repeat": 0,
+      "loops": 19,
+      "seconds": 1.0356982910016086,
+      "fps": 293.52177428622196
+    },
+    {
+      "errors": true,
+      "repeat": 1,
+      "loops": 19,
+      "seconds": 1.0537262080179062,
+      "fps": 288.499989548361
+    },
+    {
+      "errors": true,
+      "repeat": 2,
+      "loops": 18,
+      "seconds": 1.007457500003511,
+      "fps": 285.8681383571975
+    },
+    {
+      "errors": true,
+      "repeat": 3,
+      "loops": 18,
+      "seconds": 1.0161564169975463,
+      "fps": 283.42093321711064
+    },
+    {
+      "errors": true,
+      "repeat": 4,
+      "loops": 19,
+      "seconds": 1.006552584003657,
+      "fps": 302.0209821436368
+    }
+  ]
+}

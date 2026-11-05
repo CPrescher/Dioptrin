@@ -1,0 +1,169 @@
+{
+  "mask_mode": "legacy",
+  "dioptrin_version": "0.7.0",
+  "workers": 8,
+  "measurements": [
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 1.0763874170079362,
+      "loops": 7,
+      "fps": 104.05175518618519,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007996221316716401,
+        "integration_seconds": 0.06361911199928727
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 1.0471038749965373,
+      "loops": 7,
+      "fps": 106.96168992820351,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006383851752616465,
+        "integration_seconds": 0.061977291625225917
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 1.0268417919869535,
+      "loops": 7,
+      "fps": 109.07230390699078,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007262885377713246,
+        "integration_seconds": 0.06246792456477124
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 1.043942208023509,
+      "loops": 7,
+      "fps": 107.28563242217123,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006949051934498129,
+        "integration_seconds": 0.06240848431480117
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 1.2783975829952396,
+      "loops": 7,
+      "fps": 87.60967752894841,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006054359442714485,
+        "integration_seconds": 0.15124957806074235
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 1.0826731250272132,
+      "loops": 7,
+      "fps": 103.44765877252642,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006350367186314543,
+        "integration_seconds": 0.06775558587651176
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 1.04650208298699,
+      "loops": 7,
+      "fps": 107.02319834884875,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006811033686972223,
+        "integration_seconds": 0.06459327881930221
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 1.03676337498473,
+      "loops": 7,
+      "fps": 108.0285074708099,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.006636213498495636,
+        "integration_seconds": 0.0657831510015967
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 1.0380614589957986,
+      "loops": 7,
+      "fps": 107.89341905473181,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007166846309701214,
+        "integration_seconds": 0.0657645521860104
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 1.0470574169885367,
+      "loops": 7,
+      "fps": 106.96643582557822,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007018336002147407,
+        "integration_seconds": 0.06720802343443211
+      }
+    }
+  ],
+  "numerical": [
+    {
+      "errors": false,
+      "reference_file": "docs/benchmarks/2026-11-05-mask-modes-validation/published-dynamic-api.intensity.npz",
+      "repeats_byte_identical": true
+    },
+    {
+      "errors": true,
+      "reference_file": "docs/benchmarks/2026-11-05-mask-modes-validation/published-dynamic-api.poisson.npz",
+      "repeats_byte_identical": true
+    }
+  ]
+}

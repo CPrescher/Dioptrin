@@ -1,0 +1,43 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Matched Eiger benchmark</title><style>body{font:16px/1.55 system-ui,sans-serif;max-width:1050px;margin:40px auto;padding:0 24px;color:#202b34}table{border-collapse:collapse;width:100%;margin:20px 0}td,th{text-align:left;border-bottom:1px solid #ddd;padding:8px}img{width:100%}pre{white-space:pre-wrap;background:#f4f6f7;padding:15px}small{color:#555}</style><h1>Dioptrin and bslz4_to_sparse: matched Eiger benchmark</h1><p>Measured locally on November 5, 2026. The input is the existing 5.69 GB Eiger9M scan: 625 uint32 frames of 3262 × 3108 pixels. Sampled nonzero occupancy is 99.94%.</p>
+<p><strong>Measured gain:</strong> best fused intensity throughput is 9.25× the ordinary HDF5 stream and 1.39× a reusable-buffer parallel decoder feeding Dioptrin. With Poisson errors, the corresponding factors are 6.72× and 1.08×.</p>
+<img src="comparison.png" alt="Measured matched Eiger throughput"><table><tr><th>Full-file workflow</th><th>Intensity fps</th><th>Poisson fps</th><th>Intensity seconds / 625</th></tr>
+<tr><td>HDF5 → Dioptrin stream</td><td>23.2</td><td>23.7</td><td>26.98</td></tr>
+<tr><td>Parallel decode → Dioptrin (reused buffers)</td><td>154.4</td><td>147.0</td><td>4.05</td></tr>
+<tr><td>Jon, best measured kernel</td><td>214.4</td><td>158.9</td><td>2.91</td></tr>
+</table><p>The automatic intensity kernel selected <code>padded</code> and delivered 157.8 fps in the reusable-buffer paired series. Explicit <code>pipeline={"dot":"csc"}</code> delivered 214.4 fps in the full-file verification. Batch sizes 1–8 had little effect in the sampled sweep. The Poisson matrix already selects CSC automatically.</p>
+<p>With predecoded arrays and CSC selected, the same-process medians were Dioptrin 259.5 fps and Jon 362.9 fps. Dioptrin accepts float64 arrays; Jon accepts native uint32 input. These are each engine’s supported input path, with matching integration settings.</p>
+<h2>Numerical checks</h2><p>The same exported Dioptrin pixel-splitting LUT is used in both engines. Jon requires float32 weights; Dioptrin retains float64. Both use the same float64 normalization denominator. No counts are clipped, thresholded, or background-subtracted. The separate sparse pixel-list threshold is above the uint32 maximum.</p><p>All 625 integrated patterns and, in the Poisson variants, error arrays passed elementwise comparisons (rtol 2e-6, atol 1e-8). Full-file intensity relative L2 differences are about 1.29e-8. On 32 distributed frames, Poisson sigma relative L2 difference is 7.02e-9. Parallel decompression followed by Dioptrin produces identical results to the ordinary HDF5 path.</p><p>The stock upstream API does not expose Poisson errors. This benchmark constructs extra sparse-matrix rows with squared Dioptrin weights, so the native kernel accumulates signal and Poisson variance in one pass. This adapter work is included in the saved benchmark.</p><h2>Conditions and practical limits</h2><ul>
+<li><strong>date:</strong> 2026-11-05</li>
+<li><strong>machine:</strong> Apple M4 Pro, 10 performance + 4 efficiency cores, 48 GiB</li>
+<li><strong>integration:</strong> 1D full pixel split, 2000 uniform 2theta degree bins, solid angle, polarization 0.965</li>
+<li><strong>matrix:</strong> Same Dioptrin lookup table and float64 normalization in both engines; upstream requires float32 weights</li>
+<li><strong>orientation:</strong> Original PONI orientation 2: flip HDF5 frames for Dioptrin; remap CSC columns for raw chunks. Stored TIFF mask already bottom-up.</li>
+<li><strong>cache:</strong> Warm macOS filesystem cache; no cache flush; no output-file writing timed</li>
+<li><strong>threading:</strong> 1/4/8 workers; no nested BLAS/OpenMP; Dioptrin global Rayon W for arrays, W one-thread file-stream workers; bslz4 W contexts sharing plan, 2 frames per native call</li>
+<li><strong>repeats:</strong> Three warmed measurements, alternate forward/reverse workflow order; &gt;=1 second per block</li>
+<li><strong>file_scope:</strong> 32 distinct frames spread across all 625 for worker scaling; all 625 at eight workers</li>
+<li><strong>baseline:</strong> Current batch1d_iter HDF5 generator API; separate parallel bslz4 decompression + Dioptrin control uses bounded 32-frame stage batches</li>
+<li><strong>statistics:</strong> Poisson variant uses stacked squared-weight rows in unmodified upstream; no errors requested from stock upstream API</li>
+<li><strong>background:</strong> Other processes left running; competing CPU use recorded per block; no CPU pinning</li>
+<li><strong>limitations:</strong> CPU only; no cold disk or network I/O, output writing, detector acquisition, 2D integration, supersampling, or azimuthal std timed</li>
+<li><strong>builds:</strong> Dioptrin source release wheel: opt-level=3, LTO=true, codegen-units=1, generic CPU target. Upstream default Apple clang -O2 with runtime ARM kernels; no extra flags.</li>
+<li><strong>reusable_control:</strong> Additional paired eight-worker runs: per-thread uint32 decode buffers, W reusable float64 buffers, direct compressed-buffer pointers, synchronous borrowed-array Dioptrin batches. Preloaded sample image arrays released before these timings.</li>
+<li><strong>tuning:</strong> Batches 1/2/4/8 plus explicit CSC, CSC-run, NEON untranspose and stock LZ4 tested on 32 distributed frames repeated four times. CSC winner verified in five full-625-frame paired runs; compute-only CSC compared in three more runs.</li>
+</ul><p>Input hash, binary hashes, compiler/build versions, per-block competing CPU load, numerical checks, individual trials, and min/max rates are in the files below. Fresh file opening and index/setup costs are not represented equally by every workflow: steady-state execution is the target. Cold storage, acquisition, GUI, and writing result files were not timed.</p><h2>Files</h2><ul><li><a href="summary.csv">All throughput summaries (CSV)</a></li><li><a href="provenance.json">Protocol and provenance</a></li><li><a href="conclusions.json">Selected comparisons</a></li>
+<li><a href="w1-intensity.json">w1-intensity measurement record</a></li>
+<li><a href="w4-intensity.json">w4-intensity measurement record</a></li>
+<li><a href="w8-batch-tuning.json">w8-batch-tuning measurement record</a></li>
+<li><a href="w8-csc-compute-intensity.json">w8-csc-compute-intensity measurement record</a></li>
+<li><a href="w8-csc-reusable-intensity.json">w8-csc-reusable-intensity measurement record</a></li>
+<li><a href="w8-intensity.json">w8-intensity measurement record</a></li>
+<li><a href="w8-poisson.json">w8-poisson measurement record</a></li>
+<li><a href="w8-reusable-intensity.json">w8-reusable-intensity measurement record</a></li>
+<li><a href="w8-reusable-poisson.json">w8-reusable-poisson measurement record</a></li>
+</ul><h2>Reproduction</h2><p>Run from the Dioptrin repository. Replace PYTHON with the interpreter of an isolated environment. The original HDF5 input and TIFF mask must remain at the documented paths. The derived calibration preserves geometry and adds the 75 µm pixel sizes obtained from pyFAI’s named detector.</p><pre>git clone --recursive https://github.com/jonwright/bslz4_to_sparse.git /tmp/bslz4_to_sparse
+git -C /tmp/bslz4_to_sparse checkout 94264db5e0f812aaa71b91af286f560b00efb368
+git -C /tmp/bslz4_to_sparse submodule update --init --recursive
+maturin build --release --interpreter PYTHON --out /tmp/dioptrin-wheels
+uv pip install --python PYTHON /tmp/dioptrin-wheels/dioptrin-0.6.1-*.whl /tmp/bslz4_to_sparse numpy scipy h5py hdf5plugin fabio psutil pyFAI
+RAYON_NUM_THREADS=8 cargo run --release --example export_benchmark_lut -- docs/benchmarks/2026-11-05-bslz4/calibration.poni /tmp/dioptrin-lut 3262 3108 2000 pixel_split
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 PYTHON python_examples/bench_bslz4_matched.py --hdf5 test_data/eiger_0000.h5 --poni docs/benchmarks/2026-11-05-bslz4/calibration.poni --mask test_data/eiger_0000.mask --lut /tmp/dioptrin-lut --workers 8 --full-file --output /tmp/matched-results.json
+Add --errors for Poisson propagation; --reuse-control-only for the reusable-buffer control; --tune-only for batch sizes 1/2/4/8.</pre><p>Add <code>--pipeline-json '{"dot":"csc"}'</code> for the tuned intensity path or <code>--compute-only</code> to omit file workflows.</p><p>Dioptrin source: <code>c6cb083de0510d6a3dbaa95b1a93b35be651e81a</code><br>Upstream source: <a href="https://github.com/jonwright/bslz4_to_sparse/commit/94264db5e0f812aaa71b91af286f560b00efb368">94264db5e0f812aaa71b91af286f560b00efb368</a></p></html>

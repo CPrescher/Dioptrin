@@ -1203,10 +1203,14 @@ fn prepared_denominators_follow_mask_correction_range_and_unit_changes() {
                 IntegrationMethod::PixelSplit,
                 IntegrationMethod::Supersampled { n_ss: 3 },
             ] {
-                for fast in [false, true] {
+                for (fast, mode) in [false, true]
+                    .into_iter()
+                    .flat_map(|fast| [MaskMode::Fixed, MaskMode::Dynamic].map(|mode| (fast, mode)))
+                {
                     let mut ai = Integrator::new(g.clone())
                         .with_method(method)
-                        .with_fast_math(fast);
+                        .with_fast_math(fast)
+                        .with_mask_mode(mode);
                     ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
                     ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
                     for step in 0..6 {
@@ -1222,6 +1226,7 @@ fn prepared_denominators_follow_mask_correction_range_and_unit_changes() {
                         let mut fresh = Integrator::new(g.clone())
                             .with_method(method)
                             .with_fast_math(fast)
+                            .with_mask_mode(mode)
                             .with_radial_unit(ai.radial_unit());
                         fresh.set_radial_range(ai.radial_range());
                         fresh.set_polarization_factor(ai.polarization_factor());

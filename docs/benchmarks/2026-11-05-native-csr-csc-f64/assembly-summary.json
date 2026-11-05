@@ -1,0 +1,14 @@
+{
+  "masked": {
+    "vector_fma": 0,
+    "scalar_fma": 8,
+    "assembly_lines": 163,
+    "conditional_branch_sites": 23
+  },
+  "unmasked": {
+    "vector_fma": 2,
+    "scalar_fma": 4,
+    "assembly_lines": 102,
+    "conditional_branch_sites": 7
+  }
+}

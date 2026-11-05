@@ -1,0 +1,26 @@
+{
+  "threshold": 230,
+  "jon_intensity_fps": 14.956497032371704,
+  "jon_stacked_poisson_fps": 3.009040662293144,
+  "jon_with_scipy_poisson_fps": 13.851718007720931,
+  "dioptrin_api_intensity_fps": 102.28840972097929,
+  "dioptrin_api_poisson_fps": 95.88680600822978,
+  "dioptrin_intensity_speedup": 6.839061947432423,
+  "dioptrin_poisson_speedup_vs_scipy_adapter": 6.922376412426429,
+  "native_repeat": {
+    "current_csr_two_pass": {
+      "intensity_fps": 113.72617975511815,
+      "poisson_fps": 113.11106756413561
+    },
+    "fused_csr": {
+      "intensity_fps": 150.77363364928263,
+      "poisson_fps": 149.06433592701984
+    },
+    "csc_four_histograms": {
+      "intensity_fps": 254.4029324215111,
+      "poisson_fps": 206.28591013718435
+    }
+  },
+  "jon_vs_dioptrin_intensity_relative_l2": 5.291654615617573e-10,
+  "jon_scipy_sigma_vs_dioptrin_relative_l2": 1.1770149163741218e-15
+}

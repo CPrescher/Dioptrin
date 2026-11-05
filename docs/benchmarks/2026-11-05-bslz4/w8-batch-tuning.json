@@ -1,0 +1,515 @@
+{
+  "arguments": {
+    "hdf5": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "dataset": "entry_0000/instrument/eiger/data",
+    "poni": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/calibration.poni",
+    "mask": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.mask",
+    "lut": "/tmp/dioptrin-bslz4-lut-20261105/pixel_split",
+    "output": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-bslz4/w8-batch-tuning.json",
+    "workers": 8,
+    "errors": false,
+    "samples": 32,
+    "repeats": 3,
+    "target_seconds": 1.0,
+    "full_file": false,
+    "tune_only": true,
+    "reuse_control_only": false,
+    "input_sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3"
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Pro",
+  "versions": {
+    "dioptrin": "0.6.1",
+    "bslz4_to_sparse": "0.0.22a3",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3",
+    "pyFAI": "2025.12.1",
+    "h5py": "3.15.1",
+    "hdf5plugin": "6.0.0"
+  },
+  "bslz4_build": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "binaries": {
+    "dioptrin": [
+      {
+        "path": "/tmp/dioptrin-bslz4-env-20261105/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so",
+        "sha256": "5099650ed61a7e20f1c4f1970af028c8af22d1b98f83e242ffd4347d570b4bce"
+      }
+    ],
+    "bslz4": [
+      {
+        "path": "/tmp/dioptrin-bslz4-env-20261105/lib/python3.13/site-packages/bslz4_to_sparse/_bslz4_to_sparse.c2py23-darwin_arm64.so",
+        "sha256": "8d6b3481591088b54c12d152ae80ea697de1800c8ff9455d54557ac6cabf0774"
+      }
+    ]
+  },
+  "measurements": [
+    {
+      "name": "bslz4_mmap_batch1",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.5249062920047436,
+      "fps": 167.87916827560946,
+      "other_busy_cores": 0.7068490369883874,
+      "process_cores": 7.859193094576541,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch2",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.5356057500175666,
+      "fps": 166.70945651061248,
+      "other_busy_cores": 2.0049521401995705,
+      "process_cores": 7.896309974002955,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch4",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.495597834000364,
+      "fps": 171.16900959615705,
+      "other_busy_cores": 1.4722111773256463,
+      "process_cores": 7.938676915733694,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch8",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.6064170000026934,
+      "fps": 159.36086333720993,
+      "other_busy_cores": 2.729253630901,
+      "process_cores": 7.816766754820784,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_csc",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.2679460420040414,
+      "fps": 201.90133611315304,
+      "other_busy_cores": 2.7606834763003962,
+      "process_cores": 7.792179377273939,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_csc_run",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4553794999956153,
+      "fps": 175.8991383352392,
+      "other_busy_cores": 1.47670125352434,
+      "process_cores": 7.950656856191024,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_neon",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.432757667003898,
+      "fps": 178.67641255435245,
+      "other_busy_cores": 1.607222787937903,
+      "process_cores": 7.884376583810167,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_stock",
+      "repeat": 0,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4549625830259174,
+      "fps": 175.94954192402062,
+      "other_busy_cores": 1.4477039235050697,
+      "process_cores": 7.942009048760652,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_stock",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4653766250121407,
+      "fps": 174.69911531984417,
+      "other_busy_cores": 1.4720097312744784,
+      "process_cores": 7.920464133173839,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_neon",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.433289042004617,
+      "fps": 178.6101703826292,
+      "other_busy_cores": 1.4783240266993198,
+      "process_cores": 7.9349382202026035,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_csc_run",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4646735419810284,
+      "fps": 174.78297563411294,
+      "other_busy_cores": 1.4797205847442456,
+      "process_cores": 7.936311858462298,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_csc",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.166175916994689,
+      "fps": 219.52091127016976,
+      "other_busy_cores": 1.514838710230009,
+      "process_cores": 7.941084929849554,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch8",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.5068113330053166,
+      "fps": 169.89519151638657,
+      "other_busy_cores": 1.4929494872551405,
+      "process_cores": 7.93444855246374,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch4",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4987910419877153,
+      "fps": 170.80433017566585,
+      "other_busy_cores": 1.4774643402338774,
+      "process_cores": 7.949823335078141,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch2",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4975322909886017,
+      "fps": 170.94789978184752,
+      "other_busy_cores": 1.488260473187672,
+      "process_cores": 7.939846153267688,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch1",
+      "repeat": 1,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.506135458999779,
+      "fps": 169.97143150059622,
+      "other_busy_cores": 1.4549512388842145,
+      "process_cores": 7.935812100153035,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch1",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.5103234159760177,
+      "fps": 169.50011983662776,
+      "other_busy_cores": 1.5458130525584424,
+      "process_cores": 7.921862214039846,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch2",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4967252920032479,
+      "fps": 171.040070858537,
+      "other_busy_cores": 1.4445543584729599,
+      "process_cores": 7.93734298703507,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch4",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.5111762919987086,
+      "fps": 169.40445754440063,
+      "other_busy_cores": 1.7046790970976013,
+      "process_cores": 7.903294316643663,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_batch8",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4933294999937061,
+      "fps": 171.42901148144395,
+      "other_busy_cores": 1.5111852930045873,
+      "process_cores": 7.929840668151235,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_csc",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.1641473330091685,
+      "fps": 219.9034372550367,
+      "other_busy_cores": 1.4536589064074872,
+      "process_cores": 7.925526897141781,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_csc_run",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4712295830249786,
+      "fps": 174.00411394232657,
+      "other_busy_cores": 1.4551953642730984,
+      "process_cores": 7.925502677852308,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_neon",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.433200792002026,
+      "fps": 178.62116838659836,
+      "other_busy_cores": 1.4349932511047188,
+      "process_cores": 7.918208016161892,
+      "checksum": 65069489.99235115
+    },
+    {
+      "name": "bslz4_mmap_stock",
+      "repeat": 2,
+      "frames": 128,
+      "loops": 2,
+      "seconds": 1.4639046670054086,
+      "fps": 174.87477550275082,
+      "other_busy_cores": 1.5117991723645525,
+      "process_cores": 7.95705161855118,
+      "checksum": 65069489.99235115
+    }
+  ],
+  "input": {
+    "path": "/Users/clemens/Programming/Dioptrin/test_data/eiger_0000.h5",
+    "sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3",
+    "bytes": 5687072680,
+    "shape": [
+      625,
+      3262,
+      3108
+    ],
+    "dtype": "uint32",
+    "filters": [
+      "(32008, 0, (0, 5, 4, 0, 2), b'bitshuffle; see https://github.com/kiyo-masui/bitshuffle')"
+    ],
+    "sample_indices": [
+      0,
+      20,
+      40,
+      60,
+      80,
+      100,
+      120,
+      140,
+      161,
+      181,
+      201,
+      221,
+      241,
+      261,
+      281,
+      301,
+      322,
+      342,
+      362,
+      382,
+      402,
+      422,
+      442,
+      462,
+      483,
+      503,
+      523,
+      543,
+      563,
+      583,
+      603,
+      624
+    ],
+    "sample_nonzero_fraction": 0.9994071581407763,
+    "unmasked_min": 0,
+    "unmasked_max": 4294967295,
+    "first_frame_unmasked_sentinels": 0,
+    "masked_pixels": 887588,
+    "sampled_compressed_bytes": 291049178,
+    "poni_sha256": "5999ef2e03bf1ef2db21e6ab042f3170bc86f81e99ce59488d1bd896ddf1b00e",
+    "mask_sha256": "65801632091fd5b0198cc32127056590ee789121b0fe6ff5ef67c034f513bb5d"
+  },
+  "matrix": {
+    "bins": 2000,
+    "nnz": 19243209,
+    "bslz4_nnz": 19243209,
+    "bslz4_weights": "float32 (required by unmodified upstream)",
+    "dioptrin_weights": "float64",
+    "normalization": "identical exported float64 denominator",
+    "errors": "disabled"
+  },
+  "dioptrin_first_result_s": 0.683414166996954,
+  "bslz4_plan_s": 0.38914054198539816,
+  "numerical": {
+    "bslz4_array": {
+      "intensity": {
+        "relative_l2": 9.745962440474205e-09,
+        "max_absolute": 0.02023793593980372
+      }
+    },
+    "bslz4_compressed": {
+      "intensity": {
+        "relative_l2": 9.745962440474205e-09,
+        "max_absolute": 0.02023793593980372
+      }
+    }
+  },
+  "tuning_pipelines": {
+    "csc": {
+      "dot": "csc"
+    },
+    "csc_run": {
+      "dot": "csc-run"
+    },
+    "neon": {
+      "untranspose": "neon"
+    },
+    "stock": {
+      "decode": "lz4-stock"
+    }
+  },
+  "bslz4_pipelines": [
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ],
+    [
+      2,
+      1,
+      5,
+      4,
+      4,
+      2
+    ]
+  ],
+  "summary": {
+    "bslz4_mmap_batch1": {
+      "median_fps": 169.50011983662776,
+      "median_other_busy_cores": 1.4549512388842145
+    },
+    "bslz4_mmap_batch2": {
+      "median_fps": 170.94789978184752,
+      "median_other_busy_cores": 1.488260473187672
+    },
+    "bslz4_mmap_batch4": {
+      "median_fps": 170.80433017566585,
+      "median_other_busy_cores": 1.4774643402338774
+    },
+    "bslz4_mmap_batch8": {
+      "median_fps": 169.89519151638657,
+      "median_other_busy_cores": 1.5111852930045873
+    },
+    "bslz4_mmap_csc": {
+      "median_fps": 219.52091127016976,
+      "median_other_busy_cores": 1.514838710230009
+    },
+    "bslz4_mmap_csc_run": {
+      "median_fps": 174.78297563411294,
+      "median_other_busy_cores": 1.47670125352434
+    },
+    "bslz4_mmap_neon": {
+      "median_fps": 178.62116838659836,
+      "median_other_busy_cores": 1.4783240266993198
+    },
+    "bslz4_mmap_stock": {
+      "median_fps": 174.87477550275082,
+      "median_other_busy_cores": 1.4720097312744784
+    }
+  }
+}

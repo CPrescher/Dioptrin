@@ -1,0 +1,102 @@
+{
+  "protocol": {
+    "data": "Same 16 Eiger9M float64 frames, original float64 full-pixel-split weights,2000bins, solid-angle and polarization0.965, same static mask plus changing threshold230 mask.",
+    "controls": "Only the number of CSC histograms varies:1,2,4,8,16. All pixels, weights, corrections, accumulators and outputs float64; round-trip transpose checks coefficient bits. Same masks reconstructed for each timed frame; normalization and Poisson variance recomputed inside every traversal.",
+    "timing": "Five warmed blocks >=1s per lane/error/thread configuration; rotate/reverse order, warm one full16-frame batch before each block. Includes mask generation/copy, histogram allocation/zeroing, pairwise reduction, normalized output/axes and cleanup.1 and8threads process frames in parallel. No IO, decoding or initial table transpose timed.",
+    "precision": "Every output checked against strict original CSR using exactly the same mask and inputs. Only summation order changes.",
+    "limits": "Eight-thread host activity and worker scheduling caused broad variability; all samples retained. One-thread comparisons are cleaner. No CPU cache counters measured; larger histogram footprint is a plausible cost, not a measured attribution.",
+    "histograms": "Intensity has one signal and one denominator array per lane (4lanes=128000bytes,8=256000). Poisson adds variance (4lanes=192000,8=384000). Array payloads exclude output axes and CSC table."
+  },
+  "source_hashes": {
+    "docs/benchmarks/2026-11-05-histogram-lanes-f64/src/main.rs": "b671aa506b33b0911dd1a0d3099f098b3f1d73c9f14eb799c8dd3a43e5c6b55e",
+    "docs/benchmarks/2026-11-05-histogram-lanes-f64/src/lut/production_prepared.rs": "48c78b9f51013b39ae1d64f1f90d9786940b8756c454569be4b79464247612bb",
+    "docs/benchmarks/2026-11-05-histogram-lanes-f64/Cargo.toml": "19e848c379c6b3105f686e98757a452ccbf8466c22858523d9f285f717c524c5"
+  },
+  "input_provenance": {
+    "date": "2026-11-05",
+    "cpu": "Apple M4 Pro, 10 performance + 4 efficiency cores, 48 GiB",
+    "dioptrin_commit": "2c94bc918be95effa16993253d1e362601a6759d",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+    "production_row_copy_verified": true,
+    "copy_changes": "Remove production test-module include; add benchmark-only serial-denominator/two-pass and fused-row drivers. Original execution functions unchanged.",
+    "input_metadata": {
+      "indices": [
+        0,
+        41,
+        83,
+        124,
+        166,
+        208,
+        249,
+        291,
+        332,
+        374,
+        416,
+        457,
+        499,
+        540,
+        582,
+        624
+      ],
+      "shape": [
+        16,
+        3262,
+        3108
+      ],
+      "bins": 2000,
+      "orientation": "bottom-up, as required by Dioptrin",
+      "version": "0.7.0"
+    },
+    "input_hashes": {
+      "/tmp/dioptrin-bridge-investigation-20261105/frames.f64": "af31d0b2756b3bd093186e0a881792d4761508141ad80f1d9f8f646586f3b2fe",
+      "/tmp/dioptrin-bridge-investigation-20261105/mask.u8": "0c510a98b4afac57dab92441a40a58d1c740807ac51f89fd6178baf895175af1",
+      "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/weights.f64": "f087b75aa4bb3e7cb1af316454cd323e628cd0af8cb597430499062eaaa9599f",
+      "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/indices.u32": "7a86b69b3d1adb8615579d6b3c8a12b4046c50f29930e3b048ca9f2e4e99390f",
+      "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/normalization.f64": "97ee74d0ced4232971133c81779119670e5d13b8991dce838008a646b41e6a46",
+      "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/indptr.u64": "82d5db43306434ea03c051dac24790b91f59e2dcc99ff6b50a1675aa5dbfe31f",
+      "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/radial.f64": "c6f1fdc63e9452db7d23831dd3f4695cc556c3d379dd62acf8d52a487f9a39fd"
+    },
+    "hashes": {
+      "/Users/clemens/Programming/Dioptrin/src/lut/prepared.rs": "88e0de7f3835acc5058177a9b524a9781e90adeca3019ab53fdeacb959805224",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/src/main.rs": "8bef66ab64025d0fa7e2b73880fa9e586ccff6e671f8fbe4306a4ac3cf1265fd",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/src/lut/production_prepared.rs": "48c78b9f51013b39ae1d64f1f90d9786940b8756c454569be4b79464247612bb",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/Cargo.toml": "182fa83b57168050d2a0ac329629fcda82a067d948c3e230cb533212acdf6774",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/run_benchmark.py": "4f9684c2400b75600a0cd44f900bfa835c551450dfdfc7729f6ae2fc8cb0d5c5",
+      "/Users/clemens/Programming/Dioptrin/target/release/dioptrin-dynamic-mask-f64-probe": "9cf7df0452dccf2b143f38ce7f08d28e818994464baafefc5b88bb81b79eee63",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/summarize.py": "791f1e8915d8ba7238ccf1e41cc9cdc6a94546feb02d65f6296168dd546ff171",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/comparison.png": "abd98848f27e21f9f9f33758060fd4bdf6b5ec1972cf533fd034ffd2ce20b71c",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/summary.csv": "79ba4ee4ac6575a860bc129437ba3a56bc304fb64b57d04b4b0dcff91cca22f1",
+      "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-dynamic-mask-f64/conclusions.json": "de5d4390fa799de1c922898bf887f3f4202f47b0ffe33eb6cecaf44b985a297e"
+    },
+    "protocol": {
+      "data": "Same 16 real Eiger9M frames distributed across 625-frame HDF5 file, mapped as immutable bottom-up f64; same original unscreened float64 CSR coefficients for all runtime-mask backends; CSC bit-preserving transpose.",
+      "settings": "2000 uniform 2theta degree bins, full pixel splitting, solid-angle normalization, polarization 0.965; identical pixel corrections in all kernels.",
+      "masks": "Upper intensity threshold, OR existing static mask. Fixed thresholds 323, 230, 207 chosen from approximately 99.9th, 99th, 95th pooled sampled percentiles of static-valid real frame pixels (stride97). Masks change because images change; wraparound also verified. Actual per-frame counts recorded.",
+      "timed_mask_update": "Native fused threshold and static OR pass allocating combined u8 mask, plus explicit clone for backend ownership; allocate/drop every frame, no precomputed masks in timed runs. Does not time Python/NumPy plugin calls, UI events or expensive cosmic/powder-outlier mask algorithms.",
+      "baseline": "Recompute current production denominator serially per frame, then current parallel CSR signal/variance rows. Benchmark driver bypasses shared mutable denominator cache to support independent concurrent frame masks. Verified byte-identical to actual copied production invalidate_normalization+integrate on every frame/error/threshold. No reused denominators.",
+      "fused_csr": "Same production row, signal/denominator/Poisson variance fused in one parallel bin traversal, dynamic mask check at each sparse contribution.",
+      "csc": "One mask check per pixel; f64 signal, denominator and variance accumulated simultaneously in one or four interleaved histograms. No table rebuild per frame.",
+      "recompact": "Diagnostic rebuilds a compacted CSR execution table each frame from original coefficients, preserving remaining weight bits. Includes allocation, index conversion, denominator recomputation and integration; geometry weights reused. Sequential filtering prototype, not an optimized compactor.",
+      "timing": "Five >=1s warmed blocks per backend/error/threshold, rotate/reverse backend order; one warm batch before each block; includes mask construction/copy/drop, per-frame normalization, axes, normalized result allocation and errors. No geometry/CSC setup, frame decoding or HDF5 IO in throughput timing.",
+      "threads": "Independent 16-frame batches at 8 threads for all three thresholds; 1 and4 for threshold230. CSR additionally parallelizes bins. CSC parallelizes frames. Recompaction timed at8 only.",
+      "numeric_checks": "Every threshold/frame/error checked vs actual current CSR including real cache invalidation. Strict one-histogram CSC and strict CSR asserted bit-identical. Tiny FMA/summation-order differences allowed in fast kernels, no float32.",
+      "host_load": "Other-process CPU seconds sampled at block boundaries; all raw measurements retained. No user workloads stopped.",
+      "limits": "Native warmed batch throughput; no Python bridge or HDF5 IO/decompression, cold-cache, one-image latency, arbitrary masking algorithm or GPU measurements.",
+      "api_limits": "Native kernel and mask generation/copy benchmark. Python/NumPy dispatch, set_mask API calls and cache-lock bookkeeping excluded. Cache invalidation is represented by fully recomputing the denominator each frame, with no cached reuse."
+    }
+  },
+  "commit_text_formatting": [
+    {
+      "file": "Cargo.toml",
+      "measured_artifact_sha256": "19e848c379c6b3105f686e98757a452ccbf8466c22858523d9f285f717c524c5",
+      "committed_artifact_sha256": "680bdb4772303b5cf001ed392f2815b52c52e98d78109e78d93c08e8833fc6c8",
+      "change": "Normalize text line endings and trailing blank lines only; numerical content unchanged."
+    },
+    {
+      "file": "summary.csv",
+      "measured_artifact_sha256": "e6fd7a77700590030d3a1623c15f831c16b3007deb835bf6e2a1dcfa115c068b",
+      "committed_artifact_sha256": "c774f164403b40bd6f135cefd8904869aa0e8e76cb54db78835c7e2c1ad622e4",
+      "change": "Normalize text line endings and trailing blank lines only; numerical content unchanged."
+    }
+  ]
+}

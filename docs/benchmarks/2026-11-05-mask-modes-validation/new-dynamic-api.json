@@ -1,0 +1,169 @@
+{
+  "mask_mode": "dynamic",
+  "dioptrin_version": "0.7.0",
+  "workers": 8,
+  "measurements": [
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 1.0655367499857675,
+      "loops": 15,
+      "fps": 225.23859454233343,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.0072895468128990615,
+        "integration_seconds": 0.023550036565211485
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 1.0160913330037147,
+      "loops": 15,
+      "fps": 236.19923938385034,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007445682129400666,
+        "integration_seconds": 0.02358327080764866
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 1.024627499980852,
+      "loops": 15,
+      "fps": 234.23146460980703,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.0073290937525598565,
+        "integration_seconds": 0.02441771350095223
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 1.0560822499974165,
+      "loops": 16,
+      "fps": 242.40536189357056,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.0073512318085704464,
+        "integration_seconds": 0.024284283817905816
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": false,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 1.0442469579866156,
+      "loops": 16,
+      "fps": 245.15273713948537,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007567520873635658,
+        "integration_seconds": 0.023785697934727068
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 1.0194273750239518,
+      "loops": 13,
+      "fps": 204.03611389689527,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007509411434512003,
+        "integration_seconds": 0.03081200781161897
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 1.0431529580091592,
+      "loops": 13,
+      "fps": 199.39549459454602,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007273406312378938,
+        "integration_seconds": 0.029985362069055554
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 1.030635999981314,
+      "loops": 13,
+      "fps": 201.8171303969308,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.00729227880401595,
+        "integration_seconds": 0.03111467687813274
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 3,
+      "frames": 16,
+      "seconds": 1.0318331670132466,
+      "loops": 13,
+      "fps": 201.5829754746871,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007469210999261122,
+        "integration_seconds": 0.031189346189421485
+      }
+    },
+    {
+      "event": "measurement",
+      "workers": 8,
+      "threshold": 230.0,
+      "errors": true,
+      "repeat": 4,
+      "frames": 16,
+      "seconds": 1.0313883330090903,
+      "loops": 13,
+      "fps": 201.6699174724587,
+      "stage_mean_seconds": {
+        "mask_and_set_mask_seconds": 0.007346466314629652,
+        "integration_seconds": 0.03125169005761563
+      }
+    }
+  ],
+  "numerical": [
+    {
+      "errors": false,
+      "reference_file": "docs/benchmarks/2026-11-05-mask-modes-validation/new-dynamic-api.intensity.npz",
+      "repeats_byte_identical": true
+    },
+    {
+      "errors": true,
+      "reference_file": "docs/benchmarks/2026-11-05-mask-modes-validation/new-dynamic-api.poisson.npz",
+      "repeats_byte_identical": true
+    }
+  ]
+}

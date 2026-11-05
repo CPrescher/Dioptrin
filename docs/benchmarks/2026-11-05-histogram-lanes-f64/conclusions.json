@@ -1,0 +1,51 @@
+{
+  "selection": "Keep four histograms as the default for this implementation; four is faster than eight in one-thread measurements, and eight-thread differences are noisy. No universal optimum is claimed.",
+  "one_thread": {
+    "1": {
+      "intensity_fps": 31.972554226576005,
+      "poisson_fps": 27.183218609886303
+    },
+    "2": {
+      "intensity_fps": 43.85272701152116,
+      "poisson_fps": 36.20074556913697
+    },
+    "4": {
+      "intensity_fps": 46.04982999338153,
+      "poisson_fps": 37.79986044575023
+    },
+    "8": {
+      "intensity_fps": 41.72903835757113,
+      "poisson_fps": 33.950527589678046
+    },
+    "16": {
+      "intensity_fps": 36.00138157101848,
+      "poisson_fps": 24.84130674588973
+    }
+  },
+  "eight_threads": {
+    "1": {
+      "intensity_fps": 213.66529451990957,
+      "poisson_fps": 163.34333499113515
+    },
+    "2": {
+      "intensity_fps": 208.49863889621915,
+      "poisson_fps": 172.87389966315374
+    },
+    "4": {
+      "intensity_fps": 224.61070395580452,
+      "poisson_fps": 178.06896026356742
+    },
+    "8": {
+      "intensity_fps": 228.62273260130397,
+      "poisson_fps": 169.23205734708264
+    },
+    "16": {
+      "intensity_fps": 177.87153089718817,
+      "poisson_fps": 80.6907068696974
+    }
+  },
+  "four_vs_eight_one_thread_intensity_speedup": 1.1035440021115765,
+  "four_vs_eight_one_thread_poisson_speedup": 1.113380649119647,
+  "worst_intensity_relative_l2": 5.0004953135475485e-15,
+  "worst_sigma_relative_l2": 1.3434205584244367e-15
+}

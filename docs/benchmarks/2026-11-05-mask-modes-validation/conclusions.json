@@ -1,0 +1,41 @@
+{
+  "fixed": {
+    "old_intensity_fps": 227.35472891484523,
+    "new_intensity_fps": 379.3152668052044,
+    "old_poisson_fps": 220.11407854386962,
+    "new_poisson_fps": 288.499989548361
+  },
+  "dynamic": {
+    "old_intensity_fps": 106.96168992820351,
+    "new_intensity_fps": 236.19923938385034,
+    "old_poisson_fps": 107.02319834884875,
+    "new_poisson_fps": 201.6699174724587
+  },
+  "precision": {
+    "fixed-intensity": {
+      "relative_l2": 6.8068102012392015e-16,
+      "max_absolute": 1.1823431123048067e-11
+    },
+    "fixed-poisson": {
+      "relative_l2": 6.806793825256441e-16,
+      "max_absolute": 1.1823431123048067e-11
+    },
+    "dynamic-api-intensity": {
+      "relative_l2": 3.834263812249909e-16,
+      "max_absolute": 4.831690603168681e-13
+    },
+    "dynamic-api-poisson": {
+      "relative_l2": 3.8342504115285884e-16,
+      "max_absolute": 4.831690603168681e-13
+    }
+  },
+  "validation": {
+    "rust_unit_tests": 167,
+    "rust_doctests": 16,
+    "python_mask_mode_tests": 3,
+    "python_fast_math_tests": 4,
+    "python_batch_borrowing_tests": 4,
+    "clippy": "--lib --features python -- -D warnings passed",
+    "format": "cargo fmt --check passed"
+  }
+}

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add Rust `MaskMode` and Python `mask_mode="fixed" | "dynamic"`, plus
+  `set_mask_mode()`, retaining float64 weights, corrections and accumulators.
+- Fixed mode compacts the mask into cached CSR and reuses normalization.
+  Editing or clearing the mask refreshes execution state without rebuilding
+  detector geometry or original pixel weights.
+- Dynamic mode uses geometry-only CSC with four independent histograms and
+  fused per-frame normalization/Poisson variance. Strict accumulation and
+  oversized sparse tables use fused CSR. Single-image calls can parallelize
+  pixels; batches retain frame parallelism.
+- Validate mask restoration, policy/correction changes, 1D/2D raw sums,
+  concurrent initialization, typed TIFF inputs and Python API behavior.
+
+Fast accumulation may differ slightly from earlier results because mask
+compaction and CSC change summation order. Strict accumulation is preserved.
+Dioptas integration and package publication are deferred.
+
 ## [0.7.0] - 2026-11-05
 
 ### Changed

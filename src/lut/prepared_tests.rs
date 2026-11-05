@@ -8,7 +8,7 @@ fn same(a: &[f64], b: &[f64]) {
 }
 
 #[test]
-fn prepared_matches_original_strict_and_fast_kernels_bit_for_bit() {
+fn prepared_matches_original_strict_exactly_and_fast_with_reassociation() {
     for size in 0..14 {
         for weighted in [false, true] {
             for masked in [false, true] {
@@ -32,6 +32,17 @@ fn prepared_matches_original_strict_and_fast_kernels_bit_for_bit() {
                 let p = Prepared1d::new(make());
                 assert!(matches!(p.col_idx, Columns::Compact(_)));
                 for fast in [false, true] {
+                    let compare = |a: &[f64], b: &[f64]| {
+                        if !fast || !masked {
+                            same(a, b);
+                        } else {
+                            // Mask compaction changes four-lane assignment,
+                            // while retaining every remaining float64 weight.
+                            for (&x, &y) in a.iter().zip(b) {
+                                assert!((x - y).abs() <= 2e-13 * x.abs().max(1.));
+                            }
+                        }
+                    };
                     let expected = if fast {
                         super::super::fast::integrate1d_with_errors(
                             &signal, &variance, &l, m, &norm,
@@ -44,9 +55,9 @@ fn prepared_matches_original_strict_and_fast_kernels_bit_for_bit() {
                     } else {
                         p.integrate::<false, true>(&signal, m, &norm)
                     };
-                    same(&expected.0, &actual.0);
-                    same(&expected.1, &actual.1);
-                    same(&expected.2, &actual.2);
+                    compare(&expected.0, &actual.0);
+                    compare(&expected.1, &actual.1);
+                    compare(&expected.2, &actual.2);
                     let expected = if fast {
                         super::super::fast::integrate1d(&signal, &l, m, &norm)
                     } else {
@@ -57,8 +68,8 @@ fn prepared_matches_original_strict_and_fast_kernels_bit_for_bit() {
                     } else {
                         p.integrate::<false, false>(&signal, m, &norm)
                     };
-                    same(&expected.0, &actual.0);
-                    same(&expected.1, &actual.1);
+                    compare(&expected.0, &actual.0);
+                    compare(&expected.1, &actual.1);
                     let expected = if fast {
                         super::super::fast::integrate1d_raw_with_variance(
                             &signal, &variance, &l, m, &norm,
@@ -73,10 +84,10 @@ fn prepared_matches_original_strict_and_fast_kernels_bit_for_bit() {
                     } else {
                         p.raw1d::<false, true>(&signal, m, &norm)
                     };
-                    same(&expected.sum_signal, &actual.sum_signal);
-                    same(&expected.sum_norm, &actual.sum_norm);
-                    same(&expected.count, &actual.count);
-                    same(
+                    compare(&expected.sum_signal, &actual.sum_signal);
+                    compare(&expected.sum_norm, &actual.sum_norm);
+                    compare(&expected.count, &actual.count);
+                    compare(
                         expected.sum_variance.as_ref().unwrap(),
                         actual.sum_variance.as_ref().unwrap(),
                     );
@@ -106,8 +117,8 @@ fn prepared_matches_original_strict_and_fast_kernels_bit_for_bit() {
                     } else {
                         p2.integrate::<false, true>(&signal, m, &norm)
                     };
-                    same(&expected.0, &actual.0);
-                    same(&expected.1, &actual.1);
+                    compare(&expected.0, &actual.0);
+                    compare(&expected.1, &actual.1);
                 }
             }
         }
@@ -185,5 +196,143 @@ fn nonfinite_negative_and_zero_normalization_semantics_match_original() {
                 same(&expected.2, &actual.2);
             }
         }
+    }
+}
+
+#[test]
+fn mask_policies_refresh_all_raw_sums_and_restore_previously_masked_pixels() {
+    let make = || {
+        Prepared1d::new(Lut1d {
+            row_ptr: vec![0, 3, 4, 4],
+            col_idx: vec![0, 1, 2, 2],
+            values: Some(vec![0.25, 0.5, 0.75, 1.]),
+            hist_min: 0.,
+            hist_step: 1.,
+        })
+    };
+    let norm = [1., 2., 3.];
+    for mode in [MaskMode::Fixed, MaskMode::Dynamic] {
+        for fast in [false, true] {
+            let mut p = make();
+            p.set_mask_mode(mode);
+            let original = match &p.col_idx {
+                Columns::Compact(c) => c.as_ptr() as usize,
+                _ => unreachable!(),
+            };
+            let masks = [vec![0, 1, 0], vec![0, 0, 0], vec![1, 1, 1], vec![0, 1, 0]];
+            let mut csc_address = None;
+            for (i, mask) in masks.iter().enumerate() {
+                p.invalidate_mask();
+                let signal = if i == 0 {
+                    [4., f64::NAN, 9.]
+                } else {
+                    [4., 8., 9.]
+                };
+                let got = if fast {
+                    p.raw1d::<true, true>(&signal, Some(mask), &norm)
+                } else {
+                    p.raw1d::<false, true>(&signal, Some(mask), &norm)
+                };
+                let (s, n, v, c) = match i {
+                    1 => (
+                        vec![11.75, 9., 0.],
+                        vec![3.5, 3., 0.],
+                        vec![7.3125, 9., 0.],
+                        vec![1.5, 1., 0.],
+                    ),
+                    2 => (vec![0.; 3], vec![0.; 3], vec![0.; 3], vec![0.; 3]),
+                    _ => (
+                        vec![7.75, 9., 0.],
+                        vec![2.5, 3., 0.],
+                        vec![5.3125, 9., 0.],
+                        vec![1., 1., 0.],
+                    ),
+                };
+                same(&got.sum_signal, &s);
+                same(&got.sum_norm, &n);
+                same(got.sum_variance.as_ref().unwrap(), &v);
+                same(&got.count, &c);
+                if fast && mode == MaskMode::Dynamic {
+                    let address = p.csc.get().unwrap().as_ref().unwrap() as *const Csc as usize;
+                    assert_eq!(*csc_address.get_or_insert(address), address);
+                    assert!(p.fixed.get().is_none());
+                }
+                assert_eq!(
+                    match &p.col_idx {
+                        Columns::Compact(c) => c.as_ptr() as usize,
+                        _ => unreachable!(),
+                    },
+                    original
+                );
+            }
+            p.invalidate_mask();
+            let got = p.raw1d::<false, true>(&[4., 8., 9.], None, &norm);
+            same(&got.sum_signal, &[11.75, 9., 0.]);
+            same(&got.sum_norm, &[3.5, 3., 0.]);
+        }
+    }
+}
+
+#[test]
+fn switching_policy_releases_inactive_layout_and_corrections_preserve_fixed_table() {
+    let mut p = Prepared1d::new(Lut1d {
+        row_ptr: vec![0, 2],
+        col_idx: vec![0, 1],
+        values: Some(vec![0.3, 0.7]),
+        hist_min: 0.,
+        hist_step: 1.,
+    });
+    p.prepare_normalization(Some(&[0, 1]), &[1., 1.], true);
+    let fixed = p.fixed.get().unwrap().as_ref().unwrap().as_ref() as *const PreparedCsr as usize;
+    p.invalidate_normalization();
+    p.prepare_normalization(Some(&[0, 1]), &[2., 2.], true);
+    assert_eq!(
+        p.fixed.get().unwrap().as_ref().unwrap().as_ref() as *const PreparedCsr as usize,
+        fixed
+    );
+    let out = p.integrate::<true, true>(&[4., 8.], Some(&[0, 1]), &[2., 2.]);
+    p.set_mask_mode(MaskMode::Dynamic);
+    assert!(p.fixed.get().is_none());
+    p.prepare_normalization(Some(&[0, 1]), &[2., 2.], true);
+    assert!(p.csc.get().unwrap().is_some());
+    let dynamic = p.integrate::<true, true>(&[4., 8.], Some(&[0, 1]), &[2., 2.]);
+    for (a, b) in out
+        .1
+        .iter()
+        .chain(&out.2)
+        .zip(dynamic.1.iter().chain(&dynamic.2))
+    {
+        assert!((a - b).abs() < 1e-14);
+    }
+    p.set_mask_mode(MaskMode::Fixed);
+    assert!(p.csc.get().is_none());
+    p.prepare_normalization(Some(&[0, 1]), &[2., 2.], true);
+    assert!(p.fixed.get().unwrap().is_some());
+}
+
+#[test]
+fn dynamic_first_use_is_safe_when_all_pool_workers_integrate_concurrently() {
+    let mut p = Prepared1d::new(Lut1d {
+        row_ptr: vec![0, 3, 4, 4],
+        col_idx: vec![0, 1, 2, 2],
+        values: Some(vec![0.25, 0.5, 0.75, 1.]),
+        hist_min: 0.,
+        hist_step: 1.,
+    });
+    p.set_mask_mode(MaskMode::Dynamic);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let outputs: Vec<_> = pool.install(|| {
+        (0..8)
+            .into_par_iter()
+            .map(|_| {
+                p.integrate::<true, true>(&[4., f64::NAN, 9.], Some(&[0, 1, 0]), &[1., 2., 3.])
+            })
+            .collect()
+    });
+    for x in &outputs[1..] {
+        assert_eq!(x, &outputs[0]);
     }
 }

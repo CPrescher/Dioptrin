@@ -1,0 +1,656 @@
+{
+  "protocol": "Dioptrin 0.7.0, 16 distinct Eiger9M frames, 2000 bins, full pixel splitting, same float64 input, masks, polarization 0.965 and solid angle. Native Rust and Python execute sequentially, five warmed >=1 s samples per workflow, 1 and 8 Rayon threads. Python result access measured separately. No profiling counters collected; native/Python timing differences include normal run-to-run variation.",
+  "input": {
+    "indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "shape": [
+      16,
+      3262,
+      3108
+    ],
+    "bins": 2000,
+    "orientation": "bottom-up, as required by Dioptrin",
+    "version": "0.7.0"
+  },
+  "layout": {
+    "pixels": 10138296,
+    "active_pixels": 9250708,
+    "csr_entries_before_mask": 21117433,
+    "csc_entries_after_mask": 19243209,
+    "padded_width": 3,
+    "padded_weight_slots": 30414888,
+    "padded_work_ratio": 1.5805517676391707,
+    "dioptrin_prepared_csr_bytes": 253425204,
+    "jon_csc_bytes": 194498860,
+    "dioptrin_float64_frame_bytes": 81106368,
+    "jon_uint32_frame_bytes": 40553184
+  },
+  "numerical": {
+    "1": {
+      "relative_l2": 0.0,
+      "max_absolute": 0.0
+    },
+    "8": {
+      "relative_l2": 0.0,
+      "max_absolute": 0.0
+    }
+  },
+  "runs": {
+    "python-w8-b": {
+      "summary": {
+        "python_consumed": 247.70959339812063,
+        "materialize_existing": 20653.059520500585,
+        "python_return": 251.68429588546337
+      },
+      "measurements": [
+        {
+          "numerical_relative_l2": 0.0
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 16,
+          "seconds": 1.0165796249930281,
+          "fps": 251.82483861188513,
+          "seconds_per_frame": 0.003971014160129016
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 16,
+          "seconds": 1.0334682500106283,
+          "fps": 247.70959339812063,
+          "seconds_per_frame": 0.004036985351604017
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 1291,
+          "seconds": 1.0001423750072718,
+          "fps": 20653.059520500585,
+          "seconds_per_frame": 4.841897632684313e-05
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 1323,
+          "seconds": 1.0000502920011058,
+          "fps": 21166.93547245781,
+          "seconds_per_frame": 4.724349452008248e-05
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 15,
+          "seconds": 1.058855625014985,
+          "fps": 226.65979603839145,
+          "seconds_per_frame": 0.004411898437562438
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 16,
+          "seconds": 1.0302859999937937,
+          "fps": 248.4746953773439,
+          "seconds_per_frame": 0.0040245546874757565
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 16,
+          "seconds": 1.0126175830082502,
+          "fps": 252.81014698508773,
+          "seconds_per_frame": 0.003955537433625977
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 16,
+          "seconds": 1.0250100420089439,
+          "fps": 249.75365070400574,
+          "seconds_per_frame": 0.004003945476597437
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 1274,
+          "seconds": 1.0001639580004849,
+          "fps": 20380.658427995582,
+          "seconds_per_frame": 4.906612823785738e-05
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 1303,
+          "seconds": 1.0003089160018135,
+          "fps": 20841.561708085588,
+          "seconds_per_frame": 4.798104930937325e-05
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 16,
+          "seconds": 1.0293664580094628,
+          "fps": 248.69665997767206,
+          "seconds_per_frame": 0.004020962726599464
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 16,
+          "seconds": 1.0171472920046654,
+          "fps": 251.68429588546337,
+          "seconds_per_frame": 0.003973231609393224
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 16,
+          "seconds": 1.0511335420014802,
+          "fps": 243.54659971419645,
+          "seconds_per_frame": 0.004105990398443282
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 16,
+          "seconds": 1.0602412909793202,
+          "fps": 241.4544709568317,
+          "seconds_per_frame": 0.0041415675428879695
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 1281,
+          "seconds": 1.0002337500045542,
+          "fps": 20491.210179527214,
+          "seconds_per_frame": 4.8801412470948194e-05
+        },
+        {
+          "summary": {
+            "python_return": 251.68429588546337,
+            "python_consumed": 247.70959339812063,
+            "materialize_existing": 20653.059520500585
+          }
+        }
+      ]
+    },
+    "native-w1": {
+      "summary": {
+        "native_rust": 36.43516452611656
+      },
+      "measurements": [
+        {
+          "workflow": "native_rust",
+          "threads": 1,
+          "repeat": 0,
+          "loops": 3,
+          "seconds": 1.317408625,
+          "fps": 36.43516452611656
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 1,
+          "repeat": 1,
+          "loops": 3,
+          "seconds": 1.319895542,
+          "fps": 36.36651422222926
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 1,
+          "repeat": 2,
+          "loops": 3,
+          "seconds": 1.322750167,
+          "fps": 36.28803170659513
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 1,
+          "repeat": 3,
+          "loops": 3,
+          "seconds": 1.311273667,
+          "fps": 36.605631004408785
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 1,
+          "repeat": 4,
+          "loops": 3,
+          "seconds": 1.316346167,
+          "fps": 36.46457231640953
+        }
+      ]
+    },
+    "python-w1": {
+      "summary": {
+        "python_consumed": 36.1658657107308,
+        "materialize_existing": 22272.36758159338,
+        "python_return": 36.016399824876984
+      },
+      "measurements": [
+        {
+          "workflow": "python_return",
+          "threads": 1,
+          "repeat": 0,
+          "loops": 3,
+          "seconds": 1.3273032910074107,
+          "fps": 36.1635508065142,
+          "seconds_per_frame": 0.027652151895987725
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 1,
+          "repeat": 0,
+          "loops": 3,
+          "seconds": 1.3272183329972904,
+          "fps": 36.1658657107308,
+          "seconds_per_frame": 0.02765038193744355
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 1,
+          "repeat": 0,
+          "loops": 1403,
+          "seconds": 1.0003407080075704,
+          "fps": 22440.354391566078,
+          "seconds_per_frame": 4.456257608729376e-05
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 1,
+          "repeat": 1,
+          "loops": 1393,
+          "seconds": 1.0007018750184216,
+          "fps": 22272.36758159338,
+          "seconds_per_frame": 4.489868427038862e-05
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 1,
+          "repeat": 1,
+          "loops": 3,
+          "seconds": 1.3256018340180162,
+          "fps": 36.20996800714115,
+          "seconds_per_frame": 0.027616704875375337
+        },
+        {
+          "workflow": "python_return",
+          "threads": 1,
+          "repeat": 1,
+          "loops": 3,
+          "seconds": 1.3327262089878786,
+          "fps": 36.016399824876984,
+          "seconds_per_frame": 0.027765129353914137
+        },
+        {
+          "workflow": "python_return",
+          "threads": 1,
+          "repeat": 2,
+          "loops": 3,
+          "seconds": 1.423205166007392,
+          "fps": 33.72669039324629,
+          "seconds_per_frame": 0.029650107625154003
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 1,
+          "repeat": 2,
+          "loops": 3,
+          "seconds": 1.4341042090090923,
+          "fps": 33.470371050068984,
+          "seconds_per_frame": 0.029877171021022757
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 1,
+          "repeat": 2,
+          "loops": 1300,
+          "seconds": 1.0004609159950633,
+          "fps": 20790.41736409285,
+          "seconds_per_frame": 4.809908249976266e-05
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 1,
+          "repeat": 3,
+          "loops": 1353,
+          "seconds": 1.0005569589848164,
+          "fps": 21635.94966343991,
+          "seconds_per_frame": 4.621937171954991e-05
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 1,
+          "repeat": 3,
+          "loops": 3,
+          "seconds": 1.3241655419988092,
+          "fps": 36.24924412966122,
+          "seconds_per_frame": 0.02758678212497519
+        },
+        {
+          "workflow": "python_return",
+          "threads": 1,
+          "repeat": 3,
+          "loops": 3,
+          "seconds": 1.3238304579863325,
+          "fps": 36.25841943009258,
+          "seconds_per_frame": 0.027579801208048593
+        },
+        {
+          "workflow": "python_return",
+          "threads": 1,
+          "repeat": 4,
+          "loops": 3,
+          "seconds": 1.3338400420034304,
+          "fps": 35.98632406319419,
+          "seconds_per_frame": 0.0277883342084048
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 1,
+          "repeat": 4,
+          "loops": 3,
+          "seconds": 1.329992500017397,
+          "fps": 36.090429080894914,
+          "seconds_per_frame": 0.027708177083695773
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 1,
+          "repeat": 4,
+          "loops": 1395,
+          "seconds": 1.0002147080085706,
+          "fps": 22315.208745969318,
+          "seconds_per_frame": 4.481248691794671e-05
+        },
+        {
+          "summary": {
+            "python_return": 36.016399824876984,
+            "python_consumed": 36.1658657107308,
+            "materialize_existing": 22272.36758159338
+          }
+        }
+      ]
+    },
+    "python-w8-a": {
+      "summary": {
+        "python_consumed": 258.6636368190966,
+        "materialize_existing": 22126.143240543697,
+        "python_return": 259.9925580351411
+      },
+      "measurements": [
+        {
+          "numerical_relative_l2": 0.0
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 17,
+          "seconds": 1.0294701669772621,
+          "fps": 264.2135816316547,
+          "seconds_per_frame": 0.0037848167903575813
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 17,
+          "seconds": 1.0462094169924967,
+          "fps": 259.98618974574833,
+          "seconds_per_frame": 0.0038463581507077083
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 1404,
+          "seconds": 1.0001384999777656,
+          "fps": 22460.889167349727,
+          "seconds_per_frame": 4.452183493490766e-05
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 1404,
+          "seconds": 1.000065791013185,
+          "fps": 22462.522167907886,
+          "seconds_per_frame": 4.451859824666956e-05
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 17,
+          "seconds": 1.0548795420036186,
+          "fps": 257.84934598633725,
+          "seconds_per_frame": 0.003878233610307421
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 16,
+          "seconds": 1.0030699170019943,
+          "fps": 255.21650650748307,
+          "seconds_per_frame": 0.00391824186328904
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 17,
+          "seconds": 1.0256592080113478,
+          "fps": 265.1952986678501,
+          "seconds_per_frame": 0.003770805911806426
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 17,
+          "seconds": 1.0349894579849206,
+          "fps": 262.80460916922976,
+          "seconds_per_frame": 0.003805108301415149
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 1373,
+          "seconds": 1.0006383750005625,
+          "fps": 21953.98512473365,
+          "seconds_per_frame": 4.554981677897681e-05
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 1383,
+          "seconds": 1.0000839169952087,
+          "fps": 22126.143240543697,
+          "seconds_per_frame": 4.519540478105607e-05
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 17,
+          "seconds": 1.051558709004894,
+          "fps": 258.6636368190966,
+          "seconds_per_frame": 0.0038660246654591687
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 17,
+          "seconds": 1.0504251669917721,
+          "fps": 258.9427676975399,
+          "seconds_per_frame": 0.0038618572315873975
+        },
+        {
+          "workflow": "python_return",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 17,
+          "seconds": 1.0461837910115719,
+          "fps": 259.9925580351411,
+          "seconds_per_frame": 0.0038462639375425435
+        },
+        {
+          "workflow": "python_consumed",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 17,
+          "seconds": 1.0568407090031542,
+          "fps": 257.37085795697544,
+          "seconds_per_frame": 0.0038854437830998317
+        },
+        {
+          "workflow": "materialize_existing",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 1355,
+          "seconds": 1.0000776670058258,
+          "fps": 21678.316310080852,
+          "seconds_per_frame": 4.612904368108053e-05
+        },
+        {
+          "summary": {
+            "python_return": 259.9925580351411,
+            "python_consumed": 258.6636368190966,
+            "materialize_existing": 22126.143240543697
+          }
+        }
+      ]
+    },
+    "native-w8-b": {
+      "summary": {
+        "native_rust": 259.59434327701354
+      },
+      "measurements": [
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 17,
+          "seconds": 1.0255705,
+          "fps": 265.2182370690265
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 17,
+          "seconds": 1.047788625,
+          "fps": 259.59434327701354
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 17,
+          "seconds": 1.043796792,
+          "fps": 260.58712010297114
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 16,
+          "seconds": 1.007346458,
+          "fps": 254.13302242434648
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 17,
+          "seconds": 1.060558958,
+          "fps": 256.4685328884846
+        }
+      ]
+    },
+    "native-w8-a": {
+      "summary": {
+        "native_rust": 259.535556274838
+      },
+      "measurements": [
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 0,
+          "loops": 15,
+          "seconds": 1.044872208,
+          "fps": 229.69316071616674
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 1,
+          "loops": 17,
+          "seconds": 1.042236583,
+          "fps": 260.97721423006317
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 2,
+          "loops": 17,
+          "seconds": 1.04209025,
+          "fps": 261.01386132343146
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 3,
+          "loops": 17,
+          "seconds": 1.048025958,
+          "fps": 259.535556274838
+        },
+        {
+          "workflow": "native_rust",
+          "threads": 8,
+          "repeat": 4,
+          "loops": 16,
+          "seconds": 1.035590833,
+          "fps": 247.20187920010295
+        }
+      ]
+    }
+  }
+}

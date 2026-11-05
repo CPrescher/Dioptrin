@@ -1,0 +1,85 @@
+{
+  "arguments": {
+    "workers": 1,
+    "errors": false,
+    "thresholds": [
+      230.0
+    ],
+    "repeats": 5,
+    "output": "docs/benchmarks/2026-11-05-jon-dynamic-masks/smoke-intensity.json",
+    "smoke": true
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "versions": {
+    "bslz4_to_sparse": "0.0.22a3",
+    "dioptrin": "0.7.0",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3"
+  },
+  "build_info": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "input_metadata": {
+    "indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "shape": [
+      16,
+      3262,
+      3108
+    ],
+    "bins": 2000,
+    "orientation": "bottom-up, as required by Dioptrin",
+    "version": "0.7.0"
+  },
+  "weights": "Jon float32, denominator float64 original weights",
+  "pipeline": {
+    "dot": "csc",
+    "route": "dense"
+  },
+  "measurements": [],
+  "numerical": [
+    {
+      "event": "numerical",
+      "threshold": 230.0,
+      "errors": false,
+      "frames": 1,
+      "vs_float64": {
+        "intensity": {
+          "relative_l2": 7.359733117773307e-10,
+          "max_absolute": 4.407039796205936e-06
+        },
+        "sigma": {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0
+        }
+      },
+      "max_absolute_vs_rounded_weight_reference": 0.0,
+      "extra_masked_pixels": [
+        211776
+      ]
+    }
+  ],
+  "mask_stats": []
+}

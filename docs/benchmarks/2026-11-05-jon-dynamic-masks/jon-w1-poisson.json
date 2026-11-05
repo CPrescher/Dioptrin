@@ -1,0 +1,165 @@
+{
+  "arguments": {
+    "workers": 1,
+    "errors": true,
+    "thresholds": [
+      230.0
+    ],
+    "repeats": 3,
+    "output": "/Users/clemens/Programming/Dioptrin/docs/benchmarks/2026-11-05-jon-dynamic-masks/jon-w1-poisson.json",
+    "smoke": false,
+    "variance_via_scipy": false
+  },
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "versions": {
+    "bslz4_to_sparse": "0.0.22a3",
+    "dioptrin": "0.7.0",
+    "numpy": "2.4.2",
+    "scipy": "1.16.3"
+  },
+  "build_info": {
+    "built_utc": "2026-11-05T12:08:28Z",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
+    "git": "v0.0.22.a3-12-g94264db",
+    "modified": [],
+    "platform": "darwin_arm64",
+    "src_sha256": "fe6b3c32d2a22d0e0a06fa000a3c14df7ee26459db697fa603a65369a7db9ced",
+    "version": "0.0.22a3"
+  },
+  "input_metadata": {
+    "indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "shape": [
+      16,
+      3262,
+      3108
+    ],
+    "bins": 2000,
+    "orientation": "bottom-up, as required by Dioptrin",
+    "version": "0.7.0"
+  },
+  "weights": "Jon float32, denominator float64 original weights",
+  "pipeline": {
+    "dot": "csc",
+    "route": "dense"
+  },
+  "measurements": [
+    {
+      "event": "measurement",
+      "workers": 1,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 0,
+      "frames": 16,
+      "seconds": 12.507450834003976,
+      "fps": 1.279237489105361,
+      "process_cores": 0.9964093535445386,
+      "observed_other_busy_cores": 1.7931225948157192,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.002958635433969903,
+        "normalization_seconds": 0.03421840356531902,
+        "variance_seconds": 5.259371391730383e-07,
+        "matrix_plan_seconds": 0.7122215339386457,
+        "integration_output_seconds": 0.03226864330827084,
+        "job_seconds_before_cleanup": 0.7816677421833447
+      },
+      "rss_gib_after_batch": 4.5846710205078125
+    },
+    {
+      "event": "measurement",
+      "workers": 1,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 1,
+      "frames": 16,
+      "seconds": 12.249053333012853,
+      "fps": 1.3062233925358002,
+      "process_cores": 0.999031489806573,
+      "observed_other_busy_cores": 1.9149226426981152,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.0026444793093105545,
+        "normalization_seconds": 0.03211467437540705,
+        "variance_seconds": 5.078127287561074e-07,
+        "matrix_plan_seconds": 0.6985803411880624,
+        "integration_output_seconds": 0.03217691143981938,
+        "job_seconds_before_cleanup": 0.7655169141253282
+      },
+      "rss_gib_after_batch": 5.6946258544921875
+    },
+    {
+      "event": "measurement",
+      "workers": 1,
+      "errors": true,
+      "threshold": 230.0,
+      "repeat": 2,
+      "frames": 16,
+      "seconds": 12.245465124986367,
+      "fps": 1.3066061465768792,
+      "process_cores": 0.9980486551762243,
+      "observed_other_busy_cores": 1.8522641435414748,
+      "stage_mean_seconds": {
+        "mask_seconds": 0.0026424763764225645,
+        "normalization_seconds": 0.03204121874841803,
+        "variance_seconds": 5.130004865350202e-07,
+        "matrix_plan_seconds": 0.6983352761926653,
+        "integration_output_seconds": 0.03227457293360203,
+        "job_seconds_before_cleanup": 0.7652940572515945
+      },
+      "rss_gib_after_batch": 5.7615509033203125
+    }
+  ],
+  "numerical": [
+    {
+      "event": "numerical",
+      "threshold": 230.0,
+      "errors": true,
+      "frames": 16,
+      "vs_float64": {
+        "intensity": {
+          "relative_l2": 5.291653202760925e-10,
+          "max_absolute": 4.647159073556395e-06
+        },
+        "sigma": {
+          "relative_l2": 7.952827071594796e-09,
+          "max_absolute": 3.557934871167845e-07
+        }
+      },
+      "max_absolute_vs_rounded_weight_reference": 0.0,
+      "extra_masked_pixels": [
+        211776,
+        58609,
+        105321,
+        161433,
+        120953,
+        140203,
+        82292,
+        138250,
+        37345,
+        49575,
+        57370,
+        47293,
+        46398,
+        36095,
+        33608,
+        118964
+      ]
+    }
+  ],
+  "mask_stats": []
+}

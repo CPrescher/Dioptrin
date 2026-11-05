@@ -1,0 +1,991 @@
+{
+  "threads": 1,
+  "records": [
+    {
+      "bins": 2000,
+      "csc_bytes": 271471696,
+      "csr_bytes": 253425204,
+      "event": "setup",
+      "folded_csr_bytes": 230934516,
+      "folded_nnz": 19243209,
+      "frames": 16,
+      "inputs": "same readonly f64 mapping",
+      "npix": 10138296,
+      "original_nnz": 21117433,
+      "threads": 1,
+      "weights": "f64 throughout"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": false,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "production_csr_fast"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": false,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": false,
+          "max_absolute": 1.2732925824820995e-11,
+          "max_relative": 4.506565231282349e-15,
+          "relative_l2": 6.189867149517516e-16
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "folded_csr_fast"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": false,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": false,
+          "max_absolute": 2.3646862246096134e-11,
+          "max_relative": 1.6629856756513126e-14,
+          "relative_l2": 2.9680808966261777e-15
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "csc_f64_fma"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": false,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": false,
+          "max_absolute": 9.549694368615746e-12,
+          "max_relative": 3.541008260164723e-15,
+          "relative_l2": 5.537099739330074e-16
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "csc_f64_four_histograms"
+    },
+    {
+      "comparison": "folded_csr_strict",
+      "errors": false,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "folded_csr_strict"
+    },
+    {
+      "comparison": "folded_csr_strict",
+      "errors": false,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "csc_f64_strict"
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 35.92334294498796,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 0,
+      "seconds": 1.336178542,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 2.5374312183798575
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 59.57519395972693,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 0,
+      "seconds": 1.074272625,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 3.053436255410121
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 56.18208085698741,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 0,
+      "seconds": 1.1391532500000001,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 2.871066133870317
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 71.00887675932614,
+      "frames": 16,
+      "loops": 5,
+      "repeat": 0,
+      "seconds": 1.126619708,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 2.4721239166038504
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 56.90284905452359,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 0,
+      "seconds": 1.124724,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.4866150107483493
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.739658034231454,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 0,
+      "seconds": 1.0895535,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.531652609408353
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 36.149025487228144,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 1,
+      "seconds": 1.327836625,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 2.4407734167498556
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.36023470389077,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 1,
+      "seconds": 1.096637125,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.499704591179494
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 56.93165088444209,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 1,
+      "seconds": 1.124155,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.5361504108149515
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 71.30977488285804,
+      "frames": 16,
+      "loops": 5,
+      "repeat": 1,
+      "seconds": 1.121865833,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 2.7435975061736757
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.48691383860925,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 1,
+      "seconds": 1.094261875,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 2.4704273877674328
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 60.059526986668324,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 1,
+      "seconds": 1.065609458,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 2.3937873539411285
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.446123080213006,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 2,
+      "seconds": 1.095025583,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 2.3876005471361794
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 72.37084362496108,
+      "frames": 16,
+      "loops": 5,
+      "repeat": 2,
+      "seconds": 1.105417541,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 1.4254569510973374
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 56.6614289107382,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 2,
+      "seconds": 1.129516167,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 3.420485664814754
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 59.05983432284272,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 2,
+      "seconds": 1.083646792,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.529004655505013
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 36.34972067166956,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 2,
+      "seconds": 1.320505333,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 2.4784092377604514
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 60.62611619606924,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 2,
+      "seconds": 1.055650667,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 2.4584369682821308
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.66163032128013,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 3,
+      "seconds": 1.09100275,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 2.4099674333008987
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 60.734243793422905,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 3,
+      "seconds": 1.05377125,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 2.3775495473307036
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 36.15705268701691,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 3,
+      "seconds": 1.327541833,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 2.577038802789205
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.98612075011912,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 3,
+      "seconds": 1.085001,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.537389798119925
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 57.28209867289013,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 3,
+      "seconds": 1.1172775,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.5668019445132444
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 71.59543033216475,
+      "frames": 16,
+      "loops": 5,
+      "repeat": 3,
+      "seconds": 1.11738975,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 1.7011346112128392
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 57.20335265060162,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 4,
+      "seconds": 1.118815542,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.5641076987193276
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 58.11920572746029,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 4,
+      "seconds": 1.101185042,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 3.147886734953557
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 35.83337034870722,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 4,
+      "seconds": 1.3395335,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 4.899105419819486
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 60.3854692275295,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 4,
+      "seconds": 1.059857625,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 3.4416002707782827
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 57.82428014418123,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 4,
+      "seconds": 1.1068015,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 3.4769371022905715
+    },
+    {
+      "errors": false,
+      "event": "measurement",
+      "fps": 72.38441735407358,
+      "frames": 16,
+      "loops": 5,
+      "repeat": 4,
+      "seconds": 1.10521025,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 3.5701344149277823
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": true,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "production_csr_fast"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": true,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": false,
+          "max_absolute": 1.2732925824820995e-11,
+          "max_relative": 4.506565231282349e-15,
+          "relative_l2": 6.189867149517516e-16
+        },
+        "poisson_sigma": {
+          "byte_identical": false,
+          "max_absolute": 9.992007221626409e-16,
+          "max_relative": 1.2903280842757477e-15,
+          "relative_l2": 8.694714282005059e-17
+        }
+      },
+      "threads": 1,
+      "variant": "folded_csr_fast"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": true,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": false,
+          "max_absolute": 2.3646862246096134e-11,
+          "max_relative": 1.6629856756513126e-14,
+          "relative_l2": 2.9680808966261777e-15
+        },
+        "poisson_sigma": {
+          "byte_identical": false,
+          "max_absolute": 2.9976021664879227e-15,
+          "max_relative": 7.850793633440884e-15,
+          "relative_l2": 5.656622930746137e-16
+        }
+      },
+      "threads": 1,
+      "variant": "csc_f64_fma"
+    },
+    {
+      "comparison": "production_csr_fast",
+      "errors": true,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": false,
+          "max_absolute": 9.549694368615746e-12,
+          "max_relative": 3.541008260164723e-15,
+          "relative_l2": 5.537099739330074e-16
+        },
+        "poisson_sigma": {
+          "byte_identical": false,
+          "max_absolute": 1.7763568394002505e-15,
+          "max_relative": 1.784387180646767e-15,
+          "relative_l2": 9.650404138010713e-17
+        }
+      },
+      "threads": 1,
+      "variant": "csc_f64_four_histograms"
+    },
+    {
+      "comparison": "folded_csr_strict",
+      "errors": true,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "folded_csr_strict"
+    },
+    {
+      "comparison": "folded_csr_strict",
+      "errors": true,
+      "event": "numerical",
+      "metrics": {
+        "intensity": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        },
+        "poisson_sigma": {
+          "byte_identical": true,
+          "max_absolute": 0.0,
+          "max_relative": 0.0,
+          "relative_l2": 0.0
+        }
+      },
+      "threads": 1,
+      "variant": "csc_f64_strict"
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 34.210650425052044,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 0,
+      "seconds": 1.403071833,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 3.461781360958339
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 48.51583551223573,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 0,
+      "seconds": 1.319156917,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 2.3752166893664532
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 44.573685763772644,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 0,
+      "seconds": 1.076868542,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 2.575907330544893
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 57.29129874444517,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 0,
+      "seconds": 1.117098083,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 2.880026591477189
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 40.52391368827833,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 0,
+      "seconds": 1.184485792,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.8393123130749127
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 43.65715535660222,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 0,
+      "seconds": 1.099476125,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.664497042471263
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 33.37320736338104,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 1,
+      "seconds": 1.4382795,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 3.026932940590965
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 43.21785598445783,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 1,
+      "seconds": 1.110652042,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.898268865441454
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 40.57357510675922,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 1,
+      "seconds": 1.183036,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.4901256803444447
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 58.08801480391936,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 1,
+      "seconds": 1.101776334,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 2.7768884811049865
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 44.552144799282225,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 1,
+      "seconds": 1.077389208,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 1.736694403591233
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 47.39913597729561,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 1,
+      "seconds": 1.350235583,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 3.108807664088715
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 40.43041829116193,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 2,
+      "seconds": 1.187224917,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 4.665424718820011
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 57.62477649296286,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 2,
+      "seconds": 1.110633375,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 3.3264625242810584
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 40.46473181353662,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 2,
+      "seconds": 1.186218167,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 2.641630602232475
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 43.65743001326509,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 2,
+      "seconds": 1.099469208,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 2.349350857018245
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 32.715578759270635,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 2,
+      "seconds": 1.467190917,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 3.694327314392185
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 48.17675902333289,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 2,
+      "seconds": 1.328441375,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 2.614476176269994
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 44.2468630681737,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 3,
+      "seconds": 1.084822667,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 4.550517064006558
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 47.23048941100988,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 3,
+      "seconds": 1.016292666,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 2.4823423221595755
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 34.2558260774617,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 3,
+      "seconds": 1.4012215000000001,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 1.3915073423990223
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 44.43436101249998,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 3,
+      "seconds": 1.0802450829999999,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 1.3517171249649143
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 40.817181227115405,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 3,
+      "seconds": 1.175975375,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 1.526521847454365
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 59.13442675814331,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 3,
+      "seconds": 1.082279875,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 1.4434470650982394
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 41.10024643887578,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 4,
+      "seconds": 1.167876209,
+      "threads": 1,
+      "variant": "folded_csr_strict",
+      "other_busy_cores": 1.4775618325029016
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 44.62711429739947,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 4,
+      "seconds": 1.075579292,
+      "threads": 1,
+      "variant": "csc_f64_strict",
+      "other_busy_cores": 1.3782382578335268
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 34.66077168778191,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 4,
+      "seconds": 1.384850875,
+      "threads": 1,
+      "variant": "production_csr_fast",
+      "other_busy_cores": 1.3072510027353017
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 48.9791685917457,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 4,
+      "seconds": 1.3066779579999999,
+      "threads": 1,
+      "variant": "folded_csr_fast",
+      "other_busy_cores": 1.3842179617068797
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 44.29595897600633,
+      "frames": 16,
+      "loops": 3,
+      "repeat": 4,
+      "seconds": 1.083620292,
+      "threads": 1,
+      "variant": "csc_f64_fma",
+      "other_busy_cores": 1.787439095613241
+    },
+    {
+      "errors": true,
+      "event": "measurement",
+      "fps": 59.44274978118381,
+      "frames": 16,
+      "loops": 4,
+      "repeat": 4,
+      "seconds": 1.076666208,
+      "threads": 1,
+      "variant": "csc_f64_four_histograms",
+      "other_busy_cores": 1.5035608499036421
+    }
+  ]
+}

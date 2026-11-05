@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     geometry::Geometry,
-    integration::{IntegrationMethod, Integrator},
+    integration::{IntegrationMethod, Integrator, MaskMode},
     mask::Mask,
     poni::Poni,
 };
@@ -59,7 +59,9 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
                     IntegrationMethod::Supersampled { n_ss: 3 },
                     IntegrationMethod::Histogram,
                 ] {
-                    for fast in [false, true] {
+                    for (fast, mode) in [false, true].into_iter().flat_map(|fast| {
+                        [MaskMode::Fixed, MaskMode::Dynamic].map(|mode| (fast, mode))
+                    }) {
                         let mut p = Poni::new();
                         p.pixel1 = 0.1;
                         p.pixel2 = 0.1;
@@ -69,6 +71,7 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
                         let mut ai = Integrator::new(Geometry::new(3, 3, p))
                             .with_method(method)
                             .with_fast_math(fast)
+                            .with_mask_mode(mode)
                             .with_polarization_factor(0.965);
                         ai.set_mask(Mask {
                             data: vec![0, 1, 0, 0, 0, 0, 0, 0, 1],

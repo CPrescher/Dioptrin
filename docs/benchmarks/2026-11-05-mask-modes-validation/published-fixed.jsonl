@@ -1,0 +1,10 @@
+{"errors": false, "repeat": 0, "loops": 13, "seconds": 1.0264918750035577, "fps": 202.63190100679472}
+{"errors": false, "repeat": 1, "loops": 16, "seconds": 1.0469711250043474, "fps": 244.51486185823606}
+{"errors": false, "repeat": 2, "loops": 16, "seconds": 1.0337113339919597, "fps": 247.6513428670515}
+{"errors": false, "repeat": 3, "loops": 15, "seconds": 1.0556191249925178, "fps": 227.35472891484523}
+{"errors": false, "repeat": 4, "loops": 14, "seconds": 1.0079655840236228, "fps": 222.22980977766233}
+{"errors": true, "repeat": 0, "loops": 10, "seconds": 1.0236010840162635, "fps": 156.31089347054447}
+{"errors": true, "repeat": 1, "loops": 14, "seconds": 1.0176541249966249, "fps": 220.11407854386962}
+{"errors": true, "repeat": 2, "loops": 16, "seconds": 1.0677425420144573, "fps": 239.75817196251955}
+{"errors": true, "repeat": 3, "loops": 14, "seconds": 1.0324854170030449, "fps": 216.95221676853902}
+{"errors": true, "repeat": 4, "loops": 14, "seconds": 1.0023622500011697, "fps": 223.4721030243693}

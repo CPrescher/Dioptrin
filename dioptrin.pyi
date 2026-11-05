@@ -1,6 +1,6 @@
 """Type stubs for dioptrin - High-performance 1D/2D diffraction integration library."""
 
-from typing import Iterable, Iterator, Optional, Tuple, Union
+from typing import Iterable, Iterator, Literal, Optional, Tuple, Union
 
 import numpy as np
 
@@ -216,6 +216,7 @@ class Integrator:
         radial_range: Optional[Tuple[float, float]] = None,
         *,
         fast_math: bool = True,
+        mask_mode: Literal["fixed", "dynamic"] = "fixed",
     ) -> None:
         """
         Create a new Integrator instance.
@@ -256,6 +257,7 @@ class Integrator:
         radial_range: Optional[Tuple[float, float]] = None,
         *,
         fast_math: bool = True,
+        mask_mode: Literal["fixed", "dynamic"] = "fixed",
     ) -> "Integrator":
         """
         Create an Integrator from a PONI dictionary.
@@ -295,6 +297,15 @@ class Integrator:
 
     def set_fast_math(self, enabled: bool) -> None:
         """Toggle fast accumulation; rejects changes during an async batch."""
+        ...
+
+    @property
+    def mask_mode(self) -> Literal["fixed", "dynamic"]:
+        """Fixed caches mask-compacted CSR; dynamic recomputes per-frame normalization."""
+        ...
+
+    def set_mask_mode(self, mode: Literal["fixed", "dynamic"]) -> None:
+        """Switch mask policy without rebuilding geometry; rejects changes during a batch."""
         ...
 
     def clear_file_workers(self) -> None:

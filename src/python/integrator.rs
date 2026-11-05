@@ -13,7 +13,7 @@ use crate::batch::{
 };
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
-use crate::integration::{Integrator, RadialUnit};
+use crate::integration::{Integrator, MaskMode, RadialUnit};
 use crate::mask::Mask;
 use crate::poni::Poni;
 
@@ -23,6 +23,16 @@ use super::utils::{
     extract_array_dims, extract_frame_from_pyany, parse_method, parse_unit, poni_from_dict,
     resolve_workers_threads,
 };
+
+fn parse_mask_mode(value: &str) -> PyResult<MaskMode> {
+    match value {
+        "fixed" => Ok(MaskMode::Fixed),
+        "dynamic" => Ok(MaskMode::Dynamic),
+        _ => Err(PyValueError::new_err(
+            "mask_mode must be 'fixed' or 'dynamic'",
+        )),
+    }
+}
 
 #[derive(FromPyObject)]
 pub enum MaskInput<'p> {
@@ -143,7 +153,8 @@ impl PyIntegrator {
     /// )
     /// ```
     #[new]
-    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true, mask_mode="fixed"))]
     fn new(
         poni_path: &str,
         method: Option<&str>,
@@ -152,6 +163,7 @@ impl PyIntegrator {
         unit: Option<&str>,
         radial_range: Option<(f64, f64)>,
         fast_math: bool,
+        mask_mode: &str,
     ) -> PyResult<Self> {
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
@@ -159,7 +171,8 @@ impl PyIntegrator {
         let mut integrator = Integrator::new(geometry)
             .with_method(parse_method(method, n_ss)?)
             .with_radial_unit(parse_unit(unit)?)
-            .with_fast_math(fast_math);
+            .with_fast_math(fast_math)
+            .with_mask_mode(parse_mask_mode(mask_mode)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -206,7 +219,7 @@ impl PyIntegrator {
     /// ```
     #[classmethod]
     #[allow(clippy::too_many_arguments)] // Python keyword options plus the class receiver.
-    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true))]
+    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true, mask_mode="fixed"))]
     fn from_poni_dict(
         _cls: &Bound<'_, PyType>,
         poni_dict: &Bound<'_, PyDict>,
@@ -216,13 +229,15 @@ impl PyIntegrator {
         unit: Option<&str>,
         radial_range: Option<(f64, f64)>,
         fast_math: bool,
+        mask_mode: &str,
     ) -> PyResult<Self> {
         let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry)
             .with_method(parse_method(method, n_ss)?)
             .with_radial_unit(parse_unit(unit)?)
-            .with_fast_math(fast_math);
+            .with_fast_math(fast_math)
+            .with_mask_mode(parse_mask_mode(mask_mode)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -494,6 +509,25 @@ impl PyIntegrator {
         let integrator = Arc::get_mut(&mut self.integrator)
             .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
         integrator.set_fast_math(enabled);
+        Ok(())
+    }
+
+    /// Mask execution policy: "fixed" (default) or "dynamic".
+    #[getter]
+    fn mask_mode(&self) -> &'static str {
+        match self.integrator.mask_mode() {
+            MaskMode::Fixed => "fixed",
+            MaskMode::Dynamic => "dynamic",
+        }
+    }
+
+    /// Change mask policy while retaining geometry and pixel weights.
+    /// Fixed mode supports edits; dynamic mode avoids rebuilding per-frame tables.
+    fn set_mask_mode(&mut self, mode: &str) -> PyResult<()> {
+        let mode = parse_mask_mode(mode)?;
+        let integrator = Arc::get_mut(&mut self.integrator)
+            .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
+        integrator.set_mask_mode(mode);
         Ok(())
     }
 

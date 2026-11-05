@@ -143,6 +143,18 @@ pub enum IntegrationMethod {
     Supersampled { n_ss: usize },
 }
 
+/// How masks are expected to change between frames. Both modes use float64.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MaskMode {
+    /// Compile the current mask into CSR once and cache normalization.
+    /// Subsequent mask edits are supported and refresh only the prepared table.
+    #[default]
+    Fixed,
+    /// Keep geometry tables independent of the mask and accumulate normalization
+    /// on each frame. Fast arithmetic uses CSC; strict arithmetic uses fused CSR.
+    Dynamic,
+}
+
 pub struct Integrator {
     geometry: Geometry,
     /// Mutable geometry state (tth, radial, azimuth, corrections) in RwLock for thread-safe access
@@ -155,6 +167,7 @@ pub struct Integrator {
     radial_unit: RadialUnit,
     radial_range: Option<(f64, f64)>,
     fast_math: bool,
+    mask_mode: MaskMode,
 }
 
 impl Integrator {
@@ -170,6 +183,7 @@ impl Integrator {
             radial_unit: RadialUnit::default(),
             radial_range: None,
             fast_math: true,
+            mask_mode: MaskMode::default(),
         }
     }
 
@@ -189,6 +203,40 @@ impl Integrator {
     /// Changes accumulation without rebuilding the calibration/LUT.
     pub fn set_fast_math(&mut self, enabled: bool) {
         self.fast_math = enabled;
+    }
+
+    pub fn mask_mode(&self) -> MaskMode {
+        self.mask_mode
+    }
+
+    pub fn with_mask_mode(mut self, mode: MaskMode) -> Self {
+        self.set_mask_mode(mode);
+        self
+    }
+
+    /// Switch execution policy without rebuilding geometry or pixel weights.
+    pub fn set_mask_mode(&mut self, mode: MaskMode) {
+        if self.mask_mode != mode {
+            self.mask_mode = mode;
+            if let Some(lut) = self
+                .cache_1d
+                .write()
+                .expect("1D LUT cache lock poisoned")
+                .lut
+                .as_mut()
+            {
+                lut.set_mask_mode(mode);
+            }
+            if let Some(lut) = self
+                .cache_2d
+                .write()
+                .expect("2D LUT cache lock poisoned")
+                .lut
+                .as_mut()
+            {
+                lut.set_mask_mode(mode);
+            }
+        }
     }
 
     // builder pattern for method
@@ -238,14 +286,14 @@ impl Integrator {
     // builder pattern for mask
     pub fn with_mask(mut self, mask: Mask) -> Self {
         self.mask = Some(mask);
-        self.invalidate_normalization();
+        self.invalidate_mask();
         self
     }
 
     // clearing current mask
     pub fn clear_mask(&mut self) {
         self.mask = None;
-        self.invalidate_normalization();
+        self.invalidate_mask();
     }
 
     // getter for mask
@@ -256,7 +304,7 @@ impl Integrator {
     // setter for mask
     pub fn set_mask(&mut self, mask: Mask) {
         self.mask = Some(mask);
-        self.invalidate_normalization();
+        self.invalidate_mask();
     }
 
     // builder pattern for radial range

@@ -1,0 +1,84 @@
+{
+  "date": "2026-11-05",
+  "cpu": "Apple M4 Pro, 10 performance + 4 efficiency cores, 48 GiB",
+  "dioptrin_commit": "2c94bc918be95effa16993253d1e362601a6759d",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "production_execution_copy_verified": true,
+  "setup": {
+    "bins": 2000,
+    "csc_bytes": 271471696,
+    "csr_bytes": 253425204,
+    "event": "setup",
+    "folded_csr_bytes": 230934516,
+    "folded_nnz": 19243209,
+    "frames": 16,
+    "inputs": "same readonly f64 mapping",
+    "npix": 10138296,
+    "original_nnz": 21117433,
+    "threads": 8,
+    "weights": "f64 throughout"
+  },
+  "input_metadata": {
+    "indices": [
+      0,
+      41,
+      83,
+      124,
+      166,
+      208,
+      249,
+      291,
+      332,
+      374,
+      416,
+      457,
+      499,
+      540,
+      582,
+      624
+    ],
+    "shape": [
+      16,
+      3262,
+      3108
+    ],
+    "bins": 2000,
+    "orientation": "bottom-up, as required by Dioptrin",
+    "version": "0.7.0"
+  },
+  "hashes": {
+    "/tmp/dioptrin-bridge-investigation-20261105/frames.f64": "af31d0b2756b3bd093186e0a881792d4761508141ad80f1d9f8f646586f3b2fe",
+    "/tmp/dioptrin-bridge-investigation-20261105/mask.u8": "0c510a98b4afac57dab92441a40a58d1c740807ac51f89fd6178baf895175af1",
+    "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/weights.f64": "f087b75aa4bb3e7cb1af316454cd323e628cd0af8cb597430499062eaaa9599f",
+    "/tmp/dioptrin-bslz4-lut-20261105/pixel_split/indices.u32": "7a86b69b3d1adb8615579d6b3c8a12b4046c50f29930e3b048ca9f2e4e99390f",
+    "/tmp/dioptrin-csr-csc-f64-20261105/src/main.rs": "aa7c78e8bcdcaadfe4dfe9d1b68f803fa6624694a76151eff71055328e58a52d",
+    "/tmp/dioptrin-csr-csc-f64-20261105/src/lut/production_prepared.rs": "47ce363350704e488e50be941277b470c4f78ab29edfdeb8b46d6c3564e6f3f2",
+    "/Users/clemens/Programming/Dioptrin/target/release/dioptrin-csr-csc-f64-probe": "0d9a345ae6f7a9ec160f5ae8ad3b2583cd4c981efded0ed4a25f4b769c741619"
+  },
+  "protocol": {
+    "input": "16 real Eiger9M frames distributed across the 625-frame file; identical immutable float64 buffers for every variant; bottom-up orientation",
+    "settings": "2000 uniform 2theta degree bins, full pixel splitting, same mask, solid-angle normalization and polarization 0.965",
+    "matrix": "Coefficients taken from the same Dioptrin LUT export. Removing masked entries preserves all other coefficient bits. CSC round-trip is checked coefficient-by-coefficient; no float32 conversion.",
+    "normalization": "Same cached original-CSR denominators for all fast variants; same original strict denominators for both strict variants",
+    "execution": "All timed integration is native Rust. Rayon pool size 1, 4 or 8; 16 frames processed in parallel. CSR also parallelizes across bins; CSC parallelizes across frames using a private histogram per frame.",
+    "measurement": "Five warm blocks per variant/error mode, at least 1 s each; variant order rotates and reverses; each block gets one untimed warm batch. Includes output allocation, normalization and bin-axis construction. Excludes file IO, decompression, table construction and Python.",
+    "selection": "The first 8-thread run had more competing CPU load. Its full results are retained in w8.json. The completed repeat w8-repeat.json is the primary eight-thread comparison; no measurements were deleted. CSV also reports medians for <=3.6 observed competing busy cores.",
+    "arithmetic": "All pixels, weights, denominators, accumulators, intensities and errors are float64. Current/compacted CSR use the production four-lane FMA path. CSC uses either one accumulator per bin or four interleaved histograms with pairwise reduction. Strict CSR/CSC use separate multiply/add in matching pixel order.",
+    "poisson": "Both signal and Poisson variance are accumulated in one table traversal. CSC computes squared float64 weights on the fly, without duplicating the integration matrix.",
+    "limits": "Prototype cached-batch throughput on this detector/geometry. No HDF5/file throughput, cold-cache, one-image latency, 2D behavior, mask-update lifecycle, setup overhead or hardware performance counters measured. Histogram parallelism across frames is not a single-image parallel implementation."
+  },
+  "commit_text_formatting": [
+    {
+      "file": "Cargo.toml",
+      "measured_artifact_sha256": "8e6f4b96b9568070e3a499dbb477ccec773b42c46f63a2017706ef25abbcaa9a",
+      "committed_artifact_sha256": "330486846a0eb858710eb7093fd4977c64d6db0db2690f5f1d17fdc93c4f17c6",
+      "change": "Normalize text line endings and trailing blank lines only; numerical content unchanged."
+    },
+    {
+      "file": "summary.csv",
+      "measured_artifact_sha256": "9da744d38c781fc75f3fd5a22823ec20bcc79219af5e3a82196431e79b344151",
+      "committed_artifact_sha256": "8ed5651d7caadc2178e158864f8ff8b485fdf37264ed29693e70616572274b46",
+      "change": "Normalize text line endings and trailing blank lines only; numerical content unchanged."
+    }
+  ]
+}
