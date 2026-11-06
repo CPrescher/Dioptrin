@@ -70,4 +70,33 @@ class DynamicPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):source.prepare_dynamic1d((0,64),40)
         with self.assertRaises(ValueError):source.prepare_dynamic1d(image.shape,0)
 
-if __name__ == '__main__':unittest.main()
+
+
+class SparseLayoutChoiceTests(unittest.TestCase):
+    def test_constructor_setter_and_plan_snapshot_layouts(self):
+        image = np.random.default_rng(6).uniform(1, 400, (32,64))
+        mask = (image > 350).astype(np.uint8)
+        for mode in ('fixed','dynamic'):
+            ai = dioptrin.Integrator.from_poni_dict(PONI, unit='2th_deg',
+                polarization_factor=.965, mask_mode=mode)
+            self.assertEqual(ai.sparse_layout, 'csc')
+            ai.set_mask(mask)
+            reference = ai.integrate1d(image,40,errors=True)
+            for layout in ('csr','csc','csr'):
+                ai.set_sparse_layout(layout)
+                self.assertEqual(ai.sparse_layout,layout)
+                actual = ai.integrate1d(image,40,errors=True)
+                np.testing.assert_allclose(actual.intensity,reference.intensity,rtol=5e-12,atol=1e-9)
+                np.testing.assert_allclose(actual.errors,reference.errors,rtol=5e-12,atol=1e-9)
+                plan = ai.prepare_dynamic1d(image.shape,40)
+                worker=plan.worker()
+                result=worker.integrate1d(image,mask,errors=True)
+                np.testing.assert_allclose(result.intensity,reference.intensity,rtol=5e-12,atol=1e-9)
+                ai.set_sparse_layout('csc' if layout=='csr' else 'csr')
+                np.testing.assert_array_equal(worker.integrate1d(image,mask).intensity,result.intensity)
+        with self.assertRaises(ValueError):ai.set_sparse_layout('invalid')
+        with self.assertRaises(ValueError):dioptrin.Integrator.from_poni_dict(PONI,sparse_layout='invalid')
+
+
+if __name__ == "__main__":
+    unittest.main()

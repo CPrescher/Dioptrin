@@ -66,6 +66,117 @@ impl Csc {
         })
     }
 
+    /// Prepared once per fixed mask. Keep original geometry/weight storage;
+    /// only this compact pixel selection and bin normalization depend on mask.
+    pub(super) fn active_pixels(&self, mask: Option<&[u8]>) -> Vec<u32> {
+        if let Some(mask) = mask {
+            assert_eq!(mask.len() + 1, self.ptr.len());
+        }
+        (0..self.ptr.len() - 1)
+            .filter(|&p| self.ptr[p] != self.ptr[p + 1] && !mask.is_some_and(|m| m[p] != 0))
+            .map(|p| p as u32)
+            .collect()
+    }
+
+    /// Fixed-mask 1D execution: no per-frame mask checks or normalization sums.
+    /// Coefficients are shared with the dynamic path; every call owns its sums.
+    pub(super) fn fixed_results<const VAR: bool, const COUNT: bool, P: Pixel>(
+        &self,
+        signal: &[P],
+        pixels: &[u32],
+        normalization: &[f64],
+    ) -> Vec<[f64; 4]> {
+        assert_eq!(signal.len() + 1, self.ptr.len());
+        assert_eq!(normalization.len(), self.nbins);
+        // Partition by geometry, not the active execution pool or requested
+        // output fields. Direct, file-batch and array-batch APIs then preserve
+        // the same reduction order across worker counts and pixel types.
+        let bytes_per_hist = self.nbins.saturating_mul(4 * 8 * 3);
+        let chunks = if bytes_per_hist > 0 {
+            pixels
+                .len()
+                .div_ceil(262_144)
+                .min((32 * 1024 * 1024 / bytes_per_hist).max(1))
+                .max(1)
+        } else {
+            1
+        };
+        let accumulate = |i| {
+            self.fixed_accumulate::<VAR, COUNT, P>(
+                signal,
+                &pixels[i * pixels.len() / chunks..(i + 1) * pixels.len() / chunks],
+            )
+        };
+        let partials: Vec<Sums> = if rayon::current_thread_index().is_none() && chunks > 1 {
+            (0..chunks).into_par_iter().map(accumulate).collect()
+        } else {
+            (0..chunks).map(accumulate).collect()
+        };
+        let n = self.nbins;
+        let reduce = |v: &[f64], b: usize| (v[b] + v[n + b]) + (v[2 * n + b] + v[3 * n + b]);
+        let mut rows: Vec<_> = normalization
+            .iter()
+            .map(|&norm| [0., norm, 0., 0.])
+            .collect();
+        for sums in partials {
+            for (b, row) in rows.iter_mut().enumerate() {
+                row[0] += reduce(&sums.signal, b);
+                if VAR {
+                    row[2] += reduce(&sums.variance, b);
+                }
+                if COUNT {
+                    row[3] += reduce(&sums.count, b);
+                }
+            }
+        }
+        rows
+    }
+
+    fn fixed_accumulate<const VAR: bool, const COUNT: bool, P: Pixel>(
+        &self,
+        signal: &[P],
+        pixels: &[u32],
+    ) -> Sums {
+        let n = self.nbins;
+        let mut sum = vec![0.; 4 * n];
+        let mut variance = vec![0.; if VAR { 4 * n } else { 0 }];
+        let mut count = vec![0.; if COUNT { 4 * n } else { 0 }];
+        // SAFETY: Csc construction checks compact bounds and active_pixels
+        // supplies valid pixels. Signal dimensions are checked above. All
+        // destination histograms are private to this frame invocation.
+        unsafe {
+            for &pixel in pixels {
+                let p = pixel as usize;
+                let x = signal.get_unchecked(p).to_f64();
+                let lane = (p % 4) * n;
+                for k in
+                    *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
+                {
+                    let b = *self.bins.get_unchecked(k) as usize + lane;
+                    let w = self
+                        .weights
+                        .as_ref()
+                        .map_or(1., |weights| *weights.get_unchecked(k));
+                    let s = sum.get_unchecked_mut(b);
+                    *s = madd(w, x, *s);
+                    if VAR {
+                        let v = variance.get_unchecked_mut(b);
+                        *v = madd(w * w, x.max(0.), *v);
+                    }
+                    if COUNT {
+                        *count.get_unchecked_mut(b) += w;
+                    }
+                }
+            }
+        }
+        Sums {
+            signal: sum,
+            norm: vec![],
+            variance,
+            count,
+        }
+    }
+
     fn accumulate<const VAR: bool, const COUNT: bool, P: Pixel>(
         &self,
         signal: &[P],
@@ -268,6 +379,40 @@ mod tests {
             for (a, b) in result.iter().flatten().zip(expected.iter().flatten()) {
                 assert!((a - b).abs() <= 2e-11 * b.abs().max(1.), "{a} vs {b}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fixed_partition_tests {
+    use super::*;
+    #[test]
+    fn fixed_reduction_is_identical_across_direct_and_frame_worker_pools() {
+        let npix = 3 * 262_144 + 17;
+        let mut rows = vec![0];
+        let mut cols = Vec::new();
+        let mut weights = Vec::new();
+        for b in 0..7 {
+            for p in (b..npix).step_by(7) {
+                cols.push(p as u32);
+                weights.push((p % 13 + 1) as f64 / 17.);
+            }
+            rows.push(cols.len());
+        }
+        let table = Csc::new(&rows, &Columns::Compact(cols), Some(&weights), npix).unwrap();
+        let mask: Vec<_> = (0..npix).map(|p| u8::from(p % 29 == 0)).collect();
+        let pixels = table.active_pixels(Some(&mask));
+        let signal: Vec<_> = (0..npix).map(|p| (p % 997) as f64 / 31.).collect();
+        let norm = vec![17.; 7];
+        let direct = table.fixed_results::<true, true, _>(&signal, &pixels, &norm);
+        for threads in [1, 4, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let inside =
+                pool.install(|| table.fixed_results::<true, true, _>(&signal, &pixels, &norm));
+            assert_eq!(direct, inside);
         }
     }
 }

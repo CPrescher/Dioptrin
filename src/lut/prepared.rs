@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use super::csc::Csc;
 use crate::frame::Pixel;
-use crate::integration::MaskMode;
+use crate::integration::{MaskMode, SparseLayout};
 use rayon::prelude::*;
 
 use super::{IntermediateResult1d, IntermediateResult2d, Lut1d, Lut2d};
@@ -68,6 +68,9 @@ pub(crate) struct PreparedCsr {
     mode: MaskMode,
     fixed: OnceLock<Option<Box<PreparedCsr>>>,
     csc: OnceLock<Option<Csc>>,
+    fixed_pixels: OnceLock<Vec<u32>>,
+    fixed_csc_enabled: bool,
+    prefer_csc: bool,
 }
 
 pub(crate) struct Prepared1d {
@@ -105,6 +108,9 @@ impl PreparedCsr {
             mode: MaskMode::Fixed,
             fixed: OnceLock::new(),
             csc: OnceLock::new(),
+            fixed_pixels: OnceLock::new(),
+            fixed_csc_enabled: false,
+            prefer_csc: true,
         }
     }
 
@@ -118,16 +124,17 @@ impl PreparedCsr {
 
     pub(crate) fn invalidate_mask(&mut self) {
         self.fixed.take();
+        self.fixed_pixels.take();
         self.clear_normalization();
         // CSC contains geometry only and remains valid for a different mask.
     }
 
     pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
         if self.mode != mode {
+            // A policy switch changes execution, not geometry, mask or
+            // corrections. Keep both prepared layouts and denominators valid;
+            // their actual input setters invalidate the relevant state.
             self.mode = mode;
-            self.fixed.take();
-            self.csc.take();
-            self.clear_normalization();
         }
     }
 
@@ -206,6 +213,13 @@ impl PreparedCsr {
     pub(crate) fn prepare_normalization(&self, mask: Option<&[u8]>, norm: &[f64], fast: bool) {
         match self.mode {
             MaskMode::Fixed => {
+                if fast && self.fixed_csc_enabled && self.prefer_csc {
+                    if let Some(csc) = self.dynamic_csc(norm.len()) {
+                        self.fixed_pixels.get_or_init(|| csc.active_pixels(mask));
+                        self.normalization::<true>(mask, norm);
+                        return;
+                    }
+                }
                 let table = self.fixed_table(mask);
                 if fast {
                     table.normalization::<true>(None, norm);
@@ -213,7 +227,7 @@ impl PreparedCsr {
                     table.normalization::<false>(None, norm);
                 }
             }
-            MaskMode::Dynamic if fast => {
+            MaskMode::Dynamic if fast && self.prefer_csc => {
                 self.dynamic_csc(norm.len());
             }
             MaskMode::Dynamic => {}
@@ -311,11 +325,21 @@ impl PreparedCsr {
         norm: &[f64],
     ) -> Vec<[f64; 4]> {
         if self.mode == MaskMode::Fixed {
+            if FAST && self.fixed_csc_enabled && self.prefer_csc {
+                if let Some(csc) = self.dynamic_csc(norm.len()) {
+                    let pixels = self.fixed_pixels.get_or_init(|| csc.active_pixels(mask));
+                    let cached_norm = self.normalization::<true>(mask, norm);
+                    return csc.fixed_results::<VAR, COUNT, P>(signal, pixels, cached_norm);
+                }
+            }
             return self
                 .fixed_table(mask)
                 .cached_results::<FAST, VAR, COUNT, P>(signal, None, norm);
         }
-        if FAST && let Some(csc) = self.dynamic_csc(norm.len()) {
+        if FAST
+            && self.prefer_csc
+            && let Some(csc) = self.dynamic_csc(norm.len())
+        {
             return csc.results::<VAR, COUNT, P>(signal, mask, norm);
         }
         // Strict reduction order (or a table too large for compact CSC).
@@ -384,6 +408,9 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    pub(crate) fn set_sparse_layout(&mut self, layout: SparseLayout) {
+        self.csr.prefer_csc = layout == SparseLayout::Csc;
+    }
     pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
         self.csr.set_mask_mode(mode);
     }
@@ -392,8 +419,12 @@ impl Prepared1d {
     }
 
     pub(crate) fn new(l: Lut1d) -> Self {
+        let mut csr = PreparedCsr::new(l.row_ptr, l.col_idx, l.values);
+        // Fast 1D uses one geometry-only CSC for both mask policies. 2D and
+        // strict arithmetic retain their existing CSR implementations.
+        csr.fixed_csc_enabled = true;
         Self {
-            csr: PreparedCsr::new(l.row_ptr, l.col_idx, l.values),
+            csr,
             hist_min: l.hist_min,
             hist_step: l.hist_step,
         }

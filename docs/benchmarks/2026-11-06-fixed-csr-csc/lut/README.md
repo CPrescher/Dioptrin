@@ -1,0 +1,1 @@
+Production modules are imported directly from src/lut through relative #[path] attributes in main.rs. This directory establishes the module base for those paths; no copied production kernels are used.

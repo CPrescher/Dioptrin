@@ -13,7 +13,7 @@ use crate::batch::{
 };
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
-use crate::integration::{Integrator, MaskMode, RadialUnit};
+use crate::integration::{Integrator, MaskMode, RadialUnit, SparseLayout};
 use crate::mask::Mask;
 use crate::poni::Poni;
 
@@ -30,6 +30,16 @@ fn parse_mask_mode(value: &str) -> PyResult<MaskMode> {
         "dynamic" => Ok(MaskMode::Dynamic),
         _ => Err(PyValueError::new_err(
             "mask_mode must be 'fixed' or 'dynamic'",
+        )),
+    }
+}
+
+fn parse_sparse_layout(value: &str) -> PyResult<SparseLayout> {
+    match value {
+        "csc" => Ok(SparseLayout::Csc),
+        "csr" => Ok(SparseLayout::Csr),
+        _ => Err(PyValueError::new_err(
+            "sparse_layout must be 'csc' or 'csr'",
         )),
     }
 }
@@ -171,7 +181,7 @@ impl PyIntegrator {
     /// ```
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true, mask_mode="fixed"))]
+    #[pyo3(signature = (poni_path, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true, mask_mode="fixed", sparse_layout="csc"))]
     fn new(
         poni_path: &str,
         method: Option<&str>,
@@ -181,6 +191,7 @@ impl PyIntegrator {
         radial_range: Option<(f64, f64)>,
         fast_math: bool,
         mask_mode: &str,
+        sparse_layout: &str,
     ) -> PyResult<Self> {
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
@@ -189,7 +200,8 @@ impl PyIntegrator {
             .with_method(parse_method(method, n_ss)?)
             .with_radial_unit(parse_unit(unit)?)
             .with_fast_math(fast_math)
-            .with_mask_mode(parse_mask_mode(mask_mode)?);
+            .with_mask_mode(parse_mask_mode(mask_mode)?)
+            .with_sparse_layout(parse_sparse_layout(sparse_layout)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -236,7 +248,7 @@ impl PyIntegrator {
     /// ```
     #[classmethod]
     #[allow(clippy::too_many_arguments)] // Python keyword options plus the class receiver.
-    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true, mask_mode="fixed"))]
+    #[pyo3(signature = (poni_dict, method=None, polarization_factor=None, n_ss=None, unit=None, radial_range=None, *, fast_math=true, mask_mode="fixed", sparse_layout="csc"))]
     fn from_poni_dict(
         _cls: &Bound<'_, PyType>,
         poni_dict: &Bound<'_, PyDict>,
@@ -247,6 +259,7 @@ impl PyIntegrator {
         radial_range: Option<(f64, f64)>,
         fast_math: bool,
         mask_mode: &str,
+        sparse_layout: &str,
     ) -> PyResult<Self> {
         let poni = poni_from_dict(poni_dict)?;
         let geometry = Geometry::new(0, 0, poni);
@@ -254,7 +267,8 @@ impl PyIntegrator {
             .with_method(parse_method(method, n_ss)?)
             .with_radial_unit(parse_unit(unit)?)
             .with_fast_math(fast_math)
-            .with_mask_mode(parse_mask_mode(mask_mode)?);
+            .with_mask_mode(parse_mask_mode(mask_mode)?)
+            .with_sparse_layout(parse_sparse_layout(sparse_layout)?);
         if let Some(polarization_factor) = polarization_factor {
             integrator = integrator.with_polarization_factor(polarization_factor);
         }
@@ -526,6 +540,22 @@ impl PyIntegrator {
         let integrator = Arc::get_mut(&mut self.integrator)
             .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
         integrator.set_fast_math(enabled);
+        Ok(())
+    }
+
+    /// Requested fast 1D sparse layout (default CSC).
+    #[getter]
+    fn sparse_layout(&self) -> &'static str {
+        match self.integrator.sparse_layout() {
+            SparseLayout::Csc => "csc",
+            SparseLayout::Csr => "csr",
+        }
+    }
+    fn set_sparse_layout(&mut self, layout: &str) -> PyResult<()> {
+        let layout = parse_sparse_layout(layout)?;
+        let integrator = Arc::get_mut(&mut self.integrator)
+            .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
+        integrator.set_sparse_layout(layout);
         Ok(())
     }
 

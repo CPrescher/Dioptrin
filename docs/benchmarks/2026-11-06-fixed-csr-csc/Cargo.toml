@@ -1,0 +1,20 @@
+[package]
+name = "dioptrin-fixed-csr-csc-probe"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+[[bin]]
+name = "fixed-csr-csc"
+path = "main.rs"
+[dependencies]
+dioptrin = { path = "../../.." }
+rayon = "1.5"
+memmap2 = "0.9.11"
+serde_json = "1"
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+[[bin]]
+name = "export-crop-lut"
+path = "export.rs"

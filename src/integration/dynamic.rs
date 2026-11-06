@@ -35,7 +35,8 @@ impl Integrator {
             .with_method(self.method)
             .with_radial_unit(self.radial_unit)
             .with_fast_math(self.fast_math)
-            .with_mask_mode(MaskMode::Dynamic);
+            .with_mask_mode(MaskMode::Dynamic)
+            .with_sparse_layout(self.sparse_layout);
         integrator.polarization_factor = self.polarization_factor;
         integrator.radial_range = self.radial_range;
         let unit = self.radial_unit;

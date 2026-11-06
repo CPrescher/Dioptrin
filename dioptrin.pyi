@@ -219,6 +219,7 @@ class Integrator:
         *,
         fast_math: bool = True,
         mask_mode: Literal["fixed", "dynamic"] = "fixed",
+        sparse_layout: Literal["csc", "csr"] = "csc",
     ) -> None:
         """
         Create a new Integrator instance.
@@ -260,6 +261,7 @@ class Integrator:
         *,
         fast_math: bool = True,
         mask_mode: Literal["fixed", "dynamic"] = "fixed",
+        sparse_layout: Literal["csc", "csr"] = "csc",
     ) -> "Integrator":
         """
         Create an Integrator from a PONI dictionary.
@@ -309,6 +311,10 @@ class Integrator:
     def set_mask_mode(self, mode: Literal["fixed", "dynamic"]) -> None:
         """Switch mask policy without rebuilding geometry; rejects changes during a batch."""
         ...
+
+    @property
+    def sparse_layout(self) -> Literal["csc", "csr"]: ...
+    def set_sparse_layout(self, layout: Literal["csc", "csr"]) -> None: ...
 
     def prepare_dynamic1d(self, shape: Tuple[int, int], n_points: int) -> Dynamic1dPlan:
         """Prepare one immutable geometry/weight/correction snapshot for all workers.

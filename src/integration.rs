@@ -157,6 +157,15 @@ pub enum MaskMode {
     Dynamic,
 }
 
+/// Sparse execution layout for fast 1D integration. Strict arithmetic and
+/// azimuthal spread retain CSR; 2D policy is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SparseLayout {
+    #[default]
+    Csc,
+    Csr,
+}
+
 pub struct Integrator {
     geometry: Geometry,
     /// Mutable geometry state (tth, radial, azimuth, corrections) in RwLock for thread-safe access
@@ -170,6 +179,7 @@ pub struct Integrator {
     radial_range: Option<(f64, f64)>,
     fast_math: bool,
     mask_mode: MaskMode,
+    sparse_layout: SparseLayout,
 }
 
 impl Integrator {
@@ -186,6 +196,7 @@ impl Integrator {
             radial_range: None,
             fast_math: true,
             mask_mode: MaskMode::default(),
+            sparse_layout: SparseLayout::default(),
         }
     }
 
@@ -205,6 +216,27 @@ impl Integrator {
     /// Changes accumulation without rebuilding the calibration/LUT.
     pub fn set_fast_math(&mut self, enabled: bool) {
         self.fast_math = enabled;
+    }
+
+    pub fn sparse_layout(&self) -> SparseLayout {
+        self.sparse_layout
+    }
+    pub fn with_sparse_layout(mut self, layout: SparseLayout) -> Self {
+        self.set_sparse_layout(layout);
+        self
+    }
+    /// Select execution without discarding geometry, weights or valid caches.
+    pub fn set_sparse_layout(&mut self, layout: SparseLayout) {
+        self.sparse_layout = layout;
+        if let Some(lut) = self
+            .cache_1d
+            .write()
+            .expect("1D LUT cache poisoned")
+            .lut
+            .as_mut()
+        {
+            lut.set_sparse_layout(layout);
+        }
     }
 
     pub fn mask_mode(&self) -> MaskMode {

@@ -300,6 +300,7 @@ impl Integrator {
                 cache.key = Some(key);
                 let mut prepared = Prepared1d::new(lut1d);
                 prepared.set_mask_mode(self.mask_mode);
+                prepared.set_sparse_layout(self.sparse_layout);
                 cache.lut = Some(prepared);
             }
         }

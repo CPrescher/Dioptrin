@@ -53,7 +53,7 @@ Changing the worker/thread configuration replaces the pool. Cached workers retai
 one decoded image buffer each until cleared or the integrator is released.
 
 
-### Shared dynamic-mask plans (unreleased)
+### Shared dynamic-mask plans (0.9.0)
 
 For application-level frame parallelism, prepare one immutable plan and create
 a lightweight worker for each application worker:
@@ -75,3 +75,15 @@ existing plans unchanged; prepare a new plan when scientific settings change.
 Dioptrin owns the scientific plan and kernels. Applications retain responsibility
 for reading files, preparing images, mask plugins, frame ordering and cancellation.
 Use one compute thread per worker when frames are already processed in parallel.
+
+
+### Fast 1D sparse layout
+
+Starting in 0.9.0, fast 1D integration defaults to CSC for both mask policies.
+Fixed masks cache their active pixels and bin normalization; dynamic masks
+recompute normalization per frame using the same geometry-only coefficients.
+Choose `sparse_layout="csr"` in either Integrator constructor, or use
+`integrator.set_sparse_layout("csr")`, to request CSR. All weights and sums remain
+float64. Fast accumulation can change rounding. Strict arithmetic, azimuthal
+spread and 2D preserve their existing compatible paths. Mode/layout switches
+retain valid tables; mask/correction/geometry edits invalidate dependent caches.

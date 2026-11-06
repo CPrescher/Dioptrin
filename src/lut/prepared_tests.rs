@@ -274,7 +274,7 @@ fn mask_policies_refresh_all_raw_sums_and_restore_previously_masked_pixels() {
 }
 
 #[test]
-fn switching_policy_releases_inactive_layout_and_corrections_preserve_fixed_table() {
+fn switching_policy_retains_valid_layouts_and_corrections_preserve_fixed_table() {
     let mut p = Prepared1d::new(Lut1d {
         row_ptr: vec![0, 2],
         col_idx: vec![0, 1],
@@ -282,17 +282,20 @@ fn switching_policy_releases_inactive_layout_and_corrections_preserve_fixed_tabl
         hist_min: 0.,
         hist_step: 1.,
     });
-    p.prepare_normalization(Some(&[0, 1]), &[1., 1.], true);
+    p.prepare_normalization(Some(&[0, 1]), &[1., 1.], false);
     let fixed = p.fixed.get().unwrap().as_ref().unwrap().as_ref() as *const PreparedCsr as usize;
     p.invalidate_normalization();
-    p.prepare_normalization(Some(&[0, 1]), &[2., 2.], true);
+    p.prepare_normalization(Some(&[0, 1]), &[2., 2.], false);
     assert_eq!(
         p.fixed.get().unwrap().as_ref().unwrap().as_ref() as *const PreparedCsr as usize,
         fixed
     );
     let out = p.integrate::<true, true>(&[4., 8.], Some(&[0, 1]), &[2., 2.]);
     p.set_mask_mode(MaskMode::Dynamic);
-    assert!(p.fixed.get().is_none());
+    assert_eq!(
+        p.fixed.get().unwrap().as_ref().unwrap().as_ref() as *const PreparedCsr as usize,
+        fixed
+    );
     p.prepare_normalization(Some(&[0, 1]), &[2., 2.], true);
     assert!(p.csc.get().unwrap().is_some());
     let dynamic = p.integrate::<true, true>(&[4., 8.], Some(&[0, 1]), &[2., 2.]);
@@ -305,9 +308,21 @@ fn switching_policy_releases_inactive_layout_and_corrections_preserve_fixed_tabl
         assert!((a - b).abs() < 1e-14);
     }
     p.set_mask_mode(MaskMode::Fixed);
-    assert!(p.csc.get().is_none());
+    assert!(p.csc.get().unwrap().is_some());
     p.prepare_normalization(Some(&[0, 1]), &[2., 2.], true);
-    assert!(p.fixed.get().unwrap().is_some());
+    assert_eq!(
+        p.fixed.get().unwrap().as_ref().unwrap().as_ref() as *const PreparedCsr as usize,
+        fixed
+    );
+    // A mask edit still invalidates mask-specific state, while CSC weights stay.
+    p.invalidate_mask();
+    assert!(p.fixed.get().is_none());
+    assert!(p.csc.get().unwrap().is_some());
+    let changed = p.integrate::<true, true>(&[4., 8.], Some(&[1, 0]), &[2., 2.]);
+    assert!((changed.1[0] - 4.).abs() < 1e-14);
+    p.set_mask_mode(MaskMode::Dynamic);
+    let dynamic_changed = p.integrate::<true, true>(&[4., 8.], Some(&[1, 0]), &[2., 2.]);
+    assert!((dynamic_changed.1[0] - changed.1[0]).abs() < 1e-14);
 }
 
 #[test]
@@ -334,5 +349,68 @@ fn dynamic_first_use_is_safe_when_all_pool_workers_integrate_concurrently() {
     });
     for x in &outputs[1..] {
         assert_eq!(x, &outputs[0]);
+    }
+}
+
+#[test]
+fn fixed_fast_1d_reuses_csc_and_cached_selection_across_policies() {
+    let make = || {
+        Prepared1d::new(Lut1d {
+            row_ptr: vec![0, 3, 4],
+            col_idx: vec![0, 1, 2, 2],
+            values: Some(vec![0.25, 0.5, 0.75, 1.]),
+            hist_min: 0.,
+            hist_step: 1.,
+        })
+    };
+    let norm = [1., 2., 3.];
+    let signal = [4., 8., 9.];
+    let mut p = make();
+    p.prepare_normalization(Some(&[0, 1, 0]), &norm, true);
+    assert!(p.csc.get().unwrap().is_some());
+    assert!(p.fixed.get().is_none()); // fast 1D did not compile a masked CSR copy
+    let pixels = p.fixed_pixels.get().unwrap().as_ptr();
+    let cached_norm = p.fast_norm.get().unwrap().as_ptr();
+    let fixed = p.integrate::<true, true>(&signal, Some(&[0, 1, 0]), &norm);
+    p.set_mask_mode(MaskMode::Dynamic);
+    let dynamic = p.integrate::<true, true>(&signal, Some(&[0, 1, 0]), &norm);
+    for (a, b) in fixed
+        .1
+        .iter()
+        .chain(&fixed.2)
+        .zip(dynamic.1.iter().chain(&dynamic.2))
+    {
+        assert!((a - b).abs() < 1e-14);
+    }
+    p.set_mask_mode(MaskMode::Fixed);
+    p.prepare_normalization(Some(&[0, 1, 0]), &norm, true);
+    assert_eq!(pixels, p.fixed_pixels.get().unwrap().as_ptr());
+    assert_eq!(cached_norm, p.fast_norm.get().unwrap().as_ptr());
+    p.invalidate_normalization();
+    assert!(p.fast_norm.get().is_none());
+    assert_eq!(pixels, p.fixed_pixels.get().unwrap().as_ptr());
+    p.prepare_normalization(Some(&[0, 1, 0]), &[2., 4., 6.], true);
+    let corrected = p.integrate::<true, true>(&signal, Some(&[0, 1, 0]), &[2., 4., 6.]);
+    for (a, b) in fixed.1.iter().zip(&corrected.1) {
+        assert!((a / 2. - b).abs() < 1e-14);
+    }
+    p.invalidate_mask();
+    assert!(p.fixed_pixels.get().is_none());
+    assert!(p.fast_norm.get().is_none());
+    assert!(p.csc.get().unwrap().is_some());
+    let updated = p.integrate::<true, true>(&signal, Some(&[0, 0, 0]), &norm);
+    let expected = make().integrate::<true, true>(&signal, Some(&[0, 0, 0]), &norm);
+    same(&updated.1, &expected.1);
+    same(&updated.2, &expected.2);
+    let strict = p.integrate::<false, true>(&signal, Some(&[0, 0, 0]), &norm);
+    // An all-zero mask initializes the CSR policy without making a copy.
+    assert!(p.fixed.get().is_some());
+    for (a, b) in strict
+        .1
+        .iter()
+        .chain(&strict.2)
+        .zip(updated.1.iter().chain(&updated.2))
+    {
+        assert!((a - b).abs() < 1e-14);
     }
 }

@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-06
+
 ### Added
+
+- Default fast 1D fixed-mask integration to CSC with cached bin normalization
+  and a cached active-pixel selection. Dynamic masks use the same geometry-only
+  CSC coefficients with per-frame normalization. All coefficients and sums
+  remain float64; fast summation order can change final rounding.
+- Select `sparse_layout="csc" | "csr"` in Python constructors, or use
+  `set_sparse_layout()`; Rust exposes `SparseLayout`. CSC is the default for
+  fast 1D. Strict arithmetic, azimuthal spread and 2D retain compatible paths.
+- Use deterministic fixed-mask partitioning across direct and batch APIs,
+  preserving output equality across worker counts.
+- Keep both geometry layouts and valid caches when only the mask policy or
+  requested sparse layout changes. Actual mask/correction/geometry edits
+  invalidate only the dependent state.
+
 
 - Prepare immutable `Dynamic1dPlan` snapshots once and share their geometry,
   float64 CSR/CSC weights and correction arrays across frame workers. Masks are
@@ -18,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integrator edits do not mutate existing plans.
 
 ### Fixed
+
+- Retain valid geometry-only CSC, mask-specific CSR and cached denominators
+  when switching mask modes; mask/correction/geometry setters still invalidate
+  their dependent state.
 
 - Skip polarization correction recalculation and normalization invalidation when
   `set_polarization_factor()` receives the current value. Changing or clearing
