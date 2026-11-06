@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-06
+
 ### Added
 
 - Add Rust `MaskMode` and Python `mask_mode="fixed" | "dynamic"`, plus
@@ -23,7 +25,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Fast accumulation may differ slightly from earlier results because mask
 compaction and CSC change summation order. Strict accumulation is preserved.
-Dioptas integration and package publication are deferred.
+
+### Performance
+
+Matched measurements against 0.7.0 on an Apple M4 Pro (48 GiB), using the same
+Eiger9M frames, geometry, masks, 2,000 bins, full pixel splitting, solid-angle
+correction and polarization 0.965. Weights, corrections and accumulators remain
+float64. The table reports median throughput across five measurement blocks
+with eight workers; fixed-mask measurements use the batch API, while dynamic
+measurements replace the mask between single-frame integrations and include
+mask creation/update and normalization costs. File reading and decompression
+are excluded from these integration measurements.
+
+| Mode | 0.7.0 fps | 0.8.0 fps | Speedup |
+| --- | ---: | ---: | ---: |
+| Fixed mask, intensity | 227.35 | 379.32 | 1.67× |
+| Fixed mask, Poisson errors | 220.11 | 288.50 | 1.31× |
+| Dynamic mask, intensity | 106.96 | 236.20 | 2.21× |
+| Dynamic mask, Poisson errors | 107.02 | 201.67 | 1.88× |
+
+Fast-mode intensity differences from 0.7.0 have relative L2 errors below
+7e-16 in this comparison. See the [matched mask-mode results](docs/benchmarks/2026-11-05-mask-modes-validation/conclusions.json)
+and [measurement summary](docs/benchmarks/2026-11-05-mask-modes-validation/summary.csv).
 
 ## [0.7.0] - 2026-11-05
 
@@ -574,7 +597,8 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/CPrescher/Dioptrin/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/CPrescher/Dioptrin/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/CPrescher/Dioptrin/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/CPrescher/Dioptrin/compare/v0.5.5...v0.6.0
