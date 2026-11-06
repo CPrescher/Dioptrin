@@ -2,6 +2,8 @@
 mod arithmetic;
 mod cache;
 mod corrections;
+mod dynamic;
+pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};
 mod methods;
 #[cfg(test)]
 mod tests;

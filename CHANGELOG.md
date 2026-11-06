@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Prepare immutable `Dynamic1dPlan` snapshots once and share their geometry,
+  float64 CSR/CSC weights and correction arrays across frame workers. Masks are
+  explicit per-call inputs; normalization and accumulators remain independent.
+- Python `prepare_dynamic1d(shape, n_points)` returns sendable plans with
+  lightweight `worker(num_threads=1)` handles. Worker calls borrow contiguous
+  float64 images and uint8 masks without copies and release the GIL. Source
+  integrator edits do not mutate existing plans.
+
 ### Fixed
 
 - Skip polarization correction recalculation and normalization invalidation when

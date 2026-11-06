@@ -6,6 +6,8 @@ import numpy as np
 
 __all__ = [
     "Integrator",
+    "Dynamic1dPlan",
+    "Dynamic1dWorker",
     "MultiIntegrator",
     "IntegrationResult",
     "BatchResult",
@@ -306,6 +308,14 @@ class Integrator:
 
     def set_mask_mode(self, mode: Literal["fixed", "dynamic"]) -> None:
         """Switch mask policy without rebuilding geometry; rejects changes during a batch."""
+        ...
+
+    def prepare_dynamic1d(self, shape: Tuple[int, int], n_points: int) -> Dynamic1dPlan:
+        """Prepare one immutable geometry/weight/correction snapshot for all workers.
+
+        The stored mask is excluded. Workers accept a complete uint8 mask per
+        frame. Subsequent changes to this Integrator do not change the plan.
+        """
         ...
 
     def clear_file_workers(self) -> None:
@@ -754,5 +764,33 @@ class MultiIntegrator:
             >>> results = multi.batch1d(images=image_sets, n_points=2000)
             >>> for result in results:
             ...     print(result.intensity)
+        """
+        ...
+
+
+class Dynamic1dPlan:
+    """Thread-safe immutable prepared tables shared by lightweight frame workers."""
+    @property
+    def shape(self) -> Tuple[int, int]: ...
+    @property
+    def n_points(self) -> int: ...
+    @property
+    def shared_plan_id(self) -> int: ...
+    def worker(self, num_threads: int = 1) -> Dynamic1dWorker: ...
+
+
+class Dynamic1dWorker:
+    """Own compute pool and per-call accumulation, sharing a Dynamic1dPlan."""
+    @property
+    def shared_plan_id(self) -> int: ...
+    @property
+    def num_threads(self) -> int: ...
+    def integrate1d(self, image: np.ndarray, mask: Optional[np.ndarray] = None,
+                    *, errors: bool = False, azimuthal_std: bool = False
+                    ) -> IntegrationResult:
+        """Borrow C-contiguous float64 image and optional uint8 mask; release GIL.
+
+        Inputs must remain unchanged until the call returns. All masks and
+        accumulators are independent between calls, including normalization.
         """
         ...

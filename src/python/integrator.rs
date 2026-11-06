@@ -115,6 +115,23 @@ impl PyIntegrator {
 
 #[pymethods]
 impl PyIntegrator {
+    /// Build one immutable geometry/weight/correction snapshot shared by frame workers.
+    /// The stored mask is excluded: each worker receives its full mask per call.
+    /// Changes to this Integrator do not change previously prepared plans.
+    fn prepare_dynamic1d(
+        &self,
+        py: Python<'_>,
+        shape: (usize, usize),
+        n_points: usize,
+    ) -> PyResult<super::dynamic::PyDynamic1dPlan> {
+        let plan = py
+            .detach(|| self.integrator.prepare_dynamic1d(shape, n_points))
+            .map_err(PyValueError::new_err)?;
+        Ok(super::dynamic::PyDynamic1dPlan {
+            plan: Arc::new(plan),
+        })
+    }
+
     /// Release cached file workers and decoding buffers. Admitted streaming work
     /// finishes normally; the next file batch creates a new pool.
     fn clear_file_workers(&self) {

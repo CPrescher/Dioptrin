@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 pub mod calibration;
+pub mod dynamic;
 pub mod integrator;
 pub mod multi_integrator;
 pub mod results;
@@ -41,6 +42,8 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(auto_calibrate_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_ring_center_py, m)?)?;
     m.add_class::<PyIntegrator>()?;
+    m.add_class::<dynamic::PyDynamic1dPlan>()?;
+    m.add_class::<dynamic::PyDynamic1dWorker>()?;
     m.add_class::<PyMultiIntegrator>()?;
     m.add_class::<PyIntegrationResult>()?;
     m.add_class::<PyBatchResult>()?;

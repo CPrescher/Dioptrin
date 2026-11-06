@@ -106,7 +106,7 @@ jobs:
       - name: Test integration and array batch regressions
         run: |
           source .venv/bin/activate
-          python -m unittest python_examples.test_fast_math python_examples.test_mask_modes python_examples.test_batch_array_borrowing python_examples.test_image_switching python_examples.test_azimuthal_std
+          python -m unittest python_examples.test_fast_math python_examples.test_mask_modes python_examples.test_batch_array_borrowing python_examples.test_image_switching python_examples.test_azimuthal_std python_examples.test_dynamic_plan
 
       - name: Test typed TIFF input and persistent file workers
         run: |

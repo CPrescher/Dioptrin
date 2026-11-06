@@ -51,3 +51,27 @@ values to float64 inside the existing arithmetic. `Integrator.clear_file_workers
 releases cached workers and buffers; already admitted streams finish normally.
 Changing the worker/thread configuration replaces the pool. Cached workers retain
 one decoded image buffer each until cleared or the integrator is released.
+
+
+### Shared dynamic-mask plans (unreleased)
+
+For application-level frame parallelism, prepare one immutable plan and create
+a lightweight worker for each application worker:
+
+```python
+plan = integrator.prepare_dynamic1d(image_shape, 2000)
+worker = plan.worker(num_threads=1)
+result = worker.integrate1d(image_float64, mask_uint8, errors=True)
+```
+
+All workers share the plan's geometry, float64 CSR/CSC tables and correction
+arrays. Each call has its own mask, normalization sums and accumulation results.
+The complete effective mask must be passed for each frame; the source
+integrator's stored mask is excluded. Images and masks must be C-contiguous and
+remain unchanged until the call returns. Numerical work releases the GIL and
+borrows those arrays without copying. Changes to the source integrator leave
+existing plans unchanged; prepare a new plan when scientific settings change.
+
+Dioptrin owns the scientific plan and kernels. Applications retain responsibility
+for reading files, preparing images, mask plugins, frame ordering and cancellation.
+Use one compute thread per worker when frames are already processed in parallel.
