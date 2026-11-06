@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Skip polarization correction recalculation and normalization invalidation when
+  `set_polarization_factor()` receives the current value. Changing or clearing
+  the factor still refreshes corrections for subsequent integrations.
+
 ## [0.8.0] - 2026-11-06
 
 ### Added

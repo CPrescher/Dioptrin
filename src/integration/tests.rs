@@ -1287,3 +1287,85 @@ fn concurrent_first_use_prepares_one_shared_denominator_without_blocking_the_poo
         assert_eq!(x, &out[0]);
     }
 }
+
+#[test]
+fn polarization_setter_reuses_unchanged_corrections_and_updates_changed_factors() {
+    use std::sync::Arc;
+
+    let mut poni = Poni::new();
+    poni.pixel1 = 0.01;
+    poni.pixel2 = 0.01;
+    poni.distance = 0.1;
+    poni.wavelength = 1e-10;
+    let geometry = Geometry::new(7, 9, poni);
+    let data: Vec<_> = (0..63).map(|p| 10.0 + p as f64).collect();
+    let mask: Vec<_> = (0..63).map(|p| u8::from(p % 7 == 0)).collect();
+
+    for mode in [MaskMode::Fixed, MaskMode::Dynamic] {
+        for fast in [false, true] {
+            // Counting has deterministic LUT construction, so results can be
+            // compared bit-for-bit against independently built integrators.
+            let make = || {
+                let mut ai = Integrator::new(geometry.clone())
+                    .with_method(IntegrationMethod::Counting)
+                    .with_mask_mode(mode)
+                    .with_fast_math(fast);
+                ai.set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap());
+                ai
+            };
+            let mut ai = make();
+            let mut previous_factor = None;
+            let mut previous_normalization = None;
+            let mut previous_intensity = None;
+            for factor in [None, Some(0.965), Some(0.4), None] {
+                ai.set_polarization_factor(factor);
+                assert_eq!(ai.polarization_factor(), factor);
+                let actual = ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+                let cake = ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+                let normalization = ai.get_normalization();
+                let polarization = ai.polarization();
+
+                if factor != previous_factor {
+                    if let Some(previous) = &previous_normalization {
+                        assert!(!Arc::ptr_eq(&normalization, previous));
+                        assert_ne!(normalization.as_ref(), previous.as_ref());
+                    }
+                    if let Some(previous) = &previous_intensity {
+                        assert_ne!(&actual.1, previous);
+                    }
+                }
+                if factor.is_none() {
+                    assert!(polarization.iter().all(|&value| value == 1.0));
+                }
+
+                // Repeating the setter must keep the same allocated correction
+                // storage, not merely recalculate numerically equal values.
+                ai.set_polarization_factor(factor);
+                assert!(Arc::ptr_eq(&normalization, &ai.get_normalization()));
+                assert_eq!(polarization, ai.polarization());
+                assert_eq!(
+                    actual,
+                    ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11)
+                );
+                assert_eq!(
+                    cake,
+                    ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4)
+                );
+
+                let mut fresh = make();
+                fresh.set_polarization_factor(factor);
+                assert_eq!(
+                    actual,
+                    fresh.integrate1d_with_errors_from_slice(&data, 7, 9, 11)
+                );
+                assert_eq!(
+                    cake,
+                    fresh.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4)
+                );
+                previous_factor = factor;
+                previous_normalization = Some(normalization);
+                previous_intensity = Some(actual.1);
+            }
+        }
+    }
+}

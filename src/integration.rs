@@ -339,8 +339,12 @@ impl Integrator {
         self.polarization_factor
     }
 
-    // setter for polarization factor
+    /// Update polarization corrections only when the factor changes.
+    /// Reapplying the current factor preserves correction arrays and cached normalization.
     pub fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) {
+        if self.polarization_factor == polarization_factor {
+            return;
+        }
         self.polarization_factor = polarization_factor;
         self.update_polarization();
     }
