@@ -16,7 +16,12 @@ impl Integrator {
         };
 
         if needs_update {
-            // Acquire write lock and double-check (another thread may have updated)
+            // Cache readers may read normalization from state. Acquire cache
+            // writers first, then state, and publish geometry plus invalidation
+            // together. A late cold-start worker must not clear another worker's
+            // freshly built LUT after discovering that geometry is already ready.
+            let mut cache_1d = self.cache_1d.write().expect("1D LUT cache lock poisoned");
+            let mut cache_2d = self.cache_2d.write().expect("2D LUT cache lock poisoned");
             let mut state = self.state.write().expect("geometry state lock poisoned");
             if (state.dim1 * state.dim2) != size || state.dim1 != dim1 || state.dim2 != dim2 {
                 // Update geometry dimensions temporarily for calculations
@@ -47,9 +52,11 @@ impl Integrator {
                         .map(|i| state.polarization[i] * state.solid_angle[i])
                         .collect(),
                 );
+                cache_1d.key = None;
+                cache_1d.lut = None;
+                cache_2d.key = None;
+                cache_2d.lut = None;
             }
-            drop(state);
-            self.invalidate_caches();
         }
     }
 
@@ -88,5 +95,44 @@ impl Integrator {
     pub(super) fn get_normalization(&self) -> Arc<Vec<f64>> {
         let state = self.state.read().expect("geometry state lock poisoned");
         Arc::clone(&state.normalization)
+    }
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+    use crate::{frame::Frame, geometry::Geometry, integration::IntegrationMethod, poni::Poni};
+    use std::sync::Barrier;
+
+    #[test]
+    fn cold_geometry_initialization_preserves_concurrent_luts() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1.0;
+        poni.pixel2 = 1.0;
+        poni.distance = 10.0;
+        let frame = Frame {
+            name: "cold concurrent frame".into(),
+            dim1: 7,
+            dim2: 9,
+            data: (0..63).map(|i| (i + 1) as f64).collect(),
+        };
+        let reference = Integrator::new(Geometry::new(2, 2, poni.clone()))
+            .with_method(IntegrationMethod::Counting);
+        let expected_1d = reference.integrate1d(&frame, 8);
+        let expected_2d = reference.integrate2d(&frame, 8, 4);
+        for _ in 0..16 {
+            let integrator = Integrator::new(Geometry::new(2, 2, poni.clone()))
+                .with_method(IntegrationMethod::Counting);
+            let start = Barrier::new(8);
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        start.wait();
+                        assert_eq!(integrator.integrate1d(&frame, 8), expected_1d);
+                        assert_eq!(integrator.integrate2d(&frame, 8, 4), expected_2d);
+                    });
+                }
+            });
+        }
     }
 }

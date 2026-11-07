@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validate complete block coverage, plan identity and frame lifecycle before
   publishing results. Failed or incomplete frames cannot leak into reuse.
 
+### Fixed
+
+- Publish cold-start geometry and LUT invalidation together so concurrent batch
+  workers cannot clear another worker's newly prepared lookup table.
+
 ### Performance and scope
 
 - These APIs let dioptrin-io decode fixed-mask Eiger frames once for both display
