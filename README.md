@@ -7,8 +7,9 @@ polarization/solid-angle corrections, and optional masking for each frame.
 
 ## User manual
 
-The [user manual](docs/index.md) collects the guides and API examples. Start with
-[performance, image density and CPU backends](docs/PERFORMANCE.md) for the
+The [user manual](https://dioptrin.readthedocs.io/en/latest/) collects the guides
+and API examples. Its [Markdown source](docs/index.md) is kept in this repository.
+Start with [performance, image density and CPU backends](https://dioptrin.readthedocs.io/en/latest/PERFORMANCE.html) for the
 difference between sparse/dense images, SIMD kernels and measured processing rates.
 
 <!-- manual-rust-start -->

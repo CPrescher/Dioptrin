@@ -4,6 +4,9 @@ Dioptrin provides fast 1D and 2D diffraction integration using a compiled Rust
 engine. It supports pixel splitting, supersampling, detector corrections,
 Poisson uncertainties, azimuthal intensity spread, and batch integration.
 
+See the [user manual](https://dioptrin.readthedocs.io/en/latest/) for API examples,
+HDF5 workflows and performance measurements.
+
 ## Installation
 
 ```bash

@@ -1,5 +1,7 @@
 # Dioptrin user manual
 
+Read the [published manual](https://dioptrin.readthedocs.io/en/latest/).
+
 The [manual index](index.md) links to installation, Python and Rust API examples,
 HDF5 and multi-detector guides, and performance measurements.
 

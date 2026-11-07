@@ -42,11 +42,11 @@ documentation dependencies and `docs/conf.py`, with warnings treated as errors.
 The displayed Dioptrin version comes from `pyproject.toml` in the checked-out
 commit.
 
-To activate hosting, import `https://github.com/CPrescher/Dioptrin` into a
-[Read the Docs Community](https://app.readthedocs.org/) account. Select `main`
-as the default branch and `.readthedocs.yaml` as the configuration file. Connect
-the repository integration for automatic builds and pull-request previews.
-The `latest` version should track `main`; enable release versions when their
+The [published manual](https://dioptrin.readthedocs.io/en/latest/) is managed in
+the [Dioptrin Read the Docs project](https://app.readthedocs.org/projects/dioptrin/).
+Its default branch is `main`, its configuration file is `.readthedocs.yaml`,
+and a signed GitHub incoming webhook delivers repository updates for automatic
+builds. The `latest` version tracks `main`; enable release versions when their
 tags contain this documentation configuration. Older tags without it need
 separate configuration and do not gain this manual automatically.
 
