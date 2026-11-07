@@ -81,8 +81,8 @@ are excluded from these integration measurements.
 | Dynamic mask, Poisson errors | 107.02 | 201.67 | 1.88× |
 
 Fast-mode intensity differences from 0.7.0 have relative L2 errors below
-7e-16 in this comparison. See the [matched mask-mode results](docs/benchmarks/2026-11-05-mask-modes-validation/conclusions.json)
-and [measurement summary](docs/benchmarks/2026-11-05-mask-modes-validation/summary.csv).
+7e-16 in this comparison. See the [matched mask-mode results](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-05-mask-modes-validation/conclusions.json)
+and [measurement summary](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-05-mask-modes-validation/summary.csv).
 
 ## [0.7.0] - 2026-11-05
 
@@ -133,7 +133,7 @@ Persistent Eiger workers retain about 310 MiB of additional live decoding buffer
 eight workers. `clear_file_workers()` releases those buffers. Peak RSS and live
 heap are reported separately; pixel-split setup still dominates its total peak.
 All 6,144 primary frame results match the archived 0.6.0 references byte-for-byte.
-See the [file-pipeline optimization benchmark](docs/benchmarks/2026-10-24-file-pipeline-optimization.md)
+See the [file-pipeline optimization benchmark](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-10-24-file-pipeline-optimization.md)
 for all worker counts, the array control, setup time and validation.
 
 Calibration setup is essentially unchanged; the matched float64 NumPy-array
@@ -240,8 +240,8 @@ CPU/LTO/fast-math builds are separate. pyFAI 2025.12.1 uses its full CSR and
 default bbox CSR methods with a separate engine per Python worker; setup includes
 all initialized engines. Algorithms and internal precision differ, so these
 rates are not claims of identical numerical tasks at the kernel level.
-See the [release benchmark](docs/benchmarks/2026-10-24-0.6.0.md) and
-[azint/pyFAI comparison](docs/benchmarks/2026-10-24-0.6.0-comparison.md) for
+See the [release benchmark](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-10-24-0.6.0.md) and
+[azint/pyFAI comparison](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-10-24-0.6.0-comparison.md) for
 settings, all worker counts, memory details and numerical differences.
 
 <!-- end-measured-060 -->
@@ -266,7 +266,7 @@ The comparison was extended to pyFAI 2026.9.0. Both 2025.12.1 and 2026.9.0 were 
 | Eiger9M | pyFAI 2026.9.0 full CSR | 90.6 | 7.163 | 1.730 | 10.054 | 8138.7 |
 | Eiger9M | pyFAI 2026.9.0 bbox CSR | 91.7 | 3.638 | 1.475 | 5.158 | 3265.7 |
 
-See the [latest pyFAI version control](docs/benchmarks/2026-10-24-pyfai-2026.9.0.md) for all worker counts, setup/memory details and numerical checks. Dioptrin and azint measurements come from the earlier qualified sweep.
+See the [latest pyFAI version control](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-10-24-pyfai-2026.9.0.md) for all worker counts, setup/memory details and numerical checks. Dioptrin and azint measurements come from the earlier qualified sweep.
 
 At eight Python workers with Poisson errors, the new/old throughput factors were 1.008–1.019 (about 1–2% faster). Setup and memory were similar. Other worker counts showed small changes in both directions. Two trials per point do not establish a general performance gain; this test shows no large speed jump between these versions on this Mac/CPU backend.
 
@@ -293,7 +293,7 @@ The end-to-end TIFF comparison reopens and decodes every image inside its worker
 | Eiger9M | pyFAI 2026.9.0 full CSR | 77.9 | 89.7 | 86.9% | 3013 |
 | Eiger9M | pyFAI 2026.9.0 bbox CSR | 76.1 | 92.3 | 82.4% | 2944 |
 
-The normal macOS file cache is warm; these are logical file-processing rates, not cold-SSD bandwidth. Each batch has 32 tasks. The matched array control uses the same calibrated pixels, with backend-appropriate dtypes. All 6,144 file/array frame results were byte-identical to their own backend references. Algorithms and internal precision still differ across libraries. Memory and setup, per-worker stage diagnostics and proposed future improvements are in the [file-pipeline benchmark](docs/benchmarks/2026-10-24-file-pipeline.md). The integration engine is unchanged; these measurements describe an additional workflow, not another code-speed upgrade.
+The normal macOS file cache is warm; these are logical file-processing rates, not cold-SSD bandwidth. Each batch has 32 tasks. The matched array control uses the same calibrated pixels, with backend-appropriate dtypes. All 6,144 file/array frame results were byte-identical to their own backend references. Algorithms and internal precision still differ across libraries. Memory and setup, per-worker stage diagnostics and proposed future improvements are in the [file-pipeline benchmark](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-10-24-file-pipeline.md). The integration engine is unchanged; these measurements describe an additional workflow, not another code-speed upgrade.
 <!-- end-file-pipeline-release-060 -->
 
 ## [0.5.5] - 2026-09-29

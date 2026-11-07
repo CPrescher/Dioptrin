@@ -17,3 +17,8 @@ notebooks/.ipynb_checkpoints
 
 keys/private.key
 license.key
+
+# Documentation builds
+/.venv-docs/
+/docs/_build/
+/docs/__pycache__/

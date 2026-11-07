@@ -1,9 +1,17 @@
-# Dioptrin — Fast 1D/2D diffraction integration with CSR LUTs
+# Dioptrin — Fast 1D/2D diffraction integration
 
-Dioptrin provides fast 1D/2D diffraction integration using compressed sparse row (CSR) lookup tables.
+Dioptrin provides fast 1D/2D diffraction integration using sparse lookup tables.
 It supports counting, pixel-splitting, and supersampled integration methods, and integrates in terms
 of two-theta (tth) and azimuthal coordinates. The `Integrator` handles geometry updates,
 polarization/solid-angle corrections, and optional masking for each frame.
+
+## User manual
+
+The [user manual](docs/index.md) collects the guides and API examples. Start with
+[performance, image density and CPU backends](docs/PERFORMANCE.md) for the
+difference between sparse/dense images, SIMD kernels and measured processing rates.
+
+<!-- manual-rust-start -->
 
 ## Supersampling setup
 
@@ -279,6 +287,8 @@ Demonstrates the `batch` module API for processing multiple files in parallel. S
 
 All examples default to `test_data/CeO2_Pilatus1M.tif` and `test_data/v1.poni` if no arguments are provided.
 
+<!-- manual-rust-end -->
+
 ## Python Bindings
 
 Dioptrin provides Python bindings via PyO3. Build with `maturin develop` (or `maturin develop --release` for optimized builds).
@@ -356,10 +366,11 @@ for image in images:
     result = integrator.integrate1d(image, 2000, errors=True)
 ```
 
-`fixed` is the default. It removes masked entries from a cached CSR execution
-table and caches normalization. Editing or clearing the mask refreshes that
-execution table; detector geometry and original pixel weights remain available,
-so previously masked pixels can be restored correctly.
+`fixed` is the default. Fast 1D CSC execution caches active pixels and bin
+normalization. The CSR path removes masked entries from a cached execution
+table. Editing or clearing the mask refreshes the dependent caches; detector
+geometry and original pixel weights remain available, so previously masked
+pixels can be restored correctly.
 
 `dynamic` retains a geometry-only CSC table and accumulates signal,
 normalization and Poisson variance together for each image. Four private
@@ -375,9 +386,10 @@ order. Switching policy is rejected while an asynchronous batch owns the
 integrator. A batch still uses one mask; dynamic mode lets callers replace it
 between frame integrations and does not generate masks itself.
 
-Compacted CSR or transposed CSC requires an additional execution table alongside
-the original geometry table. Inactive execution layouts are released when the
-policy changes. The `mask_mode` property reports the current choice. Applications
+Compacted CSR or transposed CSC requires additional storage alongside the
+original geometry table. Policy and layout switches retain valid tables and
+normalization caches; mask, correction or geometry changes invalidate dependent
+state. The `mask_mode` property reports the current choice. Applications
 can select a policy from their enabled masking tools; Dioptrin does not infer
 whether a supplied mask will change on the next image.
 
@@ -539,6 +551,8 @@ results = integrator.batch1d(
 )
 # Total threads used: num_workers * num_threads
 ```
+
+<!-- manual-python-end -->
 
 ## License
 

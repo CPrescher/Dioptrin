@@ -1,0 +1,26 @@
+{
+  "ci_run": 42338595936,
+  "code_commit": "9c780a9f8131088df55d0a6836a526fa44ee6d01",
+  "ci_status": "success",
+  "artifact_zip_digest_verified": true,
+  "same_synthetic_inputs_across_architectures": true,
+  "files_sha256": {
+    "windows-x64-final.json": "977f712784de0fd7f379edab0d428e7801c1d0171a791146f6065e1ab0a6d8a4",
+    "windows-arm64-final.json": "7758da73da7bbd0f87778372c2091819d61e26ff62ed193f2f0bb3b14535c848"
+  },
+  "note": "Matched warm-cache file read/decode on synthetic 9M-sized uint32 frames. Four allocated CPUs on each CI runner; eight workers oversubscribe. No original beamline images uploaded.",
+  "source_repository": "https://github.com/CPrescher/dioptrin-io",
+  "ci_url": "https://github.com/CPrescher/dioptrin-io/actions/runs/42338595936",
+  "artifacts": [
+    {
+      "name": "simd-benchmark-windows-latest",
+      "id": 13561141497,
+      "zip_sha256": "c48b618d4dbaa438d58464c689a3b54655f0c2607069811df22ac2a712390c4e"
+    },
+    {
+      "name": "simd-benchmark-windows-11-arm",
+      "id": 13561581010,
+      "zip_sha256": "8f0e99d49695cc543fdea226779220e34f089c875b64866fcd5f4b6b9cb455d9"
+    }
+  ]
+}

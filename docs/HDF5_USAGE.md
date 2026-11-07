@@ -1,13 +1,15 @@
 # Using Dioptrin with HDF5 Files
 
-Dioptrin doesn't include HDF5 reading in its Rust core, but you can easily integrate HDF5 files using Python's `h5py` library. This approach is cleaner, more flexible, and avoids dependency issues.
+[Manual index](index.md) · [Performance and CPU backends](PERFORMANCE.md)
 
-## Why No Built-in HDF5 Support?
+This guide describes the current Python workflow: read HDF5 data with `h5py`,
+then pass arrays to Dioptrin for integration. Dioptrin's Python integrator does
+not open HDF5 paths directly. Native reading for Rust consumers is provided by
+the separate [dioptrin-io library](https://github.com/CPrescher/dioptrin-io).
 
-- **h5py is ubiquitous**: Already installed in every scientific Python environment
-- **Handles all compression**: bitshuffle, blosc, lz4, etc. - no plugin hassles
-- **Zero-copy integration**: NumPy arrays pass efficiently to Rust
-- **Simpler dependencies**: Keeps the Rust library lightweight
+Reading, decompression and integration are separate stages. The reader and data
+layout determine how decoding can run in parallel; the integration worker count
+alone does not establish the throughput of the whole pipeline.
 
 ## Installation
 
@@ -15,12 +17,23 @@ Dioptrin doesn't include HDF5 reading in its Rust core, but you can easily integ
 pip install h5py dioptrin
 ```
 
+For files using plugin-provided filters such as Bitshuffle/LZ4, also install
+the matching filter implementation and register it before reading. For example:
+
+```bash
+pip install hdf5plugin
+```
+
+Then use `import hdf5plugin` before reading compressed datasets. See the
+[filter documentation](https://hdf5plugin.readthedocs.io/en/stable/usage.html#read-compressed-datasets).
+
 ## Usage Patterns
 
 ### Single Frame Integration
 
 ```python
 import h5py
+import numpy as np
 import dioptrin
 
 # Load integrator
@@ -28,15 +41,17 @@ integrator = dioptrin.Integrator("calibration.poni", method="pixel_split")
 
 # Read and integrate a single frame
 with h5py.File('data.h5', 'r') as f:
-    frame = f['/entry/data/data'][42]  # Frame 42
+    frame = np.ascontiguousarray(f['/entry/data/data'][42], dtype=np.float64)
     result = integrator.integrate1d(frame, n_points=1000, errors=True)
 
 print(result.radial, result.intensity, result.errors)
 ```
 
-### Batch Processing (Recommended)
+### Batch Processing a Small Group
 
-For multiple frames, load them into a list and use `batch1d` for parallel processing:
+For a small group of frames, use `batch1d` for parallel integration. This example
+processes the first eight frames. For a complete large file, use the bounded
+chunked approach below.
 
 ```python
 import h5py
@@ -45,11 +60,12 @@ import dioptrin
 
 integrator = dioptrin.Integrator("calibration.poni")
 
-# Load all frames (h5py handles decompression)
+# h5py reads and decompresses each selected frame
 with h5py.File('data.h5', 'r') as f:
     dataset = f['/entry/data/data']
-    # Convert to float64 (Dioptrin requires float64 arrays)
-    frames = [dataset[i].astype(np.float64) for i in range(len(dataset))]
+    # Prepare the contiguous float64 arrays expected by the Python API
+    frames = [np.ascontiguousarray(dataset[i], dtype=np.float64)
+              for i in range(min(8, len(dataset)))]
 
 # Parallel integration in Rust
 results = integrator.batch1d(frames, n_points=1000)
@@ -61,7 +77,9 @@ for result in results:
 
 ### Processing Large Datasets in Chunks
 
-For very large HDF5 files that don't fit in memory, process in chunks:
+For large HDF5 files, process bounded groups. One 3262 × 3108 float64 frame is
+about 77.35 MiB; eight such arrays alone use about 619 MiB. Decoding, lookup tables,
+worker queues and retained results add memory, so this is not an RSS limit.
 
 ```python
 import h5py
@@ -70,7 +88,7 @@ import dioptrin
 
 integrator = dioptrin.Integrator("calibration.poni")
 
-chunk_size = 100  # Adjust based on available RAM
+chunk_size = 8  # Adjust based on available RAM
 all_results = []
 
 with h5py.File('large_data.h5', 'r') as f:
@@ -81,7 +99,7 @@ with h5py.File('large_data.h5', 'r') as f:
         end = min(start + chunk_size, n_frames)
 
         # Load chunk and convert to float64
-        frames = [dataset[i].astype(np.float64) for i in range(start, end)]
+        frames = [np.ascontiguousarray(dataset[i], dtype=np.float64) for i in range(start, end)]
 
         # Integrate in parallel
         results = integrator.batch1d(frames, n_points=1000)
@@ -101,7 +119,7 @@ import dioptrin
 
 integrator = dioptrin.Integrator("calibration.poni")
 
-chunk_size = 100
+chunk_size = 8
 
 with h5py.File('large_data.h5', 'r') as f:
     dataset = f['/entry/data/data']
@@ -110,7 +128,7 @@ with h5py.File('large_data.h5', 'r') as f:
     for start in range(0, n_frames, chunk_size):
         end = min(start + chunk_size, n_frames)
         # Convert to float64
-        frames = [dataset[i].astype(np.float64) for i in range(start, end)]
+        frames = [np.ascontiguousarray(dataset[i], dtype=np.float64) for i in range(start, end)]
 
         # Stream results as they complete
         batch_iter = integrator.batch1d_iter(frames, n_points=1000)
@@ -128,6 +146,8 @@ with h5py.File('large_data.h5', 'r') as f:
 
 ```python
 import h5py
+import numpy as np
+import dioptrin
 
 def find_nexus_data(filepath):
     """Find the data path in a NeXus HDF5 file."""
@@ -137,6 +157,7 @@ def find_nexus_data(filepath):
         '/entry/data/data_000001',
         '/entry1/data/data',
         '/entry_0000/instrument/detector/data',
+        '/entry_0000/instrument/eiger/data',
     ]
 
     with h5py.File(filepath, 'r') as f:
@@ -147,46 +168,53 @@ def find_nexus_data(filepath):
     raise ValueError(f"Could not find data in {filepath}")
 
 # Usage
+integrator = dioptrin.Integrator('calibration.poni')
 data_path = find_nexus_data('data.nxs')
 with h5py.File('data.nxs', 'r') as f:
-    frames = [f[data_path][i] for i in range(10)]
+    frames = [np.ascontiguousarray(f[data_path][i], dtype=np.float64)
+              for i in range(min(8, len(f[data_path])))]
 
 results = integrator.batch1d(frames, n_points=1000)
 ```
 
 ## Performance Characteristics
 
-### What's Fast
-- **Integration**: Fully parallelized in Rust across all CPU cores
-- **Array passing**: Near-zero-copy from NumPy to Rust via PyO3
+h5py serializes its HDF5 API calls through an interpreter-wide lock, including
+calls for different files or datasets. A pipeline can overlap h5py reading with
+non-h5py processing, but extra h5py threads alone do not make those API calls
+parallel. Actual overlap with integration depends on the application's scheduling
+and bindings. See [h5py's threading documentation](https://docs.h5py.org/en/stable/threads.html).
 
-### What's Sequential
-- **HDF5 reading**: h5py's file reading is sequential (HDF5 C library limitation)
-- **Decompression**: Happens during h5py read
+Dioptrin can integrate frames in parallel after data are available. The native
+indexed reader in dioptrin-io follows a different path: it indexes supported
+immutable chunks through HDF5 once, then uses parallel positional reads and
+checked decoding outside that mutex. Applications must explicitly use that
+reader; it is separate from the Python workflow shown here.
 
-### Typical Timings (100 frames, 3262×3108 pixels)
-
-| Operation | Time | Parallel |
-|-----------|------|----------|
-| HDF5 read (uncompressed) | ~0.5s | No |
-| HDF5 read (bitshuffle) | ~2s | No |
-| Integration (pixel_split) | ~30s | Yes |
-| **Total** | ~32s | Mixed |
-
-**Key insight**: Integration dominates runtime, and that's fully parallelized. The sequential HDF5 reading is only ~6% of total time.
+Measure decoding, conversion/copies, mask creation, integration and normalization
+with the intended data and settings. Integration does not always dominate the
+total. The [performance chapter](PERFORMANCE.md) explains CPU backends, worker
+counts, sparse/dense image patterns and the scope of measured Windows rates.
 
 ## Array Requirements
 
-- **Type**: `float64` (required - use `.astype(np.float64)` to convert)
-- **Layout**: C-contiguous (row-major) - h5py arrays are already this
+- **Type**: `float64` for the current Python array API
+- **Layout**: C-contiguous (row-major)
 - **Shape**: 2D array `[height, width]`
 
-**Important:** HDF5 datasets often use int16 or uint16 to save space. Always convert to float64:
+HDF5 count arrays often use integer types. Prepare float64 for the current
+Python interface; this requirement does not apply to dioptrin-io's native pixel
+buffers or Dioptrin's typed Rust integration paths.
 
 ```python
-frame = dataset[i].astype(np.float64)  # ✅ Correct
-frame = dataset[i]                       # ❌ Will fail if not float64
+frame = np.ascontiguousarray(dataset[i], dtype=np.float64)
 ```
+
+`np.ascontiguousarray` avoids an additional conversion copy when its input
+already has the requested dtype and layout. Reading a dataset slice still
+materializes an array. The single-frame Python integration API borrows a
+contiguous float64 slice; application preparation and batch/stream queues can
+have other copy and memory costs.
 
 ## Comparison with pyFAI
 
@@ -202,8 +230,9 @@ result = ai.integrate1d(img.data, 1000)
 **Dioptrin:**
 ```python
 import h5py
+import numpy as np
 with h5py.File('data.h5', 'r') as f:
-    frame = f['/entry/data/data'][0]
+    frame = np.ascontiguousarray(f['/entry/data/data'][0], dtype=np.float64)
 result = integrator.integrate1d(frame, 1000)
 ```
 
@@ -219,7 +248,9 @@ tiff_results = integrator.batch1d(tiff_paths, n_points=1000)
 
 # Batch process HDF5 frames
 with h5py.File('data.h5', 'r') as f:
-    frames = [f['/entry/data/data'][i] for i in range(100)]
+    dataset = f['/entry/data/data']
+    frames = [np.ascontiguousarray(dataset[i], dtype=np.float64)
+              for i in range(min(8, len(dataset)))]
 hdf5_results = integrator.batch1d(frames, n_points=1000)
 
 # Combine results
@@ -239,27 +270,17 @@ frame = np.ascontiguousarray(dataset[42])  # Force contiguous if needed
 
 ### Compression Not Supported
 
-If h5py can't read your file:
-
-```bash
-# macOS
-brew install hdf5-plugins
-
-# Linux
-sudo apt-get install libhdf5-plugins
-```
-
-Or export uncompressed:
+The compression filter must be available before the first data read. For
+Bitshuffle/LZ4 and other filters supported by hdf5plugin:
 
 ```python
 import h5py
-
-with h5py.File('compressed.h5', 'r') as f_in:
-    data = f_in['/entry/data/data'][:]
-
-with h5py.File('uncompressed.h5', 'w') as f_out:
-    f_out.create_dataset('/entry/data/data', data=data)
+import hdf5plugin  # registers its supported filters with h5py's HDF5 library
 ```
+
+Other filters may require another matching plugin. A file cannot be read or
+converted to an uncompressed copy until its original compression is supported.
+See the [plugin usage guide](https://hdf5plugin.readthedocs.io/en/stable/usage.html).
 
 ## Advanced: Custom Data Sources
 
@@ -273,17 +294,20 @@ The `batch1d` method accepts any list of 2D float64 NumPy arrays. This means you
 
 ```python
 import netCDF4
+import numpy as np
 
 with netCDF4.Dataset('data.nc', 'r') as f:
-    frames = [f['detector_data'][i] for i in range(100)]
+    dataset = f['detector_data']
+    frames = [np.ascontiguousarray(dataset[i], dtype=np.float64)
+              for i in range(min(8, len(dataset)))]
 
 results = integrator.batch1d(frames, n_points=1000)
 ```
 
-## Summary
+## Choosing the workflow
 
-✅ **Do**: Use h5py to read HDF5 files, pass arrays to Dioptrin
-✅ **Do**: Use `batch1d()` for parallel integration of multiple frames
-✅ **Do**: Process large datasets in chunks to manage memory
-❌ **Don't**: Expect built-in HDF5 reading in the Rust library
-❌ **Don't**: Worry about compression - h5py handles it
+Use h5py with the required filter plugins for the Python examples in this guide.
+Pass contiguous float64 arrays to Dioptrin and choose chunk/queue sizes from
+available memory. Use the separate dioptrin-io reader APIs when building a native
+Rust input pipeline. Compare complete pipelines with matched data and integration
+settings before assigning a speedup to the decoder or integrator.

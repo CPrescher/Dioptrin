@@ -1,0 +1,822 @@
+{
+  "arch": "x86_64",
+  "automatic_backend": "Avx2",
+  "boundaries": "Warm-cache positional file reads, checked Rust LZ4, unshuffle, source checks, thread/buffer creation, uint32 delivery included. Generation, opening/indexing and count hashing excluded. Fixed workers, no decoded cache. 8 workers may exceed hosted runner CPU allocation.",
+  "logical_cpus": 4,
+  "os": "windows",
+  "processor": "AMD64 Family 26 Model 2 Stepping 1, AuthenticAMD",
+  "repeats": 5,
+  "samples": [
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 19.111725805264353,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 6.697459,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 25.698912544492497,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 4.9807555,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 28.792602676501858,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 4.4455863,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 51.079880552891815,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 2.505879,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 75.49762816533391,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 1.6954175,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 90.25237666942219,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 1.4182451999999999,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 28.777516701751257,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 4.4479168,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 25.520654753133222,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 5.0155453,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 18.23857668427378,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 7.0180915,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 91.74047594098852,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 1.3952402,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 73.603979767186,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 1.7390364,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 50.58514364916168,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 2.5303872,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 19.1057582680654,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 6.6995509,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 25.368821037158266,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 5.0455636,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 29.576372304971493,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 4.3277789,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 51.165191297056786,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 2.5017008,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 75.45215440363826,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 1.6964393,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 64.67241853725743,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 1.9792054000000001,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 28.893763005861505,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 4.4300218000000005,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 25.235381542703934,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 5.0722435,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 17.893185594145955,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 7.1535613,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 90.04197644389345,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 1.4215592,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 76.26293960147966,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 1.6784037,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 52.834675265289924,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 2.4226514,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 18.96859958771156,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 6.7479942,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 25.451949572609074,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 5.0290843,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 29.336328816974955,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 4.3631908,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "fps": 52.45738247497209,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 2.440076,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "fps": 76.50210843994569,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 1.6731565000000002,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "fps": 91.02802859673965,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 1.4061603,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 33.62303341701353,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 3.8069141,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 61.39733916403397,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 2.0847809,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 87.44921967284974,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 1.4637066,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 75.33493588790962,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 1.6990789,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 138.3960930782924,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 0.9248816,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 171.646654633521,
+      "frames": 128,
+      "repeat": 0,
+      "seconds": 0.745718,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 76.74471004109799,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 1.6678674,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 59.78342427030478,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 2.1410617,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 33.4110802209433,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 3.8310644,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 198.1216826226853,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 0.6460676,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 144.69847945637684,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 0.8845981,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 76.64026788647637,
+      "frames": 128,
+      "repeat": 1,
+      "seconds": 1.6701403,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 33.750518749428316,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 3.7925343,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 61.36097197697142,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 2.0860165,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 88.60004658424324,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 1.4446945,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 82.10406022538078,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 1.5589971999999999,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 150.4057665570898,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 0.8510312,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 206.57822536393275,
+      "frames": 128,
+      "repeat": 2,
+      "seconds": 0.61962,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 90.1304229468677,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 1.4201641999999999,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 61.424474841134945,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 2.0838599,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 33.70089690461211,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 3.7981185,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 206.51469981313647,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 0.6198106,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 149.3910680014136,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 0.8568116,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 79.80423522323271,
+      "frames": 128,
+      "repeat": 3,
+      "seconds": 1.6039249,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 34.08502984690256,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 3.7553143,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 58.8958934102121,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 2.1733264,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 86.70975825522625,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 1.4761891,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "fps": 78.19855933816649,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 1.6368588,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "fps": 140.27529464935233,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 0.9124914,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "fps": 198.97082341588137,
+      "frames": 128,
+      "repeat": 4,
+      "seconds": 0.6433104,
+      "workers": 8
+    }
+  ],
+  "scans_per_pass": 4,
+  "shape": [
+    32,
+    3262,
+    3108
+  ],
+  "sources": [
+    {
+      "case": "sparse-1-in-128",
+      "file_bytes": 60140480,
+      "frame_count_sha256": [
+        "2b1f2744784846a821d46163e101a00c4576f45e5ea6d7f1502434eede99a5fa",
+        "574ce6b215787973309497f8f11017ee5abc71c54262df6b83e6d05208a48318",
+        "f68cf7d75d465593489b25c33f7e8dd981cfd3f5c8fa4e5532206afcb0da9ab6",
+        "fe3eb88748c0c81b6080806459bb8990af1fa9d4e8855d3a6c4e3a5c537feb7d",
+        "95a6b836bc3e3b0b9861451fe1e9ab76858fdf66c7c8f18e05f7b0d39ba58e8c",
+        "58efe33b18788ab1b9ed839bf16d7655e22ee0666875b48bf9f6792d764632e7",
+        "13d47b4369862e8db36ac8bbcef4cee10be4bc7be86b7f722dbcf46b3d0cd516",
+        "7dccf4bb19e7aaecf4f80cc712d4037960599f3c6fc3b8e05a528b89a736e218",
+        "feec22b8f04c103307055f46cfdaf07d762232a9a89abfe23f712c41191c128a",
+        "72a2a5c9d052c5f7852bcfc87ecefa18c6f901836c7e3dc8e547fde387b8bb24",
+        "d5ac46535a2a551818f3b3ebb22093b50ed7218844400974c221d3dbc6c28ba0",
+        "9b9bf87207ea109b5a27f2ecdb34d8b3d8eff93d610b6e7fd64370631bef7ad2",
+        "958c79190d6c19a5bb7e9f2b050282d79e6b7e1177c6431c2b2c508990f1abad",
+        "08d1f3c924dc56abfd4987f441a200501c567a02015def92f4117ec97733d115",
+        "7eccb377ea669dbd715a0565de3d3daca0fcbb4a40670f0e486daa9d1d9baf3c",
+        "a19b489d49462f2981f4d9734d174f4d7e96f3ebf6123862fa132e210952fbd3",
+        "274f207a0b1eed0a75d6355da0c745ddabf98ca7ef67a28df1f788ae436bb8e1",
+        "46859216c85cedd465f5c55453b29870098bdd47bb147f875c13c20beabafacd",
+        "ef27110ab1c43a02ff1e86996af278bdebf7e9d91deb8286e18329ce986e2a83",
+        "3cc2fa2ca087386a969f892b0c30a9d373944268f0a36f2f58e2d582d9e1fdfe",
+        "bc28b96d79c36ede9eec2cb0e494a04c1ebd13394f04d943a86b4ea4921183c8",
+        "10909a7362b5902d5868c8bdd1bad428c1c2cfb2a4b5b73c4e7936ce90c8f672",
+        "c3f54c428dddc98a9daed45dba14a51f22273c9ce69fdc54f49e75aaa85a86fd",
+        "a97ad2e747a523cdc473513e102a5ba7646eb3e684989621b600936d72fbe1b7",
+        "c6b4cf147170ac5c60892a456931cc4160cefe086290170b788a50fd397b0790",
+        "bb42b64a018c9f86cfc3555072dfeeb1cff206d48ba6ad74b740c69a4ac18d48",
+        "7ad0eb96a9f61c15e3861524c724b4b8c4b6170a825bf08082f8604ea3cff267",
+        "945f63ba33c3f623676cb6c660de271573c9a62271a109b17c6f9f3b437a92d2",
+        "4cc2a3a42625cffb2687248567b287ee143301954816c2c67fa8b3550552c343",
+        "d806fd9ea65a00c4a2b11c13291e95d66d5bfa9384851dcfa4e0c967e8de77e0",
+        "4015ea51368665964282ace2c57877ceca8638a490d8ecb4795825d90685dc1d",
+        "b43bb4c0442ba9441620af1017d194164305e7732cc2260f5583b6eef7e1042c"
+      ],
+      "ordered_counts_sha256": "2cc47832184487a1a1bcece63aafb4e896f9169e1720e2f864cd07e273d5b0b3"
+    },
+    {
+      "case": "dense-u16-range",
+      "file_bytes": 522328603,
+      "frame_count_sha256": [
+        "98520954e300a3e55f7924e757a8d12047295ba274c69a2fd1c5d7343b8f4631",
+        "a0dc4de47d6bd921a4cabb5ee26c6a917822e4fe8d4e65b34fea6f7e5720dcc9",
+        "686a346f2ce54a358088ea8cba77157ee4912d719a9d1185667a76e8657b96d2",
+        "102965110745321252fa7b97996fbe5ffb05aa4cbbce0ae33c6205437cf7a042",
+        "885a02a9586f39316bb5748f69bd9042d5980a2b8b90002a936b4330093dba36",
+        "0e75013273ee7d1b897f9a11d08263777efbce934111dbd881b338891fffb3b9",
+        "7ee51b527e42399c764c56c3bc6b7b1ed62871f7e1535247d1c7a0d871d3e9f4",
+        "8c5584a87e38cc7eefea278b027890acbcea82e40df9bbe2cdfe082744f6baca",
+        "54f4b6e288957ccc691740eaae7ef1c9ac10620eee5a7f30369cae3c26d12a77",
+        "425a42dd2cdc0bef0e7953f5834fc096cebd71009aaa2f599b0bbe98ee044494",
+        "7f9443215f86ff55e7fd5f82ba6c27bed7433bbdcafd31a295e83367a207d4c5",
+        "1ea1dad9af46d026de034ac15d8a2dfa71baa1a214b812ae74c7257637b58331",
+        "53ddaf19e9c6000f9bc7e86cf65e324a73c840c9c06224d3e8d020a254163789",
+        "30c53489d5290facd49d9afa2113d47fc61b213a39662d4fe90012ac09bea4d4",
+        "dcd6ce46ac10133bc9473fb666f50c79b0e9d201b9aa677d25cf2399161ee370",
+        "2da0388070067b7055e94644c1ed65c84cc04811d92f59b23914e1e631d5efe3",
+        "6d4b78efe4b6e14b8d4d996f2fa158782884b16e767594867ec7138e73412f49",
+        "b93e512bb0519a64a398654526b48d514297e90250982d81787ca424c5444581",
+        "84b087912b370165aea7e49c5361f8ee1c5dcc6895bcafcd23d64ebaf2470980",
+        "4c6298b274592262dd36e400ce9d6ddc235051b7793ddf752a7e94965e2e4db7",
+        "ccde712ca69f02efc4602ec3f2fb2698fed2052a42dfd8faa560eb2c1521ab53",
+        "8fd0aed087f143fb6dff18cab50bc050cb7aa7053d4529f5d815665bfb32c370",
+        "c0b2fa7901465c8e7d13dcac6e7bbc582df3a1796b2609a3467252758bc36098",
+        "2fb23b40ee29e760b594ddbc2758c290bced08d7f6774b690d527af8b17e8256",
+        "fccdaefedd562696b36fec342c19ad3395427dba0e109c7fe235b34e2d93113a",
+        "7a571f9ba6203bebc4680022c83884287cdb788e5b673cfce2d77a74d6d96e26",
+        "63a58f2e04945bb7542168bfe58212931849be5c837620cf1519004e6f398d73",
+        "9ccf21ba9bd9b7a6f7a55a16b6924baa24d903914d37aac15667f4d971dfc873",
+        "0648a0241eb38f3db950922913b51bce66b44c800402c23dea577b06d9f5ca10",
+        "180102789ad5d0e362d36f79bdcbb3b52dfaa0d5af3aa9e9f9827549f8acee7d",
+        "122df3c191adf9cf9f09c1a70f65cd8c1827e96d274dfdc9b1597f2e31eec18c",
+        "d6e98ad3df4eaefb8a5d3049b2ca693421d45aa8fe802ee12d82835d7cb56ddb"
+      ],
+      "ordered_counts_sha256": "326f702e8c73846083e3c63364493c734cbdeb9dd46d06d094264c901b0b28c5"
+    }
+  ],
+  "summary": [
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "max_fps": 19.111725805264353,
+      "median_fps": 18.96859958771156,
+      "min_fps": 17.893185594145955,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "max_fps": 25.698912544492497,
+      "median_fps": 25.451949572609074,
+      "min_fps": 25.235381542703934,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "max_fps": 29.576372304971493,
+      "median_fps": 28.893763005861505,
+      "min_fps": 28.777516701751257,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "max_fps": 52.834675265289924,
+      "median_fps": 51.165191297056786,
+      "min_fps": 50.58514364916168,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "max_fps": 76.50210843994569,
+      "median_fps": 75.49762816533391,
+      "min_fps": 73.603979767186,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "max_fps": 91.74047594098852,
+      "median_fps": 90.25237666942219,
+      "min_fps": 64.67241853725743,
+      "workers": 8
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "max_fps": 34.08502984690256,
+      "median_fps": 33.70089690461211,
+      "min_fps": 33.4110802209433,
+      "workers": 1
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "max_fps": 61.424474841134945,
+      "median_fps": 61.36097197697142,
+      "min_fps": 58.8958934102121,
+      "workers": 1
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "max_fps": 90.1304229468677,
+      "median_fps": 87.44921967284974,
+      "min_fps": 76.74471004109799,
+      "workers": 1
+    },
+    {
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "max_fps": 82.10406022538078,
+      "median_fps": 78.19855933816649,
+      "min_fps": 75.33493588790962,
+      "workers": 8
+    },
+    {
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "max_fps": 150.4057665570898,
+      "median_fps": 144.69847945637684,
+      "min_fps": 138.3960930782924,
+      "workers": 8
+    },
+    {
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "max_fps": 206.57822536393275,
+      "median_fps": 198.97082341588137,
+      "min_fps": 171.646654633521,
+      "workers": 8
+    }
+  ],
+  "validation": [
+    {
+      "all_counts_match": true,
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "frames": 32,
+      "workers": 1
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "frames": 32,
+      "workers": 1
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "frames": 32,
+      "workers": 1
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Scalar",
+      "case": "sparse-1-in-128",
+      "frames": 32,
+      "workers": 8
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Sse2",
+      "case": "sparse-1-in-128",
+      "frames": 32,
+      "workers": 8
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Avx2",
+      "case": "sparse-1-in-128",
+      "frames": 32,
+      "workers": 8
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "frames": 32,
+      "workers": 1
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "frames": 32,
+      "workers": 1
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "frames": 32,
+      "workers": 1
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Scalar",
+      "case": "dense-u16-range",
+      "frames": 32,
+      "workers": 8
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Sse2",
+      "case": "dense-u16-range",
+      "frames": 32,
+      "workers": 8
+    },
+    {
+      "all_counts_match": true,
+      "backend": "Avx2",
+      "case": "dense-u16-range",
+      "frames": 32,
+      "workers": 8
+    }
+  ],
+  "workload": "deterministic synthetic uint32 frames, Eiger9M geometry; not original beamline data"
+}
