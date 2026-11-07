@@ -31,9 +31,10 @@ python -m sphinx -n -W --keep-going -b linkcheck docs docs/_build/linkcheck
 
 The Documentation GitHub Actions workflow runs the strict HTML build for pushes
 and pull requests. Generated HTML and documentation virtual environments are
-ignored by Git. Only the benchmark JSON files linked from the performance guide
-are included as downloads; the historical benchmark directory is excluded from
-document discovery.
+ignored by Git. The Python type stub is available as a download. Native reader
+measurements and their downloads are maintained in the
+[dioptrin-io manual](https://dioptrin-io.readthedocs.io/en/latest/PERFORMANCE.html);
+the historical benchmark directory here is excluded from document discovery.
 
 ## Read the Docs
 
