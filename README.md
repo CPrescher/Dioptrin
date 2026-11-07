@@ -1,5 +1,11 @@
 # Dioptrin — Fast 1D/2D diffraction integration
 
+
+[Physical detector geometry](docs/detectors.md) includes a frozen detector
+catalogue, orientations, nonuniform/curved quadrilateral coordinates, Fit2D
+splines and conversion. Attach a detector descriptor to use that physical
+mapping consistently for integration and refinement.
+
 Dioptrin provides fast 1D/2D diffraction integration using sparse lookup tables.
 It supports counting, pixel-splitting, and supersampled integration methods, and integrates in terms
 of two-theta (tth) and azimuthal coordinates. The `Integrator` handles geometry updates,

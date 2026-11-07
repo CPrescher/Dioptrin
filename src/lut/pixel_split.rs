@@ -207,8 +207,7 @@ pub fn build_lut1d_ps_csr(
 
     let wavelength = geometry.poni.wavelength;
 
-    let (d1, d2) = geometry.corner_grid();
-    let (tth_corners, azimuthal_corners) = geometry.calc_tth_and_azimuth(&d1, &d2);
+    let (tth_corners, azimuthal_corners) = geometry.angular_corners();
     let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
     let azimuthal = geometry.calc_azimuth_all();
 
@@ -216,9 +215,6 @@ pub fn build_lut1d_ps_csr(
     let mut max = math::max(&radial_corners);
     max += 10.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
-
-    let dim2 = geometry.dim2;
-    let width = dim2 + 1;
 
     // Single pass: build per-row buckets in parallel, then flatten to CSR.
     let (buckets, _, _) = radial
@@ -233,20 +229,18 @@ pub fn build_lut1d_ps_csr(
                 )
             },
             |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
-                let row = idx / dim2;
-                let col = idx - row * dim2;
-                let base = row * width + col;
+                let [i00, i01, i11, i10] = geometry.corner_indices(idx);
 
-                let r00 = radial_corners[base];
-                let r01 = radial_corners[base + 1];
-                let r10 = radial_corners[base + width];
-                let r11 = radial_corners[base + width + 1];
+                let r00 = radial_corners[i00];
+                let r01 = radial_corners[i01];
+                let r10 = radial_corners[i10];
+                let r11 = radial_corners[i11];
 
                 let center_azimuthal = azimuthal[idx];
-                let a00 = unwrap_angle(azimuthal_corners[base], center_azimuthal);
-                let a01 = unwrap_angle(azimuthal_corners[base + 1], center_azimuthal);
-                let a10 = unwrap_angle(azimuthal_corners[base + width], center_azimuthal);
-                let a11 = unwrap_angle(azimuthal_corners[base + width + 1], center_azimuthal);
+                let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
+                let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
+                let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
+                let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
 
                 let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
                 let area_total = polygon_area(&poly).abs();
@@ -374,15 +368,11 @@ pub fn build_lut1d_ps_csr_with_range(
 
     let wavelength = geometry.poni.wavelength;
 
-    let (d1, d2) = geometry.corner_grid();
-    let (tth_corners, azimuthal_corners) = geometry.calc_tth_and_azimuth(&d1, &d2);
+    let (tth_corners, azimuthal_corners) = geometry.angular_corners();
     let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
     let azimuthal = geometry.calc_azimuth_all();
 
     let (min, _max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
-
-    let dim2 = geometry.dim2;
-    let width = dim2 + 1;
 
     let (buckets, _, _) = radial
         .par_iter()
@@ -396,20 +386,18 @@ pub fn build_lut1d_ps_csr_with_range(
                 )
             },
             |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
-                let row = idx / dim2;
-                let col = idx - row * dim2;
-                let base = row * width + col;
+                let [i00, i01, i11, i10] = geometry.corner_indices(idx);
 
-                let r00 = radial_corners[base];
-                let r01 = radial_corners[base + 1];
-                let r10 = radial_corners[base + width];
-                let r11 = radial_corners[base + width + 1];
+                let r00 = radial_corners[i00];
+                let r01 = radial_corners[i01];
+                let r10 = radial_corners[i10];
+                let r11 = radial_corners[i11];
 
                 let center_azimuthal = azimuthal[idx];
-                let a00 = unwrap_angle(azimuthal_corners[base], center_azimuthal);
-                let a01 = unwrap_angle(azimuthal_corners[base + 1], center_azimuthal);
-                let a10 = unwrap_angle(azimuthal_corners[base + width], center_azimuthal);
-                let a11 = unwrap_angle(azimuthal_corners[base + width + 1], center_azimuthal);
+                let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
+                let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
+                let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
+                let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
 
                 let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
                 let area_total = polygon_area(&poly).abs();
@@ -536,8 +524,7 @@ fn build_lut2d_ps_csr_with_azimuthal(
 
     let wavelength = geometry.poni.wavelength;
 
-    let (d1, d2) = geometry.corner_grid();
-    let (tth_corners, azimuthal_corners) = geometry.calc_tth_and_azimuth(&d1, &d2);
+    let (tth_corners, azimuthal_corners) = geometry.angular_corners();
     let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
 
     let min_radial = math::min(&radial_corners);
@@ -560,27 +547,23 @@ fn build_lut2d_ps_csr_with_azimuthal(
     };
 
     let rows = n_radial * n_azimuthal;
-    let dim2 = geometry.dim2;
-    let width = dim2 + 1;
 
     let counts: Vec<AtomicUsize> = (0..rows).map(|_| AtomicUsize::new(0)).collect();
     (0..radial.len()).into_par_iter().for_each_init(
         || (Vec::with_capacity(8), Vec::with_capacity(8)),
         |(buf1, buf2), idx| {
-            let row = idx / dim2;
-            let col = idx - row * dim2;
-            let base = row * width + col;
+            let [i00, i01, i11, i10] = geometry.corner_indices(idx);
 
-            let r00 = radial_corners[base];
-            let r01 = radial_corners[base + 1];
-            let r10 = radial_corners[base + width];
-            let r11 = radial_corners[base + width + 1];
+            let r00 = radial_corners[i00];
+            let r01 = radial_corners[i01];
+            let r10 = radial_corners[i10];
+            let r11 = radial_corners[i11];
 
             let center_azimuthal = azimuthal[idx];
-            let a00 = unwrap_angle(azimuthal_corners[base], center_azimuthal);
-            let a01 = unwrap_angle(azimuthal_corners[base + 1], center_azimuthal);
-            let a10 = unwrap_angle(azimuthal_corners[base + width], center_azimuthal);
-            let a11 = unwrap_angle(azimuthal_corners[base + width + 1], center_azimuthal);
+            let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
+            let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
+            let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
+            let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
 
             let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
             let area_total = polygon_area(&poly).abs();
@@ -667,20 +650,18 @@ fn build_lut2d_ps_csr_with_azimuthal(
     (0..radial.len()).into_par_iter().for_each_init(
         || (Vec::with_capacity(8), Vec::with_capacity(8)),
         |(buf1, buf2), idx| {
-            let row = idx / dim2;
-            let col = idx - row * dim2;
-            let base = row * width + col;
+            let [i00, i01, i11, i10] = geometry.corner_indices(idx);
 
-            let r00 = radial_corners[base];
-            let r01 = radial_corners[base + 1];
-            let r10 = radial_corners[base + width];
-            let r11 = radial_corners[base + width + 1];
+            let r00 = radial_corners[i00];
+            let r01 = radial_corners[i01];
+            let r10 = radial_corners[i10];
+            let r11 = radial_corners[i11];
 
             let center_azimuthal = azimuthal[idx];
-            let a00 = unwrap_angle(azimuthal_corners[base], center_azimuthal);
-            let a01 = unwrap_angle(azimuthal_corners[base + 1], center_azimuthal);
-            let a10 = unwrap_angle(azimuthal_corners[base + width], center_azimuthal);
-            let a11 = unwrap_angle(azimuthal_corners[base + width + 1], center_azimuthal);
+            let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
+            let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
+            let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
+            let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
 
             let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
             let area_total = polygon_area(&poly).abs();
