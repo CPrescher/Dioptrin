@@ -44,7 +44,9 @@ does not survive the Fit2D representation.
 The compressed catalogue is a frozen **pyFAI 2026.9.0** data snapshot: 109
 identities, 105 quadrilateral models, four unavailable six-corner Pixirad models.
 It retains the factory configuration options alongside aliases, pitches, dimensions, masks, nonuniform/curved coordinates,
-Perkin binning and official Rayonix binning pitches. Catalogue availability is
+Perkin binning and official Rayonix binning pitches. Factory `config` retains
+constructor defaults, while `pixel1`/`pixel2` describe the unbinned physical grid;
+these differ for detectors whose constructor starts binned. Catalogue availability is
 not a claim of arbitrary detector-configuration/API parity. Nondefault geometry,
 unknown crops/binning, hexagonal splitting and parallax need explicit support.
 See [pyFAI's detector documentation](https://www.silx.org/doc/pyFAI/latest/api/detectors/index.html).

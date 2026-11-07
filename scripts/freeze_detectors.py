@@ -19,10 +19,11 @@ for cls in sorted(set(ALL_DETECTORS.values()), key=lambda c: c.__name__):
         continue
     d = cls()
     d._orientation = Orientation(3)
+    factory_config=d.get_config()
     d.binning = (1,1)
     name = (d.aliases or [cls.__name__])[0]
     record = dict(name=name, aliases=sorted(set([cls.__name__, *d.aliases])),
-                  config=d.get_config(), pixel1=d.pixel1, pixel2=d.pixel2, binning_pitches=list(getattr(d,"BINNED_PIXEL_SIZE",{}).items()), max_shape=list(d.max_shape),
+                  config=factory_config, pixel1=d.pixel1, pixel2=d.pixel2, binning_pitches=list(getattr(d,"BINNED_PIXEL_SIZE",{}).items()), max_shape=list(d.max_shape),
                   orientation=3, map="Uniform", mask=[], circular_mask=cls.__name__ in ("Mar345","Rayonix133","RayonixSx165"), spline=None, unsupported=None)
     if d.CORNERS != 4:
         record["unsupported"] = f"{name}: hexagonal pixel corners are not implemented in the pyFAI detector reference; supply a qualified quadrilateral NeXus definition."
