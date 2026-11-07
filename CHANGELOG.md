@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-07
+
+### Added
+
+- Expose immutable float64 `Fixed1dPlan` snapshots and lightweight workers for
+  fixed-mask CSC integration directly from decoded pixel blocks. Plans share
+  geometry, coefficients and normalization across workers.
+- Support multicore integration within one frame through validated contiguous
+  ranges and deterministic merging of private float64 histograms. Original
+  uint16/uint32 counts can be consumed without a full-frame float64 copy.
+- Validate complete block coverage, plan identity and frame lifecycle before
+  publishing results. Failed or incomplete frames cannot leak into reuse.
+
+### Performance and scope
+
+- These APIs let dioptrin-io decode fixed-mask Eiger frames once for both display
+  and integration. In the matched warm-cache Eiger 9M Qt benchmark, median
+  open-to-pattern latency decreased from 180–182 ms to 143–145 ms. Dynamic masks
+  and batch/map processing retain their existing paths.
+- All 625 source frames matched independent pixel hashes; float64 intensities
+  and Poisson uncertainties agreed within the documented tolerance. See the
+  [combined-path benchmark](docs/PERFORMANCE.md) for scope and conditions.
+
 ## [0.9.0] - 2026-11-06
 
 ### Added
@@ -633,7 +656,8 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/CPrescher/Dioptrin/compare/v0.9.0...v0.10.0
 [0.8.0]: https://github.com/CPrescher/Dioptrin/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/CPrescher/Dioptrin/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/CPrescher/Dioptrin/compare/v0.6.0...v0.6.1
