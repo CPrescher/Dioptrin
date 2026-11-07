@@ -9,8 +9,9 @@ polarization/solid-angle corrections, and optional masking for each frame.
 
 The [user manual](https://dioptrin.readthedocs.io/en/latest/) collects the guides
 and API examples. Its [Markdown source](docs/index.md) is kept in this repository.
-Start with [performance, image density and CPU backends](https://dioptrin.readthedocs.io/en/latest/PERFORMANCE.html) for the
-difference between sparse/dense images, SIMD kernels and measured processing rates.
+See [integration performance](https://dioptrin.readthedocs.io/en/latest/PERFORMANCE.html)
+for masks, float64 arithmetic and shared plans. File-reading comparisons and SIMD
+decoder measurements belong in the [dioptrin-io manual](https://dioptrin-io.readthedocs.io/en/latest/PERFORMANCE.html).
 
 <!-- manual-rust-start -->
 

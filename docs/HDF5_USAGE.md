@@ -193,8 +193,10 @@ reader; it is separate from the Python workflow shown here.
 
 Measure decoding, conversion/copies, mask creation, integration and normalization
 with the intended data and settings. Integration does not always dominate the
-total. The [performance chapter](PERFORMANCE.md) explains CPU backends, worker
-counts, sparse/dense image patterns and the scope of measured Windows rates.
+total. The [integration performance chapter](PERFORMANCE.md) covers masks,
+float64 arithmetic and shared plans. The
+[dioptrin-io performance guide](https://dioptrin-io.readthedocs.io/en/latest/PERFORMANCE.html)
+covers reader backends, worker counts, sparse/dense images and Windows read/decode rates.
 
 ## Array Requirements
 

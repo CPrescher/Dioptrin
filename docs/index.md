@@ -6,8 +6,8 @@ examples and API documentation maintained in this repository.
 
 Start with [installation](installation.md) and the [Python API](python-api.md),
 or the [Rust integration examples](rust-api.md). The
-[performance guide](PERFORMANCE.md) explains sparse and dense images, CPU
-backends, worker counts and the conditions behind the measured rates.
+[performance guide](PERFORMANCE.md) explains fixed and dynamic masks, float64
+arithmetic, shared plans and matched integration timings.
 
 ```{toctree}
 :caption: Getting started
@@ -38,9 +38,9 @@ BUILDING
 
 Dioptrin performs diffraction integration. The separate
 [dioptrin-io](https://github.com/CPrescher/dioptrin-io) library provides native
-file readers for Rust applications. The performance guide identifies which
-library and pipeline each setting or measurement belongs to.
+file readers for Rust applications. Its [performance guide](https://dioptrin-io.readthedocs.io/en/latest/PERFORMANCE.html)
+contains file-reading comparisons, CPU decoder backends and reader measurements.
 
 Historical [integration benchmark records](https://github.com/CPrescher/Dioptrin/tree/main/docs/benchmarks)
-remain in the repository. The performance chapter includes downloadable Windows
-reader measurements and provenance.
+remain in the repository. Native reader measurements and their provenance are
+maintained in the dioptrin-io manual.
