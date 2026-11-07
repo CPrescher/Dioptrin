@@ -213,12 +213,14 @@ impl PreparedCsr {
     pub(crate) fn prepare_normalization(&self, mask: Option<&[u8]>, norm: &[f64], fast: bool) {
         match self.mode {
             MaskMode::Fixed => {
-                if fast && self.fixed_csc_enabled && self.prefer_csc {
-                    if let Some(csc) = self.dynamic_csc(norm.len()) {
-                        self.fixed_pixels.get_or_init(|| csc.active_pixels(mask));
-                        self.normalization::<true>(mask, norm);
-                        return;
-                    }
+                if fast
+                    && self.fixed_csc_enabled
+                    && self.prefer_csc
+                    && let Some(csc) = self.dynamic_csc(norm.len())
+                {
+                    self.fixed_pixels.get_or_init(|| csc.active_pixels(mask));
+                    self.normalization::<true>(mask, norm);
+                    return;
                 }
                 let table = self.fixed_table(mask);
                 if fast {
@@ -325,12 +327,14 @@ impl PreparedCsr {
         norm: &[f64],
     ) -> Vec<[f64; 4]> {
         if self.mode == MaskMode::Fixed {
-            if FAST && self.fixed_csc_enabled && self.prefer_csc {
-                if let Some(csc) = self.dynamic_csc(norm.len()) {
-                    let pixels = self.fixed_pixels.get_or_init(|| csc.active_pixels(mask));
-                    let cached_norm = self.normalization::<true>(mask, norm);
-                    return csc.fixed_results::<VAR, COUNT, P>(signal, pixels, cached_norm);
-                }
+            if FAST
+                && self.fixed_csc_enabled
+                && self.prefer_csc
+                && let Some(csc) = self.dynamic_csc(norm.len())
+            {
+                let pixels = self.fixed_pixels.get_or_init(|| csc.active_pixels(mask));
+                let cached_norm = self.normalization::<true>(mask, norm);
+                return csc.fixed_results::<VAR, COUNT, P>(signal, pixels, cached_norm);
             }
             return self
                 .fixed_table(mask)
@@ -408,6 +412,16 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    pub(crate) fn fixed_csc(&self) -> Option<&Csc> {
+        self.csr.csc.get()?.as_ref()
+    }
+    pub(crate) fn fixed_pixels(&self) -> &[u32] {
+        self.csr.fixed_pixels.get().expect("prepared fixed pixels")
+    }
+    pub(crate) fn fixed_bin_norm(&self) -> &[f64] {
+        self.csr.fast_norm.get().expect("prepared normalization")
+    }
+
     pub(crate) fn set_sparse_layout(&mut self, layout: SparseLayout) {
         self.csr.prefer_csc = layout == SparseLayout::Csc;
     }

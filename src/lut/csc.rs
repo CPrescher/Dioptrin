@@ -5,17 +5,17 @@ use rayon::prelude::*;
 use super::prepared::{Columns, madd};
 use crate::frame::Pixel;
 
-pub(super) struct Csc {
+pub(crate) struct Csc {
     ptr: Vec<u32>,
     bins: Vec<u32>,
     weights: Option<Vec<f64>>,
     nbins: usize,
 }
 
-struct Sums {
-    signal: Vec<f64>,
+pub(crate) struct Sums {
+    pub(crate) signal: Vec<f64>,
     norm: Vec<f64>,
-    variance: Vec<f64>,
+    pub(crate) variance: Vec<f64>,
     count: Vec<f64>,
 }
 
@@ -92,15 +92,11 @@ impl Csc {
         // output fields. Direct, file-batch and array-batch APIs then preserve
         // the same reduction order across worker counts and pixel types.
         let bytes_per_hist = self.nbins.saturating_mul(4 * 8 * 3);
-        let chunks = if bytes_per_hist > 0 {
-            pixels
-                .len()
-                .div_ceil(262_144)
-                .min((32 * 1024 * 1024 / bytes_per_hist).max(1))
-                .max(1)
-        } else {
-            1
-        };
+        let chunks = (32 * 1024 * 1024_usize)
+            .checked_div(bytes_per_hist)
+            .map_or(1, |limit| {
+                pixels.len().div_ceil(262_144).min(limit.max(1)).max(1)
+            });
         let accumulate = |i| {
             self.fixed_accumulate::<VAR, COUNT, P>(
                 signal,
@@ -132,22 +128,58 @@ impl Csc {
         rows
     }
 
+    pub(crate) fn block_sums(&self, errors: bool) -> Sums {
+        Sums {
+            signal: vec![0.; 4 * self.nbins],
+            norm: vec![],
+            variance: vec![0.; if errors { 4 * self.nbins } else { 0 }],
+            count: vec![],
+        }
+    }
+
+    pub(crate) fn add_fixed_block<P: Pixel>(
+        &self,
+        signal: &[P],
+        offset: usize,
+        pixels: &[u32],
+        sums: &mut Sums,
+    ) {
+        if sums.variance.is_empty() {
+            self.add_fixed_slice::<false, false, P>(signal, offset, pixels, sums);
+        } else {
+            self.add_fixed_slice::<true, false, P>(signal, offset, pixels, sums);
+        }
+    }
+
     fn fixed_accumulate<const VAR: bool, const COUNT: bool, P: Pixel>(
         &self,
         signal: &[P],
         pixels: &[u32],
     ) -> Sums {
+        let mut sums = self.block_sums(VAR);
+        if COUNT {
+            sums.count = vec![0.; 4 * self.nbins];
+        }
+        self.add_fixed_slice::<VAR, COUNT, P>(signal, 0, pixels, &mut sums);
+        sums
+    }
+
+    // Caller selects only active pixels in [offset, offset + signal.len()).
+    fn add_fixed_slice<const VAR: bool, const COUNT: bool, P: Pixel>(
+        &self,
+        signal: &[P],
+        offset: usize,
+        pixels: &[u32],
+        sums: &mut Sums,
+    ) {
         let n = self.nbins;
-        let mut sum = vec![0.; 4 * n];
-        let mut variance = vec![0.; if VAR { 4 * n } else { 0 }];
-        let mut count = vec![0.; if COUNT { 4 * n } else { 0 }];
         // SAFETY: Csc construction checks compact bounds and active_pixels
         // supplies valid pixels. Signal dimensions are checked above. All
         // destination histograms are private to this frame invocation.
         unsafe {
             for &pixel in pixels {
                 let p = pixel as usize;
-                let x = signal.get_unchecked(p).to_f64();
+                let x = signal.get_unchecked(p - offset).to_f64();
                 let lane = (p % 4) * n;
                 for k in
                     *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
@@ -157,23 +189,17 @@ impl Csc {
                         .weights
                         .as_ref()
                         .map_or(1., |weights| *weights.get_unchecked(k));
-                    let s = sum.get_unchecked_mut(b);
+                    let s = sums.signal.get_unchecked_mut(b);
                     *s = madd(w, x, *s);
                     if VAR {
-                        let v = variance.get_unchecked_mut(b);
+                        let v = sums.variance.get_unchecked_mut(b);
                         *v = madd(w * w, x.max(0.), *v);
                     }
                     if COUNT {
-                        *count.get_unchecked_mut(b) += w;
+                        *sums.count.get_unchecked_mut(b) += w;
                     }
                 }
             }
-        }
-        Sums {
-            signal: sum,
-            norm: vec![],
-            variance,
-            count,
         }
     }
 
