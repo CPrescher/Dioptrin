@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and batch/map processing retain their existing paths.
 - All 625 source frames matched independent pixel hashes; float64 intensities
   and Poisson uncertainties agreed within the documented tolerance. See the
-  [combined-path benchmark](docs/PERFORMANCE.md) for scope and conditions.
+  [combined-path benchmark](https://github.com/CPrescher/Dioptrin/blob/v0.10.0/docs/PERFORMANCE.md) for scope and conditions.
 
 ## [0.9.0] - 2026-11-06
 
