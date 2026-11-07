@@ -3,7 +3,9 @@ mod arithmetic;
 mod cache;
 mod corrections;
 mod dynamic;
+mod fixed;
 pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};
+pub use fixed::{Fixed1dPlan, Fixed1dResult, Fixed1dWorker, InputOrder};
 mod methods;
 #[cfg(test)]
 mod tests;

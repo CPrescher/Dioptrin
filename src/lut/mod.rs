@@ -25,7 +25,7 @@ pub use azimuthal::{AzimuthalIntegrationResult, integrate1d_with_azimuthal_std};
 
 pub mod common;
 mod counting_csr;
-mod csc;
+pub(crate) mod csc;
 #[cfg(test)]
 pub(crate) mod fast;
 mod integrate;
