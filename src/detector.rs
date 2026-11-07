@@ -41,6 +41,9 @@ pub enum DetectorTransform {
 pub struct Detector {
     pub name: String,
     pub aliases: Vec<String>,
+    /// Factory options represented by this frozen physical mapping.
+    #[serde(default)]
+    pub config: serde_json::Value,
     pub pixel1: f64,
     pub pixel2: f64,
     /// Manufacturer-specific binning pitches (not always exact multiples).
@@ -72,6 +75,7 @@ impl Detector {
         Self {
             name: "Detector".into(),
             aliases: vec![],
+            config: serde_json::Value::Null,
             pixel1,
             pixel2,
             binning_pitches: vec![],

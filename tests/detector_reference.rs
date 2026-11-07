@@ -149,6 +149,7 @@ fn orientations_and_transforms_keep_physical_positions_and_mask_pixels() {
 }
 #[test]
 fn identification_requires_unique_consistent_evidence() {
+    assert_eq!(detector::named("Aarhus").unwrap().config["radius"], 0.29989);
     assert!(detector::identify([1043, 981], None, "").selected.is_none());
     let d = detector::identify(
         [1043, 981],
