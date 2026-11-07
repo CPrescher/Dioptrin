@@ -19,12 +19,20 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest, macos-15-intel]
         python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+        include:
+          - os: windows-11-arm
+            python: '3.13'
+          - os: windows-11-arm
+            python: '3.14'
+          - os: windows-11-arm
+            python: '3.15'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
+      - uses: dtolnay/rust-toolchain@stable
       - name: Build unrestricted wheels
         uses: PyO3/maturin-action@v1
         with:

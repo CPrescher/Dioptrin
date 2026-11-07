@@ -90,3 +90,10 @@ Choose `sparse_layout="csr"` in either Integrator constructor, or use
 float64. Fast accumulation can change rounding. Strict arithmetic, azimuthal
 spread and 2D preserve their existing compatible paths. Mode/layout switches
 retain valid tables; mask/correction/geometry edits invalidate dependent caches.
+
+### Prebuilt wheels
+
+Release wheels cover CPython 3.11–3.15 on Linux x86-64/ARM64, macOS Intel/Apple
+Silicon and Windows x64. Starting with 0.10.0, Windows ARM64 wheels are also
+available for CPython 3.13–3.15. Use `pip install --only-binary=:all: dioptrin` to
+require an available wheel.

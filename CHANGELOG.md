@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validate complete block coverage, plan identity and frame lifecycle before
   publishing results. Failed or incomplete frames cannot leak into reuse.
 
+- Publish native Windows ARM64 wheels for CPython 3.13–3.15, alongside the
+  existing Linux, macOS and Windows x64 wheels.
+
 ### Fixed
 
 - Publish cold-start geometry and LUT invalidation together so concurrent batch
