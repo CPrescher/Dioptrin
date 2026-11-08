@@ -2,6 +2,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::frame::Frame;
+use crate::integration::PixelSplitMode;
 use crate::multi::{Multi2dOptions, MultiIntegrator, MultiNormalization};
 
 use super::integrator::PyIntegrator;
@@ -110,6 +111,9 @@ impl PyMultiIntegrator {
     /// # Arguments
     ///
     /// * `integrators` - List of Integrator instances, one per detector
+    /// * `pixel_split_mode` - "fractional" (default) or "pyfai_histogram" for
+    ///   closer full-histogram compatibility in 2D only. Beam-containing pixels
+    ///   use detector-plane sampling in both modes; negative weights are avoided.
     ///
     /// # Example
     ///
@@ -120,8 +124,17 @@ impl PyMultiIntegrator {
     /// multi = dioptrin.MultiIntegrator(integrators=[int1, int2])
     /// ```
     #[new]
-    #[pyo3(signature = (integrators))]
-    fn new(integrators: Vec<PyRef<'_, PyIntegrator>>) -> PyResult<Self> {
+    #[pyo3(signature = (integrators, *, pixel_split_mode="fractional"))]
+    fn new(integrators: Vec<PyRef<'_, PyIntegrator>>, pixel_split_mode: &str) -> PyResult<Self> {
+        let mode = match pixel_split_mode {
+            "fractional" => PixelSplitMode::Fractional,
+            "pyfai_histogram" => PixelSplitMode::PyfaiHistogram,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "pixel_split_mode must be 'fractional' or 'pyfai_histogram'",
+                ));
+            }
+        };
         if integrators.is_empty() {
             return Err(PyValueError::new_err(
                 "MultiIntegrator requires at least one integrator",
@@ -133,7 +146,9 @@ impl PyMultiIntegrator {
             .map(|py_int| py_int.inner().clone())
             .collect();
 
-        let multi = MultiIntegrator::from_arcs(arcs).map_err(PyValueError::new_err)?;
+        let multi = MultiIntegrator::from_arcs(arcs)
+            .map_err(PyValueError::new_err)?
+            .with_pixel_split_mode(mode);
 
         Ok(Self { multi })
     }

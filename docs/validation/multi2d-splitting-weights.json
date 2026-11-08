@@ -1,0 +1,281 @@
+{
+  "pyfai": "2025.12.1",
+  "comparisons": [
+    {
+      "scenario": "off_axis",
+      "detector": 0,
+      "shape": [
+        31,
+        37
+      ],
+      "reference_pixels_unmasked": true,
+      "dense_subpixels_per_axis": 256,
+      "origin_pixel_row_column": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "fractional": {
+          "mean_pixel_L1_vs_dense": 0.0001503027809559204,
+          "max_pixel_L1_vs_dense": 0.0038905292255538293,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_histogram": {
+          "mean_pixel_L1_vs_dense": 0.004518706713480784,
+          "max_pixel_L1_vs_dense": 0.1821449683368585,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_21": {
+          "mean_pixel_L1_vs_dense": 0.0003491046303477286,
+          "max_pixel_L1_vs_dense": 0.0179947833625696,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_41": {
+          "mean_pixel_L1_vs_dense": 0.00011786602134998734,
+          "max_pixel_L1_vs_dense": 0.011267503764510689,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_reference": {
+          "mean_pixel_L1_vs_dense": 0.0045189878863133364,
+          "max_pixel_L1_vs_dense": 0.1821478139571029,
+          "negative_weights": 13,
+          "minimum_weight": -1.4232930446515493e-06
+        }
+      }
+    },
+    {
+      "scenario": "off_axis",
+      "detector": 1,
+      "shape": [
+        23,
+        29
+      ],
+      "reference_pixels_unmasked": true,
+      "dense_subpixels_per_axis": 256,
+      "origin_pixel_row_column": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "fractional": {
+          "mean_pixel_L1_vs_dense": 0.0002630580320872006,
+          "max_pixel_L1_vs_dense": 0.004427916969194645,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_histogram": {
+          "mean_pixel_L1_vs_dense": 0.0068174336281377245,
+          "max_pixel_L1_vs_dense": 0.20048800995470056,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_21": {
+          "mean_pixel_L1_vs_dense": 0.00046993700532236556,
+          "max_pixel_L1_vs_dense": 0.013878647161993912,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_41": {
+          "mean_pixel_L1_vs_dense": 0.00014076468246184274,
+          "max_pixel_L1_vs_dense": 0.005324146422777509,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_reference": {
+          "mean_pixel_L1_vs_dense": 0.006817634958381869,
+          "max_pixel_L1_vs_dense": 0.20048515815354429,
+          "negative_weights": 6,
+          "minimum_weight": -1.8915552461811864e-06
+        }
+      }
+    },
+    {
+      "scenario": "beam_and_seam",
+      "detector": 0,
+      "shape": [
+        31,
+        37
+      ],
+      "reference_pixels_unmasked": true,
+      "dense_subpixels_per_axis": 256,
+      "origin_pixel_row_column": [
+        13,
+        9
+      ],
+      "comparisons": {
+        "fractional": {
+          "mean_pixel_L1_vs_dense": 0.0033455345986212882,
+          "max_pixel_L1_vs_dense": 0.12962803742112008,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_histogram": {
+          "mean_pixel_L1_vs_dense": 0.01742521572567076,
+          "max_pixel_L1_vs_dense": 0.3341483004065424,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_21": {
+          "mean_pixel_L1_vs_dense": 0.001396114930510626,
+          "max_pixel_L1_vs_dense": 0.02404162348533136,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_41": {
+          "mean_pixel_L1_vs_dense": 0.0004563330498674232,
+          "max_pixel_L1_vs_dense": 0.012835246760677543,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_reference": {
+          "mean_pixel_L1_vs_dense": 0.02804226127302109,
+          "max_pixel_L1_vs_dense": 12.177999045916284,
+          "negative_weights": 14,
+          "minimum_weight": -2.95984941503792
+        }
+      }
+    },
+    {
+      "scenario": "beam_and_seam",
+      "detector": 1,
+      "shape": [
+        23,
+        29
+      ],
+      "reference_pixels_unmasked": true,
+      "dense_subpixels_per_axis": 256,
+      "origin_pixel_row_column": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "fractional": {
+          "mean_pixel_L1_vs_dense": 0.0027852756065804905,
+          "max_pixel_L1_vs_dense": 0.23465969733630632,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_histogram": {
+          "mean_pixel_L1_vs_dense": 0.01240362297959129,
+          "max_pixel_L1_vs_dense": 0.23922677315825613,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_21": {
+          "mean_pixel_L1_vs_dense": 0.0014488829405495834,
+          "max_pixel_L1_vs_dense": 0.03812738881359852,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_41": {
+          "mean_pixel_L1_vs_dense": 0.00044855636032140283,
+          "max_pixel_L1_vs_dense": 0.00870420874618838,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_reference": {
+          "mean_pixel_L1_vs_dense": 0.013927716589681156,
+          "max_pixel_L1_vs_dense": 1.01751708984375,
+          "negative_weights": 7,
+          "minimum_weight": -8.490067046059463e-07
+        }
+      }
+    },
+    {
+      "scenario": "radial_crop",
+      "detector": 0,
+      "shape": [
+        31,
+        37
+      ],
+      "reference_pixels_unmasked": true,
+      "dense_subpixels_per_axis": 256,
+      "origin_pixel_row_column": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "fractional": {
+          "mean_pixel_L1_vs_dense": 0.0002785641123487855,
+          "max_pixel_L1_vs_dense": 0.0038905292255538293,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_histogram": {
+          "mean_pixel_L1_vs_dense": 0.01414944893546704,
+          "max_pixel_L1_vs_dense": 0.987579345703125,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_21": {
+          "mean_pixel_L1_vs_dense": 0.00069072347151034,
+          "max_pixel_L1_vs_dense": 0.027423676990327106,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_41": {
+          "mean_pixel_L1_vs_dense": 0.00021862591882312234,
+          "max_pixel_L1_vs_dense": 0.011206468608260689,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_reference": {
+          "mean_pixel_L1_vs_dense": 0.014148819541098537,
+          "max_pixel_L1_vs_dense": 0.987579345703125,
+          "negative_weights": 4,
+          "minimum_weight": -2.1014385397523877e-06
+        }
+      }
+    },
+    {
+      "scenario": "radial_crop",
+      "detector": 1,
+      "shape": [
+        23,
+        29
+      ],
+      "reference_pixels_unmasked": true,
+      "dense_subpixels_per_axis": 256,
+      "origin_pixel_row_column": [
+        0,
+        0
+      ],
+      "comparisons": {
+        "fractional": {
+          "mean_pixel_L1_vs_dense": 0.00046906109542605546,
+          "max_pixel_L1_vs_dense": 0.004611110475968017,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_histogram": {
+          "mean_pixel_L1_vs_dense": 0.018482310208211557,
+          "max_pixel_L1_vs_dense": 0.99871826171875,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_21": {
+          "mean_pixel_L1_vs_dense": 0.001022315782948401,
+          "max_pixel_L1_vs_dense": 0.03249872947225646,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "subpixels_41": {
+          "mean_pixel_L1_vs_dense": 0.0003177983010250845,
+          "max_pixel_L1_vs_dense": 0.008184738204580488,
+          "negative_weights": 0,
+          "minimum_weight": 0.0
+        },
+        "pyfai_reference": {
+          "mean_pixel_L1_vs_dense": 0.018481669382140513,
+          "max_pixel_L1_vs_dense": 0.9987182617187499,
+          "negative_weights": 5,
+          "minimum_weight": -1.2505854303045613e-06
+        }
+      }
+    }
+  ]
+}

@@ -89,12 +89,68 @@ multi-integrator when calibration or mask settings change.
   can be expressed as `(3*pi/4, 5*pi/4)`. Angles wrap over `2*pi`, then the
   requested sector is **clipped**. They never fold over the sector width.
 - Bins are half-open. Out-of-range centers/samples are excluded; split pixels
-  contribute their in-range fractions. Empty bins contain zero intensity/std.
-- Methods: `counting` (pixel centers), `pixel_split` (quadrilateral clipping in
-  radial/azimuthal space), `supersampled` (`n_ss > 0`, n_ss² samples/pixel).
+  contribute their in-range fractions in the default fractional mode and in
+  supersampling. The optional pyFAI histogram convention renormalizes clipped
+  pixels, as described below. Empty bins contain zero intensity/std.
+- Methods: `counting` (pixel centers), `pixel_split` (by default quadrilateral clipping in
+  radial/azimuthal space, with a beam-pixel sampling fallback), `supersampled` (`n_ss > 0`, n_ss² samples/pixel).
   `histogram` is unsupported. Detectors can use different supported methods.
 - Results flatten as `azimuthal_index * n_radial + radial_index`. Both
   coordinate arrays contain bin centers; neither contains edges.
+
+### Splitting conventions and azint-style subpixel splitting
+
+`MultiIntegrator(integrators, *, pixel_split_mode="fractional")` keeps exact
+polygon-intersection weights as the default. The optional value
+`"pyfai_histogram"` uses approximate line-area rasterization, corner clipping
+and clipped-pixel renormalization to reproduce pyFAI's full histogram engine
+more closely. It is a compatibility choice, independent of `normalization`.
+Rust uses `multi.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)`; the
+raw single-detector API selects it through `grid.with_pixel_split_mode(...)`.
+It affects only the new shared-grid 2D `PixelSplit` path.
+
+Pixels enclosing or touching the polar origin cannot be described reliably by
+a single polar quadrilateral. Both modes fall back to detector-plane sampling
+there: 128 × 128 strata with four symmetric samples per stratum (65,536 samples
+per singular pixel). The symmetric pattern avoids bias from grid points lying
+exactly on azimuthal-bin edges. Samples from a pixel are combined before
+squaring its weight for variance. Compatibility mode also discards negative
+numerical raster areas and renormalizes the positive areas; it deliberately
+does not reproduce pathological negative pyFAI weights. This is approximate,
+not bitwise compatibility, and the singular fallback still clips by sample
+fractions rather than renormalizing a partly included pixel.
+
+For splitting throughout the detector using the same midpoint-subdivision
+approach as [azint](https://maxiv-science.github.io/azint/), use the existing
+`supersampled` method on **each detector**:
+
+```python
+integrators = [
+    dioptrin.Integrator(path, method="supersampled", n_ss=21,
+                       unit="q_A^-1", radial_range=(0.0, 8.0))
+    for path in ["detector1.poni", "detector2.poni"]
+]
+multi = dioptrin.MultiIntegrator(integrators)
+result = multi.integrate2d([img1, img2], 2000, 360,
+                           normalization="absolute", errors=True)
+```
+
+`n_ss=21` means 441 sample centers per original pixel. A bin's weight is the
+number of its samples divided by 441. This avoids polar-polygon ambiguity and
+handles the seam sample by sample. Increasing `n_ss` improves geometric
+resolution but increases table-preparation work; cached frames reuse the table.
+Check convergence, for example between 21 and 41, for the chosen cake grid.
+The sampling parameter is not a guaranteed accuracy threshold.
+
+This is the same **class of geometric splitting** used by azint for rectangular
+pixels; no azint runtime dependency is required. It does not duplicate azint's
+complete integration estimator: azint averages individually corrected pixel
+signals (`sum(w*I/correction)/sum(w)`), whereas this multi-detector path retains
+its documented raw-sum convention (`sum(w*I)/sum(w*correction)`, with optional
+absolute detector constants and monitors). Azint also uses float32 geometry
+and opposite bin-edge inclusivity at exact edges. See the
+[azint source](https://github.com/maxiv-science/azint/blob/4f78cc3b1d8cab67128c9679f55de6340c68f191/azint.cpp)
+and [investigation](validation/multi2d-splitting.md) for the comparison limits.
 
 ### Normalization and uncertainties
 
@@ -134,6 +190,11 @@ Pass one image/calibration/mask per detector, common UI-selected radial and
 azimuthal edges, and any per-detector monitors. Merge the returned raw sums
 before division; do not average detector cakes or create an image mosaic.
 Convert returned azimuthal coordinates to degrees only for display.
+
+For closer full-histogram compatibility, also construct
+`MultiIntegrator(integrators, pixel_split_mode="pyfai_histogram")`. The tested
+beam/seam case then agrees within 5.7e-7 relative intensity and 1.4e-6 relative
+std; the default fractional convention remains different by design.
 
 For a matched no-splitting reference, use Dioptrin `counting` and pyFAI
 `("no", "histogram", "cython")`, with the same effective edges, masks,
@@ -182,7 +243,9 @@ Its raw normalization is relative; detector constants/monitors are applied
 by MultiIntegrator. A grid is cached per Integrator and reused for later frames;
 switching grids or calling a legacy ordinary 2D method rebuilds that cache.
 
-See [the validation report](validation/multi2d.md) and run
+See [the initial validation report](validation/multi2d.md),
+[full-splitting investigation](validation/multi2d-splitting.md),
+[first-frame and Eiger benchmarks](validation/multi2d-startup.md) and run
 `python python_examples/test_multi2d.py` to reproduce the pyFAI comparisons.
 
 ## Python API (existing 1D)

@@ -1,7 +1,7 @@
 """Characterize cold preparation and cached Python multi-detector 2D latency.
 
 RAYON_NUM_THREADS=8 python python_examples/bench_multi2d.py --report result.json
-Includes NumPy input copies, raw merging and Python result conversion; no I/O.
+Includes NumPy input copies, raw merging and Python result-object construction; no output list getters or I/O.
 """
 import argparse
 import json
@@ -17,7 +17,11 @@ import numpy as np
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--n-ss", type=int, default=3)
+    parser.add_argument("--pixel-split-mode", choices=["fractional", "pyfai_histogram"], default="fractional")
     args = parser.parse_args()
+    if args.n_ss < 1:
+        parser.error("--n-ss must be positive")
     geometries = [
         dict(pixel1=1e-4, pixel2=1.2e-4, distance=0.1, poni1=0.009, poni2=0.011,
              rot1=0.0, rot2=0.0, rot3=0.0, wavelength=1e-10),
@@ -29,9 +33,9 @@ def main():
     results = []
     for method in ["counting", "pixel_split", "supersampled"]:
         integrators = [dioptrin.Integrator.from_poni_dict(
-            p, method=method, n_ss=3, unit="2th_rad", radial_range=(0, 0.3),
+            p, method=method, n_ss=args.n_ss, unit="2th_rad", radial_range=(0, 0.3),
             polarization_factor=0.6) for p in geometries]
-        multi = dioptrin.MultiIntegrator(integrators)
+        multi = dioptrin.MultiIntegrator(integrators, pixel_split_mode=args.pixel_split_mode)
         def run():
             return multi.integrate2d(images, 256, 180, errors=True,
                                      normalization="absolute", normalization_factors=[2, 3])
@@ -49,7 +53,7 @@ def main():
                             cached_median_ms=statistics.median(samples), repetitions=len(samples)))
     report = dict(platform=platform.platform(), python=platform.python_version(),
                   rayon_threads=dioptrin.rayon_num_threads(), shapes=shapes,
-                  n_radial=256, n_azimuthal=180, errors=True, results=results)
+                  n_radial=256, n_azimuthal=180, n_ss=args.n_ss, pixel_split_mode=args.pixel_split_mode, errors=True, results=results)
     print(json.dumps(report, indent=2))
     if args.report:
         args.report.write_text(json.dumps(report, indent=2)+"\n")

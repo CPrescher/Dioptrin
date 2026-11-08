@@ -5,6 +5,7 @@
       "scenario": "off_axis",
       "unit": "2th_rad",
       "split": "no",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -15,6 +16,7 @@
       "scenario": "off_axis",
       "unit": "2th_rad",
       "split": "full",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -23,8 +25,20 @@
     },
     {
       "scenario": "off_axis",
+      "unit": "2th_rad",
+      "split": "full",
+      "pixel_split_mode": "pyfai_histogram",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 5.06988261222969e-07,
+      "max_relative_std": 1.8845353013023302e-06
+    },
+    {
+      "scenario": "off_axis",
       "unit": "2th_deg",
       "split": "no",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -35,6 +49,7 @@
       "scenario": "off_axis",
       "unit": "2th_deg",
       "split": "full",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -43,8 +58,20 @@
     },
     {
       "scenario": "off_axis",
+      "unit": "2th_deg",
+      "split": "full",
+      "pixel_split_mode": "pyfai_histogram",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 5.06988261222969e-07,
+      "max_relative_std": 1.8845353013023302e-06
+    },
+    {
+      "scenario": "off_axis",
       "unit": "q_A^-1",
       "split": "no",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -55,6 +82,7 @@
       "scenario": "off_axis",
       "unit": "q_A^-1",
       "split": "full",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -63,8 +91,20 @@
     },
     {
       "scenario": "off_axis",
+      "unit": "q_A^-1",
+      "split": "full",
+      "pixel_split_mode": "pyfai_histogram",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 3.6821912436258235e-07,
+      "max_relative_std": 3.1167604808455872e-06
+    },
+    {
+      "scenario": "off_axis",
       "unit": "q_nm^-1",
       "split": "no",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -75,6 +115,7 @@
       "scenario": "off_axis",
       "unit": "q_nm^-1",
       "split": "full",
+      "pixel_split_mode": "fractional",
       "bins": 9,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -82,9 +123,21 @@
       "max_relative_std": 0.022205362724764078
     },
     {
+      "scenario": "off_axis",
+      "unit": "q_nm^-1",
+      "split": "full",
+      "pixel_split_mode": "pyfai_histogram",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 3.6821912436258235e-07,
+      "max_relative_std": 3.1167604808455872e-06
+    },
+    {
       "scenario": "beam_and_seam",
       "unit": "2th_rad",
       "split": "no",
+      "pixel_split_mode": "fractional",
       "bins": 71,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -95,6 +148,7 @@
       "scenario": "beam_and_seam",
       "unit": "2th_rad",
       "split": "full",
+      "pixel_split_mode": "fractional",
       "bins": 72,
       "dioptrin_only_nonzero_bins": 1,
       "pyfai_only_nonzero_bins": 0,
@@ -102,9 +156,21 @@
       "max_relative_std": 0.0801310652750507
     },
     {
+      "scenario": "beam_and_seam",
+      "unit": "2th_rad",
+      "split": "full",
+      "pixel_split_mode": "pyfai_histogram",
+      "bins": 72,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 5.695900352223012e-07,
+      "max_relative_std": 1.341305676242543e-06
+    },
+    {
       "scenario": "radial_crop",
       "unit": "2th_rad",
       "split": "no",
+      "pixel_split_mode": "fractional",
       "bins": 18,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
@@ -115,11 +181,23 @@
       "scenario": "radial_crop",
       "unit": "2th_rad",
       "split": "full",
+      "pixel_split_mode": "fractional",
       "bins": 18,
       "dioptrin_only_nonzero_bins": 0,
       "pyfai_only_nonzero_bins": 0,
       "max_relative_intensity": 0.0019031913203269581,
       "max_relative_std": 0.022961193802820967
+    },
+    {
+      "scenario": "radial_crop",
+      "unit": "2th_rad",
+      "split": "full",
+      "pixel_split_mode": "pyfai_histogram",
+      "bins": 18,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 6.889990142614555e-07,
+      "max_relative_std": 3.2056098140749528e-06
     }
   ]
 }
