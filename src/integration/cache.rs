@@ -42,6 +42,11 @@ pub(super) enum OneDKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TwoDKey {
+    SharedGrid {
+        grid: super::IntegrationGrid2d,
+        unit: RadialUnit,
+        sampling: usize,
+    },
     Counting {
         n_radial: usize,
         n_azimuthal: usize,
@@ -340,6 +345,18 @@ impl Integrator {
 
             // Build the LUT
             let lut2d = match key {
+                TwoDKey::SharedGrid {
+                    grid,
+                    unit,
+                    sampling,
+                } => {
+                    let method = match sampling {
+                        0 => super::IntegrationMethod::Counting,
+                        1 => super::IntegrationMethod::PixelSplit,
+                        n => super::IntegrationMethod::Supersampled { n_ss: n - 1 },
+                    };
+                    lut::shared_grid::build(&geom, radial, azimuth, &grid, method, unit)
+                }
                 TwoDKey::Counting {
                     n_radial,
                     n_azimuthal,

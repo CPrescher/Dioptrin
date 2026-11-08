@@ -2,7 +2,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::frame::Frame;
-use crate::multi::MultiIntegrator;
+use crate::multi::{Multi2dOptions, MultiIntegrator, MultiNormalization};
 
 use super::integrator::PyIntegrator;
 use super::results::PyIntegrationResult;
@@ -15,6 +15,93 @@ pub struct PyMultiIntegrator {
 
 #[pymethods]
 impl PyMultiIntegrator {
+    /// Combine one image per detector on shared radial/azimuthal edges.
+    ///
+    /// Radial edges use the integrators' common radial_range and unit. Azimuthal
+    /// edges are radians, default (-pi, pi); sectors are clipped, not folded.
+    /// Images are C-contiguous float64 arrays or TIFF paths (mixed lists allowed).
+    /// errors=True propagates Poisson max(image,0) with squared split weights.
+    /// normalization='absolute' matches MultiGeometry(correctSolidAngle=True)
+    /// scaling; 'relative' retains ordinary Dioptrin solid-angle scaling.
+    /// normalization_factors are one positive monitor denominator per detector.
+    /// Result intensity/errors reshape to (n_azimuthal,n_radial); both coordinate
+    /// arrays contain bin centers. Empty bins contain zero.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (images, n_radial, n_azimuthal, errors=false, azimuthal_range=None, *, normalization="relative", normalization_factors=None))]
+    fn integrate2d(
+        &self,
+        py: Python<'_>,
+        images: Vec<ImageInput>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        errors: bool,
+        azimuthal_range: Option<(f64, f64)>,
+        normalization: &str,
+        normalization_factors: Option<Vec<f64>>,
+    ) -> PyResult<PyIntegrationResult> {
+        if images.len() != self.multi.integrators().len() {
+            return Err(PyValueError::new_err(format!(
+                "Expected {} images (one per detector), got {}",
+                self.multi.integrators().len(),
+                images.len()
+            )));
+        }
+        let mut options = Multi2dOptions {
+            errors,
+            normalization_factors,
+            ..Default::default()
+        };
+        if let Some(range) = azimuthal_range {
+            options.azimuthal_range = range;
+        }
+        options.normalization = match normalization {
+            "relative" => MultiNormalization::Relative,
+            "absolute" => MultiNormalization::Absolute,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "normalization must be 'relative' or 'absolute'",
+                ));
+            }
+        };
+        let mut buffers = Vec::with_capacity(images.len());
+        for (i, image) in images.into_iter().enumerate() {
+            buffers.push(match image {
+                ImageInput::Path(path) => {
+                    let frame = Frame::from_tiff(path)
+                        .map_err(|e| PyValueError::new_err(format!("detector {i}: {e}")))?;
+                    (frame.data, frame.dim1, frame.dim2)
+                }
+                ImageInput::Array(array) => {
+                    let (d1, d2) = extract_array_dims(&array, "float64")?;
+                    (array.as_slice()?.to_vec(), d1, d2)
+                }
+            });
+        }
+        let slices: Vec<_> = buffers
+            .iter()
+            .map(|(data, d1, d2)| (data.as_slice(), *d1, *d2))
+            .collect();
+        let result = py
+            .detach(|| {
+                self.multi
+                    .integrate2d_from_slices(&slices, n_radial, n_azimuthal, &options)
+            })
+            .map_err(PyValueError::new_err)?;
+        let mut output = if let Some(errors) = result.errors {
+            PyIntegrationResult::from_2d_with_errors(
+                result.intensity,
+                errors,
+                n_radial,
+                n_azimuthal,
+            )
+        } else {
+            PyIntegrationResult::from_2d(result.intensity, n_radial, n_azimuthal)
+        };
+        output.radial = Some(result.radial);
+        output.azimuthal = Some(result.azimuthal);
+        Ok(output)
+    }
+
     /// Create a new MultiIntegrator from a list of Integrator instances.
     ///
     /// All integrators must have the same radial_unit and radial_range set.

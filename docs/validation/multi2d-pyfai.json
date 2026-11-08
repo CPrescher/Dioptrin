@@ -1,0 +1,125 @@
+{
+  "pyfai": "2025.12.1",
+  "comparisons": [
+    {
+      "scenario": "off_axis",
+      "unit": "2th_rad",
+      "split": "no",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 7.76427752901855e-09,
+      "max_relative_std": 7.76427763917401e-09
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "2th_rad",
+      "split": "full",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 0.001055366899923958,
+      "max_relative_std": 0.007244235530163465
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "2th_deg",
+      "split": "no",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 7.76427752901855e-09,
+      "max_relative_std": 7.76427763917401e-09
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "2th_deg",
+      "split": "full",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 0.0010553668999150503,
+      "max_relative_std": 0.007244235530158917
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "q_A^-1",
+      "split": "no",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 2.5968382166914034e-08,
+      "max_relative_std": 2.5968382334676195e-08
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "q_A^-1",
+      "split": "full",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 0.0005981407547272247,
+      "max_relative_std": 0.02220536272475747
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "q_nm^-1",
+      "split": "no",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 2.5968382166914034e-08,
+      "max_relative_std": 2.5968382334676195e-08
+    },
+    {
+      "scenario": "off_axis",
+      "unit": "q_nm^-1",
+      "split": "full",
+      "bins": 9,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 0.0005981407547337557,
+      "max_relative_std": 0.022205362724764078
+    },
+    {
+      "scenario": "beam_and_seam",
+      "unit": "2th_rad",
+      "split": "no",
+      "bins": 71,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 5.118985454194453e-08,
+      "max_relative_std": 5.1189854468190874e-08
+    },
+    {
+      "scenario": "beam_and_seam",
+      "unit": "2th_rad",
+      "split": "full",
+      "bins": 72,
+      "dioptrin_only_nonzero_bins": 1,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 0.02230889607022147,
+      "max_relative_std": 0.0801310652750507
+    },
+    {
+      "scenario": "radial_crop",
+      "unit": "2th_rad",
+      "split": "no",
+      "bins": 18,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 1.5525625850191274e-08,
+      "max_relative_std": 1.5525625958111484e-08
+    },
+    {
+      "scenario": "radial_crop",
+      "unit": "2th_rad",
+      "split": "full",
+      "bins": 18,
+      "dioptrin_only_nonzero_bins": 0,
+      "pyfai_only_nonzero_bins": 0,
+      "max_relative_intensity": 0.0019031913203269581,
+      "max_relative_std": 0.022961193802820967
+    }
+  ]
+}

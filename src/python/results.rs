@@ -11,8 +11,8 @@ use std::sync::mpsc::Receiver;
 ///
 /// # Attributes
 ///
-/// * `radial` - Radial bin centers (present for 1D integration, None for 2D)
-/// * `azimuthal` - Azimuthal bin centers (present for 2D integration, None for 1D)
+/// * `radial` - Radial bin centers (1D and MultiIntegrator 2D; otherwise None)
+/// * `azimuthal` - Azimuthal bin centers in radians (MultiIntegrator 2D; otherwise None)
 /// * `intensity` - Integrated intensity values
 /// * `errors` - Poisson error estimates (present if errors=True was specified)
 /// * `azimuthal_std` - Weighted population spread (1D, when requested)
