@@ -1,0 +1,40 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "python": "3.13.5",
+  "rayon_threads": 8,
+  "shapes": [
+    [
+      256,
+      320
+    ],
+    [
+      192,
+      240
+    ]
+  ],
+  "n_radial": 256,
+  "n_azimuthal": 180,
+  "n_ss": 21,
+  "pixel_split_mode": "pyfai_histogram",
+  "errors": true,
+  "results": [
+    {
+      "method": "counting",
+      "cold_ms": 7.00429204152897,
+      "cached_median_ms": 0.799728964921087,
+      "repetitions": 20
+    },
+    {
+      "method": "pixel_split",
+      "cold_ms": 16.265375015791506,
+      "cached_median_ms": 0.7693749794270843,
+      "repetitions": 20
+    },
+    {
+      "method": "supersampled",
+      "cold_ms": 128.8542919792235,
+      "cached_median_ms": 0.8462289697490633,
+      "repetitions": 20
+    }
+  ]
+}

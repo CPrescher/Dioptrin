@@ -79,8 +79,8 @@ class IntegrationResult:
     coordinates and error estimates, depending on the integration type performed.
 
     Attributes:
-        radial: Radial bin centers (present for 1D integration, None for 2D)
-        azimuthal: Azimuthal bin centers (present for 2D integration, None for 1D)
+        radial: Radial bin centers (1D and MultiIntegrator 2D; otherwise None)
+        azimuthal: Azimuthal bin centers in radians (MultiIntegrator 2D; otherwise None)
         intensity: Integrated intensity values
         errors: Error estimates (present if errors=True was specified)
         azimuthal_std: Weighted population spread (1D, when explicitly requested)
@@ -90,7 +90,7 @@ class IntegrationResult:
 
     @property
     def radial(self) -> Optional[list[float]]:
-        """Radial bin centers (1D only)."""
+        """Radial bin centers (1D and MultiIntegrator 2D; otherwise None)."""
         ...
 
     @property
@@ -675,7 +675,8 @@ class MultiIntegrator:
 
     Merges integration results from multiple detectors into a single diffraction
     pattern by summing raw signal, normalization, and variance across detectors
-    before dividing. This is equivalent to pyFAI's MultiGeometry.
+    before dividing. The 2D absolute normalization mode supplies pyFAI
+    MultiGeometry's solid-angle scale; splitting algorithms can still differ.
 
     All integrators must share the same radial_unit and radial_range, and must
     not use the "histogram" method.
@@ -688,7 +689,7 @@ class MultiIntegrator:
         >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
     """
 
-    def __init__(self, integrators: list[Integrator]) -> None:
+    def __init__(self, integrators: list[Integrator], *, pixel_split_mode: str = "fractional") -> None:
         """
         Create a new MultiIntegrator from a list of Integrator instances.
 
@@ -700,6 +701,11 @@ class MultiIntegrator:
 
         Args:
             integrators: List of Integrator instances, one per detector
+            pixel_split_mode: "fractional" (default) or "pyfai_histogram" for
+                approximate Qt/pyFAI full-histogram 2D splitting. This changes
+                boundary clipping and weights; it has no effect on 1D.
+                Singular beam pixels use 128x128 strata with four symmetric
+                samples per stratum in both modes. Negative weights are avoided.
 
         Raises:
             ValueError: If validation fails (empty list, mismatched units/ranges,
@@ -737,6 +743,33 @@ class MultiIntegrator:
             >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
             >>> result = multi.integrate1d(images=[img1, img2], n_points=2000, errors=True)
             >>> print(result.radial, result.intensity)
+        """
+        ...
+
+    def integrate2d(
+        self,
+        images: list[Union[str, np.ndarray]],
+        n_radial: int,
+        n_azimuthal: int,
+        errors: bool = False,
+        azimuthal_range: Optional[tuple[float, float]] = None,
+        *,
+        normalization: str = "relative",
+        normalization_factors: Optional[list[float]] = None,
+    ) -> IntegrationResult:
+        """Combine raw fractional pixel contributions onto shared 2D edges.
+
+        Radial edges use the common radial_range and unit. Azimuthal edges are
+        radians (default -pi, pi), span at most 2*pi, and clip sectors without
+        folding outliers. Supports counting, pixel_split and supersampled.
+        Inputs are C-contiguous float64 arrays or TIFF paths; mixed lists work.
+        normalization='absolute' additionally puts pixel1*pixel2/distance**2 in
+        each detector's denominator for pyFAI MultiGeometry absolute scaling.
+        normalization_factors contains one finite positive monitor per detector.
+        errors=True propagates independent Poisson max(image, 0) variance.
+        Coordinates contain bin centers; flat intensity/errors reshape to
+        (n_azimuthal, n_radial). Empty bins have zero intensity/error.
+        Invalid grids, shapes, masks, geometry or factors raise ValueError.
         """
         ...
 

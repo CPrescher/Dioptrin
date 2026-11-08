@@ -18,6 +18,29 @@ python python_examples/hdf5_chunked_batch.py
 
 ## Available Examples
 
+### Multi-detector 2D validation
+
+`test_multi2d.py` checks the public API, unequal detector inputs, normalization,
+beam-center pixels, azimuthal sectors and matched-grid pyFAI comparisons:
+
+```sh
+python python_examples/test_multi2d.py
+```
+
+For the scientific investigation and timings, run these tools separately:
+
+```sh
+python python_examples/inspect_full_split.py --report weights.json --figure weights.png
+python python_examples/bench_multi2d_startup.py --eiger-dir /path/to/test_data --report timing.json
+```
+
+The inspection tool builds a release Rust example and compares individual pixel
+weights against dense 256 × 256 detector-plane sampling. It can exceed a minute
+on a fresh checkout. Benchmark and `inspect_` scripts are deliberately excluded
+from `test_examples.py`'s 60-second quick-example budget; the numerical
+regression tests run in CI. See the [multi-detector guide](../docs/MULTI_DETECTOR.md)
+for complete API examples and benchmark scope.
+
 ### HDF5 Processing
 
 **`hdf5_chunked_batch.py`** - Memory-efficient batch processing of large HDF5 files

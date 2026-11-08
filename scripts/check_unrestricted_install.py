@@ -40,6 +40,13 @@ for ai in integrators:
 multi = dioptrin.MultiIntegrator(integrators)
 assert np.isfinite(multi.integrate1d([image, image], 40, errors=True).intensity).all()
 assert len(multi.batch1d([[image, image]], 40, errors=True)) == 1
+cake = multi.integrate2d([image, image], 40, 12, errors=True,
+                        normalization="absolute", normalization_factors=[1., 2.])
+assert len(cake.radial) == 40 and len(cake.azimuthal) == 12
+assert cake.n_radial == 40 and cake.n_azimuthal == 12
+assert len(cake.intensity) == 480 and np.isfinite(cake.intensity).all()
+assert len(cake.errors) == 480 and np.isfinite(cake.errors).all()
+assert np.any(np.asarray(cake.intensity) > 0)
 print("PASS: constructors, 1D/2D, batches, streams and multi-detector integration")
 """
 

@@ -31,6 +31,8 @@ pub(crate) mod fast;
 mod integrate;
 mod pixel_split;
 pub(crate) mod prepared;
+mod pyfai_split;
+pub(crate) mod shared_grid;
 mod supersampled;
 
 // Re-export RadialUnit from integration module for use in LUT builders

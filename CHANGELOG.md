@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-08
+
+### Added
+
+- Add shared-grid multi-detector 2D integration in Rust and Python. Each
+  detector retains its own geometry, mask and corrections; raw signal,
+  normalization and Poisson variance are merged before final division.
+- Default the new pixel-splitting path to fractional polygon intersections,
+  with periodic seam handling, fractional range clipping and detector-plane
+  sampling for pixels containing or touching the beam center. Counting and
+  subpixel sampling are also supported; pyFAI histogram compatibility is opt-in.
+- Expose per-detector monitor normalization, relative or absolute solid-angle
+  scaling, explicit azimuthal sectors and cached integration tables. See the
+  [multi-detector guide](https://github.com/CPrescher/Dioptrin/blob/v0.11.0/docs/MULTI_DETECTOR.md) and
+  [first-frame/Eiger validation](https://github.com/CPrescher/Dioptrin/blob/v0.11.0/docs/validation/multi2d-startup.md).
+
+### Performance and scope
+
+- On the tested Eiger 9M frame with a 2000 × 360 grid, native fractional
+  polygons took 0.729 s for the first frame and a median 24.01 ms for cached
+  frames on an Apple M4 Pro using eight threads. Input decoding and application
+  display are excluded; the validation report records the complete scope.
+- This release supplies the Rust and Python integration APIs for applications
+  such as Dioptas. It does not change Dioptas itself. Existing ordinary
+  single-detector 2D and all 1D integration retain their prior conventions.
+
 ## [0.10.0] - 2026-11-07
 
 ### Added

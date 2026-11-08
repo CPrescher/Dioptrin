@@ -1,0 +1,38 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "python": "3.13.5",
+  "rayon_threads": 8,
+  "shapes": [
+    [
+      256,
+      320
+    ],
+    [
+      192,
+      240
+    ]
+  ],
+  "n_radial": 256,
+  "n_azimuthal": 180,
+  "errors": true,
+  "results": [
+    {
+      "method": "counting",
+      "cold_ms": 7.774416997563094,
+      "cached_median_ms": 0.9189584816340357,
+      "repetitions": 20
+    },
+    {
+      "method": "pixel_split",
+      "cold_ms": 12.111958989407867,
+      "cached_median_ms": 0.9617710311431438,
+      "repetitions": 20
+    },
+    {
+      "method": "supersampled",
+      "cold_ms": 10.212458961177617,
+      "cached_median_ms": 0.8200834854505956,
+      "repetitions": 20
+    }
+  ]
+}

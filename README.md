@@ -500,7 +500,7 @@ for r in integrator.batch2d_iter(
 
 ### Multi-Detector Integration
 
-Merge results from multiple detectors into a single diffraction pattern using `MultiIntegrator`:
+Merge results from multiple detectors into a single diffraction pattern or 2D cake using `MultiIntegrator`:
 
 ```python
 import dioptrin
@@ -528,6 +528,14 @@ print(result.radial, result.intensity)
 
 # With error estimates
 result = multi.integrate1d(images=[img1, img2], n_points=2000, errors=True)
+
+# Shared-grid 2D cake: fractional polygon splitting is the default.
+result2d = multi.integrate2d(
+    images=[img1, img2], n_radial=2000, n_azimuthal=360,
+    errors=True, normalization="absolute",
+)
+# Flattened output uses azimuthal_index * n_radial + radial_index.
+# Absolute scaling includes each detector's pixel area / distance squared.
 
 # Batch processing multiple frame sets
 image_sets = [[img1_a, img2_a], [img1_b, img2_b]]
