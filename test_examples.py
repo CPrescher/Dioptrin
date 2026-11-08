@@ -50,10 +50,10 @@ def main():
     examples_dir = Path(__file__).parent / "python_examples"
 
     # Automatically discover all Python scripts in python_examples/
-    # Skip __init__.py, anything starting with underscore, and benchmark
-    # scripts (they exceed the per-script 60s budget and aren't tests).
+    # Skip __init__.py, anything starting with underscore, and benchmark or
+    # inspection scripts (they exceed the per-script 60s budget and aren't tests).
     def is_benchmark(name: str) -> bool:
-        return name.startswith("bench_") or "benchmark" in name
+        return name.startswith(("bench_", "inspect_")) or "benchmark" in name
 
     examples = sorted([
         f.name for f in examples_dir.glob("*.py")
