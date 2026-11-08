@@ -691,3 +691,24 @@ fn row<
 #[cfg(test)]
 #[path = "prepared_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod explicit_variance_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_variance_uses_squared_weights_and_respects_mask() {
+        let lut = Prepared2d::new(Lut2d {
+            row_ptr: vec![0, 2, 3],
+            col_idx: vec![0, 1, 0],
+            values: Some(vec![0.25, 0.5, 0.75]),
+            n_tth: 2,
+            n_azimuthal: 1,
+        });
+        let r = lut.raw2d_with_variances(&[-4.0, 2.0], &[9.0, 25.0], Some(&[0, 1]), &[2.0, 4.0]);
+        assert_eq!(r.sum_signal, [-1.0, -3.0]);
+        assert_eq!(r.sum_norm, [0.5, 1.5]);
+        assert_eq!(r.sum_variance.unwrap(), [0.5625, 5.0625]);
+        assert_eq!(r.count, [0.25, 0.75]);
+    }
+}
