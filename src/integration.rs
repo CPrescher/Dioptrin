@@ -3,7 +3,7 @@ mod arithmetic;
 mod cache;
 mod corrections;
 mod dynamic;
-mod grid;
+pub(crate) mod grid;
 pub use grid::{IntegrationGrid2d, PixelSplitMode};
 mod fixed;
 pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};

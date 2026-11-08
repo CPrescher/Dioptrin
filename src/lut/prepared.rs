@@ -483,6 +483,41 @@ impl Prepared1d {
     }
 }
 impl Prepared2d {
+    pub(crate) fn raw2d_with_variances(
+        &self,
+        data: &[f64],
+        variance: &[f64],
+        mask: Option<&[u8]>,
+        normalization: &[f64],
+    ) -> IntermediateResult2d {
+        let rows: Vec<_> = (0..self.row_ptr.len() - 1)
+            .into_par_iter()
+            .map(|r| {
+                let (mut signal, mut norm, mut var, mut count) = (0.0, 0.0, 0.0, 0.0);
+                for k in self.row_ptr[r]..self.row_ptr[r + 1] {
+                    let j = self.col_idx.get(k);
+                    if mask.is_some_and(|m| m[j] != 0) {
+                        continue;
+                    }
+                    let w = self.values.as_ref().map_or(1.0, |v| v[k]);
+                    signal += w * data[j];
+                    norm += w * normalization[j];
+                    var += w * w * variance[j];
+                    count += w;
+                }
+                (signal, norm, var, count)
+            })
+            .collect();
+        IntermediateResult2d {
+            sum_signal: rows.iter().map(|r| r.0).collect(),
+            sum_norm: rows.iter().map(|r| r.1).collect(),
+            sum_variance: Some(rows.iter().map(|r| r.2).collect()),
+            count: rows.iter().map(|r| r.3).collect(),
+            n_radial: self.n_tth,
+            n_azimuthal: self.n_azimuthal,
+        }
+    }
+
     pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
         self.csr.set_mask_mode(mode);
     }
