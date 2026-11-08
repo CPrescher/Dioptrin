@@ -607,3 +607,279 @@ fn complementary_masks_partition_raw_contributions_for_all_methods() {
         }
     }
 }
+
+#[test]
+fn singular_beam_pixel_has_eightfold_coverage_and_positive_variance() {
+    let mut g = geometry(1, 1);
+    g.poni.pixel1 = 1e-4;
+    g.poni.pixel2 = 1e-4;
+    g.poni.poni1 = 5e-5;
+    g.poni.poni2 = 5e-5;
+    for mode in [PixelSplitMode::Fractional, PixelSplitMode::PyfaiHistogram] {
+        let multi = MultiIntegrator::try_new(vec![ai(g.clone(), IntegrationMethod::PixelSplit)])
+            .unwrap()
+            .with_pixel_split_mode(mode);
+        let out = multi
+            .integrate2d_from_slices(
+                &[(&[25.0], 1, 1)],
+                1,
+                8,
+                &Multi2dOptions {
+                    errors: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        close(&out.raw.count, &[0.125; 8]);
+        close(&out.raw.sum_signal, &[25.0 / 8.0; 8]);
+        close(out.raw.sum_variance.as_ref().unwrap(), &[25.0 / 64.0; 8]);
+        assert!(out.intensity.iter().all(|x| x.is_finite() && *x > 0.0));
+        let sector = multi
+            .integrate2d_from_slices(
+                &[(&[25.0], 1, 1)],
+                1,
+                2,
+                &Multi2dOptions {
+                    azimuthal_range: (0.0, PI / 2.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        close(&sector.raw.count, &[0.125; 2]);
+    }
+    // A tilted detector's beam pixel need not contain the PONI point.
+    g.poni.pixel1 = 1.7e-4;
+    g.poni.pixel2 = 2.1e-4;
+    g.poni.distance = 0.14;
+    g.poni.poni1 = 0.00131;
+    g.poni.poni2 = 0.00113;
+    g.poni.rot1 = 0.007;
+    g.poni.rot2 = -0.009;
+    g.poni.rot3 = 0.05;
+    let m = MultiIntegrator::try_new(vec![ai(g, IntegrationMethod::PixelSplit)]).unwrap();
+    let out = m
+        .integrate2d_from_slices(&[(&[1.0], 1, 1)], 1, 8, &Default::default())
+        .unwrap();
+    close(&[out.raw.count.iter().sum()], &[1.0]);
+    assert!(out.raw.count.iter().all(|w| *w > 0.0));
+}
+
+#[test]
+fn histogram_compatibility_is_opt_in_and_is_part_of_the_cache_key() {
+    let mut g = geometry(1, 1);
+    g.poni.poni1 = -0.001;
+    g.poni.poni2 = -0.001;
+    let corners = g.calc_tth(&[0.0, 0.0, 1.0, 1.0], &[0.0, 1.0, 0.0, 1.0]);
+    let hi = (corners.iter().copied().fold(f64::INFINITY, f64::min)
+        + corners.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+        * 0.5;
+    let grid = IntegrationGrid2d::new(1, 1, (0.0, hi), (-PI, PI)).unwrap();
+    let ai = ai(g, IntegrationMethod::PixelSplit);
+    let a = ai
+        .integrate2d_raw_on_grid_from_slice(&[1.0], 1, 1, &grid, true)
+        .unwrap();
+    let compat = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
+    let b = ai
+        .integrate2d_raw_on_grid_from_slice(&[1.0], 1, 1, &compat, true)
+        .unwrap();
+    assert!(a.count[0] > 0.0 && a.count[0] < 1.0);
+    close(&b.count, &[1.0]);
+    close(b.sum_variance.as_ref().unwrap(), &[1.0]);
+    let again = ai
+        .integrate2d_raw_on_grid_from_slice(&[1.0], 1, 1, &grid, true)
+        .unwrap();
+    assert_eq!(a.sum_signal, again.sum_signal);
+    assert_eq!(a.sum_norm, again.sum_norm);
+}
+
+#[test]
+fn histogram_raster_matches_pyfai_boundary_pixel_golden_weight() {
+    // pyFAI 2025.12.1 fullSplit2D_engine, no masks/corrections. A pixel
+    // straddling an azimuthal edge: polygon area gives 0.1010677423, while
+    // the reference's line-area raster gives 0.0106259221 in this bin.
+    let mut g = geometry(31, 37);
+    g.poni.poni1 = -0.003;
+    g.poni.poni2 = -0.002;
+    let ai = ai(g, IntegrationMethod::PixelSplit);
+    let mut image = vec![0.0; 31 * 37];
+    image[8 * 37 + 34] = 1.0;
+    let grid = IntegrationGrid2d::new(12, 17, (0.0, 0.2 * (1.0 + f32::EPSILON as f64)), (-PI, PI))
+        .unwrap();
+    let fraction = ai
+        .integrate2d_raw_on_grid_from_slice(&image, 31, 37, &grid, false)
+        .unwrap();
+    let raster = ai
+        .integrate2d_raw_on_grid_from_slice(
+            &image,
+            31,
+            37,
+            &grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram),
+            false,
+        )
+        .unwrap();
+    assert!((fraction.sum_signal[9 * 12 + 4] - 0.1010677423).abs() < 1e-8);
+    assert!((raster.sum_signal[9 * 12 + 4] - 0.0106259221).abs() < 3e-5);
+    close(&[raster.sum_signal.iter().sum()], &[1.0]);
+    assert!(raster.sum_signal.iter().all(|w| *w >= 0.0 && *w <= 1.0));
+}
+
+#[test]
+fn histogram_mode_does_not_change_1d_or_other_2d_methods() {
+    for method in [
+        IntegrationMethod::Counting,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+    ] {
+        let g = geometry(7, 9);
+        let data = vec![20.0; g.size()];
+        let a = MultiIntegrator::try_new(vec![ai(g.clone(), method)]).unwrap();
+        let b = MultiIntegrator::try_new(vec![ai(g, method)])
+            .unwrap()
+            .with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
+        let ra = a
+            .integrate2d_from_slices(&[(&data, 7, 9)], 10, 13, &Default::default())
+            .unwrap();
+        let rb = b
+            .integrate2d_from_slices(&[(&data, 7, 9)], 10, 13, &Default::default())
+            .unwrap();
+        assert_eq!(ra.intensity, rb.intensity);
+        assert_eq!(
+            a.integrate1d_from_slices(&[(&data, 7, 9)], 10),
+            b.integrate1d_from_slices(&[(&data, 7, 9)], 10)
+        );
+    }
+}
+
+#[test]
+fn azint_style_twenty_one_subpixels_match_vector_geometry_oracle() {
+    let mut g1 = geometry(3, 4);
+    g1.poni.poni1 = 0.00013;
+    g1.poni.poni2 = 0.00017;
+    let mut g2 = geometry(4, 3);
+    g2.poni.pixel1 = 0.00017;
+    g2.poni.distance = 0.14;
+    g2.poni.rot1 = 0.006;
+    g2.poni.rot2 = -0.009;
+    g2.poni.rot3 = 0.05;
+    for (unit, hi) in [
+        (RadialUnit::TthRad, 0.1),
+        (RadialUnit::TthDeg, 0.1_f64.to_degrees()),
+        (RadialUnit::QAngstrom, 0.8),
+        (RadialUnit::QNm, 8.0),
+    ] {
+        let geoms = [g1.clone(), g2.clone()];
+        let data = [vec![13.0; 12], vec![31.0; 12]];
+        let masks: Vec<Vec<u8>> = (0..2)
+            .map(|d| (0..12).map(|i| u8::from((i + d) % 5 == 0)).collect())
+            .collect();
+        let integrators = geoms
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                ai(g.clone(), IntegrationMethod::Supersampled { n_ss: 21 })
+                    .with_radial_unit(unit)
+                    .with_radial_range(0.0, hi)
+                    .with_polarization_factor(0.6)
+                    .with_mask(Mask::from_vec(masks[i].clone(), g.dim1, g.dim2).unwrap())
+            })
+            .collect();
+        let multi = MultiIntegrator::try_new(integrators).unwrap();
+        let slices: Vec<_> = geoms
+            .iter()
+            .zip(&data)
+            .map(|(g, d)| (d.as_slice(), g.dim1, g.dim2))
+            .collect();
+        let out = multi
+            .integrate2d_from_slices(
+                &slices,
+                8,
+                17,
+                &Multi2dOptions {
+                    errors: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut signal = vec![0.0; 136];
+        let mut variance = signal.clone();
+        let mut norm = signal.clone();
+        let mut count = signal.clone();
+        for (d, g) in geoms.iter().enumerate() {
+            let mut y = Vec::new();
+            let mut x = Vec::new();
+            // Independent vector geometry calculation, rather than the scalar
+            // transform used to build the production supersampled LUT.
+            for row in 0..g.dim1 {
+                for col in 0..g.dim2 {
+                    for i in 0..21 {
+                        for j in 0..21 {
+                            y.push(row as f64 + (i as f64 + 0.5) / 21.0);
+                            x.push(col as f64 + (j as f64 + 0.5) / 21.0);
+                        }
+                    }
+                }
+            }
+            let (tth, az) = g.calc_tth_and_azimuth(&y, &x);
+            let radial = unit.convert_from_tth(&tth, g.poni.wavelength);
+            let centers = g.calc_tth_all();
+            let center_az = g.calc_azimuth_all();
+            let sa = g.calc_solid_angle();
+            let pol = g.calc_polarization(0.6, &centers, &center_az);
+            for pixel in 0..12 {
+                if masks[d][pixel] != 0 {
+                    continue;
+                }
+                let mut n = vec![0; 136];
+                for sample in pixel * 441..(pixel + 1) * 441 {
+                    if radial[sample] < 0.0 || radial[sample] >= hi {
+                        continue;
+                    }
+                    let r = (radial[sample] / hi * 8.0).floor() as usize;
+                    let a = ((az[sample] + PI).rem_euclid(TAU) / TAU * 17.0).floor() as usize;
+                    n[a * 8 + r] += 1;
+                }
+                for b in 0..136 {
+                    let w = n[b] as f64 / 441.0;
+                    signal[b] += w * data[d][pixel];
+                    variance[b] += w * w * data[d][pixel];
+                    norm[b] += w * sa[pixel] * pol[pixel];
+                    count[b] += w;
+                }
+            }
+        }
+        close(&out.raw.sum_signal, &signal);
+        close(out.raw.sum_variance.as_ref().unwrap(), &variance);
+        close(&out.raw.sum_norm, &norm);
+        close(&out.raw.count, &count);
+    }
+}
+
+#[test]
+fn beam_on_pixel_edge_or_corner_retains_small_radial_disk() {
+    let mut g = geometry(1, 2);
+    g.poni.pixel1 = 1e-4;
+    g.poni.pixel2 = 1e-4;
+    let radial_hi = 1e-4_f64;
+    for mode in [PixelSplitMode::Fractional, PixelSplitMode::PyfaiHistogram] {
+        for corner in [false, true] {
+            g.poni.poni1 = if corner { 0.0 } else { 5e-5 };
+            g.poni.poni2 = if corner { 0.0 } else { 1e-4 };
+            let m = MultiIntegrator::try_new(vec![
+                ai(g.clone(), IntegrationMethod::PixelSplit).with_radial_range(0.0, radial_hi),
+            ])
+            .unwrap()
+            .with_pixel_split_mode(mode);
+            let out = m
+                .integrate2d_from_slices(&[(&[1.0, 1.0], 1, 2)], 1, 8, &Default::default())
+                .unwrap();
+            let disk = PI * (radial_hi.tan() * g.poni.distance / g.poni.pixel1).powi(2);
+            let expected = if corner { disk / 4.0 } else { disk };
+            let actual: f64 = out.raw.count.iter().sum();
+            // Independent analytic detector-plane area; the polar corner quad
+            // misses this entire disk for a beam lying inside a pixel edge.
+            assert!(
+                (actual - expected).abs() < 3e-4,
+                "mode {mode:?}, corner {corner}: {actual} != {expected}"
+            );
+        }
+    }
+}

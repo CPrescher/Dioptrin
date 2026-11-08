@@ -1,5 +1,10 @@
 # Native multi-detector 2D validation
 
+This records the initial implementation at `7e6b73b`. The subsequent
+[full-splitting investigation](multi2d-splitting.md) adds an opt-in pyFAI
+histogram convention, a singular beam-pixel fallback and azint-style sampling
+validation. Its report contains the current test totals and compatibility results.
+
 Date: 2026-11-08. Implementation branch: `codex/multi-detector-2d`, isolated
 worktree `/Users/clemens/Programming/Dioptrin-multi2d`, based on released 0.10.0
 commit `d667a7f`. No release/version bump or desktop checkout changes.
@@ -165,8 +170,8 @@ Rayon threads, macOS ARM64, Python 3.13.5. Twenty cached calls per method:
 | Polygon splitting | 12.11 ms | 0.962 ms |
 | Supersampled, n_ss=3 | 10.21 ms | 0.820 ms |
 
-These measurements include Python input copies, raw merging and result
-conversion, but no image decoding or UI work. This is a small synthetic
+These measurements include Python input copies, raw merging and result-object
+construction (output list getters are excluded), but no image decoding or UI work. This is a small synthetic
 characterization, not a before/after speedup or a real-detector throughput
 claim. Repeated cached results were identical. Reproduce with
 `RAYON_NUM_THREADS=8 python python_examples/bench_multi2d.py --report result.json`.

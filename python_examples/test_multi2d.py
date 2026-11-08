@@ -62,6 +62,18 @@ class ApiTests(unittest.TestCase):
             dioptrin.MultiIntegrator([integrator(radial_range=(0, 1)),
                                       integrator(radial_range=(0, 2))])
 
+    def test_beam_pixel_is_nonnegative_in_both_modes(self):
+        p = dict(PONI, pixel1=1e-4, pixel2=1e-4, poni1=5e-5, poni2=5e-5)
+        for mode in ["fractional", "pyfai_histogram"]:
+            ai = integrator(p, method="pixel_split")
+            multi = dioptrin.MultiIntegrator([ai], pixel_split_mode=mode)
+            out = multi.integrate2d([np.full((1, 1), 25.0)], 1, 8, errors=True)
+            # An isotropic pixel centered on the axis has equal 45-degree wedges.
+            np.testing.assert_allclose(out.intensity, np.full(8, 25.0), rtol=1e-6)
+            np.testing.assert_allclose(out.errors, np.full(8, 5.0), rtol=1e-6)
+        with self.assertRaises(ValueError):
+            dioptrin.MultiIntegrator([integrator()], pixel_split_mode="invalid")
+
     def test_monitor_and_absolute_scale(self):
         d = np.full((8, 11), 64.0)
         multi = dioptrin.MultiIntegrator([integrator()])
@@ -74,6 +86,26 @@ class ApiTests(unittest.TestCase):
 
 
 class PyFaiTests(unittest.TestCase):
+    def test_histogram_sectors_and_zero_discontinuity(self):
+        from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+        from pyFAI.multi_geometry import MultiGeometry
+        p = dict(PONI, poni1=-0.003, poni2=-0.002)
+        data = np.ascontiguousarray(10.0+np.arange(31*37).reshape(31,37)%13)
+        for lo, hi, disc in [(0,90,180), (20,60,180), (0,360,0)]:
+            ai = AzimuthalIntegrator(dist=p["distance"], pixel1=p["pixel1"], pixel2=p["pixel2"],
+                                    poni1=p["poni1"], poni2=p["poni2"], wavelength=p["wavelength"])
+            reference = MultiGeometry([ai], unit="2th_rad", radial_range=(0,0.2),
+                                      azimuth_range=(lo,hi), chi_disc=disc, threadpoolsize=0).integrate2d(
+                [data],12,17,method=("full","histogram","cython"),error_model="poisson")
+            dr=reference.radial[1]-reference.radial[0]
+            radial=(max(0.0,float(reference.radial[0]-dr/2)),float(reference.radial[-1]+dr/2))
+            out=dioptrin.MultiIntegrator([integrator(p,method="pixel_split",radial_range=radial)],
+                                         pixel_split_mode="pyfai_histogram").integrate2d(
+                [data],12,17,azimuthal_range=(float(np.radians(lo)),float(np.radians(hi))),
+                normalization="absolute",errors=True)
+            np.testing.assert_allclose(np.array(out.intensity).reshape(17,12),reference.intensity,rtol=1e-4,atol=1e-3)
+            np.testing.assert_allclose(np.array(out.errors).reshape(17,12),reference.sigma,rtol=1e-4,atol=1e-3)
+
     def test_matched_counting_and_full_split(self):
         import pyFAI
         from pyFAI.integrator.azimuthal import AzimuthalIntegrator
@@ -93,7 +125,7 @@ class PyFaiTests(unittest.TestCase):
         cases += [("beam_and_seam", "2th_rad", 0.08, central),
                   ("radial_crop", "2th_rad", 0.08, geometries)]
         for scenario, unit, hi, geometries in cases:
-            for split in ["no", "full"]:
+            for split, mode in [("no", "fractional"), ("full", "fractional"), ("full", "pyfai_histogram")]:
                 ais = [AzimuthalIntegrator(dist=p["distance"], pixel1=p["pixel1"], pixel2=p["pixel2"],
                                            poni1=p["poni1"], poni2=p["poni2"], rot1=p["rot1"],
                                            rot2=p["rot2"], rot3=p["rot3"], wavelength=p["wavelength"])
@@ -112,7 +144,7 @@ class PyFaiTests(unittest.TestCase):
                       for p in geometries]
                 for ai, mask in zip(ds, masks):
                     ai.set_mask(mask.astype(bool))
-                out = dioptrin.MultiIntegrator(ds).integrate2d(
+                out = dioptrin.MultiIntegrator(ds, pixel_split_mode=mode).integrate2d(
                     data, 12, 17, errors=True, normalization="absolute", normalization_factors=[2.0,3.0])
                 actual = np.array(out.intensity).reshape(17,12)
                 error = np.array(out.errors).reshape(17,12)
@@ -120,7 +152,7 @@ class PyFaiTests(unittest.TestCase):
                 # pyFAI uses float32 geometry/corrections/weights internally.
                 relative = np.abs(actual[valid]-ref.intensity[valid])/np.maximum(1,abs(ref.intensity[valid]))
                 rel_sigma = np.abs(error[valid]-ref.sigma[valid])/np.maximum(1,abs(ref.sigma[valid]))
-                receipt = dict(scenario=scenario, unit=unit, split=split, bins=int(valid.sum()),
+                receipt = dict(scenario=scenario, unit=unit, split=split, pixel_split_mode=mode, bins=int(valid.sum()),
                                dioptrin_only_nonzero_bins=int(np.count_nonzero((actual != 0) & ~valid)),
                                pyfai_only_nonzero_bins=int(np.count_nonzero((actual == 0) & valid)),
                                max_relative_intensity=float(relative.max()),
@@ -132,6 +164,11 @@ class PyFaiTests(unittest.TestCase):
                 if split == "no":
                     np.testing.assert_allclose(actual, ref.intensity, rtol=2e-6, atol=1e-3)
                     np.testing.assert_allclose(error, ref.sigma, rtol=2e-6, atol=1e-3)
+                elif mode == "pyfai_histogram":
+                    self.assertEqual(receipt["dioptrin_only_nonzero_bins"], 0)
+                    self.assertEqual(receipt["pyfai_only_nonzero_bins"], 0)
+                    np.testing.assert_allclose(actual, ref.intensity, rtol=1e-5, atol=1e-3)
+                    np.testing.assert_allclose(error, ref.sigma, rtol=1e-5, atol=1e-3)
                 else:
                     # pyFAI's full histogram engine distributes integrated line
                     # areas through rows; Dioptrin clips polygons exactly in f64.

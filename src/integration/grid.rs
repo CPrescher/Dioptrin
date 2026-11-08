@@ -2,11 +2,25 @@ use super::{IntegrationMethod, Integrator};
 use crate::lut::IntermediateResult2d;
 use std::f64::consts::TAU;
 
+/// Splitting convention for the shared-grid 2D path. Other methods and legacy
+/// single-detector/1D integration are unaffected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PixelSplitMode {
+    /// Exact polygon intersections divided by original pixel polygon area.
+    #[default]
+    Fractional,
+    /// Approximate line-area rasterization and clipped-pixel renormalization,
+    /// for comparison with pyFAI's full histogram engine. Singular beam pixels
+    /// use sampling; numerical negative weights are discarded and renormalized.
+    PyfaiHistogram,
+}
+
 /// Explicit shared 2D bin edges. Radial values use the integrator's unit;
 /// azimuthal values are radians. Bins are half-open, with no edge clamping.
 /// Angles are periodic over 2π; sectors exclude angles outside their edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntegrationGrid2d {
+    pub(crate) pixel_split_mode: PixelSplitMode,
     pub(crate) n_radial: usize,
     pub(crate) n_azimuthal: usize,
     radial: [u64; 2],
@@ -57,6 +71,7 @@ impl IntegrationGrid2d {
             return Err("azimuthal start must be in [-2π, 2π] and span must be at most 2π".into());
         }
         Ok(Self {
+            pixel_split_mode: PixelSplitMode::Fractional,
             n_radial,
             n_azimuthal,
             radial: [radial_range.0.to_bits(), radial_range.1.to_bits()],
@@ -66,6 +81,11 @@ impl IntegrationGrid2d {
 
     pub fn shape(&self) -> (usize, usize) {
         (self.n_azimuthal, self.n_radial)
+    }
+    /// Select an alternative pixel-splitting convention without changing edges.
+    pub fn with_pixel_split_mode(mut self, mode: PixelSplitMode) -> Self {
+        self.pixel_split_mode = mode;
+        self
     }
     pub fn radial_range(&self) -> (f64, f64) {
         (
@@ -117,8 +137,9 @@ fn centers((lo, hi): (f64, f64), count: usize) -> Vec<f64> {
 }
 
 impl Integrator {
-    /// Integrate onto explicit shared edges and return raw sums. Uses fractional
-    /// pixel weights (not the legacy row-normalized split weights). Variance,
+    /// Integrate onto explicit shared edges and return raw sums. Splitting uses
+    /// the grid's mode (default: fractional polygon areas, with sampling for
+    /// singular beam pixels; optional: pyFAI histogram approximation). Variance,
     /// when requested, is Poisson max(signal, 0), accumulated with squared weights.
     /// Relative solid angle and this detector's polarization are in sum_norm.
     pub fn integrate2d_raw_on_grid_from_slice(

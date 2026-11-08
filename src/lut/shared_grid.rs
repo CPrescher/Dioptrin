@@ -3,7 +3,7 @@
 use super::Lut2d;
 use super::pixel_split::{clip_polygon_rect_scratch, polygon_area};
 use crate::geometry::Geometry;
-use crate::integration::{IntegrationGrid2d, IntegrationMethod, RadialUnit};
+use crate::integration::{IntegrationGrid2d, IntegrationMethod, PixelSplitMode, RadialUnit};
 use rayon::prelude::*;
 use std::f64::consts::TAU;
 
@@ -47,33 +47,59 @@ pub(crate) fn build(
                     }
                 }
                 IntegrationMethod::Supersampled { n_ss } => {
-                    let row = pixel / geometry.dim2;
-                    let col = pixel % geometry.dim2;
-                    let weight = 1.0 / (n_ss * n_ss) as f64;
-                    for i in 0..n_ss {
-                        for j in 0..n_ss {
-                            let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;
-                            let d2 = ((col * n_ss + j) as f64 + 0.5) / n_ss as f64;
-                            let (tth, azimuthal) = transform.tth_and_azimuth(d1, d2);
-                            if let Some(bin) = grid.bin(convert(tth), azimuthal) {
-                                // Combine all samples of a pixel/bin before squaring
-                                // the weight for variance propagation.
-                                if let Some((_, w)) = entries.iter_mut().find(|(b, _)| *b == bin) {
-                                    *w += weight;
-                                } else {
-                                    entries.push((bin, weight));
-                                }
-                            }
-                        }
-                    }
+                    entries = sample_pixel(
+                        geometry,
+                        &transform,
+                        pixel,
+                        grid,
+                        n_ss,
+                        &[(0.5, 0.5)],
+                        &convert,
+                    );
                 }
                 IntegrationMethod::PixelSplit => {
                     let (r, a) = corners.as_ref().unwrap();
                     let width = geometry.dim2 + 1;
                     let base = pixel / geometry.dim2 * width + pixel % geometry.dim2;
+                    let indices = [base, base + 1, base + width + 1, base + width];
+                    // A pixel enclosing/touching the polar origin has no single
+                    // simple polar quad. Use detector-plane samples, coalesced by
+                    // pixel/bin before the variance kernel squares each weight.
+                    let mut axis_on_edge = false;
+                    let winding: f64 = (0..4)
+                        .map(|i| {
+                            let delta = a[indices[(i + 1) % 4]] - a[indices[i]];
+                            let delta = (delta + std::f64::consts::PI).rem_euclid(TAU)
+                                - std::f64::consts::PI;
+                            axis_on_edge |=
+                                delta.abs() >= std::f64::consts::PI - 64.0 * f64::EPSILON;
+                            delta
+                        })
+                        .sum();
+                    if winding.abs() > std::f64::consts::PI
+                        || axis_on_edge
+                        || indices.iter().any(|&i| r[i] == 0.0)
+                    {
+                        return sample_pixel(
+                            geometry,
+                            &transform,
+                            pixel,
+                            grid,
+                            128,
+                            &[(0.25, 0.5), (0.5, 0.25), (0.75, 0.5), (0.5, 0.75)],
+                            &convert,
+                        );
+                    }
+                    if grid.pixel_split_mode == PixelSplitMode::PyfaiHistogram {
+                        // Reverse to pyFAI's corner order, preserving raw angles.
+                        let poly =
+                            [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]));
+                        if let Some(entries) = super::pyfai_split::split(poly, grid) {
+                            return entries;
+                        }
+                    }
                     let (a0, _) = grid.azimuthal_range();
                     let center = a0 + (azimuthal[pixel] - a0).rem_euclid(TAU);
-                    let indices = [base, base + 1, base + width + 1, base + width];
                     let poly = indices.map(|i| {
                         (
                             r[i],
@@ -172,4 +198,36 @@ fn split_polygon(
             }
         }
     }
+}
+
+fn sample_pixel<F: Fn(f64) -> f64>(
+    geometry: &Geometry,
+    transform: &crate::geometry::SubpixelTransform,
+    pixel: usize,
+    grid: &IntegrationGrid2d,
+    n_ss: usize,
+    offsets: &[(f64, f64)],
+    convert: &F,
+) -> Vec<(usize, f64)> {
+    let row = pixel / geometry.dim2;
+    let col = pixel % geometry.dim2;
+    let weight = 1.0 / ((n_ss * n_ss) as f64 * offsets.len() as f64);
+    let mut entries = Vec::new();
+    for i in 0..n_ss {
+        for j in 0..n_ss {
+            for &(off1, off2) in offsets {
+                let d1 = row as f64 + (i as f64 + off1) / n_ss as f64;
+                let d2 = ((col * n_ss + j) as f64 + off2) / n_ss as f64;
+                let (tth, azimuthal) = transform.tth_and_azimuth(d1, d2);
+                if let Some(bin) = grid.bin(convert(tth), azimuthal) {
+                    if let Some((_, w)) = entries.iter_mut().find(|(b, _)| *b == bin) {
+                        *w += weight;
+                    } else {
+                        entries.push((bin, weight));
+                    }
+                }
+            }
+        }
+    }
+    entries
 }

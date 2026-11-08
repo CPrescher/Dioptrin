@@ -38,6 +38,7 @@ use std::sync::Arc;
 
 use crate::frame::Frame;
 use crate::integration::IntegrationGrid2d;
+use crate::integration::PixelSplitMode;
 
 #[cfg(test)]
 mod tests;
@@ -93,6 +94,7 @@ pub struct Multi2dResult {
 /// across detectors before dividing.
 pub struct MultiIntegrator {
     integrators: Vec<Arc<Integrator>>,
+    pixel_split_mode: PixelSplitMode,
 }
 
 fn validate_integrators(integrators: &[Arc<Integrator>]) -> Result<(), String> {
@@ -134,6 +136,13 @@ fn validate_integrators(integrators: &[Arc<Integrator>]) -> Result<(), String> {
 }
 
 impl MultiIntegrator {
+    /// Select the 2D polygon splitting convention. Default is Fractional;
+    /// PyfaiHistogram approximates Qt/pyFAI full-histogram cakes. No effect on 1D.
+    pub fn with_pixel_split_mode(mut self, mode: PixelSplitMode) -> Self {
+        self.pixel_split_mode = mode;
+        self
+    }
+
     /// Fallible owned constructor; unlike `new`, invalid inputs return an error.
     pub fn try_new(integrators: Vec<Integrator>) -> Result<Self, String> {
         Self::from_arcs(integrators.into_iter().map(Arc::new).collect())
@@ -178,7 +187,8 @@ impl MultiIntegrator {
             n_azimuthal,
             self.integrators[0].radial_range().unwrap(),
             options.azimuthal_range,
-        )?;
+        )?
+        .with_pixel_split_mode(self.pixel_split_mode);
         if self
             .integrators
             .iter()
@@ -278,14 +288,20 @@ impl MultiIntegrator {
     pub fn new(integrators: Vec<Integrator>) -> Self {
         let arcs: Vec<Arc<Integrator>> = integrators.into_iter().map(Arc::new).collect();
         validate_integrators(&arcs).unwrap();
-        Self { integrators: arcs }
+        Self {
+            integrators: arcs,
+            pixel_split_mode: PixelSplitMode::Fractional,
+        }
     }
 
     /// Create a new MultiIntegrator from Arc-wrapped Integrators.
     /// Returns Err with a message if validation fails.
     pub fn from_arcs(integrators: Vec<Arc<Integrator>>) -> Result<Self, String> {
         validate_integrators(&integrators)?;
-        Ok(Self { integrators })
+        Ok(Self {
+            integrators,
+            pixel_split_mode: PixelSplitMode::Fractional,
+        })
     }
 
     /// Integrate one frame per detector and merge into a single 1D pattern.

@@ -689,7 +689,7 @@ class MultiIntegrator:
         >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
     """
 
-    def __init__(self, integrators: list[Integrator]) -> None:
+    def __init__(self, integrators: list[Integrator], *, pixel_split_mode: str = "fractional") -> None:
         """
         Create a new MultiIntegrator from a list of Integrator instances.
 
@@ -701,6 +701,11 @@ class MultiIntegrator:
 
         Args:
             integrators: List of Integrator instances, one per detector
+            pixel_split_mode: "fractional" (default) or "pyfai_histogram" for
+                approximate Qt/pyFAI full-histogram 2D splitting. This changes
+                boundary clipping and weights; it has no effect on 1D.
+                Singular beam pixels use 128x128 strata with four symmetric
+                samples per stratum in both modes. Negative weights are avoided.
 
         Raises:
             ValueError: If validation fails (empty list, mismatched units/ranges,
