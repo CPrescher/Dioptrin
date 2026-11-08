@@ -35,6 +35,32 @@ python -m pip install --upgrade dioptrin
 Install Dioptrin in the same Python environment as Dioptas and restart Dioptas. The **Use Dioptrin** checkbox becomes available in its
 integration options. Dioptas continues to work with pyFAI without Dioptrin.
 
+### Multi-detector 2D integration (0.11.0)
+
+`MultiIntegrator.integrate2d` combines detector images on a shared radial and
+azimuthal grid. Detectors retain their individual calibrations, masks and
+corrections. Fractional polygon splitting is the default for `pixel_split`,
+with periodic seam handling and detector-plane sampling at the beam center.
+
+```python
+# int1 and int2 have the same radial unit/range and their own geometry/mask.
+multi = dioptrin.MultiIntegrator([int1, int2])
+result = multi.integrate2d(
+    [img1, img2], 2000, 360, errors=True, normalization="absolute",
+)
+cake = np.asarray(result.intensity).reshape(360, 2000)
+```
+
+Import `dioptrin` and `numpy as np` in your application. Radial coordinates use
+the configured unit; azimuthal coordinates and sector edges use radians. Raw
+signal, normalization and Poisson variance are merged before final division.
+Absolute scaling includes each detector's pixel area divided by distance
+squared, matching pyFAI MultiGeometry's solid-angle scale. Applications must
+call the new API to use it; upgrading the library alone does not switch an
+existing Dioptas multi-detector workflow. See the
+[multi-detector guide](https://dioptrin.readthedocs.io/en/latest/MULTI_DETECTOR.html)
+for complete setup, normalization, units, masks, uncertainties and benchmarks.
+
 ### Integration arithmetic
 
 Fast accumulation is enabled by default starting in 0.6.0

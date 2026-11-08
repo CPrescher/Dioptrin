@@ -38,11 +38,30 @@ All integrators in a `MultiIntegrator` must:
 
 ## Shared-grid 2D cakes
 
+Available in **Dioptrin 0.11.0 and later**. Install or upgrade in the same
+Python environment as your application:
+
+```sh
+python -m pip install --upgrade "dioptrin>=0.11.0"
+```
+
+Create one integrator per detector, with a common radial unit and range.
+For example, after loading `img1` and `img2` in the orientation expected by
+their calibrations:
+
 ```python
 import numpy as np
+import dioptrin
 
-# Configure geometry, unit, common radial_range, polarization and each detector's
-# mask before creating MultiIntegrator, using the setup below.
+integrators = [
+    dioptrin.Integrator(
+        path, method="pixel_split", unit="q_A^-1",
+        radial_range=(0.0, 20.0), polarization_factor=0.99,
+    )
+    for path in ["detector1.poni", "detector2.poni"]
+]
+# Apply any detector masks to integrators before constructing MultiIntegrator.
+multi = dioptrin.MultiIntegrator(integrators)  # fractional polygons by default
 result = multi.integrate2d(
     images=[np.ascontiguousarray(img1, dtype=np.float64),
             np.ascontiguousarray(img2, dtype=np.float64)],
@@ -247,6 +266,14 @@ See [the initial validation report](validation/multi2d.md),
 [full-splitting investigation](validation/multi2d-splitting.md),
 [first-frame and Eiger benchmarks](validation/multi2d-startup.md) and run
 `python python_examples/test_multi2d.py` to reproduce the pyFAI comparisons.
+
+```{toctree}
+:hidden:
+
+validation/multi2d
+validation/multi2d-splitting
+validation/multi2d-startup
+```
 
 ## Python API (existing 1D)
 

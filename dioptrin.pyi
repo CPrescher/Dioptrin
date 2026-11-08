@@ -90,7 +90,7 @@ class IntegrationResult:
 
     @property
     def radial(self) -> Optional[list[float]]:
-        """Radial bin centers (1D only)."""
+        """Radial bin centers (1D and MultiIntegrator 2D; otherwise None)."""
         ...
 
     @property
