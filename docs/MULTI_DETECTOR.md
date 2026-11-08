@@ -107,7 +107,9 @@ and clipped-pixel renormalization to reproduce pyFAI's full histogram engine
 more closely. It is a compatibility choice, independent of `normalization`.
 Rust uses `multi.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)`; the
 raw single-detector API selects it through `grid.with_pixel_split_mode(...)`.
-It affects only the new shared-grid 2D `PixelSplit` path.
+This setting affects the shared-grid 2D `PixelSplit` path. For an integrator
+method that also supports pyFAI-compatible 1D patterns, select `method="pyfai_full"`
+(Python) or `IntegrationMethod::PyfaiFull` (Rust).
 
 Pixels enclosing or touching the polar origin cannot be described reliably by
 a single polar quadrilateral. Both modes fall back to detector-plane sampling

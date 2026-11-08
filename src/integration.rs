@@ -145,6 +145,8 @@ pub enum IntegrationMethod {
     Counting,
     /// Pixel-splitting with fractional/bilinear weights.
     PixelSplit,
+    /// Approximate pyFAI-compatible full splitting for 1D and 2D.
+    PyfaiFull,
     /// Supersampling with `n_ss x n_ss` subpixels per pixel.
     Supersampled { n_ss: usize },
 }

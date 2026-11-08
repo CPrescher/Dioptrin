@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `IntegrationMethod::PyfaiFull` / Python `method="pyfai_full"`: approximate
+  pyFAI-compatible full pixel splitting for ordinary 1D and 2D integration,
+  typed input and prepared fixed/dynamic plans. The sector-aware 1D LUT builder
+  is public for native adapters with independent ranges and supplied variances.
+
 ## [0.10.0] - 2026-11-07
 
 ### Added

@@ -47,7 +47,8 @@ impl Integrator {
                 unit,
                 radial_range,
             },
-            IntegrationMethod::PixelSplit => OneDKey::PixelSplit {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
+                pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                 n_points,
                 unit,
                 radial_range,

@@ -176,6 +176,11 @@ impl Integrator {
         grid: &IntegrationGrid2d,
         errors: bool,
     ) -> Result<IntermediateResult2d, String> {
+        let grid = if matches!(self.method, IntegrationMethod::PyfaiFull) {
+            grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)
+        } else {
+            *grid
+        };
         self.validate_2d_input(data, dim1, dim2)?;
         if let Some(v) = variance {
             validate_variances(data, v)?;
@@ -199,12 +204,12 @@ impl Integrator {
         }
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
         let key = super::cache::TwoDKey::SharedGrid {
-            grid: *grid,
+            grid,
             unit: self.radial_unit,
             // 0 = counting, 1 = polygon splitting, >=2 = supersampling + 1
             sampling: match self.method {
                 IntegrationMethod::Counting => 0,
-                IntegrationMethod::PixelSplit => 1,
+                IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => 1,
                 IntegrationMethod::Supersampled { n_ss } => n_ss + 1,
                 IntegrationMethod::Histogram => unreachable!(),
             },

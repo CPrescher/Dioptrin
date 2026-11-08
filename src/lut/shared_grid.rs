@@ -15,7 +15,10 @@ pub(crate) fn build(
     method: IntegrationMethod,
     unit: RadialUnit,
 ) -> Lut2d {
-    let corners = if matches!(method, IntegrationMethod::PixelSplit) {
+    let corners = if matches!(
+        method,
+        IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull
+    ) {
         let (d1, d2) = geometry.corner_grid();
         let (tth, azimuthal) = geometry.calc_tth_and_azimuth(&d1, &d2);
         Some((
@@ -57,7 +60,7 @@ pub(crate) fn build(
                         &convert,
                     );
                 }
-                IntegrationMethod::PixelSplit => {
+                IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                     let (r, a) = corners.as_ref().unwrap();
                     let width = geometry.dim2 + 1;
                     let base = pixel / geometry.dim2 * width + pixel % geometry.dim2;
