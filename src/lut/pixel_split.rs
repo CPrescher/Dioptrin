@@ -10,7 +10,7 @@ use crate::lut::counting_csr::{Lut1d, Lut2d};
 use crate::math::{self, histogram};
 
 /// Compute the signed area of a polygon given as (x, y) vertices.
-fn polygon_area(poly: &[(f64, f64)]) -> f64 {
+pub(super) fn polygon_area(poly: &[(f64, f64)]) -> f64 {
     if poly.len() < 3 {
         return 0.0;
     }
@@ -136,7 +136,7 @@ fn clip_top_into(poly: &[(f64, f64)], y_max: f64, out: &mut Vec<(f64, f64)>) {
 }
 
 /// Clip polygon against an axis-aligned rectangle.
-fn clip_polygon_rect_scratch<'a>(
+pub(super) fn clip_polygon_rect_scratch<'a>(
     poly: &[(f64, f64)],
     x_min: f64,
     x_max: f64,
