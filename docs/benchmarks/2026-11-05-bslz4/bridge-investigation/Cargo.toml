@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dioptrin = { path = "/Users/clemens/Programming/Dioptrin" }
+dioptrin = { path = "../../../.." }
 rayon = "1.5"
 memmap2 = "0.9.11"
 
