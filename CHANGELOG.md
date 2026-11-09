@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Add strict `FixedCsr1dPlan` snapshots for compatibility LUTs, caching fixed-mask
+  normalization while retaining the original signal and error reduction order.
+- Add `prepare_fixed2d_on_grid` / `FixedGrid2dPlan` for normalized cached cakes,
+  validating static geometry once and avoiding unused raw-sum/count output arrays.
+  Frame dimensions and unmasked finite samples remain checked on each call.
+
 - Vectorize and parallelize the full-resolution Massif Gaussian background
   filter while preserving each pixel's floating-point summation order.
 - Add Rust `PreparedMassif` to reuse immutable samples and component labels

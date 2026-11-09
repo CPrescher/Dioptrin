@@ -27,6 +27,7 @@ HDF5_USAGE
 MULTI_DETECTOR
 detectors
 validation/pyfai-full
+validation/cached-pyfai
 PERFORMANCE
 ```
 

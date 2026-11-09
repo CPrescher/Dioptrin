@@ -187,6 +187,20 @@ impl Integrator {
         }
         self.update_geometry_arrays(dim1, dim2);
         let normalization = self.get_normalization();
+        self.validate_grid_coordinates(&normalization)?;
+        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
+        let key = self.grid_lut_key(&grid);
+        let lut = self.ensure_lut2d(key);
+        Ok(if let Some(variance) = variance {
+            lut.raw2d_with_variances(data, variance, mask, &normalization)
+        } else if errors {
+            self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
+        } else {
+            self.lut_integrate2d_raw(data, &lut, mask, &normalization)
+        })
+    }
+
+    pub(super) fn validate_grid_coordinates(&self, normalization: &[f64]) -> Result<(), String> {
         {
             let state = self.state.read().map_err(|e| e.to_string())?;
             if state
@@ -202,8 +216,15 @@ impl Integrator {
                 );
             }
         }
-        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
-        let key = super::cache::TwoDKey::SharedGrid {
+        Ok(())
+    }
+    pub(super) fn grid_lut_key(&self, grid: &IntegrationGrid2d) -> super::cache::TwoDKey {
+        let grid = if matches!(self.method, IntegrationMethod::PyfaiFull) {
+            grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)
+        } else {
+            *grid
+        };
+        super::cache::TwoDKey::SharedGrid {
             grid,
             unit: self.radial_unit,
             // 0 = counting, 1 = polygon splitting, >=2 = supersampling + 1
@@ -213,15 +234,7 @@ impl Integrator {
                 IntegrationMethod::Supersampled { n_ss } => n_ss + 1,
                 IntegrationMethod::Histogram => unreachable!(),
             },
-        };
-        let lut = self.ensure_lut2d(key);
-        Ok(if let Some(variance) = variance {
-            lut.raw2d_with_variances(data, variance, mask, &normalization)
-        } else if errors {
-            self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
-        } else {
-            self.lut_integrate2d_raw(data, &lut, mask, &normalization)
-        })
+        }
     }
 
     pub(crate) fn validate_2d_input(
@@ -230,9 +243,25 @@ impl Integrator {
         dim1: usize,
         dim2: usize,
     ) -> Result<(), String> {
+        self.validate_2d_setup(dim1, dim2, data.len())?;
+        if data
+            .iter()
+            .enumerate()
+            .any(|(i, x)| !x.is_finite() && self.mask.as_ref().is_none_or(|m| m.data[i] == 0))
+        {
+            return Err("unmasked image pixels must be finite".into());
+        }
+        Ok(())
+    }
+    pub(super) fn validate_2d_setup(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        data_len: usize,
+    ) -> Result<(), String> {
         if dim1 == 0
             || dim2 == 0
-            || dim1.checked_mul(dim2) != Some(data.len())
+            || dim1.checked_mul(dim2) != Some(data_len)
             || dim1
                 .checked_add(1)
                 .and_then(|d| dim2.checked_add(1).and_then(|e| d.checked_mul(e)))
@@ -241,7 +270,7 @@ impl Integrator {
             return Err("image dimensions must be positive and match data length".into());
         }
         if let Some(mask) = &self.mask
-            && (mask.dim1 != dim1 || mask.dim2 != dim2 || mask.data.len() != data.len())
+            && (mask.dim1 != dim1 || mask.dim2 != dim2 || mask.data.len() != data_len)
         {
             return Err("mask dimensions must match its detector image".into());
         }
@@ -276,14 +305,6 @@ impl Integrator {
                 return Err("n_ss must be positive and fit sampling indices".into());
             }
             _ => (),
-        }
-        // Nonfinite pixels would poison raw sums. Masked pixels are allowed.
-        if data
-            .iter()
-            .enumerate()
-            .any(|(i, x)| !x.is_finite() && self.mask.as_ref().is_none_or(|m| m.data[i] == 0))
-        {
-            return Err("unmasked image pixels must be finite".into());
         }
         Ok(())
     }

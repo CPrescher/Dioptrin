@@ -9,6 +9,7 @@ use crate::math::histogram;
 // values=Some(..) -> weighted (supersampled / pixel-split)
 /// CSR-based 1D LUT. If `values` is `None`, integration averages contributions.
 /// If `Some(weights)`, contributions are weighted (e.g., supersampled/pixel-split).
+#[derive(Clone)]
 pub struct Lut1d {
     pub row_ptr: Vec<usize>,
     pub col_idx: Vec<usize>,

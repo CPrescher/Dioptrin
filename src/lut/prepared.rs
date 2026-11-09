@@ -483,6 +483,39 @@ impl Prepared1d {
     }
 }
 impl Prepared2d {
+    /// Direct fixed-mask intensity output: preserve row arithmetic without
+    /// constructing raw signal/normalization/count arrays that are unused.
+    pub(crate) fn fixed_intensity<const FAST: bool>(
+        &self,
+        signal: &[f64],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> Vec<f64> {
+        let table = self.fixed_table(mask);
+        let normalization = table.normalization::<FAST>(None, norm);
+        macro_rules! run {
+            ($cols:expr) => {
+                (0..table.row_ptr.len() - 1)
+                    .into_par_iter()
+                    .map(|i| {
+                        let s = table.sum::<_, f64, FAST, true, false, false, false>(
+                            i,
+                            $cols,
+                            None,
+                            signal,
+                            &[],
+                        )[0];
+                        let n = normalization[i];
+                        if n == 0. { 0. } else { s / n }
+                    })
+                    .collect()
+            };
+        }
+        match &table.col_idx {
+            Columns::Compact(c) => run!(c),
+            Columns::Wide(c) => run!(c),
+        }
+    }
     pub(crate) fn raw2d_with_variances(
         &self,
         data: &[f64],
