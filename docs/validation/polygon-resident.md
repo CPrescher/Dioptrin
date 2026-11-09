@@ -17,14 +17,14 @@ frames reuse coefficients and normalization, while reading the new frame's
 samples.
 
 `with_csc_layout()` explicitly forces the pixel-oriented kernel, bypassing this
-optional gather table and timing probes. The desktop uses this as its default
-to preserve large-detector throughput.
+optional gather table and timing probes. The desktop exposes this as a manual override.
 
 `with_auto_layout()` opts into a broad estimate rather than runtime timing:
-CSR below about 4 MP for low/high bin counts, below about 6 MP for 512–2000 bins,
-and below about 8 MP with Poisson errors; CSC above those thresholds. The
+CSR generally; CSC for images above about 8 MP at 2000 bins or more
+without Poisson errors. The desktop defaults to CSR with manual overrides and
+an optional Automatic estimate. The
 `predict_1d_layout` API returns the recommendation and approximate crossover
-pixel count. `selected_resident_layout(errors)` exposes the selected resident
+large-image threshold. `selected_resident_layout(errors)` exposes the selected resident
 orientation. It is deliberately a ballpark, not a CPU-specific timing guarantee.
 It adds no timing probes. Preparing a selected CSR path can retain an additional
 masked CSR table. Ordinary CSR uses the same weights but a different summation

@@ -7,7 +7,8 @@ p.add_argument('--threads',type=int,default=8)
 p.add_argument('--poisson',action='store_true')
 p.add_argument('--batch',action='store_true')
 a=p.parse_args()
-threshold=8_000_000 if a.poisson else 6_000_000 if 512<=a.bins<=2000 else 4_000_000
-layout='csc' if a.batch or a.pixels<=0 or a.bins<=0 or a.threads<=0 or a.pixels>=threshold else 'csr'
-print(json.dumps(dict(layout=layout,approximateSwitchPixels=threshold,
- note='Ballpark estimate from the M4 Pro sweep. CSC remains the desktop default; Automatic is opt-in. Parallel/streamed workers retain CSC. Manual overrides are available.'),indent=2))
+threshold=8_000_000
+exception=a.pixels>=threshold and not a.poisson and a.bins>=2000
+layout='csc' if a.batch or a.pixels<=0 or a.bins<=0 or a.threads<=0 or exception else 'csr'
+print(json.dumps(dict(layout=layout,largeImageThresholdPixels=threshold,
+ note='Ballpark: CSR generally; CSC for large images at high bins without errors. CSR is the desktop default; Automatic is optional. Parallel/streamed workers retain CSC. Manual overrides are available.'),indent=2))

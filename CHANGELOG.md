@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- Add an opt-in resident 1D CSC/CSR selector using a broad 4/6/8 MP estimate
-  based on bin count and Poisson errors, with no runtime timing probes. CSC
-  remains the desktop default and streamed/parallel block execution is unchanged.
+- Add an opt-in resident 1D CSC/CSR selector using a broad detector-size/bin estimate:
+  CSR generally, with a CSC exception above about 8 MP for high bin counts
+  without Poisson errors. No runtime timing probes are used;
+  streamed/parallel block execution is unchanged.
   Splitting weights are unchanged; ordinary CSR and CSC can differ in rounding.
 
 - Cache a bin-oriented execution table for sufficiently large resident fixed-mask

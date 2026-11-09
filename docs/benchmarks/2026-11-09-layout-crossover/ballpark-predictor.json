@@ -1,28 +1,14 @@
 {
-  "policy": "broad estimate; no runtime timing probes",
-  "default": "csc",
-  "automaticOptIn": true,
-  "rules": [
-    {
-      "poisson": true,
-      "switchPixels": 8000000
-    },
-    {
-      "poisson": false,
-      "radialBins": [
-        512,
-        2000
-      ],
-      "switchPixels": 6000000
-    },
-    {
-      "poisson": false,
-      "otherBinCounts": true,
-      "switchPixels": 4000000
-    }
-  ],
+  "default": "csr",
+  "usualResidentLayout": "csr",
+  "automaticOptional": true,
+  "largeImagePixels": 8000000,
+  "cscException": {
+    "minPixels": 8000000,
+    "minBins": 2000,
+    "poisson": false
+  },
   "parallelAndStreamed": "csc",
-  "scope": "resident fixed-mask polygon/subpixel 1D; cakes and compatibility unchanged",
-  "boundary": "CSR below threshold; CSC at and above threshold",
-  "basis": "2026-11-09 M4 Pro 8-thread detector/bin sweep; not a precise portable crossover"
+  "timingProbes": false,
+  "scope": "resident fixed-mask 1D; broad estimate for practical large-detector bin counts of 1000 or more; manual overrides available"
 }
