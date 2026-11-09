@@ -2,10 +2,16 @@
 use super::{IntegrationMethod, Integrator, MaskMode, SparseLayout};
 use crate::{
     frame::Pixel,
-    lut::{csc::Sums, prepared::Prepared1d},
+    lut::{
+        csc::{FixedRows, Sums},
+        prepared::Prepared1d,
+    },
     mask::Mask,
 };
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{Arc, OnceLock},
+};
 
 /// Mapping from incoming row-major pixels to the calibrated detector image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +27,7 @@ pub struct Fixed1dPlan {
     shape: (usize, usize),
     mask: Option<Mask>,
     normalization: Arc<Vec<f64>>,
+    resident: OnceLock<Option<FixedRows>>,
 }
 
 pub struct Fixed1dResult {
@@ -98,6 +105,7 @@ impl Integrator {
             shape,
             mask,
             normalization,
+            resident: OnceLock::new(),
         })
     }
 }
@@ -195,11 +203,28 @@ impl Fixed1dPlan {
         }
     }
 
-    /// Existing complete-frame float64 CSC kernel, using the same prepared tables.
-    /// Input is already in calibrated detector order; useful as a full-frame fallback.
+    /// Complete resident frames use a bin-oriented cache with the same CSC
+    /// coefficients, chunk partitions and lane reduction. Streamed blocks and
+    /// outer Rayon batch workers retain the existing CSC execution.
     pub fn integrate_frame(&self, data: &[f64], errors: bool) -> Result<Fixed1dResult, String> {
         if data.len() != self.shape.0 * self.shape.1 {
             return Err("image size mismatch".into());
+        }
+        if rayon::current_thread_index().is_none()
+            && let Some(resident) = self.resident.get_or_init(|| {
+                FixedRows::new(self.lut.fixed_csc().unwrap(), self.lut.fixed_pixels())
+            })
+        {
+            let (intensity, sigma) = if errors {
+                resident.integrate::<true>(data, self.lut.fixed_bin_norm())
+            } else {
+                resident.integrate::<false>(data, self.lut.fixed_bin_norm())
+            };
+            return Ok(Fixed1dResult {
+                radial: self.lut.bins(),
+                intensity,
+                errors: errors.then_some(sigma),
+            });
         }
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
         let (radial, intensity, sigma) = if errors {
@@ -333,6 +358,58 @@ mod tests {
         for (&a, &b) in a.iter().zip(b) {
             assert!((a - b).abs() <= 1e-10 + 2e-12 * b.abs(), "{a} != {b}");
         }
+    }
+    #[test]
+    fn resident_frame_is_bitwise_csc_and_keeps_outer_workers_on_csc() {
+        let original = integrator(IntegrationMethod::PixelSplit);
+        let shape = (768, 768);
+        let pixels = shape.0 * shape.1;
+        let engine = Integrator::new(Geometry::new(
+            shape.0,
+            shape.1,
+            original.geometry.poni.clone(),
+        ))
+        .with_method(IntegrationMethod::PixelSplit)
+        .with_polarization_factor(0.965)
+        .with_mask(Mask {
+            data: (0..pixels).map(|i| u8::from(i % 11 == 0)).collect(),
+            dim1: shape.0,
+            dim2: shape.1,
+        });
+        let plan = engine.prepare_fixed1d(shape, 128).unwrap();
+        let data: Vec<_> = (0..pixels)
+            .map(|i| ((i * 997) % 1009) as f64 - 31.7)
+            .collect();
+        let mask = plan.mask.as_ref().map(|m| m.data.as_slice());
+        let (x, y, e) = plan
+            .lut
+            .integrate::<true, true>(&data, mask, &plan.normalization);
+        let check = |r: Fixed1dResult| {
+            for (a, b) in [
+                (&r.radial, &x),
+                (&r.intensity, &y),
+                (r.errors.as_ref().unwrap(), &e),
+            ] {
+                assert_eq!(
+                    a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    b.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        };
+        assert!(plan.resident.get().is_none());
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        check(pool.install(|| plan.integrate_frame(&data, true).unwrap()));
+        assert!(
+            plan.resident.get().is_none(),
+            "outer batch workers must not allocate resident tables"
+        );
+        check(plan.integrate_frame(&data, true).unwrap());
+        assert!(plan.resident.get().unwrap().is_some());
+        check(plan.integrate_frame(&data, true).unwrap());
+        check(pool.install(|| plan.integrate_frame(&data, true).unwrap()));
     }
     #[test]
     fn native_blocks_preserve_float64_weights_masks_errors_and_orientation() {

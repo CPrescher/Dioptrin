@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Cache a bin-oriented execution table for sufficiently large resident fixed-mask
+  1D frames. Preserve CSC coefficients, chunk/lane reductions and Poisson errors
+  bitwise while avoiding histogram scatter/merge work. Streamed block and outer
+  Rayon batch workers retain CSC; the optional resident table is capped at 128 MiB.
+
 - Add strict `FixedCsr1dPlan` snapshots for compatibility LUTs, caching fixed-mask
   normalization while retaining the original signal and error reduction order.
 - Add `prepare_fixed2d_on_grid` / `FixedGrid2dPlan` for normalized cached cakes,
