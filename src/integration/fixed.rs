@@ -128,17 +128,15 @@ impl Fixed1dPlan {
         self.auto_layout = false;
         self
     }
-    /// Opt in to a local CSC/CSR timing choice for complete resident frames.
-    /// CSC remains the baseline. CSR must win at least four of five paired
-    /// probes and improve the median by more than 15%. Choices are cached per
-    /// error mode. Streamed blocks and outer Rayon workers retain CSC.
+    /// Opt in to the broad detector-size/bin-count estimate for resident frames.
+    /// No timing probes are run. Streamed and parallel workers retain CSC.
     /// CSR uses identical weights but can differ by floating-point sum order.
     pub fn with_auto_layout(mut self) -> Self {
         self.auto_layout = true;
         self
     }
 
-    /// Locally measured resident choice, if automatic selection has run.
+    /// Estimated resident choice, if automatic selection has run.
     pub fn selected_resident_layout(&self, errors: bool) -> Option<SparseLayout> {
         self.auto_choice[usize::from(errors)].get().copied()
     }
@@ -246,8 +244,16 @@ impl Fixed1dPlan {
             if rayon::current_thread_index().is_some() {
                 return Ok(self.integrate_csc(data, errors));
             }
-            let choice = self.auto_choice[usize::from(errors)]
-                .get_or_init(|| self.measure_auto(data, errors));
+            let choice = self.auto_choice[usize::from(errors)].get_or_init(|| {
+                super::predict_1d_layout(
+                    data.len(),
+                    self.lut.bins().len(),
+                    errors,
+                    false,
+                    rayon::current_num_threads(),
+                )
+                .layout
+            });
             return Ok(if *choice == SparseLayout::Csr {
                 self.integrate_csr(data, errors)
             } else {
@@ -337,46 +343,6 @@ impl Fixed1dPlan {
             radial,
             intensity,
             errors: errors.then_some(sigma),
-        }
-    }
-
-    fn measure_auto(&self, data: &[f64], errors: bool) -> SparseLayout {
-        let prior = super::predict_1d_layout(
-            data.len(),
-            self.lut.bins().len(),
-            errors,
-            false,
-            rayon::current_num_threads(),
-        );
-        let csr_first = prior.layout == SparseLayout::Csr;
-        // Include complete allocations/output in both probes. Both fixed masks
-        // and normalization caches are warm before measurement.
-        drop(black_box(self.integrate_csc(data, errors)));
-        drop(black_box(self.integrate_csr(data, errors)));
-        let mut csc = [Duration::ZERO; 5];
-        let mut csr = [Duration::ZERO; 5];
-        for i in 0..5 {
-            for use_csr in [csr_first ^ (i % 2 != 0), !csr_first ^ (i % 2 != 0)] {
-                let start = Instant::now();
-                drop(black_box(if use_csr {
-                    self.integrate_csr(data, errors)
-                } else {
-                    self.integrate_csc(data, errors)
-                }));
-                if use_csr {
-                    csr[i] = start.elapsed();
-                } else {
-                    csc[i] = start.elapsed();
-                }
-            }
-        }
-        let wins = csc.iter().zip(&csr).filter(|(a, b)| b < a).count();
-        csc.sort_unstable();
-        csr.sort_unstable();
-        if wins >= 4 && csr[2].as_secs_f64() < 0.85 * csc[2].as_secs_f64() {
-            SparseLayout::Csr
-        } else {
-            SparseLayout::Csc
         }
     }
 }
