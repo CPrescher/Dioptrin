@@ -83,7 +83,8 @@ impl Integrator {
                 unit,
                 radial_range,
             },
-            IntegrationMethod::PixelSplit => OneDKey::PixelSplit {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
+                pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                 n_points,
                 unit,
                 radial_range,
@@ -168,8 +169,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d(&frame.data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -238,8 +240,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d_with_errors(&frame.data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -295,8 +298,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d(data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -364,8 +368,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d_with_errors(data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -410,8 +415,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -461,8 +467,9 @@ impl Integrator {
                     &normalization[..],
                 )
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -519,8 +526,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d_raw(data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -569,8 +577,9 @@ impl Integrator {
                 });
                 self.lut_integrate1d_raw_with_variance(data, &lut1d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                 let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -647,12 +656,8 @@ impl Integrator {
                 });
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -705,12 +710,8 @@ impl Integrator {
                 });
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -774,13 +775,12 @@ impl Integrator {
                 });
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
+                    Some(azimuthal),
+                ));
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -839,13 +839,12 @@ impl Integrator {
                 });
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
+                    Some(azimuthal),
+                ));
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -912,12 +911,8 @@ impl Integrator {
                 });
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -983,12 +978,8 @@ impl Integrator {
                 });
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplit {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -1063,13 +1054,12 @@ impl Integrator {
                 });
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
+                    Some(azimuthal),
+                ));
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
@@ -1141,13 +1131,12 @@ impl Integrator {
                 });
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
-            IntegrationMethod::PixelSplit => {
-                let lut2d = self.ensure_lut2d(TwoDKey::PixelSplitAzimuthal {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
+                    Some(azimuthal),
+                ));
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {

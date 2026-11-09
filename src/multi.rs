@@ -174,6 +174,41 @@ impl MultiIntegrator {
         n_azimuthal: usize,
         options: &Multi2dOptions,
     ) -> Result<Multi2dResult, String> {
+        self.integrate2d_slices_impl(slices, None, n_radial, n_azimuthal, options)
+    }
+
+    /// Merge independent detector images with externally propagated pixel variances.
+    /// Squared splitting weights are applied before detector variances are summed.
+    /// `options.errors` must be true; all detector variances are checked up front.
+    pub fn integrate2d_from_slices_with_variances(
+        &self,
+        slices: &[(&[f64], usize, usize)],
+        variances: &[&[f64]],
+        n_radial: usize,
+        n_azimuthal: usize,
+        options: &Multi2dOptions,
+    ) -> Result<Multi2dResult, String> {
+        if !options.errors || variances.len() != slices.len() {
+            return Err(
+                "explicit variance integration requires errors and one variance plane per detector"
+                    .into(),
+            );
+        }
+        for (i, ((data, _, _), v)) in slices.iter().zip(variances).enumerate() {
+            crate::integration::grid::validate_variances(data, v)
+                .map_err(|e| format!("detector {i}: {e}"))?;
+        }
+        self.integrate2d_slices_impl(slices, Some(variances), n_radial, n_azimuthal, options)
+    }
+
+    fn integrate2d_slices_impl(
+        &self,
+        slices: &[(&[f64], usize, usize)],
+        variances: Option<&[&[f64]]>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        options: &Multi2dOptions,
+    ) -> Result<Multi2dResult, String> {
         validate_integrators(&self.integrators)?;
         if slices.len() != self.integrators.len() {
             return Err(format!(
@@ -238,16 +273,22 @@ impl MultiIntegrator {
             n_radial,
             n_azimuthal,
         };
-        for ((integrator, &(data, dim1, dim2)), factor) in
-            self.integrators.iter().zip(slices).zip(factors)
+        for (i, ((integrator, &(data, dim1, dim2)), factor)) in
+            self.integrators.iter().zip(slices).zip(factors).enumerate()
         {
-            let raw = integrator.integrate2d_raw_on_grid_from_slice(
-                data,
-                dim1,
-                dim2,
-                &grid,
-                options.errors,
-            )?;
+            let raw = if let Some(v) = variances {
+                integrator.integrate2d_raw_on_grid_with_variances_from_slice(
+                    data, v[i], dim1, dim2, &grid,
+                )?
+            } else {
+                integrator.integrate2d_raw_on_grid_from_slice(
+                    data,
+                    dim1,
+                    dim2,
+                    &grid,
+                    options.errors,
+                )?
+            };
             for j in 0..rows {
                 total.sum_signal[j] += raw.sum_signal[j];
                 total.sum_norm[j] += raw.sum_norm[j] * factor;

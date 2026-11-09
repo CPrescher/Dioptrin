@@ -3,7 +3,7 @@ mod arithmetic;
 mod cache;
 mod corrections;
 mod dynamic;
-mod grid;
+pub(crate) mod grid;
 pub use grid::{IntegrationGrid2d, PixelSplitMode};
 mod fixed;
 pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};
@@ -145,6 +145,8 @@ pub enum IntegrationMethod {
     Counting,
     /// Pixel-splitting with fractional/bilinear weights.
     PixelSplit,
+    /// Approximate pyFAI-compatible full splitting for 1D and 2D.
+    PyfaiFull,
     /// Supersampling with `n_ss x n_ss` subpixels per pixel.
     Supersampled { n_ss: usize },
 }

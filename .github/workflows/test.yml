@@ -108,6 +108,11 @@ jobs:
           source .venv/bin/activate
           python -m unittest python_examples.test_fast_math python_examples.test_mask_modes python_examples.test_batch_array_borrowing python_examples.test_image_switching python_examples.test_azimuthal_std python_examples.test_dynamic_plan python_examples.test_multi2d
 
+      - name: Compare pyFAI-compatible full splitting
+        run: |
+          source .venv/bin/activate
+          python python_examples/test_pyfai_full.py
+
       - name: Test typed TIFF input and persistent file workers
         run: |
           source .venv/bin/activate

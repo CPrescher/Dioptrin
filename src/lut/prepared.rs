@@ -483,6 +483,41 @@ impl Prepared1d {
     }
 }
 impl Prepared2d {
+    pub(crate) fn raw2d_with_variances(
+        &self,
+        data: &[f64],
+        variance: &[f64],
+        mask: Option<&[u8]>,
+        normalization: &[f64],
+    ) -> IntermediateResult2d {
+        let rows: Vec<_> = (0..self.row_ptr.len() - 1)
+            .into_par_iter()
+            .map(|r| {
+                let (mut signal, mut norm, mut var, mut count) = (0.0, 0.0, 0.0, 0.0);
+                for k in self.row_ptr[r]..self.row_ptr[r + 1] {
+                    let j = self.col_idx.get(k);
+                    if mask.is_some_and(|m| m[j] != 0) {
+                        continue;
+                    }
+                    let w = self.values.as_ref().map_or(1.0, |v| v[k]);
+                    signal += w * data[j];
+                    norm += w * normalization[j];
+                    var += w * w * variance[j];
+                    count += w;
+                }
+                (signal, norm, var, count)
+            })
+            .collect();
+        IntermediateResult2d {
+            sum_signal: rows.iter().map(|r| r.0).collect(),
+            sum_norm: rows.iter().map(|r| r.1).collect(),
+            sum_variance: Some(rows.iter().map(|r| r.2).collect()),
+            count: rows.iter().map(|r| r.3).collect(),
+            n_radial: self.n_tth,
+            n_azimuthal: self.n_azimuthal,
+        }
+    }
+
     pub(crate) fn set_mask_mode(&mut self, mode: MaskMode) {
         self.csr.set_mask_mode(mode);
     }
@@ -656,3 +691,24 @@ fn row<
 #[cfg(test)]
 #[path = "prepared_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod explicit_variance_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_variance_uses_squared_weights_and_respects_mask() {
+        let lut = Prepared2d::new(Lut2d {
+            row_ptr: vec![0, 2, 3],
+            col_idx: vec![0, 1, 0],
+            values: Some(vec![0.25, 0.5, 0.75]),
+            n_tth: 2,
+            n_azimuthal: 1,
+        });
+        let r = lut.raw2d_with_variances(&[-4.0, 2.0], &[9.0, 25.0], Some(&[0, 1]), &[2.0, 4.0]);
+        assert_eq!(r.sum_signal, [-1.0, -3.0]);
+        assert_eq!(r.sum_norm, [0.5, 1.5]);
+        assert_eq!(r.sum_variance.unwrap(), [0.5625, 5.0625]);
+        assert_eq!(r.count, [0.25, 0.75]);
+    }
+}

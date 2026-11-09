@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-09
+
+### Added
+
+- `IntegrationMethod::PyfaiFull` / Python `method="pyfai_full"`: approximate
+  pyFAI-compatible full pixel splitting for ordinary 1D and 2D integration,
+  typed input, and prepared fixed/dynamic plans. The sector-aware 1D LUT
+  builder is public for native adapters with independent ranges and variances.
+- Physical detector descriptors in Rust, including frozen named-detector
+  geometry/masks, orientations, module gaps and curved/separable pixel maps,
+  distortion splines, and Fit2D conversion. These are the numerical APIs used
+  by the Rust Dioptas desktop; see [detector geometry](docs/detectors.md).
+- Explicit independent pixel variances for shared-grid 2D and multi-detector
+  integration, accumulated with squared pixel weights and the existing
+  per-detector normalization.
+
+### Fixed
+
+- Preserve physical pixel-corner geometry throughout integration and calibration
+  refinement; share compatible detector coordinates without discarding module
+  boundaries or independent corners.
+- Include detector-data and pixel-splitting attribution notices in wheels and
+  source archives.
+- Keep archived benchmark dependency paths relative so source distributions
+  remain portable outside the original development checkout.
+
+### Compatibility and validation
+
+- Existing polygon/subpixel defaults remain unchanged. The new full-splitting
+  mode is approximate compatibility: singular beam pixels use nonnegative
+  detector-plane sampling, and negative numerical raster fractions are rejected.
+  Tiny-coverage boundary bins can differ from pyFAI. See the
+  [full-splitting validation](docs/validation/pyfai-full.md).
+- Validate 1D/2D output against independent pyFAI engines in all four supported
+  library radial units, plus fixed/dynamic plans, typed frames and detector
+  coordinate/mask reference fixtures. The Rust desktop retains its native
+  processing and project workflows; it does not need Python at runtime.
+
 ## [0.11.0] - 2026-11-08
 
 ### Added

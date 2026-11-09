@@ -1,5 +1,11 @@
 # Dioptrin — Fast 1D/2D diffraction integration
 
+
+[Physical detector geometry](docs/detectors.md) includes a frozen detector
+catalogue, orientations, nonuniform/curved quadrilateral coordinates, Fit2D
+splines and conversion. Attach a detector descriptor to use that physical
+mapping consistently for integration and refinement.
+
 Dioptrin provides fast 1D/2D diffraction integration using sparse lookup tables.
 It supports counting, pixel-splitting, and supersampled integration methods, and integrates in terms
 of two-theta (tth) and azimuthal coordinates. The `Integrator` handles geometry updates,
@@ -590,3 +596,25 @@ Run LUT build benchmarks:
 ```
 cargo bench --bench build
 ```
+
+## pyFAI-compatible full pixel splitting
+
+Select `method="pyfai_full"` in Python or `IntegrationMethod::PyfaiFull`
+in Rust to use approximate pyFAI full-histogram splitting for **both 1D and
+2D**. The default `pixel_split` convention is unchanged. `histogram` remains
+the separate unsplit legacy method.
+
+```python
+ai = dioptrin.Integrator("calibration.poni", method="pyfai_full", unit="2th_deg")
+pattern = ai.integrate1d(image, 2000, errors=True)
+cake = ai.integrate2d(image, 2000, 360, errors=True)
+```
+
+The 1D path follows signed radial line-area integration and renormalizes
+range-clipped pixels. Optional sector-aware Rust tables are available through
+`lut::build_lut1d_pyfai_csr`; azimuthal bounds are radians. The 2D path reuses
+the shared-grid compatibility rasterizer. Singular beam pixels use nonnegative
+detector-plane fractions; negative numerical weights are discarded. This is
+approximate compatibility, not bitwise reproduction of every pyFAI boundary
+case. Corrections, variance propagation, CSR/CSC plans and typed-frame input
+reuse the existing native execution paths.

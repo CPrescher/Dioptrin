@@ -24,6 +24,7 @@ pub enum BatchImageInput<'p> {
 pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
     match method.unwrap_or("pixel_split").to_lowercase().as_str() {
         "pixel_split" | "pixelsplit" | "ps" | "pixelsplitting" => Ok(IntegrationMethod::PixelSplit),
+        "pyfai_full" | "pyfai" => Ok(IntegrationMethod::PyfaiFull),
         "counting" | "count" => Ok(IntegrationMethod::Counting),
         "histogram" | "hist" => Ok(IntegrationMethod::Histogram),
         "supersampled" | "supersample" | "ss" => {
