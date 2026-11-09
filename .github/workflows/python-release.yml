@@ -37,7 +37,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist --features python -i ${{ matrix.python }}
-          sccache: 'true'
+          maturin-version: 'v1.16.0'
+          cache: 'none'
           manylinux: '2_28'
       - name: Check publication contents
         run: python scripts/check_release_wheels.py dist

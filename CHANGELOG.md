@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Physical detector descriptors in Rust, including frozen named-detector
   geometry/masks, orientations, module gaps and curved/separable pixel maps,
   distortion splines, and Fit2D conversion. These are the numerical APIs used
-  by the Rust Dioptas desktop; see [detector geometry](docs/detectors.md).
+  by the Rust Dioptas desktop; see [detector geometry](https://github.com/CPrescher/Dioptrin/blob/v0.12.0/docs/detectors.md).
 - Explicit independent pixel variances for shared-grid 2D and multi-detector
   integration, accumulated with squared pixel weights and the existing
   per-detector normalization.
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode is approximate compatibility: singular beam pixels use nonnegative
   detector-plane sampling, and negative numerical raster fractions are rejected.
   Tiny-coverage boundary bins can differ from pyFAI. See the
-  [full-splitting validation](docs/validation/pyfai-full.md).
+  [full-splitting validation](https://github.com/CPrescher/Dioptrin/blob/v0.12.0/docs/validation/pyfai-full.md).
 - Validate 1D/2D output against independent pyFAI engines in all four supported
   library radial units, plus fixed/dynamic plans, typed frames and detector
   coordinate/mask reference fixtures. The Rust desktop retains its native
