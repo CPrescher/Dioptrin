@@ -883,3 +883,117 @@ fn beam_on_pixel_edge_or_corner_retains_small_radial_disk() {
         }
     }
 }
+
+#[test]
+fn explicit_variances_follow_squared_weights_and_detector_normalization() {
+    for method in methods() {
+        let g = geometry(9, 12);
+        let data = vec![25.0; g.size()];
+        let variance = vec![25.0; g.size()];
+        let multi =
+            MultiIntegrator::try_new(vec![ai(g.clone(), method), ai(g.clone(), method)]).unwrap();
+        let slices = [(&data[..], 9, 12), (&data[..], 9, 12)];
+        let options = Multi2dOptions {
+            errors: true,
+            normalization: MultiNormalization::Absolute,
+            ..Default::default()
+        };
+        let poisson = multi
+            .integrate2d_from_slices(&slices, 17, 11, &options)
+            .unwrap();
+        let explicit = multi
+            .integrate2d_from_slices_with_variances(
+                &slices,
+                &[&variance, &variance],
+                17,
+                11,
+                &options,
+            )
+            .unwrap();
+        close(&explicit.intensity, &poisson.intensity);
+        close(
+            explicit.errors.as_ref().unwrap(),
+            poisson.errors.as_ref().unwrap(),
+        );
+        // An independent gain of -3 multiplies intensity by -3, std by 3.
+        // This cannot be recovered by interpreting corrected intensity as counts.
+        let corrected = vec![-75.0; g.size()];
+        let propagated = vec![225.0; g.size()];
+        let changed = multi
+            .integrate2d_from_slices_with_variances(
+                &[(&corrected, 9, 12), (&corrected, 9, 12)],
+                &[&propagated, &propagated],
+                17,
+                11,
+                &options,
+            )
+            .unwrap();
+        close(
+            &changed.intensity,
+            &poisson
+                .intensity
+                .iter()
+                .map(|v| -3.0 * v)
+                .collect::<Vec<_>>(),
+        );
+        close(
+            changed.errors.as_ref().unwrap(),
+            &poisson
+                .errors
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|v| 3.0 * v)
+                .collect::<Vec<_>>(),
+        );
+        let mut invalid = variance.clone();
+        invalid[2] = -1.0;
+        assert!(
+            multi
+                .integrate2d_from_slices_with_variances(
+                    &slices,
+                    &[&variance, &invalid],
+                    17,
+                    11,
+                    &options
+                )
+                .is_err()
+        );
+        invalid[2] = f64::NAN;
+        assert!(
+            multi
+                .integrate2d_from_slices_with_variances(
+                    &slices,
+                    &[&variance, &invalid],
+                    17,
+                    11,
+                    &options
+                )
+                .is_err()
+        );
+        assert!(
+            multi
+                .integrate2d_from_slices_with_variances(
+                    &slices,
+                    &[&variance[..3], &variance],
+                    17,
+                    11,
+                    &options
+                )
+                .is_err()
+        );
+        let recovered = multi
+            .integrate2d_from_slices_with_variances(
+                &slices,
+                &[&variance, &variance],
+                17,
+                11,
+                &options,
+            )
+            .unwrap();
+        close(
+            recovered.errors.as_ref().unwrap(),
+            explicit.errors.as_ref().unwrap(),
+        );
+    }
+}

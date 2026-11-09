@@ -1,10 +1,10 @@
 [project]
 name = "dioptrin"
-version = "0.11.0"
+version = "0.12.0"
 description = "Fast open-source diffraction integration powered by Rust"
 readme = "README-pypi.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "licenses/pyFAI-detectors.txt", "licenses/pyFAI-pixel-splitting.txt"]
 requires-python = ">=3.11,<3.16"
 dependencies = [
     "numpy>=1.23",

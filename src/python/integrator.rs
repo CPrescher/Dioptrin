@@ -160,7 +160,7 @@ impl PyIntegrator {
     /// # Arguments
     ///
     /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
-    /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+    /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
     /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
     /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
@@ -223,7 +223,7 @@ impl PyIntegrator {
     /// # Arguments
     ///
     /// * `poni_dict` - Dictionary containing PONI calibration parameters
-    /// * `method` - Integration method: "pixel_split" (default), "counting", "histogram", or "supersampled"
+    /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
     /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
     /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
@@ -579,7 +579,7 @@ impl PyIntegrator {
     }
 
     /// Changes the integration method used for subsequent integrations.
-    /// Available methods: "pixel_split", "counting", "histogram", or "supersampled".
+    /// Available methods: "pixel_split", "pyfai_full", "counting", "histogram", or "supersampled".
     ///
     /// # Arguments
     ///

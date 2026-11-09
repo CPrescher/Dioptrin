@@ -28,6 +28,7 @@ pub(super) enum OneDKey {
         radial_range: Option<RadialRangeKey>,
     },
     PixelSplit {
+        pyfai: bool,
         n_points: usize,
         unit: RadialUnit,
         radial_range: Option<RadialRangeKey>,
@@ -42,6 +43,13 @@ pub(super) enum OneDKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TwoDKey {
+    PyfaiFull {
+        n_radial: usize,
+        n_azimuthal: usize,
+        unit: RadialUnit,
+        radial_range: Option<RadialRangeKey>,
+        azimuthal: Option<AzimuthalRangeKey>,
+    },
     SharedGrid {
         grid: super::IntegrationGrid2d,
         unit: RadialUnit,
@@ -206,11 +214,14 @@ impl Integrator {
                 unit,
                 radial_range,
             },
-            super::IntegrationMethod::PixelSplit => OneDKey::PixelSplit {
-                n_points,
-                unit,
-                radial_range,
-            },
+            super::IntegrationMethod::PixelSplit | super::IntegrationMethod::PyfaiFull => {
+                OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
+                    n_points,
+                    unit,
+                    radial_range,
+                }
+            }
             super::IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
                 n_points,
                 n_ss,
@@ -220,6 +231,36 @@ impl Integrator {
             super::IntegrationMethod::Histogram => return,
         };
         drop(self.ensure_lut1d(key));
+    }
+
+    pub(super) fn pixel_split2d_key(
+        &self,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal: Option<AzimuthalRangeKey>,
+    ) -> TwoDKey {
+        if matches!(self.method, super::IntegrationMethod::PyfaiFull) {
+            TwoDKey::PyfaiFull {
+                n_radial,
+                n_azimuthal,
+                azimuthal,
+                unit: self.radial_unit,
+                radial_range: self.radial_range_key(),
+            }
+        } else if let Some(azimuthal) = azimuthal {
+            TwoDKey::PixelSplitAzimuthal {
+                n_radial,
+                n_azimuthal,
+                azimuthal,
+                unit: self.radial_unit,
+            }
+        } else {
+            TwoDKey::PixelSplit {
+                n_radial,
+                n_azimuthal,
+                unit: self.radial_unit,
+            }
+        }
     }
 
     /// Ensures the 1D LUT is built for the given key, using double-checked locking.
@@ -255,6 +296,7 @@ impl Integrator {
                     None => lut::build_lut1d_csr(radial, n_points),
                 },
                 OneDKey::PixelSplit {
+                    pyfai,
                     n_points,
                     unit,
                     radial_range,
@@ -262,16 +304,29 @@ impl Integrator {
                     let mut geom = self.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
-                    match radial_range {
-                        Some(rr) => lut::build_lut1d_ps_csr_with_range(
+                    if pyfai {
+                        lut::build_lut1d_pyfai_csr(
                             &geom,
-                            radial,
-                            n_points,
                             unit,
-                            f64::from_bits(rr.min_bits),
-                            f64::from_bits(rr.max_bits),
-                        ),
-                        None => lut::build_lut1d_ps_csr(&geom, radial, n_points, unit),
+                            n_points,
+                            None,
+                            radial_range.map(|rr| {
+                                [f64::from_bits(rr.min_bits), f64::from_bits(rr.max_bits)]
+                            }),
+                        )
+                        .expect("valid pyFAI full-splitting grid")
+                    } else {
+                        match radial_range {
+                            Some(rr) => lut::build_lut1d_ps_csr_with_range(
+                                &geom,
+                                radial,
+                                n_points,
+                                unit,
+                                f64::from_bits(rr.min_bits),
+                                f64::from_bits(rr.max_bits),
+                            ),
+                            None => lut::build_lut1d_ps_csr(&geom, radial, n_points, unit),
+                        }
                     }
                 }
                 OneDKey::Supersampled {
@@ -345,6 +400,42 @@ impl Integrator {
 
             // Build the LUT
             let lut2d = match key {
+                TwoDKey::PyfaiFull {
+                    n_radial,
+                    n_azimuthal,
+                    unit,
+                    radial_range,
+                    azimuthal,
+                } => {
+                    let [lo, hi] = radial_range
+                        .map(|r| [f64::from_bits(r.min_bits), f64::from_bits(r.max_bits)])
+                        .unwrap_or_else(|| lut::pyfai_radial_range(&geom, unit));
+                    let (start, step) = azimuthal
+                        .map(|a| (f64::from_bits(a.start_bits), f64::from_bits(a.step_bits)))
+                        .unwrap_or((
+                            -std::f64::consts::PI + std::f64::consts::PI / n_azimuthal as f64,
+                            std::f64::consts::TAU / n_azimuthal as f64,
+                        ));
+                    let grid = super::IntegrationGrid2d::new(
+                        n_radial,
+                        n_azimuthal,
+                        (lo, hi),
+                        (
+                            start - 0.5 * step,
+                            start + (n_azimuthal as f64 - 0.5) * step,
+                        ),
+                    )
+                    .expect("valid pyFAI cake grid")
+                    .with_pixel_split_mode(super::PixelSplitMode::PyfaiHistogram);
+                    lut::shared_grid::build(
+                        &geom,
+                        radial,
+                        azimuth,
+                        &grid,
+                        super::IntegrationMethod::PixelSplit,
+                        unit,
+                    )
+                }
                 TwoDKey::SharedGrid {
                     grid,
                     unit,

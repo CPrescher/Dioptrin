@@ -31,7 +31,9 @@ pub(crate) mod fast;
 mod integrate;
 mod pixel_split;
 pub(crate) mod prepared;
+mod pyfai_1d;
 mod pyfai_split;
+pub use pyfai_1d::{build_lut1d_pyfai_csr, pyfai_radial_range};
 pub(crate) mod shared_grid;
 mod supersampled;
 

@@ -150,7 +150,41 @@ impl Integrator {
         grid: &IntegrationGrid2d,
         errors: bool,
     ) -> Result<IntermediateResult2d, String> {
+        self.integrate2d_raw_on_grid_impl(data, None, dim1, dim2, grid, errors)
+    }
+
+    /// Integrate independent, externally propagated pixel variances using squared
+    /// pixel-splitting weights. Calibration/geometry uncertainties are not added.
+    /// Variances must be finite, nonnegative and match the image, including masked pixels.
+    pub fn integrate2d_raw_on_grid_with_variances_from_slice(
+        &self,
+        data: &[f64],
+        variance: &[f64],
+        dim1: usize,
+        dim2: usize,
+        grid: &IntegrationGrid2d,
+    ) -> Result<IntermediateResult2d, String> {
+        self.integrate2d_raw_on_grid_impl(data, Some(variance), dim1, dim2, grid, true)
+    }
+
+    fn integrate2d_raw_on_grid_impl(
+        &self,
+        data: &[f64],
+        variance: Option<&[f64]>,
+        dim1: usize,
+        dim2: usize,
+        grid: &IntegrationGrid2d,
+        errors: bool,
+    ) -> Result<IntermediateResult2d, String> {
+        let grid = if matches!(self.method, IntegrationMethod::PyfaiFull) {
+            grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)
+        } else {
+            *grid
+        };
         self.validate_2d_input(data, dim1, dim2)?;
+        if let Some(v) = variance {
+            validate_variances(data, v)?;
+        }
         self.update_geometry_arrays(dim1, dim2);
         let normalization = self.get_normalization();
         {
@@ -170,18 +204,20 @@ impl Integrator {
         }
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
         let key = super::cache::TwoDKey::SharedGrid {
-            grid: *grid,
+            grid,
             unit: self.radial_unit,
             // 0 = counting, 1 = polygon splitting, >=2 = supersampling + 1
             sampling: match self.method {
                 IntegrationMethod::Counting => 0,
-                IntegrationMethod::PixelSplit => 1,
+                IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => 1,
                 IntegrationMethod::Supersampled { n_ss } => n_ss + 1,
                 IntegrationMethod::Histogram => unreachable!(),
             },
         };
         let lut = self.ensure_lut2d(key);
-        Ok(if errors {
+        Ok(if let Some(variance) = variance {
+            lut.raw2d_with_variances(data, variance, mask, &normalization)
+        } else if errors {
             self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
         } else {
             self.lut_integrate2d_raw(data, &lut, mask, &normalization)
@@ -251,4 +287,11 @@ impl Integrator {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_variances(data: &[f64], variance: &[f64]) -> Result<(), String> {
+    if variance.len() != data.len() || variance.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return Err("pixel variances must match the image and be finite and nonnegative".into());
+    }
+    Ok(())
 }

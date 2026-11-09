@@ -1,5 +1,7 @@
 pub mod batch;
 pub mod calibration;
+pub mod detector;
+pub mod fit2d;
 pub mod frame;
 pub mod geometry;
 pub mod integration;

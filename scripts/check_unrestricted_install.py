@@ -25,7 +25,8 @@ path.write_text("poni_version: 1\nPixelSize1: 0.0001\nPixelSize2: 0.0001\n"
 image = np.arange(64*64, dtype=np.float64).reshape(64, 64)
 kwargs = dict(unit="2th_deg", radial_range=(0., 10.))
 integrators = [dioptrin.Integrator(str(path), **kwargs),
-    dioptrin.Integrator.from_poni_dict(poni, **kwargs)]
+    dioptrin.Integrator.from_poni_dict(poni, **kwargs),
+    dioptrin.Integrator(str(path), method="pyfai_full", **kwargs)]
 for ai in integrators:
     one = ai.integrate1d(image, 40, errors=True)
     assert len(one.intensity) == 40 and np.isfinite(one.intensity).all()
@@ -38,10 +39,11 @@ for ai in integrators:
         for result in results:
             np.testing.assert_array_equal(result.result.intensity, one.intensity)
 multi = dioptrin.MultiIntegrator(integrators)
-assert np.isfinite(multi.integrate1d([image, image], 40, errors=True).intensity).all()
-assert len(multi.batch1d([[image, image]], 40, errors=True)) == 1
-cake = multi.integrate2d([image, image], 40, 12, errors=True,
-                        normalization="absolute", normalization_factors=[1., 2.])
+images = [image] * len(integrators)
+assert np.isfinite(multi.integrate1d(images, 40, errors=True).intensity).all()
+assert len(multi.batch1d([images], 40, errors=True)) == 1
+cake = multi.integrate2d(images, 40, 12, errors=True,
+                        normalization="absolute", normalization_factors=[float(i + 1) for i in range(len(integrators))])
 assert len(cake.radial) == 40 and len(cake.azimuthal) == 12
 assert cake.n_radial == 40 and cake.n_azimuthal == 12
 assert len(cake.intensity) == 480 and np.isfinite(cake.intensity).all()

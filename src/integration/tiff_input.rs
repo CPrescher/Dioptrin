@@ -51,7 +51,8 @@ impl Integrator {
                 unit,
                 radial_range,
             },
-            IntegrationMethod::PixelSplit => OneDKey::PixelSplit {
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
+                pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                 n_points,
                 unit,
                 radial_range,
@@ -115,11 +116,9 @@ impl Integrator {
                 n_azimuthal,
                 unit,
             },
-            (IntegrationMethod::PixelSplit, None) => TwoDKey::PixelSplit {
-                n_radial,
-                n_azimuthal,
-                unit,
-            },
+            (IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull, None) => {
+                self.pixel_split2d_key(n_radial, n_azimuthal, None)
+            }
             (IntegrationMethod::Supersampled { n_ss }, None) => TwoDKey::Supersampled {
                 n_radial,
                 n_azimuthal,
@@ -132,12 +131,9 @@ impl Integrator {
                 azimuthal: AzimuthalRangeKey::new(a, b),
                 unit,
             },
-            (IntegrationMethod::PixelSplit, Some((a, b))) => TwoDKey::PixelSplitAzimuthal {
-                n_radial,
-                n_azimuthal,
-                azimuthal: AzimuthalRangeKey::new(a, b),
-                unit,
-            },
+            (IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull, Some((a, b))) => {
+                self.pixel_split2d_key(n_radial, n_azimuthal, Some(AzimuthalRangeKey::new(a, b)))
+            }
             (IntegrationMethod::Supersampled { n_ss }, Some((a, b))) => {
                 TwoDKey::SupersampledAzimuthal {
                     n_radial,

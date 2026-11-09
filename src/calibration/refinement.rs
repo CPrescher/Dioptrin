@@ -290,13 +290,13 @@ fn tth_at(
     distance: f64,
     poni1: f64,
     poni2: f64,
-    pixel1: f64,
-    pixel2: f64,
+    geometry: &Geometry,
     tc: &TrigConsts,
 ) -> f64 {
-    let p1 = (d1 + 0.5) * pixel1 - poni1;
-    let p2 = (d2 + 0.5) * pixel2 - poni2;
-    let p3 = distance;
+    let p = geometry.detector_position(d1 + 0.5, d2 + 0.5);
+    let p1 = p[1] - poni1;
+    let p2 = p[2] - poni2;
+    let p3 = distance + p[0];
 
     let x = p1 * tc.cr2 * tc.cr3 + p2 * (tc.cr3 * tc.sr1 * tc.sr2 - tc.cr1 * tc.sr3)
         - p3 * (tc.cr1 * tc.cr3 * tc.sr2 + tc.sr1 * tc.sr3);
@@ -379,12 +379,7 @@ impl ParamPack {
 // ---------- residuals + Jacobian ----------
 
 /// Compute the 2θ predicted by the model at every control point.
-fn predicted_2theta(
-    points: &CalibrationPoints,
-    pack: &ParamPack,
-    pixel1: f64,
-    pixel2: f64,
-) -> Vec<f64> {
+fn predicted_2theta(points: &CalibrationPoints, pack: &ParamPack, geometry: &Geometry) -> Vec<f64> {
     let tc = TrigConsts::new(pack.full[P_ROT1], pack.full[P_ROT2], pack.full[P_ROT3]);
     let distance = pack.full[P_DIST];
     let poni1 = pack.full[P_PONI1];
@@ -393,7 +388,7 @@ fn predicted_2theta(
         .d1
         .iter()
         .zip(&points.d2)
-        .map(|(&d1, &d2)| tth_at(d1, d2, distance, poni1, poni2, pixel1, pixel2, &tc))
+        .map(|(&d1, &d2)| tth_at(d1, d2, distance, poni1, poni2, geometry, &tc))
         .collect()
 }
 
@@ -421,11 +416,10 @@ fn auto_assign(
     points: &CalibrationPoints,
     pack: &ParamPack,
     calibrant: &Calibrant,
-    pixel1: f64,
-    pixel2: f64,
+    geometry: &Geometry,
     tolerance: f64,
 ) -> Vec<Option<usize>> {
-    let pred = predicted_2theta(points, pack, pixel1, pixel2);
+    let pred = predicted_2theta(points, pack, geometry);
     let rings = calibrant.two_theta_rad(pack.full[P_WAVELENGTH]);
     let mut out = points.ring.clone();
     for (i, slot) in out.iter_mut().enumerate() {
@@ -459,10 +453,9 @@ fn residuals(
     pack: &ParamPack,
     assignments: &[Option<usize>],
     calibrant: &Calibrant,
-    pixel1: f64,
-    pixel2: f64,
+    geometry: &Geometry,
 ) -> (Vec<f64>, Vec<bool>) {
-    let pred = predicted_2theta(points, pack, pixel1, pixel2);
+    let pred = predicted_2theta(points, pack, geometry);
     let tgt = target_2theta(assignments, calibrant, pack.full[P_WAVELENGTH]);
     let mut r = vec![0.0; pred.len()];
     let mut active = vec![false; pred.len()];
@@ -486,8 +479,7 @@ fn finite_diff_jacobian(
     pack: &ParamPack,
     assignments: &[Option<usize>],
     calibrant: &Calibrant,
-    pixel1: f64,
-    pixel2: f64,
+    geometry: &Geometry,
     base_residuals: &[f64],
 ) -> Vec<Vec<f64>> {
     let n_pts = points.len();
@@ -514,7 +506,7 @@ fn finite_diff_jacobian(
         let h = eps * scales[p_idx];
         let saved = probe.full[p_idx];
         probe.full[p_idx] = saved + h;
-        let (r_plus, _) = residuals(points, &probe, assignments, calibrant, pixel1, pixel2);
+        let (r_plus, _) = residuals(points, &probe, assignments, calibrant, geometry);
         probe.full[p_idx] = saved;
         for i in 0..n_pts {
             jac[i][k] = (r_plus[i] - base_residuals[i]) / h;
@@ -649,8 +641,6 @@ pub fn refine(
     if points.is_empty() {
         return Err(CalibrationError::NoPoints);
     }
-    let pixel1 = geometry.poni.pixel1;
-    let pixel2 = geometry.poni.pixel2;
     let wavelength = geometry.poni.wavelength;
     if !(wavelength.is_finite() && wavelength > 0.0) {
         return Err(CalibrationError::BadWavelength);
@@ -681,15 +671,14 @@ pub fn refine(
             points,
             &pack,
             calibrant,
-            pixel1,
-            pixel2,
+            geometry,
             options.assign_tolerance_rad,
         )
     } else {
         points.ring.clone()
     };
 
-    let (mut r, mut active) = residuals(points, &pack, &assignments, calibrant, pixel1, pixel2);
+    let (mut r, mut active) = residuals(points, &pack, &assignments, calibrant, geometry);
     let mut w = loss_weights(&r, &active, options.loss);
     // Multiply in per-point user weights (if any).
     if !points.weight.is_empty() {
@@ -719,7 +708,7 @@ pub fn refine(
     let mut last_iter = 0;
     for iter in 0..options.max_iter {
         last_iter = iter;
-        let jac = finite_diff_jacobian(points, &pack, &assignments, calibrant, pixel1, pixel2, &r);
+        let jac = finite_diff_jacobian(points, &pack, &assignments, calibrant, geometry, &r);
         let (mut a, g) = normal_equations(&jac, &r, &w, n_free);
         // Apply Marquardt damping to the diagonal.
         for k in 0..n_free {
@@ -743,15 +732,13 @@ pub fn refine(
                 points,
                 &pack,
                 calibrant,
-                pixel1,
-                pixel2,
+                geometry,
                 options.assign_tolerance_rad,
             )
         } else {
             points.ring.clone()
         };
-        let (new_r, new_active) =
-            residuals(points, &pack, &new_assignments, calibrant, pixel1, pixel2);
+        let (new_r, new_active) = residuals(points, &pack, &new_assignments, calibrant, geometry);
         let mut new_w = loss_weights(&new_r, &new_active, options.loss);
         if !points.weight.is_empty() {
             for i in 0..new_w.len() {

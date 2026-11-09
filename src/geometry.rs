@@ -2,20 +2,26 @@
 //!
 #![allow(dead_code)]
 
+use crate::detector::Detector;
 use crate::poni::Poni;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Geometry {
     pub dim1: usize,
     pub dim2: usize,
     pub poni: Poni,
+    detector: Option<Arc<Detector>>,
+    shared_corners: bool,
 }
 
 /// Scalar sampling transform with the same operation order as the vector geometry
 /// routines. Supersampling reuses this transform instead of allocating coordinate
 /// arrays for every detector row.
 pub(crate) struct SubpixelTransform {
+    detector: Option<Arc<Detector>>,
+    shape: [usize; 2],
     pixel1: f64,
     pixel2: f64,
     poni1: f64,
@@ -26,12 +32,21 @@ pub(crate) struct SubpixelTransform {
 
 impl SubpixelTransform {
     fn position(&self, d1: f64, d2: f64) -> (f64, f64, f64) {
-        let p1 = d1 * self.pixel1 - self.poni1;
-        let p2 = d2 * self.pixel2 - self.poni2;
+        let [dz, y, x] = self
+            .detector
+            .as_ref()
+            .map(|d| d.position(self.shape, d1, d2))
+            .unwrap_or([0., d1 * self.pixel1, d2 * self.pixel2]);
+        self.physical_position([dz, y, x])
+    }
+    fn physical_position(&self, p: [f64; 3]) -> (f64, f64, f64) {
+        let p1 = p[1] - self.poni1;
+        let p2 = p[2] - self.poni2;
+        let distance = self.distance + p[0];
         (
-            math::f_x1(&p1, &p2, &self.distance, &self.trig),
-            math::f_x2(&p1, &p2, &self.distance, &self.trig),
-            math::f_x3(&p1, &p2, &self.distance, &self.trig),
+            math::f_x1(&p1, &p2, &distance, &self.trig),
+            math::f_x2(&p1, &p2, &distance, &self.trig),
+            math::f_x3(&p1, &p2, &distance, &self.trig),
         )
     }
 
@@ -49,6 +64,12 @@ impl SubpixelTransform {
 impl Geometry {
     pub(crate) fn subpixel_transform(&self) -> SubpixelTransform {
         SubpixelTransform {
+            detector: if self.requires_detector_transform() {
+                self.detector.clone()
+            } else {
+                None
+            },
+            shape: [self.dim1, self.dim2],
             pixel1: self.poni.pixel1,
             pixel2: self.poni.pixel2,
             poni1: self.poni.poni1,
@@ -59,9 +80,76 @@ impl Geometry {
     }
 
     pub fn new(dim1: usize, dim2: usize, poni: Poni) -> Geometry {
-        Geometry { dim1, dim2, poni }
+        Geometry {
+            dim1,
+            dim2,
+            poni,
+            detector: None,
+            shared_corners: true,
+        }
     }
 
+    pub fn detector(&self) -> Option<&Arc<Detector>> {
+        self.detector.as_ref()
+    }
+    fn requires_detector_transform(&self) -> bool {
+        self.detector.as_ref().is_some_and(|d| {
+            let pixels = d.effective_pixels([self.dim1, self.dim2]);
+            !matches!(d.map, crate::detector::PixelMap::Uniform)
+                || d.spline.is_some()
+                || !matches!(d.orientation, 0 | 3)
+                || pixels[0] != self.poni.pixel1
+                || pixels[1] != self.poni.pixel2
+        })
+    }
+    /// Attach a physical detector after validating the image's integer binning.
+    pub fn with_detector(mut self, detector: Arc<Detector>) -> Result<Self, String> {
+        detector.validate()?;
+        detector.binning([self.dim1, self.dim2])?;
+        self.shared_corners = detector.is_contiguous();
+        self.detector = Some(detector);
+        Ok(self)
+    }
+    /// Coordinates in the physical detector frame, [z, slow, fast] metres.
+    pub fn detector_position(&self, row: f64, col: f64) -> [f64; 3] {
+        self.detector
+            .as_ref()
+            .map(|d| d.position([self.dim1, self.dim2], row, col))
+            .unwrap_or([0., row * self.poni.pixel1, col * self.poni.pixel2])
+    }
+    /// Angular corners. Default uniform geometry retains its shared-grid fast path.
+    /// For a physical detector, four independent corners are stored per pixel.
+    pub fn angular_corners(&self) -> (Vec<f64>, Vec<f64>) {
+        if self.shared_corners {
+            let (r, c) = self.corner_grid();
+            return self.calc_tth_and_azimuth(&r, &c);
+        }
+        let d = self.detector.as_ref().unwrap();
+        let t = self.subpixel_transform();
+        let mut radial = Vec::with_capacity(self.size() * 4);
+        let mut az = Vec::with_capacity(self.size() * 4);
+        for r in 0..self.dim1 {
+            for c in 0..self.dim2 {
+                for p in d.corners([self.dim1, self.dim2], r, c) {
+                    let (x, y, z) = t.physical_position(p);
+                    radial.push(math::f_tth(&x, &y, &z));
+                    az.push(math::f_azimuth(&x, &y));
+                }
+            }
+        }
+        (radial, az)
+    }
+    /// A, D, C, B indices (winding used by pixel-split LUTs).
+    pub fn corner_indices(&self, idx: usize) -> [usize; 4] {
+        if !self.shared_corners {
+            let b = 4 * idx;
+            [b, b + 3, b + 2, b + 1]
+        } else {
+            let w = self.dim2 + 1;
+            let b = idx / self.dim2 * w + idx % self.dim2;
+            [b, b + 1, b + w + 1, b + w]
+        }
+    }
     pub fn size(&self) -> usize {
         self.dim1 * self.dim2
     }
@@ -174,6 +262,21 @@ impl Geometry {
 
     /// Calculates all pixel center positions in the sample reference coordinate system
     fn calc_pixel_positions_with_sample_reference_all(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        if self.requires_detector_transform() {
+            let t = self.subpixel_transform();
+            let mut x = Vec::with_capacity(self.size());
+            let mut y = Vec::with_capacity(self.size());
+            let mut z = Vec::with_capacity(self.size());
+            for r in 0..self.dim1 {
+                for c in 0..self.dim2 {
+                    let (a, b, d) = t.position(r as f64 + 0.5, c as f64 + 0.5);
+                    x.push(a);
+                    y.push(b);
+                    z.push(d);
+                }
+            }
+            return (x, y, z);
+        }
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference_all();
         let tc = math::TrigonometricConstants::new(&self.poni);
 
@@ -247,6 +350,11 @@ impl Geometry {
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
     pub fn calc_tth(&self, d1: &[f64], d2: &[f64]) -> Vec<f64> {
+        if self.requires_detector_transform() {
+            assert_eq!(d1.len(), d2.len());
+            let t = self.subpixel_transform();
+            return d1.iter().zip(d2).map(|(&r, &c)| t.tth(r, c)).collect();
+        }
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -277,6 +385,15 @@ impl Geometry {
     ///   * `d1` - pixel positions in Y image (|) direction
     ///   * `d2` - pixel positions in X image (_) direction
     pub fn calc_azimuth(&self, d1: &[f64], d2: &[f64]) -> Vec<f64> {
+        if self.requires_detector_transform() {
+            assert_eq!(d1.len(), d2.len());
+            let t = self.subpixel_transform();
+            return d1
+                .iter()
+                .zip(d2)
+                .map(|(&r, &c)| t.tth_and_azimuth(r, c).1)
+                .collect();
+        }
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -293,6 +410,15 @@ impl Geometry {
     /// Calculates two theta and azimuthal angle in radians for each pixel in the detector.
     /// Combined function to reduce overhead for calculating each time the transform into sample reference geometry.
     pub fn calc_tth_and_azimuth(&self, d1: &[f64], d2: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        if self.requires_detector_transform() {
+            assert_eq!(d1.len(), d2.len());
+            let t = self.subpixel_transform();
+            return d1
+                .iter()
+                .zip(d2)
+                .map(|(&r, &c)| t.tth_and_azimuth(r, c))
+                .unzip();
+        }
         let (d1_cart, d2_cart) = self.calc_pixel_position_det_reference(d1, d2);
         let (d1_cart_poni, d2_cart_poni) =
             self.calc_pixel_positions_with_poni_reference(&d1_cart, &d2_cart);
@@ -317,6 +443,59 @@ impl Geometry {
 
     /// Calculates Solid Angle for each pixel in the detector
     pub fn calc_solid_angle(&self) -> Vec<f64> {
+        if self.requires_detector_transform() {
+            let d = self.detector.as_ref().unwrap();
+            let flat = d.is_flat();
+            // pyFAI cos_incidence takes normals from get_pixel_corners in
+            // image-index order; only centre positions use detector orientation.
+            // Preserve this convention for imported non-planar definitions.
+            let normal_detector = if flat {
+                None
+            } else {
+                let mut model = d.as_ref().clone();
+                model.orientation = 3;
+                Some(model)
+            };
+            return (0..self.size())
+                .into_par_iter()
+                .map(|i| {
+                    let r = (i / self.dim2) as f64 + 0.5;
+                    let c = (i % self.dim2) as f64 + 0.5;
+                    let p = d.position([self.dim1, self.dim2], r, c);
+                    let area = d.spline_area([self.dim1, self.dim2], r, c);
+                    if flat {
+                        area * math::f_solid_angle(
+                            &(p[1] - self.poni.poni1),
+                            &(p[2] - self.poni.poni2),
+                            &(self.poni.distance + p[0]),
+                        )
+                    } else {
+                        let v = normal_detector.as_ref().unwrap().corners(
+                            [self.dim1, self.dim2],
+                            i / self.dim2,
+                            i % self.dim2,
+                        );
+                        let a: [f64; 3] = std::array::from_fn(|k| v[2][k] - v[0][k]);
+                        let b: [f64; 3] = std::array::from_fn(|k| v[3][k] - v[1][k]);
+                        let n = [
+                            a[1] * b[2] - a[2] * b[1],
+                            a[2] * b[0] - a[0] * b[2],
+                            a[0] * b[1] - a[1] * b[0],
+                        ];
+                        let t = [
+                            p[0] + self.poni.distance,
+                            p[1] - self.poni.poni1,
+                            p[2] - self.poni.poni2,
+                        ];
+                        let dot = n.iter().zip(t).map(|(a, b)| a * b).sum::<f64>();
+                        let norm = (n.iter().map(|v| v * v).sum::<f64>()
+                            * t.iter().map(|v| v * v).sum::<f64>())
+                        .sqrt();
+                        area * (dot / norm).abs().powi(3)
+                    }
+                })
+                .collect();
+        }
         let (d1_cart_poni, d2_cart_poni) = self.calc_pixel_positions_with_poni_reference_all();
         d1_cart_poni
             .par_iter()

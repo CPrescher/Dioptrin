@@ -123,3 +123,19 @@ Release wheels cover CPython 3.11–3.15 on Linux x86-64/ARM64, macOS Intel/Appl
 Silicon and Windows x64. Starting with 0.10.0, Windows ARM64 wheels are also
 available for CPython 3.13–3.15. Use `pip install --only-binary=:all: dioptrin` to
 require an available wheel.
+
+### pyFAI-compatible full pixel splitting (0.12.0)
+
+Use `method="pyfai_full"` for approximate pyFAI-compatible full splitting in
+both 1D patterns and 2D cakes:
+
+```python
+ai = dioptrin.Integrator("calibration.poni", method="pyfai_full", unit="2th_deg")
+pattern = ai.integrate1d(image, 2000, errors=True)
+cake = ai.integrate2d(image, 2000, 360, errors=True)
+```
+
+The default `pixel_split` method retains its fractional polygon convention.
+`histogram` remains the separate unsplit legacy method. Singular beam pixels
+and negligible boundary coverage are handled safely rather than reproduced
+bit for bit. See the [validation notes](https://github.com/CPrescher/Dioptrin/blob/v0.12.0/docs/validation/pyfai-full.md).

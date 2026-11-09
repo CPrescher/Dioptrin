@@ -38,6 +38,9 @@ def check(directory):
                 raise RuntimeError(f"Unexpected key file in {artifact.name}: {name}")
         if not any(Path(n).name == "LICENSE" for n in names):
             raise RuntimeError(f"Missing MIT license file in {artifact.name}")
+        for notice in ("pyFAI-detectors.txt", "pyFAI-pixel-splitting.txt"):
+            if not any(Path(n).name == notice for n in names):
+                raise RuntimeError(f"Missing upstream notice {notice} in {artifact.name}")
         print(f"Checked {artifact.name}")
 
 
