@@ -9,8 +9,10 @@ use crate::{
     mask::Mask,
 };
 use std::{
+    hint::black_box,
     ops::Range,
     sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 /// Mapping from incoming row-major pixels to the calibrated detector image.
@@ -28,6 +30,10 @@ pub struct Fixed1dPlan {
     mask: Option<Mask>,
     normalization: Arc<Vec<f64>>,
     resident: OnceLock<Option<FixedRows>>,
+    resident_choice: [OnceLock<bool>; 2],
+    auto_layout: bool,
+    force_csc: bool,
+    auto_choice: [OnceLock<SparseLayout>; 2],
 }
 
 pub struct Fixed1dResult {
@@ -106,11 +112,36 @@ impl Integrator {
             mask,
             normalization,
             resident: OnceLock::new(),
+            resident_choice: [OnceLock::new(), OnceLock::new()],
+            auto_layout: false,
+            force_csc: false,
+            auto_choice: [OnceLock::new(), OnceLock::new()],
         })
     }
 }
 
 impl Fixed1dPlan {
+    /// Force the pixel-oriented kernel, including complete resident frames.
+    /// This bypasses the optional gather cache and automatic timing probes.
+    pub fn with_csc_layout(mut self) -> Self {
+        self.force_csc = true;
+        self.auto_layout = false;
+        self
+    }
+    /// Opt in to a local CSC/CSR timing choice for complete resident frames.
+    /// CSC remains the baseline. CSR must win at least four of five paired
+    /// probes and improve the median by more than 15%. Choices are cached per
+    /// error mode. Streamed blocks and outer Rayon workers retain CSC.
+    /// CSR uses identical weights but can differ by floating-point sum order.
+    pub fn with_auto_layout(mut self) -> Self {
+        self.auto_layout = true;
+        self
+    }
+
+    /// Locally measured resident choice, if automatic selection has run.
+    pub fn selected_resident_layout(&self, errors: bool) -> Option<SparseLayout> {
+        self.auto_choice[usize::from(errors)].get().copied()
+    }
     pub fn shape(&self) -> (usize, usize) {
         self.shape
     }
@@ -203,29 +234,81 @@ impl Fixed1dPlan {
         }
     }
 
-    /// Complete resident frames use a bin-oriented cache with the same CSC
-    /// coefficients, chunk partitions and lane reduction. Streamed blocks and
-    /// outer Rayon batch workers retain the existing CSC execution.
+    /// Complete resident frames can use a bin-oriented cache with the same CSC
+    /// reduction order. The first call in each error mode measures both layouts;
+    /// gather is retained only with a clear measured advantage. Streamed blocks
+    /// and outer Rayon batch workers retain CSC without probing.
     pub fn integrate_frame(&self, data: &[f64], errors: bool) -> Result<Fixed1dResult, String> {
         if data.len() != self.shape.0 * self.shape.1 {
             return Err("image size mismatch".into());
         }
-        if rayon::current_thread_index().is_none()
+        if self.auto_layout {
+            if rayon::current_thread_index().is_some() {
+                return Ok(self.integrate_csc(data, errors));
+            }
+            let choice = self.auto_choice[usize::from(errors)]
+                .get_or_init(|| self.measure_auto(data, errors));
+            return Ok(if *choice == SparseLayout::Csr {
+                self.integrate_csr(data, errors)
+            } else {
+                self.integrate_csc(data, errors)
+            });
+        }
+        if !self.force_csc
+            && rayon::current_thread_index().is_none()
             && let Some(resident) = self.resident.get_or_init(|| {
                 FixedRows::new(self.lut.fixed_csc().unwrap(), self.lut.fixed_pixels())
             })
         {
-            let (intensity, sigma) = if errors {
-                resident.integrate::<true>(data, self.lut.fixed_bin_norm())
-            } else {
-                resident.integrate::<false>(data, self.lut.fixed_bin_norm())
-            };
-            return Ok(Fixed1dResult {
-                radial: self.lut.bins(),
-                intensity,
-                errors: errors.then_some(sigma),
-            });
+            let selected = self.resident_choice[usize::from(errors)]
+                .get_or_init(|| self.measure_resident(resident, data, errors));
+            if *selected {
+                return Ok(self.integrate_rows(resident, data, errors));
+            }
         }
+        Ok(self.integrate_csc(data, errors))
+    }
+
+    fn integrate_rows(&self, rows: &FixedRows, data: &[f64], errors: bool) -> Fixed1dResult {
+        let (intensity, sigma) = if errors {
+            rows.integrate::<true>(data, self.lut.fixed_bin_norm())
+        } else {
+            rows.integrate::<false>(data, self.lut.fixed_bin_norm())
+        };
+        Fixed1dResult {
+            radial: self.lut.bins(),
+            intensity,
+            errors: errors.then_some(sigma),
+        }
+    }
+
+    fn measure_resident(&self, rows: &FixedRows, data: &[f64], errors: bool) -> bool {
+        // Warm both layouts, then alternate their order. This is a plan-local
+        // choice, not a pixel-count threshold inferred from one workstation.
+        drop(black_box(self.integrate_csc(data, errors)));
+        drop(black_box(self.integrate_rows(rows, data, errors)));
+        let mut csc = [Duration::ZERO; 5];
+        let mut gather = [Duration::ZERO; 5];
+        for i in 0..5 {
+            for use_rows in [i % 2 == 0, i % 2 != 0] {
+                let start = Instant::now();
+                drop(black_box(if use_rows {
+                    self.integrate_rows(rows, data, errors)
+                } else {
+                    self.integrate_csc(data, errors)
+                }));
+                let elapsed = start.elapsed();
+                if use_rows {
+                    gather[i] = elapsed;
+                } else {
+                    csc[i] = elapsed;
+                }
+            }
+        }
+        resident_wins(csc, gather)
+    }
+
+    fn integrate_csc(&self, data: &[f64], errors: bool) -> Fixed1dResult {
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
         let (radial, intensity, sigma) = if errors {
             self.lut
@@ -234,12 +317,75 @@ impl Fixed1dPlan {
             self.lut
                 .integrate::<true, false>(data, mask, &self.normalization)
         };
-        Ok(Fixed1dResult {
+        Fixed1dResult {
             radial,
             intensity,
             errors: errors.then_some(sigma),
-        })
+        }
     }
+
+    fn integrate_csr(&self, data: &[f64], errors: bool) -> Fixed1dResult {
+        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
+        let (radial, intensity, sigma) = if errors {
+            self.lut
+                .integrate_fixed_csr::<true>(data, mask, &self.normalization)
+        } else {
+            self.lut
+                .integrate_fixed_csr::<false>(data, mask, &self.normalization)
+        };
+        Fixed1dResult {
+            radial,
+            intensity,
+            errors: errors.then_some(sigma),
+        }
+    }
+
+    fn measure_auto(&self, data: &[f64], errors: bool) -> SparseLayout {
+        let prior = super::predict_1d_layout(
+            data.len(),
+            self.lut.bins().len(),
+            errors,
+            false,
+            rayon::current_num_threads(),
+        );
+        let csr_first = prior.layout == SparseLayout::Csr;
+        // Include complete allocations/output in both probes. Both fixed masks
+        // and normalization caches are warm before measurement.
+        drop(black_box(self.integrate_csc(data, errors)));
+        drop(black_box(self.integrate_csr(data, errors)));
+        let mut csc = [Duration::ZERO; 5];
+        let mut csr = [Duration::ZERO; 5];
+        for i in 0..5 {
+            for use_csr in [csr_first ^ (i % 2 != 0), !csr_first ^ (i % 2 != 0)] {
+                let start = Instant::now();
+                drop(black_box(if use_csr {
+                    self.integrate_csr(data, errors)
+                } else {
+                    self.integrate_csc(data, errors)
+                }));
+                if use_csr {
+                    csr[i] = start.elapsed();
+                } else {
+                    csc[i] = start.elapsed();
+                }
+            }
+        }
+        let wins = csc.iter().zip(&csr).filter(|(a, b)| b < a).count();
+        csc.sort_unstable();
+        csr.sort_unstable();
+        if wins >= 4 && csr[2].as_secs_f64() < 0.85 * csc[2].as_secs_f64() {
+            SparseLayout::Csr
+        } else {
+            SparseLayout::Csc
+        }
+    }
+}
+
+fn resident_wins(mut csc: [Duration; 5], mut gather: [Duration; 5]) -> bool {
+    let wins = csc.iter().zip(&gather).filter(|(a, b)| b < a).count();
+    csc.sort_unstable();
+    gather.sort_unstable();
+    wins >= 4 && gather[2].as_secs_f64() < 0.9 * csc[2].as_secs_f64()
 }
 
 impl Fixed1dWorker<'_> {
@@ -408,8 +554,97 @@ mod tests {
         );
         check(plan.integrate_frame(&data, true).unwrap());
         assert!(plan.resident.get().unwrap().is_some());
+        assert!(plan.resident_choice[1].get().is_some());
+        assert!(plan.resident_choice[0].get().is_none());
         check(plan.integrate_frame(&data, true).unwrap());
         check(pool.install(|| plan.integrate_frame(&data, true).unwrap()));
+        let intensity = plan.integrate_frame(&data, false).unwrap();
+        assert!(plan.resident_choice[0].get().is_some());
+        assert_eq!(intensity.intensity, y);
+        assert!(intensity.errors.is_none());
+        // Exercise both decisions regardless of scheduler noise during probes.
+        for use_rows in [false, true] {
+            let forced = engine.prepare_fixed1d(shape, 128).unwrap();
+            forced.resident_choice[1].set(use_rows).unwrap();
+            check(forced.integrate_frame(&data, true).unwrap());
+        }
+    }
+
+    #[test]
+    fn resident_selection_requires_consistent_ten_percent_advantage() {
+        let times = |ns: [u64; 5]| ns.map(Duration::from_nanos);
+        let csc = times([100; 5]);
+        assert!(resident_wins(csc, times([80, 81, 79, 80, 150])));
+        assert!(!resident_wins(csc, times([95; 5])));
+        assert!(!resident_wins(csc, times([80, 80, 80, 120, 120])));
+        assert!(!resident_wins(csc, times([110; 5])));
+        assert!(!resident_wins([Duration::ZERO; 5], [Duration::ZERO; 5]));
+    }
+
+    #[test]
+    fn automatic_layout_keeps_weights_errors_and_changed_samples() {
+        let mut engine = integrator(IntegrationMethod::PixelSplit);
+        let shape = (17, 23);
+        let mut mask = vec![0; shape.0 * shape.1];
+        for i in (0..mask.len()).step_by(7) {
+            mask[i] = 1;
+        }
+        engine.set_mask(Mask {
+            data: mask.clone(),
+            dim1: shape.0,
+            dim2: shape.1,
+        });
+        let csc = engine
+            .prepare_fixed1d(shape, 128)
+            .unwrap()
+            .with_csc_layout();
+        let auto = engine
+            .prepare_fixed1d(shape, 128)
+            .unwrap()
+            .with_auto_layout();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let data: Vec<_> = (0..mask.len())
+            .map(|i| {
+                if mask[i] != 0 {
+                    f64::NAN
+                } else {
+                    (i % 31) as f64 + 2.
+                }
+            })
+            .collect();
+        pool.install(|| auto.integrate_frame(&data, true).unwrap());
+        assert!(auto.selected_resident_layout(true).is_none());
+        for errors in [false, true] {
+            for mode in [SparseLayout::Csr, SparseLayout::Csc] {
+                let plan = engine
+                    .prepare_fixed1d(shape, 128)
+                    .unwrap()
+                    .with_auto_layout();
+                plan.auto_choice[usize::from(errors)].set(mode).unwrap();
+                for scale in [1., 1.7] {
+                    let frame: Vec<_> = data.iter().map(|x| x * scale).collect();
+                    let expected = csc.integrate_frame(&frame, errors).unwrap();
+                    let actual = plan.integrate_frame(&frame, errors).unwrap();
+                    assert_eq!(actual.radial, expected.radial);
+                    for (a, b) in actual.intensity.iter().zip(&expected.intensity) {
+                        assert!((a - b).abs() < 2e-12 * b.abs().max(1.));
+                    }
+                    assert_eq!(actual.errors.is_some(), errors);
+                    if let (Some(a), Some(b)) = (actual.errors, expected.errors) {
+                        for (a, b) in a.iter().zip(b) {
+                            assert!((a - b).abs() < 2e-12 * b.abs().max(1.));
+                        }
+                    }
+                }
+            }
+            auto.integrate_frame(&data, errors).unwrap();
+            assert!(auto.selected_resident_layout(errors).is_some());
+        }
+        assert!(csc.resident.get().is_none());
+        assert!(csc.integrate_frame(&data[..10], false).is_err());
     }
     #[test]
     fn native_blocks_preserve_float64_weights_masks_errors_and_orientation() {

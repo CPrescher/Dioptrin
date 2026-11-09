@@ -370,6 +370,10 @@ impl PreparedCsr {
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
         let rows = self.results::<FAST, VAR, false, P>(s, m, n);
+        Self::normalize_rows::<VAR>(rows)
+    }
+
+    fn normalize_rows<const VAR: bool>(rows: Vec<[f64; 4]>) -> (Vec<f64>, Vec<f64>) {
         let mut intensity = Vec::with_capacity(rows.len());
         let mut errors = Vec::with_capacity(if VAR { rows.len() } else { 0 });
         for [signal, norm, variance, _] in rows {
@@ -412,6 +416,20 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    /// Execute the existing fast CSR kernel without changing this plan's CSC
+    /// policy or its streamed workers. Mask compaction/normalization stay cached.
+    pub(crate) fn integrate_fixed_csr<const VAR: bool>(
+        &self,
+        data: &[f64],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let table = self.csr.fixed_table(mask);
+        let rows = table.cached_results::<true, VAR, false, f64>(data, None, norm);
+        let (y, e) = PreparedCsr::normalize_rows::<VAR>(rows);
+        (self.bins(), y, e)
+    }
+
     pub(crate) fn fixed_csc(&self) -> Option<&Csc> {
         self.csr.csc.get()?.as_ref()
     }

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Add an opt-in resident 1D CSC/CSR selector with a bounded performance prior
+  and cached local timing. CSR must show a repeatable >15% gain; CSC remains
+  the baseline and streamed/parallel block execution is unchanged. Add an
+  explicit `with_csc_layout()` override. Splitting weights are unchanged;
+  ordinary CSR and CSC can differ in floating-point rounding.
+
 - Cache a bin-oriented execution table for sufficiently large resident fixed-mask
   1D frames. Preserve CSC coefficients, chunk/lane reductions and Poisson errors
   bitwise while avoiding histogram scatter/merge work. Streamed block and outer
