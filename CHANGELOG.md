@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- Vectorize and parallelize the full-resolution Massif Gaussian background
+  filter while preserving each pixel's floating-point summation order.
+- Add Rust `PreparedMassif` to reuse immutable samples and component labels
+  across seed searches. Existing `find_peaks` remains available and preserves
+  peak ordering, deduplication and subpixel positions. The shared filter also
+  accelerates image-wide calibration candidate extraction.
+
+
 ## [0.12.0] - 2026-11-09
 
 ### Added
