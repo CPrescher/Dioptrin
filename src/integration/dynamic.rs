@@ -1,15 +1,18 @@
 //! Immutable 1D integration plans shared by independent frame workers.
-use super::cache::OneDKey;
-use super::{IntegrationMethod, Integrator, MaskMode};
+use super::{IntegrationMethod, Integrator, MaskMode, SparseLayout};
+use crate::lut::{Lut1d, csc::Sums, prepared::Prepared1d};
+use std::sync::Arc;
 
 /// A prepared geometry/weight/correction snapshot. All per-frame masks and
 /// accumulators are supplied to or allocated by `integrate`, never stored here.
 /// Sharing this plan does not prevent changing the source integrator later.
 pub struct Dynamic1dPlan {
-    integrator: Integrator,
+    lut: Arc<Prepared1d>,
+    normalization: Arc<Vec<f64>>,
+    fast_math: bool,
+    csc: bool,
     shape: (usize, usize),
     n_points: usize,
-    key: OneDKey,
 }
 
 pub struct Dynamic1dResult {
@@ -39,43 +42,103 @@ impl Integrator {
             .with_sparse_layout(self.sparse_layout);
         integrator.polarization_factor = self.polarization_factor;
         integrator.radial_range = self.radial_range;
-        let unit = self.radial_unit;
-        let radial_range = self.radial_range_key();
-        let key = match self.method {
-            IntegrationMethod::Counting => OneDKey::Counting {
-                n_points,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
-                pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
-                n_points,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
-                n_points,
-                n_ss,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::Histogram => {
-                return Err("dynamic plans require counting, pixel_split or supersampled".into());
-            }
-        };
+        if matches!(self.method, IntegrationMethod::Histogram) {
+            return Err("dynamic plans require counting, pixel_split or supersampled".into());
+        }
         // Complete lazy geometry/CSR/CSC initialization ONCE, before any frame
         // workers start. There are no cache writers on the resulting plan.
         integrator.prepare1d(shape.0, shape.1, n_points);
+        let normalization = integrator.get_normalization();
+        let lut = integrator
+            .cache_1d
+            .into_inner()
+            .map_err(|_| "poisoned lookup cache")?
+            .lut
+            .ok_or("missing prepared dynamic table")?;
         Ok(Dynamic1dPlan {
-            integrator,
+            lut: Arc::new(lut),
+            normalization,
+            fast_math: self.fast_math,
+            csc: self.sparse_layout == SparseLayout::Csc,
             shape,
             n_points,
-            key,
         })
     }
 }
 
 impl Dynamic1dPlan {
+    /// Freeze a caller-built grid/sector LUT and normalization as a dynamic
+    /// CSC plan. No mask is baked into the shared weights or denominators.
+    pub fn new(
+        shape: (usize, usize),
+        lut: Lut1d,
+        normalization: Arc<Vec<f64>>,
+    ) -> Result<Self, String> {
+        let pixels = shape.0.checked_mul(shape.1).ok_or("image shape overflow")?;
+        if pixels == 0
+            || normalization.len() != pixels
+            || normalization.iter().any(|n| !n.is_finite() || *n < 0.)
+            || lut.row_ptr.len() < 2
+            || lut.row_ptr[0] != 0
+            || lut.row_ptr.windows(2).any(|p| p[0] > p[1])
+            || lut.row_ptr.last() != Some(&lut.col_idx.len())
+            || lut.col_idx.iter().any(|&p| p >= pixels)
+            || lut
+                .values
+                .as_ref()
+                .is_some_and(|v| v.len() != lut.col_idx.len() || v.iter().any(|x| !x.is_finite()))
+            || !lut.hist_min.is_finite()
+            || !lut.hist_step.is_finite()
+            || lut.hist_step <= 0.
+        {
+            return Err(
+                "Dynamic plan requires valid dimensions, LUT weights/indices and normalization."
+                    .into(),
+            );
+        }
+        let n_points = lut.n_points();
+        let mut lut = Prepared1d::new(lut);
+        lut.set_mask_mode(MaskMode::Dynamic);
+        lut.set_sparse_layout(SparseLayout::Csc);
+        lut.prepare_normalization(None, &normalization, true);
+        Ok(Self {
+            lut: Arc::new(lut),
+            normalization,
+            shape,
+            n_points,
+            fast_math: true,
+            csc: true,
+        })
+    }
+
+    /// Private reusable histograms for a frame worker borrowing this plan.
+    pub fn worker(&self, errors: bool) -> Dynamic1dWorker<'_> {
+        let sums = if self.fast_math && self.csc {
+            self.lut
+                .dynamic_csc(self.normalization.len())
+                .map(|csc| csc.dynamic_sums(errors))
+        } else {
+            None
+        };
+        Dynamic1dWorker {
+            plan: self,
+            sums,
+            errors,
+        }
+    }
+
+    /// Supplied variances replace the Poisson estimate, including for negative
+    /// background-subtracted signal. Correction parameters are deterministic.
+    pub fn integrate_with_variances(
+        &self,
+        data: &[f64],
+        variance: &[f64],
+        mask: Option<&[u8]>,
+        azimuthal_std: bool,
+    ) -> Result<Dynamic1dResult, String> {
+        self.worker(true)
+            .integrate(data, mask, Some(variance), azimuthal_std)
+    }
     pub fn shape(&self) -> (usize, usize) {
         self.shape
     }
@@ -96,9 +159,8 @@ impl Dynamic1dPlan {
         if let Some(mask) = mask {
             assert_eq!(mask.len(), data.len());
         }
-        let integrator = &self.integrator;
-        let normalization = integrator.get_normalization();
-        let lut = integrator.ensure_lut1d(self.key);
+        let normalization = &self.normalization;
+        let lut = &self.lut;
         if azimuthal_std {
             let variance = errors.then(|| data.iter().map(|&s| s.max(0.0)).collect::<Vec<_>>());
             let result = crate::lut::azimuthal::integrate_with_columns(
@@ -108,7 +170,7 @@ impl Dynamic1dPlan {
                 lut.values.as_deref(),
                 lut.bins(),
                 mask,
-                &normalization,
+                normalization,
                 variance.as_deref(),
             );
             return Dynamic1dResult {
@@ -118,24 +180,75 @@ impl Dynamic1dPlan {
                 azimuthal_std: Some(result.azimuthal_std),
             };
         }
-        if errors {
-            let (radial, intensity, errors) =
-                integrator.lut_integrate1d_with_errors(data, &lut, mask, &normalization);
-            Dynamic1dResult {
-                radial,
-                intensity,
-                errors: Some(errors),
-                azimuthal_std: None,
-            }
-        } else {
-            let (radial, intensity) = integrator.lut_integrate1d(data, &lut, mask, &normalization);
-            Dynamic1dResult {
-                radial,
-                intensity,
-                errors: None,
-                azimuthal_std: None,
-            }
+        let (radial, intensity, sigma) = match (self.fast_math, errors) {
+            (true, true) => lut.integrate::<true, true>(data, mask, normalization),
+            (true, false) => lut.integrate::<true, false>(data, mask, normalization),
+            (false, true) => lut.integrate::<false, true>(data, mask, normalization),
+            (false, false) => lut.integrate::<false, false>(data, mask, normalization),
+        };
+        Dynamic1dResult {
+            radial,
+            intensity,
+            errors: errors.then_some(sigma),
+            azimuthal_std: None,
         }
+    }
+}
+
+/// Per-frame sums are private; the LUT and normalization remain shared.
+pub struct Dynamic1dWorker<'a> {
+    plan: &'a Dynamic1dPlan,
+    sums: Option<Sums>,
+    errors: bool,
+}
+impl Dynamic1dWorker<'_> {
+    pub fn integrate(
+        &mut self,
+        data: &[f64],
+        mask: Option<&[u8]>,
+        variance: Option<&[f64]>,
+        azimuthal_std: bool,
+    ) -> Result<Dynamic1dResult, String> {
+        if data.len() != self.plan.normalization.len()
+            || mask.is_some_and(|m| m.len() != data.len())
+            || variance.is_some_and(|v| {
+                !self.errors || v.len() != data.len() || v.iter().any(|x| !x.is_finite() || *x < 0.)
+            })
+        {
+            return Err("Dynamic frame requires matching shapes and finite nonnegative variances with errors enabled.".into());
+        }
+        let plan = self.plan;
+        if !azimuthal_std && let Some(sums) = &mut self.sums {
+            let csc = plan.lut.dynamic_csc(data.len()).expect("prepared CSC");
+            let (intensity, errors) =
+                csc.dynamic_frame(data, variance, mask, &plan.normalization, sums);
+            return Ok(Dynamic1dResult {
+                radial: plan.lut.bins(),
+                intensity,
+                errors,
+                azimuthal_std: None,
+            });
+        }
+        if variance.is_none() {
+            return Ok(plan.integrate(data, mask, self.errors, azimuthal_std));
+        }
+        let lut = &plan.lut;
+        let result = crate::lut::azimuthal::integrate_with_columns(
+            data,
+            &lut.row_ptr,
+            |k| lut.col_idx.get(k),
+            lut.values.as_deref(),
+            lut.bins(),
+            mask,
+            &plan.normalization,
+            variance,
+        );
+        Ok(Dynamic1dResult {
+            radial: result.radial,
+            intensity: result.intensity,
+            errors: result.errors,
+            azimuthal_std: azimuthal_std.then_some(result.azimuthal_std),
+        })
     }
 }
 
@@ -145,6 +258,91 @@ mod tests {
     use crate::{geometry::Geometry, mask::Mask, poni::Poni};
     use rayon::prelude::*;
     use std::sync::Arc;
+
+    #[test]
+    fn reusable_workers_propagate_supplied_variances_and_changing_masks() {
+        let source = source(IntegrationMethod::PixelSplit, true);
+        let g = source.geometry();
+        let radial = source
+            .radial_unit
+            .convert_from_tth(&g.calc_tth_all(), g.poni.wavelength);
+        let lut = crate::lut::build_lut1d_ps_csr(g, &radial, 40, source.radial_unit);
+        let plan = Arc::new(source.prepare_dynamic1d((32, 64), 40).unwrap());
+        let normalization = plan.normalization.clone();
+        let table = plan.lut.row_ptr.as_ptr() as usize;
+        (0..8usize).into_par_iter().for_each(|frame| {
+            let data: Vec<_> = (0..2048)
+                .map(|p| (p % 97) as f64 - 80. - frame as f64)
+                .collect();
+            let variance: Vec<_> = (0..2048).map(|p| 4. + ((p + frame) % 31) as f64).collect();
+            let mut worker = plan.worker(true);
+            let hist = worker.sums.as_ref().unwrap().signal.as_ptr();
+            for step in 0..5 {
+                let mask: Vec<_> = (0..2048)
+                    .map(|p| u8::from(step == 4 || (p + step + frame) % 11 == 0))
+                    .collect();
+                let actual = worker
+                    .integrate(&data, Some(&mask), Some(&variance), false)
+                    .unwrap();
+                let expected = crate::lut::integrate1d_with_errors(
+                    &data,
+                    &variance,
+                    &lut,
+                    Some(&mask),
+                    normalization,
+                );
+                close(&actual.radial, &expected.0);
+                close(&actual.intensity, &expected.1);
+                close(actual.errors.as_ref().unwrap(), &expected.2);
+                assert_eq!(hist, worker.sums.as_ref().unwrap().signal.as_ptr());
+                assert_eq!(table, plan.lut.row_ptr.as_ptr() as usize);
+                assert!(Arc::ptr_eq(&normalization, &plan.normalization));
+                let spread = worker
+                    .integrate(&data, Some(&mask), Some(&variance), true)
+                    .unwrap();
+                close(&spread.intensity, &expected.1);
+                close(spread.errors.as_ref().unwrap(), &expected.2);
+            }
+        });
+    }
+
+    #[test]
+    fn custom_dynamic_grid_validates_shapes_and_recovers_after_failed_frames() {
+        let lut = crate::lut::Lut1d {
+            row_ptr: vec![0, 2, 4],
+            col_idx: vec![0, 1, 0, 1],
+            values: Some(vec![0.25, 0.5, 0.75, 0.5]),
+            hist_min: 0.,
+            hist_step: 1.,
+        };
+        let plan = Dynamic1dPlan::new((1, 2), lut.clone(), Arc::new(vec![2., 4.])).unwrap();
+        let mut worker = plan.worker(true);
+        assert!(
+            worker
+                .integrate(&[-4., 2.], None, Some(&[-1., 25.]), false)
+                .is_err()
+        );
+        assert!(
+            worker
+                .integrate(&[-4.], None, Some(&[9., 25.]), false)
+                .is_err()
+        );
+        for mask in [[0, 1], [1, 0], [0, 0], [1, 1]] {
+            let result = worker
+                .integrate(&[-4., 2.], Some(&mask), Some(&[9., 25.]), false)
+                .unwrap();
+            let expected = crate::lut::integrate1d_with_errors(
+                &[-4., 2.],
+                &[9., 25.],
+                &lut,
+                Some(&mask),
+                &[2., 4.],
+            );
+            close(&result.intensity, &expected.1);
+            close(result.errors.as_ref().unwrap(), &expected.2);
+        }
+        assert!(Dynamic1dPlan::new((1, 3), lut, Arc::new(vec![2., 4.])).is_err());
+    }
 
     fn source(method: IntegrationMethod, fast: bool) -> Integrator {
         let mut poni = Poni::new();
@@ -179,8 +377,8 @@ mod tests {
             for fast in [false, true] {
                 let source = source(method, fast);
                 let plan = Arc::new(source.prepare_dynamic1d((32, 64), 40).unwrap());
-                let table = plan.integrator.ensure_lut1d(plan.key).row_ptr.as_ptr() as usize;
-                let norm = plan.integrator.get_normalization();
+                let table = plan.lut.row_ptr.as_ptr() as usize;
+                let norm = plan.normalization.clone();
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(8)
                     .build()
@@ -233,11 +431,8 @@ mod tests {
                                 }
                             }
                         }
-                        assert_eq!(
-                            table,
-                            plan.integrator.ensure_lut1d(plan.key).row_ptr.as_ptr() as usize
-                        );
-                        assert!(Arc::ptr_eq(&norm, &plan.integrator.get_normalization()));
+                        assert_eq!(table, plan.lut.row_ptr.as_ptr() as usize);
+                        assert!(Arc::ptr_eq(&norm, &plan.normalization.clone()));
                     })
                 });
             }

@@ -49,6 +49,25 @@ own image and mask and produces its own normalization and result arrays.
 Rebuild the plan when its scientific settings change. Reading, mask generation,
 frame ordering and cancellation remain application responsibilities.
 
+Rust applications can retain `Dynamic1dWorker` scratch across frames:
+
+```rust,ignore
+let plan = integrator.prepare_dynamic1d((height, width), bins)?;
+let mut worker = plan.worker(true);
+let result = worker.integrate(
+    &corrected_counts, Some(&effective_mask), Some(&pixel_variances), false,
+)?;
+```
+
+The CSC worker recomputes normalization for each mask and reuses private signal,
+normalization and variance histograms. Supplied variances must be finite,
+nonnegative and match the image; they replace `max(signal, 0)`, preserving
+original counting noise after background subtraction and deterministic
+corrections. Without supplied variances, counting errors retain the Poisson
+estimate. `Dynamic1dPlan::new(shape, lut, normalization)` accepts an existing
+grid/sector LUT and shared normalization without baking in a mask. Azimuthal
+spread retains its row-statistics implementation within the same plan.
+
 Use one compute thread per frame worker when the application already processes
 frames in parallel. More workers do not guarantee higher throughput: decoding,
 mask plugins, memory bandwidth and retained frame buffers can limit the batch.

@@ -416,6 +416,9 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    pub(crate) fn dynamic_csc(&self, pixels: usize) -> Option<&super::csc::Csc> {
+        self.csr.dynamic_csc(pixels)
+    }
     /// Execute the existing fast CSR kernel without changing this plan's CSC
     /// policy or its streamed workers. Mask compaction/normalization stay cached.
     pub(crate) fn integrate_fixed_csr<const VAR: bool>(

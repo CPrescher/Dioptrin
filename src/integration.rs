@@ -8,7 +8,7 @@ pub use grid::{IntegrationGrid2d, PixelSplitMode};
 mod fixed;
 mod fixed_csr;
 mod layout;
-pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};
+pub use dynamic::{Dynamic1dPlan, Dynamic1dResult, Dynamic1dWorker};
 pub use fixed::{Fixed1dPlan, Fixed1dResult, Fixed1dWorker, InputOrder};
 pub use fixed_csr::{FixedCsr1dPlan, FixedGrid2dPlan};
 pub use layout::{LayoutPrediction, predict_1d_layout};

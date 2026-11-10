@@ -269,6 +269,84 @@ impl Csc {
         }
     }
 
+    pub(crate) fn dynamic_sums(&self, errors: bool) -> Sums {
+        let mut sums = self.block_sums(errors);
+        sums.norm = vec![0.; 4 * self.nbins];
+        sums
+    }
+
+    /// Reuse private histograms; geometry/weights are independent of each mask.
+    /// A supplied variance is already propagated from the original counts.
+    pub(crate) fn dynamic_frame(
+        &self,
+        signal: &[f64],
+        variance: Option<&[f64]>,
+        mask: Option<&[u8]>,
+        norm: &[f64],
+        sums: &mut Sums,
+    ) -> (Vec<f64>, Option<Vec<f64>>) {
+        assert_eq!(signal.len() + 1, self.ptr.len());
+        assert_eq!(norm.len(), signal.len());
+        assert!(mask.is_none_or(|v| v.len() == signal.len()));
+        assert!(variance.is_none_or(|v| v.len() == signal.len()));
+        sums.signal.fill(0.);
+        sums.norm.fill(0.);
+        sums.variance.fill(0.);
+        let errors = !sums.variance.is_empty();
+        // SAFETY: compact indices originate from checked CSR construction;
+        // the complete input dimensions are checked above. Sums are private.
+        unsafe {
+            for p in 0..signal.len() {
+                if mask.is_some_and(|m| *m.get_unchecked(p) != 0) {
+                    continue;
+                }
+                let x = *signal.get_unchecked(p);
+                let n = *norm.get_unchecked(p);
+                let v = if errors {
+                    variance.map_or_else(|| x.max(0.), |v| *v.get_unchecked(p))
+                } else {
+                    0.
+                };
+                let lane = (p % 4) * self.nbins;
+                for k in
+                    *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
+                {
+                    let b = *self.bins.get_unchecked(k) as usize + lane;
+                    let w = self.weights.as_ref().map_or(1., |w| *w.get_unchecked(k));
+                    let s = sums.signal.get_unchecked_mut(b);
+                    *s = madd(w, x, *s);
+                    let nsum = sums.norm.get_unchecked_mut(b);
+                    *nsum = madd(w, n, *nsum);
+                    if errors {
+                        let var = sums.variance.get_unchecked_mut(b);
+                        *var = madd(w * w, v, *var);
+                    }
+                }
+            }
+        }
+        let n = self.nbins;
+        let reduce = |s: &[f64], b| (s[b] + s[n + b]) + (s[2 * n + b] + s[3 * n + b]);
+        let mut intensity = Vec::with_capacity(n);
+        let mut sigma = errors.then(|| Vec::with_capacity(n));
+        for b in 0..n {
+            let norm = reduce(&sums.norm, b);
+            intensity.push(if norm == 0. {
+                0.
+            } else {
+                reduce(&sums.signal, b) / norm
+            });
+            if let Some(sigma) = &mut sigma {
+                let var = if norm == 0. {
+                    0.
+                } else {
+                    reduce(&sums.variance, b) / (norm * norm)
+                };
+                sigma.push(var.max(0.).sqrt());
+            }
+        }
+        (intensity, sigma)
+    }
+
     pub(crate) fn add_fixed_block<P: Pixel>(
         &self,
         signal: &[P],
