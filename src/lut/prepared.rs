@@ -416,6 +416,56 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    pub(crate) fn input_columns(&self, mask: Option<&[u8]>, shape: (usize, usize)) -> Columns {
+        let table = self.fixed_table(mask);
+        let (height, width) = shape;
+        Columns::new(
+            (0..table.col_idx_len())
+                .map(|k| {
+                    let j = table.col_idx.get(k);
+                    (height - 1 - j / width) * width + j % width
+                })
+                .collect(),
+        )
+    }
+
+    /// Frame-parallel callers execute these strict rows on their own worker.
+    /// Only input addresses change; coefficient and summation order do not.
+    pub(crate) fn integrate_input<const VAR: bool, P: Pixel>(
+        &self,
+        signal: &[P],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+        columns: Option<&Columns>,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let table = self.fixed_table(mask);
+        let cached = table.normalization::<false>(None, norm);
+        let columns = columns.unwrap_or(&table.col_idx);
+        macro_rules! rows {
+            ($cols:expr) => {
+                (0..table.row_ptr.len() - 1)
+                    .map(|i| {
+                        let mut sums = table.sum::<_, P, false, true, false, VAR, false>(
+                            i,
+                            $cols,
+                            None,
+                            signal,
+                            &[],
+                        );
+                        sums[1] = cached[i];
+                        sums
+                    })
+                    .collect()
+            };
+        }
+        let rows = match columns {
+            Columns::Compact(cols) => rows!(cols),
+            Columns::Wide(cols) => rows!(cols),
+        };
+        let (y, e) = PreparedCsr::normalize_rows::<VAR>(rows);
+        (self.bins(), y, e)
+    }
+
     pub(crate) fn dynamic_csc(&self, pixels: usize) -> Option<&super::csc::Csc> {
         self.csr.dynamic_csc(pixels)
     }

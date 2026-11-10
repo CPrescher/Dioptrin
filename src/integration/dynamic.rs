@@ -289,7 +289,7 @@ mod tests {
                     &variance,
                     &lut,
                     Some(&mask),
-                    normalization,
+                    &normalization,
                 );
                 close(&actual.radial, &expected.0);
                 close(&actual.intensity, &expected.1);

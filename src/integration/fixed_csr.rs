@@ -1,9 +1,9 @@
 //! Immutable CSR snapshots retaining the existing reduction order.
-use super::{Fixed1dResult, IntegrationGrid2d, Integrator, MaskMode};
+use super::{Fixed1dResult, InputOrder, IntegrationGrid2d, Integrator, MaskMode};
 use crate::{
     lut::{
         Lut1d,
-        prepared::{Prepared1d, Prepared2d},
+        prepared::{Columns, Prepared1d, Prepared2d},
     },
     mask::Mask,
 };
@@ -15,6 +15,74 @@ pub struct FixedCsr1dPlan {
     lut: Prepared1d,
     norm: Vec<f64>,
     mask: Option<Vec<u8>>,
+}
+
+/// Shared strict CSR execution directly from a decoder's integer pixels.
+/// Construction maps input addresses once, without changing bin reduction order.
+/// Calls execute on the caller's thread, for parallelism across frames.
+pub struct FixedCsr1dInputPlan {
+    plan: Arc<FixedCsr1dPlan>,
+    shape: (usize, usize),
+    columns: Option<Columns>,
+}
+impl FixedCsr1dInputPlan {
+    pub fn new(
+        plan: Arc<FixedCsr1dPlan>,
+        shape: (usize, usize),
+        order: InputOrder,
+    ) -> Result<Self, String> {
+        if shape.0 == 0 || shape.1 == 0 || shape.0.checked_mul(shape.1) != Some(plan.norm.len()) {
+            return Err("CSR input shape must match the prepared detector".into());
+        }
+        let columns = (order == InputOrder::FlipVertical)
+            .then(|| plan.lut.input_columns(plan.mask.as_deref(), shape));
+        Ok(Self {
+            plan,
+            shape,
+            columns,
+        })
+    }
+    pub fn shape(&self) -> (usize, usize) {
+        self.shape
+    }
+    pub fn integrate_u16(&self, pixels: &[u16], errors: bool) -> Result<Fixed1dResult, String> {
+        self.integrate(pixels, errors)
+    }
+    pub fn integrate_u32(&self, pixels: &[u32], errors: bool) -> Result<Fixed1dResult, String> {
+        self.integrate(pixels, errors)
+    }
+    fn integrate<P: crate::frame::Pixel>(
+        &self,
+        pixels: &[P],
+        errors: bool,
+    ) -> Result<Fixed1dResult, String> {
+        if pixels.len() != self.plan.norm.len() {
+            return Err("image size mismatch".into());
+        }
+        let run = |errors| {
+            if errors {
+                self.plan.lut.integrate_input::<true, P>(
+                    pixels,
+                    self.plan.mask.as_deref(),
+                    &self.plan.norm,
+                    self.columns.as_ref(),
+                )
+            } else {
+                self.plan.lut.integrate_input::<false, P>(
+                    pixels,
+                    self.plan.mask.as_deref(),
+                    &self.plan.norm,
+                    self.columns.as_ref(),
+                )
+            }
+        };
+        let (radial, intensity, sigma) = run(errors);
+        Ok(Fixed1dResult {
+            radial,
+            intensity,
+            errors: errors.then_some(sigma),
+        })
+    }
 }
 impl FixedCsr1dPlan {
     /// Validate and own a LUT, per-pixel normalization and an optional fixed mask.
@@ -193,6 +261,108 @@ mod tests {
             a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
             b.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
         );
+    }
+    #[test]
+    fn integer_input_preserves_strict_bits_for_orders_masks_ragged_and_duplicate_rows() {
+        let shape = (7, 11);
+        let pixels = shape.0 * shape.1;
+        for weighted in [false, true] {
+            for masking in 0..3 {
+                let mut row_ptr = vec![0];
+                let mut col_idx = vec![];
+                let mut weights = vec![];
+                for r in 0..19 {
+                    let count = if r % 7 == 0 { 0 } else { (r * 19) % 41 };
+                    for k in 0..count {
+                        col_idx.push((k * 53 + r * 17) % pixels);
+                        weights.push(if k % 11 == 0 {
+                            1e-310
+                        } else {
+                            ((k * 997 + r * 11) % 4093) as f64 / 4093.
+                        });
+                    }
+                    row_ptr.push(col_idx.len());
+                }
+                let lut = lut::Lut1d {
+                    row_ptr,
+                    col_idx,
+                    values: weighted.then_some(weights),
+                    hist_min: 0.1,
+                    hist_step: 0.2,
+                };
+                let norm = (0..pixels)
+                    .map(|i| {
+                        if i % 31 == 0 {
+                            0.
+                        } else {
+                            0.2 + i as f64 / 131.
+                        }
+                    })
+                    .collect();
+                let mask = (0..pixels)
+                    .map(|i| u8::from(masking == 2 || (masking == 1 && i % 3 == 0)))
+                    .collect();
+                let plan = Arc::new(FixedCsr1dPlan::new(lut, norm, Some(mask)).unwrap());
+                let raw32: Vec<u32> = (0..pixels)
+                    .map(|i| {
+                        if i % 13 == 0 {
+                            u32::MAX
+                        } else {
+                            (i as u32).wrapping_mul(2654435761)
+                        }
+                    })
+                    .collect();
+                let raw16: Vec<u16> = raw32.iter().map(|v| *v as u16).collect();
+                for order in [InputOrder::Detector, InputOrder::FlipVertical] {
+                    let typed = FixedCsr1dInputPlan::new(plan.clone(), shape, order).unwrap();
+                    assert_eq!(typed.shape(), shape);
+                    for errors in [false, true] {
+                        let compare = |raw: Vec<f64>, actual: Fixed1dResult| {
+                            let oriented = if order == InputOrder::FlipVertical {
+                                raw.chunks_exact(shape.1).rev().flatten().copied().collect()
+                            } else {
+                                raw
+                            };
+                            let expected = plan.integrate_frame(&oriented, errors).unwrap();
+                            same(&actual.radial, &expected.radial);
+                            same(&actual.intensity, &expected.intensity);
+                            if errors {
+                                same(&actual.errors.unwrap(), &expected.errors.unwrap());
+                            }
+                        };
+                        compare(
+                            raw32.iter().map(|&v| v as f64).collect(),
+                            typed.integrate_u32(&raw32, errors).unwrap(),
+                        );
+                        compare(
+                            raw16.iter().map(|&v| v as f64).collect(),
+                            typed.integrate_u16(&raw16, errors).unwrap(),
+                        );
+                    }
+                    assert!(typed.integrate_u32(&raw32[..pixels - 1], true).is_err());
+                    let expected = typed.integrate_u32(&raw32, true).unwrap();
+                    std::thread::scope(|scope| {
+                        for _ in 0..4 {
+                            let (typed, raw, expected) = (&typed, &raw32, &expected);
+                            scope.spawn(move || {
+                                let actual = typed.integrate_u32(raw, true).unwrap();
+                                same(&actual.intensity, &expected.intensity);
+                                same(
+                                    actual.errors.as_ref().unwrap(),
+                                    expected.errors.as_ref().unwrap(),
+                                );
+                            });
+                        }
+                    });
+                }
+                for invalid in [(0, 11), (7, 0), (1, pixels - 1), (usize::MAX, 2)] {
+                    assert!(
+                        FixedCsr1dInputPlan::new(plan.clone(), invalid, InputOrder::FlipVertical)
+                            .is_err()
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn csr_snapshot_preserves_strict_signal_errors_sectors_and_changed_frames() {
