@@ -19,7 +19,9 @@ pub struct FixedCsr1dPlan {
 
 /// Shared strict CSR execution directly from a decoder's integer pixels.
 /// Construction maps input addresses once, without changing bin reduction order.
-/// Calls execute on the caller's thread, for parallelism across frames.
+/// Serial entry points execute on the caller's thread for parallelism across
+/// frames. Explicit parallel entry points schedule independent bins for a
+/// single image, retaining the same strict arithmetic within each bin.
 pub struct FixedCsr1dInputPlan {
     plan: Arc<FixedCsr1dPlan>,
     shape: (usize, usize),
@@ -46,12 +48,29 @@ impl FixedCsr1dInputPlan {
         self.shape
     }
     pub fn integrate_u16(&self, pixels: &[u16], errors: bool) -> Result<Fixed1dResult, String> {
-        self.integrate(pixels, errors)
+        self.integrate::<_, false>(pixels, errors)
     }
     pub fn integrate_u32(&self, pixels: &[u32], errors: bool) -> Result<Fixed1dResult, String> {
-        self.integrate(pixels, errors)
+        self.integrate::<_, false>(pixels, errors)
     }
-    fn integrate<P: crate::frame::Pixel>(
+    /// Integrate one image with independent bins scheduled on the current Rayon
+    /// pool. Each bin retains the serial API's strict summation order.
+    pub fn integrate_u16_parallel(
+        &self,
+        pixels: &[u16],
+        errors: bool,
+    ) -> Result<Fixed1dResult, String> {
+        self.integrate::<_, true>(pixels, errors)
+    }
+    /// Parallel-bin counterpart of `integrate_u32`, with identical result bits.
+    pub fn integrate_u32_parallel(
+        &self,
+        pixels: &[u32],
+        errors: bool,
+    ) -> Result<Fixed1dResult, String> {
+        self.integrate::<_, true>(pixels, errors)
+    }
+    fn integrate<P: crate::frame::Pixel, const PARALLEL: bool>(
         &self,
         pixels: &[P],
         errors: bool,
@@ -61,14 +80,14 @@ impl FixedCsr1dInputPlan {
         }
         let run = |errors| {
             if errors {
-                self.plan.lut.integrate_input::<true, P>(
+                self.plan.lut.integrate_input::<true, P, PARALLEL>(
                     pixels,
                     self.plan.mask.as_deref(),
                     &self.plan.norm,
                     self.columns.as_ref(),
                 )
             } else {
-                self.plan.lut.integrate_input::<false, P>(
+                self.plan.lut.integrate_input::<false, P, PARALLEL>(
                     pixels,
                     self.plan.mask.as_deref(),
                     &self.plan.norm,
@@ -338,8 +357,34 @@ mod tests {
                             raw16.iter().map(|&v| v as f64).collect(),
                             typed.integrate_u16(&raw16, errors).unwrap(),
                         );
+                        for threads in [1, 2, 4] {
+                            let pool = rayon::ThreadPoolBuilder::new()
+                                .num_threads(threads)
+                                .build()
+                                .unwrap();
+                            pool.install(|| {
+                                compare(
+                                    raw32.iter().map(|&v| v as f64).collect(),
+                                    typed.integrate_u32_parallel(&raw32, errors).unwrap(),
+                                );
+                                compare(
+                                    raw16.iter().map(|&v| v as f64).collect(),
+                                    typed.integrate_u16_parallel(&raw16, errors).unwrap(),
+                                );
+                            });
+                        }
                     }
                     assert!(typed.integrate_u32(&raw32[..pixels - 1], true).is_err());
+                    assert!(
+                        typed
+                            .integrate_u16_parallel(&raw16[..pixels - 1], false)
+                            .is_err()
+                    );
+                    assert!(
+                        typed
+                            .integrate_u32_parallel(&raw32[..pixels - 1], true)
+                            .is_err()
+                    );
                     let expected = typed.integrate_u32(&raw32, true).unwrap();
                     std::thread::scope(|scope| {
                         for _ in 0..4 {

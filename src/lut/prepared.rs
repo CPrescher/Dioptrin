@@ -429,9 +429,10 @@ impl Prepared1d {
         )
     }
 
-    /// Frame-parallel callers execute these strict rows on their own worker.
-    /// Only input addresses change; coefficient and summation order do not.
-    pub(crate) fn integrate_input<const VAR: bool, P: Pixel>(
+    /// Frame-parallel callers execute rows on their own worker; interactive
+    /// callers can schedule independent rows in parallel. Only input addresses
+    /// change; coefficient and summation order within each bin do not.
+    pub(crate) fn integrate_input<const VAR: bool, P: Pixel, const PARALLEL: bool>(
         &self,
         signal: &[P],
         mask: Option<&[u8]>,
@@ -442,21 +443,27 @@ impl Prepared1d {
         let cached = table.normalization::<false>(None, norm);
         let columns = columns.unwrap_or(&table.col_idx);
         macro_rules! rows {
-            ($cols:expr) => {
-                (0..table.row_ptr.len() - 1)
-                    .map(|i| {
-                        let mut sums = table.sum::<_, P, false, true, false, VAR, false>(
-                            i,
-                            $cols,
-                            None,
-                            signal,
-                            &[],
-                        );
-                        sums[1] = cached[i];
-                        sums
-                    })
-                    .collect()
-            };
+            ($cols:expr) => {{
+                let row = |i| {
+                    let mut sums = table.sum::<_, P, false, true, false, VAR, false>(
+                        i,
+                        $cols,
+                        None,
+                        signal,
+                        &[],
+                    );
+                    sums[1] = cached[i];
+                    sums
+                };
+                if PARALLEL {
+                    (0..table.row_ptr.len() - 1)
+                        .into_par_iter()
+                        .map(row)
+                        .collect()
+                } else {
+                    (0..table.row_ptr.len() - 1).map(row).collect()
+                }
+            }};
         }
         let rows = match columns {
             Columns::Compact(cols) => rows!(cols),
