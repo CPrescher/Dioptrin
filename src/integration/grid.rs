@@ -72,12 +72,20 @@ impl IntegrationGrid2d {
         if radial_range.0 < 0.0 {
             return Err("radial range must be nonnegative".into());
         }
-        if azimuthal_range.0 < -TAU
-            || azimuthal_range.0 > TAU
-            || azimuthal_range.1 - azimuthal_range.0 > TAU + 1e-12
-        {
-            return Err("azimuthal start must be in [-2π, 2π] and span must be at most 2π".into());
+        if azimuthal_range.1 - azimuthal_range.0 > TAU + 1e-12 {
+            return Err("azimuthal span must be at most 2π (one full turn)".into());
         }
+        // Correct distant starts before computing weights or axis labels. Keep
+        // all previously accepted ranges, including pyFAI's documented seams.
+        let azimuthal_range = if !(-TAU..=TAU).contains(&azimuthal_range.0) {
+            let mut start = azimuthal_range.0.rem_euclid(TAU);
+            if start >= std::f64::consts::PI {
+                start -= TAU;
+            }
+            (start, start + (azimuthal_range.1 - azimuthal_range.0))
+        } else {
+            azimuthal_range
+        };
         Ok(Self {
             pixel_split_mode: PixelSplitMode::Fractional,
             n_radial,
@@ -261,6 +269,19 @@ impl Integrator {
         }
         self.update_geometry_arrays(dim1, dim2);
         let normalization = self.get_normalization();
+        self.validate_grid_coordinates(&normalization)?;
+        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
+        let lut = self.ensure_lut2d(self.shared_grid_key(grid));
+        Ok(if let Some(variance) = variance {
+            lut.raw2d_with_variances(data, variance, mask, &normalization)
+        } else if errors {
+            self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
+        } else {
+            self.lut_integrate2d_raw(data, &lut, mask, &normalization)
+        })
+    }
+
+    pub(super) fn validate_grid_coordinates(&self, normalization: &[f64]) -> Result<(), String> {
         {
             let state = self.state.read().map_err(|e| e.to_string())?;
             if state
@@ -276,15 +297,16 @@ impl Integrator {
                 );
             }
         }
-        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
-        let lut = self.ensure_lut2d(self.shared_grid_key(grid));
-        Ok(if let Some(variance) = variance {
-            lut.raw2d_with_variances(data, variance, mask, &normalization)
-        } else if errors {
-            self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
+        Ok(())
+    }
+
+    pub(super) fn grid_lut_key(&self, grid: &IntegrationGrid2d) -> super::cache::TwoDKey {
+        let grid = if matches!(self.method, IntegrationMethod::PyfaiFull) {
+            grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)
         } else {
-            self.lut_integrate2d_raw(data, &lut, mask, &normalization)
-        })
+            *grid
+        };
+        self.shared_grid_key(grid)
     }
 
     /// Cache key of the shared-grid table for this integrator's method and unit.
@@ -330,8 +352,10 @@ impl Integrator {
     /// and step, wrapping periodically) this is a true range: a sector such as
     /// `(0, PI / 2)` receives only the pixels (or pixel fractions) inside it.
     /// Angles are periodic, so a sector may cross the ±π cut, e.g.
-    /// `(2.5, 2.5 + PI / 2)`. `min` must lie in `[-2π, 2π]` and the span must
-    /// be positive and at most 2π.
+    /// `(2.5, 2.5 + PI / 2)`. Edges must be finite and resolvable, with a
+    /// positive span of at most 2π. Any starting angle is accepted; starts
+    /// outside ±2π are corrected to [-π, π), including the returned axis.
+    /// For example, (-3π, -π) is corrected to the full turn (-π, π).
     ///
     /// The radial edges are the ones [`Integrator::integrate2d`] uses for the
     /// same method, unit and `n_radial`, so the radial axis matches the default
@@ -369,7 +393,7 @@ impl Integrator {
         IntegrationGrid2d::new(n_radial, n_azimuthal, (0.0, 1.0), azimuthal_range)?;
         // Like the default 2D path, non-finite pixels are not rejected: they
         // propagate into the bins they contribute to.
-        self.validate_2d_setup(data, dim1, dim2)?;
+        self.validate_2d_setup(dim1, dim2, data.len())?;
         self.update_geometry_arrays(dim1, dim2);
         let radial_range = self.default_radial_edges_2d(dim1, dim2, n_radial);
         // Values inside the edges must land in a bin even when their index
@@ -468,7 +492,7 @@ impl Integrator {
         dim1: usize,
         dim2: usize,
     ) -> Result<(), String> {
-        self.validate_2d_setup(data, dim1, dim2)?;
+        self.validate_2d_setup(dim1, dim2, data.len())?;
         // Nonfinite pixels would poison raw sums. Masked pixels are allowed.
         if data
             .iter()
@@ -482,10 +506,15 @@ impl Integrator {
 
     /// Shape, mask, geometry and method checks shared by the 2D grid paths;
     /// the pixel values themselves are not inspected.
-    fn validate_2d_setup(&self, data: &[f64], dim1: usize, dim2: usize) -> Result<(), String> {
+    pub(super) fn validate_2d_setup(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        data_len: usize,
+    ) -> Result<(), String> {
         if dim1 == 0
             || dim2 == 0
-            || dim1.checked_mul(dim2) != Some(data.len())
+            || dim1.checked_mul(dim2) != Some(data_len)
             || dim1
                 .checked_add(1)
                 .and_then(|d| dim2.checked_add(1).and_then(|e| d.checked_mul(e)))
@@ -494,7 +523,7 @@ impl Integrator {
             return Err("image dimensions must be positive and match data length".into());
         }
         if let Some(mask) = &self.mask
-            && (mask.dim1 != dim1 || mask.dim2 != dim2 || mask.data.len() != data.len())
+            && (mask.dim1 != dim1 || mask.dim2 != dim2 || mask.data.len() != data_len)
         {
             return Err("mask dimensions must match its detector image".into());
         }

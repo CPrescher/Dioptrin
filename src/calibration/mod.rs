@@ -48,7 +48,7 @@ pub use grid_search::{
     GridSearchCandidate, GridSearchOptions, GridSearchResult, grid_search, grid_search_top_k,
 };
 pub use inversion::{InvertedGeometry, aggregate, invert};
-pub use massif::{ImagePeakOptions, MassifOptions, find_peaks, find_peaks_image};
+pub use massif::{ImagePeakOptions, MassifOptions, PreparedMassif, find_peaks, find_peaks_image};
 pub use radial::{RadialExtractOptions, RadialExtractResult, extract_rings_radial};
 pub use refinement::{
     CalibrationError, CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask,

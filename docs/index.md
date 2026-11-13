@@ -28,6 +28,8 @@ MULTI_DETECTOR
 detectors
 validation/pyfai-full
 validation/pyfai-full-seam
+validation/cached-pyfai
+validation/polygon-resident
 PERFORMANCE
 ```
 

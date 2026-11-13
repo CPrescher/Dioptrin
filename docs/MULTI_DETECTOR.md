@@ -103,8 +103,9 @@ multi-integrator when calibration or mask settings change.
 - Units: `2th_rad`, `2th_deg`, `q_A^-1`, `q_nm^-1`. q requires a positive finite
   wavelength in meters for each detector. Geometry distances and pixel sizes
   use meters; rotations and azimuthal coordinates use radians.
-- Azimuthal edges default to `(-pi, pi)`. The start is in `[-2*pi, 2*pi]` and
-  the increasing span is at most `2*pi`. A sector crossing the discontinuity
+- Azimuthal edges default to `(-pi, pi)`. Any finite, resolvable start is accepted;
+  the increasing span is at most `2*pi`. Starts outside ±`2*pi` are translated
+  to an equivalent start in [-π, π), including the returned axis labels. A sector crossing the discontinuity
   can be expressed as `(3*pi/4, 5*pi/4)`. Angles wrap over `2*pi`, then the
   requested sector is **clipped**. They never fold over the sector width.
 - Bins are half-open. Out-of-range centers/samples are excluded; split pixels
