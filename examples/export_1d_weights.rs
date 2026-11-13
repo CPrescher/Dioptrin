@@ -3,8 +3,8 @@
 //! METHOD is counting, pixel_split, pyfai_full or supersampled; R0/R1 are 2θ in
 //! radians. OUTPUT is little-endian f64, shaped (ROWS*COLS, NR): row p holds the
 //! raw `sum_signal` of an image that is 1 in pixel p and 0 elsewhere. No mask or
-//! corrections are applied. Tables that are normalized per bin (counting,
-//! pixel_split, supersampled) therefore report w[p,b] / sum_p w[p,b].
+//! corrections are applied. Every method reports the pixel's own weight in the
+//! bin: 1 for counting, the fraction of the pixel for the splitting methods.
 use dioptrin::{
     geometry::Geometry,
     integration::{IntegrationMethod, Integrator, RadialUnit},

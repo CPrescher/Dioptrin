@@ -174,8 +174,7 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
     a
 }
 
-/// Per-bin `(pixel, fraction)` contributions of the 1D polygon builders,
-/// before the per-bin normalization applied by the public builders.
+/// Per-bin `(pixel, fraction)` contributions of the 1D polygon builders.
 ///
 /// `fraction = area(pixel ∩ bin) / area(pixel)`, both measured on the pixel's
 /// quadrilateral in (radial, azimuth) space, so a pixel that lies completely
@@ -322,7 +321,8 @@ pub(crate) fn lut1d_ps_fractions(
     buckets
 }
 
-/// Flatten per-bin fractions to CSR and normalize each bin (row) to unit sum.
+/// Flatten per-bin fractions to CSR. Weights stay pixel fractions (not
+/// normalized per bin), so raw sums of different detectors share one scale.
 fn lut1d_from_fractions(buckets: Vec<Vec<(usize, f64)>>, min: f64, step: f64) -> Lut1d {
     let n_points = buckets.len();
     // Prefix sum
@@ -337,17 +337,6 @@ fn lut1d_from_fractions(buckets: Vec<Vec<(usize, f64)>>, min: f64, step: f64) ->
         for (idx, val) in bucket {
             col_idx.push(*idx);
             values.push(*val);
-        }
-    }
-
-    // Normalize per row
-    for i in 0..n_points {
-        let (s, e) = (row_ptr[i], row_ptr[i + 1]);
-        let ssum: f64 = values[s..e].iter().sum();
-        if ssum > 0.0 {
-            for v in &mut values[s..e] {
-                *v /= ssum;
-            }
         }
     }
 
@@ -367,9 +356,10 @@ fn lut1d_from_fractions(buckets: Vec<Vec<(usize, f64)>>, min: f64, step: f64) ->
 /// The `unit` parameter specifies the radial unit for proper corner conversion.
 ///
 /// Each pixel is weighted by the fraction of its own (radial, azimuth)
-/// quadrilateral that falls into a bin; each bin (row) is then normalized to
-/// unit sum. Pixels containing or touching the point of normal incidence use
-/// detector-plane sampling instead of a polar quadrilateral.
+/// quadrilateral that falls into a bin. Bins (rows) are not normalized, so the
+/// raw sums of several detectors can be added. Pixels containing or touching
+/// the point of normal incidence use detector-plane sampling instead of a
+/// polar quadrilateral.
 ///
 /// Example (1D)
 /// ```
@@ -424,7 +414,7 @@ pub fn build_lut1d_ps_csr(
 ///
 /// Weights are per-pixel area fractions as in [`build_lut1d_ps_csr`]; a pixel
 /// partly outside `[radial_min, radial_max)` contributes only its in-range
-/// fraction (it is not renormalized to one) before the per-bin normalization.
+/// fraction (it is not renormalized to one).
 pub fn build_lut1d_ps_csr_with_range(
     geometry: &Geometry,
     radial: &[f64],
@@ -998,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_included_pixels_have_unit_total_weight_before_bin_normalization() {
+    fn fully_included_pixels_have_unit_total_weight() {
         let mut poni = Poni::new();
         poni.pixel1 = 1.7e-4;
         poni.pixel2 = 2.1e-4;
@@ -1030,20 +1020,25 @@ mod tests {
         let total = pixel_total(&buckets, 0);
         assert!((total - 0.4).abs() < 1e-3, "{total}");
 
-        // The public builder normalizes the bin but must not hide the pixel.
+        // The public builder keeps the fractions as they are.
         let tth = geometry.calc_tth_all();
         let lut = build_lut1d_ps_csr_with_range(&geometry, &tth, 4, RadialUnit::TthRad, min, max);
         assert!(lut.col_idx.iter().all(|&pixel| pixel == 0));
         assert_eq!(lut.row_ptr[4] - lut.row_ptr[3], 1);
-        assert_eq!(lut.values.unwrap()[lut.row_ptr[3]], 1.0);
+        let values = lut.values.unwrap();
+        assert!(
+            (values.iter().sum::<f64>() - 0.4).abs() < 1e-3,
+            "{values:?}"
+        );
     }
 
     #[test]
     fn bin_weights_follow_pixel_fractions_not_polar_area() {
         // Pixels 1..=3 of the strip span 11-12, 12-13 and 13-14 pixel lengths
         // from the beam. One bin covers the outer half of the first, all of the
-        // second and the inner half of the third: weights 1/4, 1/2, 1/4.
-        // Polar-area weights (~1/r) would give 0.267, 0.499, 0.234.
+        // second and the inner half of the third: weights 1/2, 1, 1/2, i.e.
+        // 1/4, 1/2, 1/4 of the bin. Polar-area weights (~1/r) would give bin
+        // shares of 0.267, 0.499, 0.234.
         let geometry = radial_strip(5, 10.0, 0.1);
         let (lo1, hi1) = pixel_radial_extent(&geometry, 1);
         let (lo3, hi3) = pixel_radial_extent(&geometry, 3);
@@ -1053,10 +1048,11 @@ mod tests {
         let lut = build_lut1d_ps_csr_with_range(&geometry, &tth, 1, RadialUnit::TthRad, min, max);
         assert_eq!(lut.col_idx, vec![1, 2, 3]);
         let values = lut.values.unwrap();
+        assert!((values[1] - 1.0).abs() < 1e-12, "{values:?}");
+        let total: f64 = values.iter().sum();
         for (value, expected) in values.iter().zip([0.25, 0.5, 0.25]) {
-            assert!((value - expected).abs() < 0.01, "{values:?}");
+            assert!((value / total - expected).abs() < 0.01, "{values:?}");
         }
-        assert!((values.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
 
     #[test]

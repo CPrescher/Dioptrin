@@ -1,6 +1,9 @@
 //! Exact regression oracle: the pre-optimization collect/sort implementation.
 //! Kept test-only, on small tilted geometries, to catch boundary arithmetic,
 //! sample counting, CSR ordering and floating-point normalization changes.
+//! The 1D oracles follow two deliberate changes to the production tables:
+//! weights are pixel fractions (divided by n_ss², not by the bin total), and
+//! with an explicit range, subpixels outside it are dropped instead of clamped.
 #![allow(clippy::too_many_arguments)] // Preserve the previous kernel signatures as test oracles.
 use super::*;
 use crate::poni::Poni;
@@ -70,7 +73,8 @@ mod legacy {
                 bin_total += cnt;
             }
             if bin_total > 0 {
-                let denom = bin_total as f64;
+                // 1D weights are pixel fractions, not normalized per bin.
+                let denom = (n_ss * n_ss) as f64;
                 for w in &mut values[bin_start..] {
                     *w /= denom;
                 }
@@ -100,7 +104,7 @@ mod legacy {
         radial_min: f64,
         radial_max: f64,
     ) -> Lut1d {
-        let (hist_min, _hist_max, hist_step) =
+        let (hist_min, hist_max, hist_step) =
             histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
         let wavelength = geometry.poni.wavelength;
@@ -116,7 +120,11 @@ mod legacy {
                     let tth_ss = geometry.calc_tth(&d1, &d2);
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for (i, &v) in radial_ss.iter().enumerate() {
-                        let b = histogram::get_bin_clamped(v, hist_min, hist_step, n_points);
+                        // Subpixels outside the explicit range belong to no bin.
+                        if !(hist_min..=hist_max).contains(&v) {
+                            continue;
+                        }
+                        let b = histogram::get_bin(v, hist_min, hist_step).min(n_points - 1);
                         acc.push((b, actual_index[i]));
                     }
                     acc
@@ -155,7 +163,8 @@ mod legacy {
                 bin_total += cnt;
             }
             if bin_total > 0 {
-                let denom = bin_total as f64;
+                // 1D weights are pixel fractions, not normalized per bin.
+                let denom = (n_ss * n_ss) as f64;
                 for w in &mut values[bin_start..] {
                     *w /= denom;
                 }

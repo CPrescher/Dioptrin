@@ -27,7 +27,8 @@ Supersampling counts a pixel's repeated contributions to each output bin while
 generating its subpixels, then assembles the unique contributions into an exactly
 sized CSR table. It avoids a detector-wide list of all `pixels × n_ss²` events
 and the associated global sort. The same float64 geometry arithmetic, bin-edge
-rules, sorted pixel order and normalized weights are preserved in 1D and 2D.
+rules and sorted pixel order are preserved in 1D and 2D. 1D weights are
+fractions of each pixel; 2D weights are normalized per bin.
 Geometry and the completed table remain shared by native batch workers.
 
 ## 1D integration example
