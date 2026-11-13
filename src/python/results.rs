@@ -12,7 +12,8 @@ use std::sync::mpsc::Receiver;
 /// # Attributes
 ///
 /// * `radial` - Radial bin centers (1D and MultiIntegrator 2D; otherwise None)
-/// * `azimuthal` - Azimuthal bin centers in radians (MultiIntegrator 2D; otherwise None)
+/// * `azimuthal` - Azimuthal bin centers in radians (MultiIntegrator 2D and Integrator 2D
+///   with `azimuthal_range`; otherwise None)
 /// * `intensity` - Integrated intensity values
 /// * `errors` - Poisson error estimates (present if errors=True was specified)
 /// * `azimuthal_std` - Weighted population spread (1D, when requested)
@@ -112,6 +113,46 @@ impl PyIntegrationResult {
         }
     }
 
+    /// 2D result on an explicit azimuthal range: fills the azimuthal bin
+    /// centres; `radial` stays None as for the default 2D path.
+    pub(crate) fn from_azimuthal_range_2d(
+        result: crate::integration::AzimuthalRange2dResult,
+        n_radial: usize,
+        n_azimuthal: usize,
+    ) -> Self {
+        Self {
+            radial: None,
+            azimuthal: Some(result.azimuthal),
+            intensity: result.intensity,
+            errors: result.errors,
+            azimuthal_std: None,
+            n_radial: Some(n_radial),
+            n_azimuthal: Some(n_azimuthal),
+        }
+    }
+
+    /// Batch entry for an explicit-range result: integration errors (invalid
+    /// input) become the entry's error.
+    pub(crate) fn batch_azimuthal_range_2d(
+        filename: String,
+        result: Result<AzimuthalRange2dOutput, String>,
+        n_radial: usize,
+        n_azimuthal: usize,
+    ) -> PyBatchResult {
+        match result.and_then(|r| r) {
+            Ok(r) => PyBatchResult {
+                filename,
+                result: Some(Self::from_azimuthal_range_2d(r, n_radial, n_azimuthal)),
+                error: None,
+            },
+            Err(e) => PyBatchResult {
+                filename,
+                result: None,
+                error: Some(e),
+            },
+        }
+    }
+
     pub(crate) fn from_2d_with_errors(
         intensity: Vec<f64>,
         errors: Vec<f64>,
@@ -201,7 +242,16 @@ pub(crate) enum BatchReceiver {
         n_radial: usize,
         n_azimuthal: usize,
     },
+    /// 2D on an explicit `(min, max)` azimuthal range; carries bin centres.
+    Integration2DOnAzimuthalRange {
+        receiver: Mutex<Receiver<(usize, String, Result<AzimuthalRange2dOutput, String>)>>,
+        n_radial: usize,
+        n_azimuthal: usize,
+    },
 }
+
+/// Output of [`crate::batch::Integration2DOnAzimuthalRange`].
+pub(crate) type AzimuthalRange2dOutput = Result<crate::integration::AzimuthalRange2dResult, String>;
 
 /// Iterator for streaming batch integration results.
 ///
@@ -406,6 +456,33 @@ impl PyBatchIterator {
                                 },
                             ),
                         },
+                        Err(_) => return Err(PyStopIteration::new_err(())),
+                    }
+                }
+                BatchReceiver::Integration2DOnAzimuthalRange {
+                    receiver,
+                    n_radial,
+                    n_azimuthal,
+                } => {
+                    let (n_radial, n_azimuthal) = (*n_radial, *n_azimuthal);
+                    let recv_result = py.detach(|| {
+                        receiver
+                            .lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|guard| {
+                                guard.recv().map_err(|_| "channel closed".to_string())
+                            })
+                    });
+                    match recv_result {
+                        Ok((index, filename, result)) => (
+                            index,
+                            PyIntegrationResult::batch_azimuthal_range_2d(
+                                filename,
+                                result,
+                                n_radial,
+                                n_azimuthal,
+                            ),
+                        ),
                         Err(_) => return Err(PyStopIteration::new_err(())),
                     }
                 }

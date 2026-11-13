@@ -4,7 +4,7 @@ mod cache;
 mod corrections;
 mod dynamic;
 pub(crate) mod grid;
-pub use grid::{IntegrationGrid2d, PixelSplitMode};
+pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode};
 mod fixed;
 pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};
 pub use fixed::{Fixed1dPlan, Fixed1dResult, Fixed1dWorker, InputOrder};
@@ -186,6 +186,8 @@ pub struct Integrator {
     fast_math: bool,
     mask_mode: MaskMode,
     sparse_layout: SparseLayout,
+    /// Default 2D radial edges for `integrate2d_on_azimuthal_range`.
+    radial_edges_2d: RwLock<Option<(grid::RadialEdgesKey, (f64, f64))>>,
 }
 
 impl Integrator {
@@ -203,6 +205,7 @@ impl Integrator {
             fast_math: true,
             mask_mode: MaskMode::default(),
             sparse_layout: SparseLayout::default(),
+            radial_edges_2d: RwLock::new(None),
         }
     }
 

@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Integrator::integrate2d_on_azimuthal_range` (and `_from_slice`) integrates
+  2D on true azimuthal edges `(min, max)` in radians, including sectors and
+  sectors crossing the ±π cut, and returns intensity, optional errors and the
+  radial and azimuthal bin centres (`AzimuthalRange2dResult`). It bins through
+  the cached shared-grid tables and keeps the default 2D radial grid. The batch
+  task `batch::Integration2DOnAzimuthalRange` runs it per file. The existing
+  `integrate2d_with_azimuthal_range*` functions keep their meaning (first-bin
+  centre and step, wrapping periodically).
+
 ### Fixed
 
+- Python `Integrator.integrate2d`, `batch2d` and `batch2d_iter` (path and
+  array input, with and without errors) passed the documented
+  `azimuthal_range=(min, max)` to Rust as (first-bin centre, step), so
+  `(0, 1.57)` with 90 bins put the whole circle into five bins of 1.57 rad.
+  They now integrate the true range: the bins split `[min, max)` evenly, pixels
+  outside are left out, and `result.azimuthal` holds the bin centres. Invalid
+  ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
+  `ValueError`; batches check before starting.
 - 1D `pixel_split` (`IntegrationMethod::PixelSplit`, `build_lut1d_ps_csr`,
   `build_lut1d_ps_csr_with_range`) now weights every pixel by the **fraction
   of its own area** that falls into a radial bin (clipped polygon area divided
@@ -46,6 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility and validation
 
+- **Behaviour change:** Python `Integrator` 2D calls with an explicit
+  `azimuthal_range` return different cakes. Ranges used to be read as (first-bin
+  centre, step); they are now true `(min, max)` ranges, sectors included, so
+  code that passed (centre, step) to work around the bug must pass
+  `(min, max)` instead. An explicit full circle `(-π, π)` follows exactly ±π,
+  while the default (no range) grid spans the detector's own azimuth extent, so
+  values differ slightly from the default cake; on the CeO2 Pilatus 1M test
+  image (500×360 bins, 2θ in degrees) the median relative difference per bin is
+  2e-5 for counting, 1.8e-3 for `pixel_split`, 1.0e-3 for `supersampled` and
+  0 for `pyfai_full`, with larger differences in sparsely filled bins at module
+  gaps. On the default path's own edges, counting and supersampling give
+  identical values except next to the beam centre, and `pixel_split` differs
+  slightly (fractional polygon areas vs the legacy 2D table). Calls without
+  `azimuthal_range` are unchanged.
 - **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
   patterns change wherever detectors share a bin with unequal coverage.
   Single-detector intensities and errors are unchanged up to floating-point

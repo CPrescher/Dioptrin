@@ -173,7 +173,10 @@ impl IntegrationTask for Integration2DWithErrors {
 pub struct Integration2DWithAzimuthalRange {
     pub n_radial: usize,
     pub n_azimuthal: usize,
+    /// Centre of the first azimuthal bin in radians (the `azimuthal_start` of
+    /// `Integrator::integrate2d_with_azimuthal_range`), despite the field name.
     pub azimuthal_min: f64,
+    /// Azimuthal bin width in radians (`azimuthal_step`), despite the field name.
     pub azimuthal_max: f64,
 }
 
@@ -208,7 +211,10 @@ impl IntegrationTask for Integration2DWithAzimuthalRange {
 pub struct Integration2DWithAzimuthalRangeAndErrors {
     pub n_radial: usize,
     pub n_azimuthal: usize,
+    /// Centre of the first azimuthal bin in radians (the `azimuthal_start` of
+    /// `Integrator::integrate2d_with_azimuthal_range`), despite the field name.
     pub azimuthal_min: f64,
+    /// Azimuthal bin width in radians (`azimuthal_step`), despite the field name.
     pub azimuthal_max: f64,
 }
 
@@ -231,6 +237,39 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
             self.n_azimuthal,
             Some((self.azimuthal_min, self.azimuthal_max)),
         )
+    }
+}
+
+/// 2D integration on a true azimuthal range `(min, max)` in radians, via
+/// [`Integrator::integrate2d_on_azimuthal_range`]; sectors are supported.
+///
+/// Returns the full result (intensity, optional errors, bin centres), or an
+/// error message for invalid input.
+#[derive(Clone, Copy, Debug)]
+pub struct Integration2DOnAzimuthalRange {
+    pub n_radial: usize,
+    pub n_azimuthal: usize,
+    /// Lower azimuthal edge in radians.
+    pub azimuthal_min: f64,
+    /// Upper azimuthal edge in radians.
+    pub azimuthal_max: f64,
+    pub errors: bool,
+}
+
+impl IntegrationTask for Integration2DOnAzimuthalRange {
+    type Output = Result<crate::integration::AzimuthalRange2dResult, String>;
+
+    fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
+        integrator.integrate2d_on_azimuthal_range(
+            frame,
+            self.n_radial,
+            self.n_azimuthal,
+            (self.azimuthal_min, self.azimuthal_max),
+            self.errors,
+        )
+    }
+    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+        self.execute(integrator, &frame.to_frame())
     }
 }
 
