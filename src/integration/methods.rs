@@ -49,8 +49,8 @@ impl Integrator {
         if matches!(self.method, IntegrationMethod::Histogram) {
             // Preserve Histogram's legacy mean of pre-corrected intensities and
             // its automatic radial range, rather than changing its weighting.
-            let radial = view.state.radial.clone();
-            let lut = crate::lut::build_lut1d_csr(&radial, n_points);
+            let radial = &view.state.radial;
+            let lut = crate::lut::build_lut1d_csr(radial, n_points);
             let corrected: Vec<_> = data
                 .iter()
                 .zip(normalization.iter())
@@ -141,7 +141,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = view.state.radial.clone();
+                let radial = &view.state.radial;
                 // Histogram uses pre-corrected intensity for backward compat
                 let corrected: Vec<f64> = frame
                     .data
@@ -149,7 +149,7 @@ impl Integrator {
                     .zip(normalization.iter())
                     .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
                     .collect();
-                histogram::histogram(&radial, &corrected, n_points, mask_data)
+                histogram::histogram(radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
                 let lut1d = view.ensure_lut1d(OneDKey::Counting {
@@ -196,7 +196,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = view.state.radial.clone();
+                let radial = &view.state.radial;
                 let corrected: Vec<f64> = frame
                     .data
                     .iter()
@@ -210,7 +210,7 @@ impl Integrator {
                     .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
                     .collect();
                 histogram::histogram_with_errors(
-                    &radial,
+                    radial,
                     &corrected,
                     &corrected_var,
                     n_points,
@@ -262,13 +262,13 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = view.state.radial.clone();
+                let radial = &view.state.radial;
                 let corrected: Vec<f64> = data
                     .iter()
                     .zip(normalization.iter())
                     .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
                     .collect();
-                histogram::histogram(&radial, &corrected, n_points, mask_data)
+                histogram::histogram(radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
                 let lut1d = view.ensure_lut1d(OneDKey::Counting {
@@ -315,7 +315,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = view.state.radial.clone();
+                let radial = &view.state.radial;
                 let corrected: Vec<f64> = data
                     .iter()
                     .zip(normalization.iter())
@@ -328,7 +328,7 @@ impl Integrator {
                     .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
                     .collect();
                 histogram::histogram_with_errors(
-                    &radial,
+                    radial,
                     &corrected,
                     &corrected_var,
                     n_points,

@@ -223,6 +223,7 @@ impl Integrator {
         if let Some(mask) = &self.mask {
             mask.assert_compatible(dim1, dim2);
         }
+        let view = self.for_shape(dim1, dim2);
         let unit = self.radial_unit;
         let radial_range = self.radial_range_key();
         let key = match self.method {
@@ -247,7 +248,7 @@ impl Integrator {
             },
             super::IntegrationMethod::Histogram => return,
         };
-        drop(self.for_shape(dim1, dim2).ensure_lut1d(key));
+        drop(view.ensure_lut1d(key));
     }
 
     pub(super) fn pixel_split2d_key(
@@ -294,6 +295,9 @@ pub(super) struct ShapeView<'a> {
 
 impl Integrator {
     pub(super) fn for_shape(&self, dim1: usize, dim2: usize) -> ShapeView<'_> {
+        if let Some(mask) = &self.mask {
+            mask.assert_compatible(dim1, dim2);
+        }
         ShapeView {
             integrator: self,
             state: self.geometry_for(dim1, dim2),

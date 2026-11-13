@@ -11,8 +11,9 @@ use super::{IntegrationGrid2d, IntegrationMethod, Integrator, RadialUnit};
 use crate::batch::{
     Integration1D, Integration2D, WorkItem, process_files_streaming, process_queue_streaming,
 };
-use crate::frame::Frame;
+use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
+use crate::mask::Mask;
 use crate::poni::Poni;
 
 /// Includes two shapes with the same pixel count, which a length check alone
@@ -106,6 +107,146 @@ fn references(method: IntegrationMethod) -> Vec<Reference> {
             (frame, expected)
         })
         .collect()
+}
+
+#[test]
+fn histogram_preparation_warms_geometry_without_a_lookup_table() {
+    let ai = integrator(IntegrationMethod::Histogram);
+    assert!(ai.tth().is_empty());
+    ai.prepare1d(SHAPES[0].0, SHAPES[0].1, N_POINTS);
+    assert_eq!(ai.tth().len(), SHAPES[0].0 * SHAPES[0].1);
+    assert!(ai.cache_1d.read().unwrap().lut.is_none());
+    let prepared = ai.geometry_for(SHAPES[0].0, SHAPES[0].1);
+    ai.integrate1d(&frame(SHAPES[0]), N_POINTS);
+    assert!(Arc::ptr_eq(
+        &prepared,
+        &ai.geometry_for(SHAPES[0].0, SHAPES[0].1)
+    ));
+}
+
+#[test]
+fn radial_unit_builder_refreshes_an_already_used_integrator() {
+    for method in METHODS.into_iter().take(4) {
+        let frame = frame(SHAPES[0]);
+        let mut ai = integrator(method);
+        ai.integrate1d(&frame, N_POINTS);
+        for unit in [
+            RadialUnit::TthDeg,
+            RadialUnit::QNm,
+            RadialUnit::QAngstrom,
+            RadialUnit::TthRad,
+        ] {
+            ai = ai.with_radial_unit(unit);
+            let fresh = integrator(method).with_radial_unit(unit);
+            let actual = ai.integrate1d_with_errors(&frame, N_POINTS);
+            let expected = fresh.integrate1d_with_errors(&frame, N_POINTS);
+            assert_eq!(actual.0, expected.0);
+            assert_same(method, &actual.1, &expected.1, "unit-builder intensity");
+            assert_same(method, &actual.2, &expected.2, "unit-builder errors");
+        }
+    }
+}
+
+#[test]
+fn incompatible_mask_rejects_a_shape_before_replacing_geometry() {
+    let shape = SHAPES[0];
+    let ai = integrator(IntegrationMethod::Counting).with_mask(Mask {
+        data: vec![0; shape.0 * shape.1],
+        dim1: shape.0,
+        dim2: shape.1,
+    });
+    let expected = ai.integrate1d(&frame(shape), N_POINTS);
+    let prepared = ai.geometry_for(shape.0, shape.1);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ai.integrate1d(&frame(SHAPES[1]), N_POINTS)
+    }));
+    assert!(failed.is_err());
+    assert!(Arc::ptr_eq(&prepared, &ai.state.read().unwrap()));
+    assert_eq!(ai.integrate1d(&frame(shape), N_POINTS), expected);
+}
+
+#[test]
+fn typed_tiff_threads_match_float_references_across_shapes() {
+    use std::{
+        fs::File,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tiff::encoder::{TiffEncoder, colortype};
+    let path = std::env::temp_dir().join(format!(
+        "dioptrin-mixed-typed-{}-{}.tif",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let typed: Vec<_> = SHAPES
+        .into_iter()
+        .map(|(h, w)| {
+            let pixels: Vec<u32> = (0..h * w)
+                .map(|p| ((p * 37 + w) % 100_003) as u32)
+                .collect();
+            TiffEncoder::new(File::create(&path).unwrap())
+                .unwrap()
+                .write_image::<colortype::Gray32>(w as u32, h as u32, &pixels)
+                .unwrap();
+            let mut image = TiffFrame::default();
+            image.reload(path.to_str().unwrap()).unwrap();
+            assert!(image.legacy().is_none());
+            assert!(matches!(
+                image.pixels,
+                tiff::decoder::DecodingResult::U32(_)
+            ));
+            image
+        })
+        .collect();
+    std::fs::remove_file(path).unwrap();
+    let angles = [None, Some((-2.8, 0.9))];
+    for method in METHODS.into_iter().take(4) {
+        for fast in [false, true] {
+            let new = || integrator(method).with_fast_math(fast);
+            let references: Vec<_> = typed
+                .iter()
+                .map(|image| {
+                    let frame = image.to_frame();
+                    let ai = new();
+                    let pattern = ai.integrate1d_with_errors(&frame, N_POINTS);
+                    let cakes: Vec<_> = angles
+                        .into_iter()
+                        .map(|range| {
+                            if let Some((start, step)) = range {
+                                ai.integrate2d_with_azimuthal_range_and_errors(
+                                    &frame,
+                                    N_RADIAL,
+                                    N_AZIMUTHAL,
+                                    start,
+                                    step,
+                                )
+                            } else {
+                                ai.integrate2d_with_errors(&frame, N_RADIAL, N_AZIMUTHAL)
+                            }
+                        })
+                        .collect();
+                    (pattern, cakes)
+                })
+                .collect();
+            let shared = new();
+            (0..36).into_par_iter().for_each(|i| {
+                let k = i % typed.len();
+                let a = (i / typed.len()) % angles.len();
+                let actual = shared.integrate_tiff1d::<true>(&typed[k], N_POINTS);
+                let expected = &references[k].0;
+                assert_eq!(actual.0, expected.0);
+                assert_same(method, &actual.1, &expected.1, "typed 1D intensity");
+                assert_same(method, &actual.2, &expected.2, "typed 1D errors");
+                let actual =
+                    shared.integrate_tiff2d::<true>(&typed[k], N_RADIAL, N_AZIMUTHAL, angles[a]);
+                let expected = &references[k].1[a];
+                assert_same(method, &actual.0, &expected.0, "typed 2D intensity");
+                assert_same(method, &actual.1, &expected.1, "typed 2D errors");
+            });
+        }
+    }
 }
 
 #[test]
@@ -267,7 +408,8 @@ fn queue_batch_with_workers_handles_mixed_shapes() {
     }
 }
 
-/// TIFF files take the typed-pixel path (`integrate_tiff1d`/`integrate_tiff2d`).
+/// Rust streaming helpers decode TIFFs to float64 Frames; the direct typed
+/// adapters are exercised separately above.
 #[test]
 fn file_batch_with_workers_handles_tiffs_of_different_sizes() {
     crate::util::download_pilatus_test_file();

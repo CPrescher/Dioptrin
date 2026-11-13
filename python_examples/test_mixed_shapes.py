@@ -28,13 +28,19 @@ class MixedShapeTests(unittest.TestCase):
     def test_parallel_1d_arrays_and_generators_match_independent_shapes(self):
         frames = images()
         order = [i % len(frames) for i in range(18)]
-        for method in METHODS:
+        for method in (*METHODS, "histogram"):
             for fast in (False, True):
                 new = lambda: dioptrin.Integrator.from_poni_dict(
                     PONI, method=method, n_ss=2, fast_math=fast)
                 for errors in (False, True):
                     expected = [new().integrate1d(image, 25, errors=errors) for image in frames]
                     shared = new()
+                    eager = shared.batch1d([frames[i] for i in order], 25, errors=errors,
+                                           num_workers=4, num_threads=2)
+                    self.assertEqual(len(eager), len(order))
+                    for i, item in zip(order, eager):
+                        self.assertTrue(item.is_ok(), item.error)
+                        self.assert_result_matches(item.result, expected[i])
                     for source in ([frames[i] for i in order], (frames[i] for i in order)):
                         batch = list(shared.batch1d_iter(source, 25, errors=errors,
                                                         num_workers=4, num_threads=2))

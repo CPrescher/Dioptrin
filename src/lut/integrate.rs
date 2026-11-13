@@ -7,7 +7,8 @@ use crate::math::histogram;
 
 /// First half of the bounds check for the unchecked loops in this module:
 /// one weight per column index, and the length every per-pixel array is
-/// guaranteed to have (returned). [`check_row`] does the rest row by row.
+/// guaranteed to have (returned). [`check_row`] validates row spans and
+/// [`check_pixel`] validates each gathered index during accumulation.
 ///
 /// `Lut1d`/`Lut2d` have public fields and the arrays come from the caller, so
 /// none of this can be assumed.
@@ -29,15 +30,19 @@ fn pixel_limit(
     mask.map_or(arrays, |m| m.len().min(arrays))
 }
 
-/// Second half: the row's entries `start..end` exist (the slice panics
-/// otherwise) and address only pixels below `limit`. Reading the row's
-/// indices here also brings them into cache for the gather that follows.
-#[inline]
-fn check_row(col_idx: &[usize], start: usize, end: usize, limit: usize) {
-    let largest = col_idx[start..end].iter().fold(0, |m, &j| m.max(j));
+/// Validate the row span before reading column indices or weights through pointers.
+#[inline(always)]
+fn check_row(col_idx: &[usize], start: usize, end: usize) {
+    let _ = &col_idx[start..end];
+}
+
+/// Validate each gathered index in the accumulation loop, avoiding a separate
+/// traversal of the table while guarding every per-pixel pointer read.
+#[inline(always)]
+fn check_pixel(index: usize, limit: usize) {
     assert!(
-        start == end || largest < limit,
-        "lookup table addresses pixel {largest} but the image, mask, normalization \
+        index < limit,
+        "lookup table addresses pixel {index} but the image, mask, normalization \
          or variance array has only {limit} pixels"
     );
 }
@@ -87,7 +92,7 @@ pub fn integrate1d(
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return 0.0;
             }
@@ -107,6 +112,7 @@ pub fn integrate1d(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -119,6 +125,7 @@ pub fn integrate1d(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
                                     k += 1;
@@ -146,6 +153,7 @@ pub fn integrate1d(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_norm += *norm_ptr.add(j);
@@ -156,6 +164,7 @@ pub fn integrate1d(
                             None => {
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
                                     k += 1;
@@ -199,7 +208,7 @@ pub fn integrate1d_with_errors(
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return (0.0, 0.0);
             }
@@ -220,6 +229,7 @@ pub fn integrate1d_with_errors(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -233,6 +243,7 @@ pub fn integrate1d_with_errors(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_var += w * w * *variance_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
@@ -262,6 +273,7 @@ pub fn integrate1d_with_errors(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_var += *variance_ptr.add(j);
@@ -273,6 +285,7 @@ pub fn integrate1d_with_errors(
                             None => {
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_var += *variance_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
@@ -342,7 +355,7 @@ pub fn integrate2d(
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return 0.0;
             }
@@ -361,6 +374,7 @@ pub fn integrate2d(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -373,6 +387,7 @@ pub fn integrate2d(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
                                     k += 1;
@@ -399,6 +414,7 @@ pub fn integrate2d(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_norm += *norm_ptr.add(j);
@@ -409,6 +425,7 @@ pub fn integrate2d(
                             None => {
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
                                     k += 1;
@@ -450,7 +467,7 @@ pub fn integrate2d_with_errors(
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return (0.0, 0.0);
             }
@@ -471,6 +488,7 @@ pub fn integrate2d_with_errors(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -484,6 +502,7 @@ pub fn integrate2d_with_errors(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_var += w * w * *variance_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
@@ -513,6 +532,7 @@ pub fn integrate2d_with_errors(
                                 let mask_ptr = mask.as_ptr();
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_var += *variance_ptr.add(j);
@@ -524,6 +544,7 @@ pub fn integrate2d_with_errors(
                             None => {
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_var += *variance_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
@@ -588,7 +609,7 @@ pub fn integrate1d_raw(
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return (0.0, 0.0, 0.0);
             }
@@ -608,6 +629,7 @@ pub fn integrate1d_raw(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -622,6 +644,7 @@ pub fn integrate1d_raw(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
                                     count += w;
@@ -646,6 +669,7 @@ pub fn integrate1d_raw(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_norm += *norm_ptr.add(j);
@@ -658,6 +682,7 @@ pub fn integrate1d_raw(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
                                     count += 1.0;
@@ -709,7 +734,7 @@ pub fn integrate1d_raw_with_variance(
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return (0.0, 0.0, 0.0, 0.0);
             }
@@ -731,6 +756,7 @@ pub fn integrate1d_raw_with_variance(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -746,6 +772,7 @@ pub fn integrate1d_raw_with_variance(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_var += w * w * *variance_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
@@ -773,6 +800,7 @@ pub fn integrate1d_raw_with_variance(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_var += *variance_ptr.add(j);
@@ -786,6 +814,7 @@ pub fn integrate1d_raw_with_variance(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_var += *variance_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
@@ -839,7 +868,7 @@ pub fn integrate2d_raw(
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return (0.0, 0.0, 0.0);
             }
@@ -859,6 +888,7 @@ pub fn integrate2d_raw(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -873,6 +903,7 @@ pub fn integrate2d_raw(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
                                     count += w;
@@ -897,6 +928,7 @@ pub fn integrate2d_raw(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_norm += *norm_ptr.add(j);
@@ -909,6 +941,7 @@ pub fn integrate2d_raw(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
                                     count += 1.0;
@@ -960,7 +993,7 @@ pub fn integrate2d_raw_with_variance(
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end, limit);
+            check_row(&lut.col_idx, start, end);
             if start == end {
                 return (0.0, 0.0, 0.0, 0.0);
             }
@@ -982,6 +1015,7 @@ pub fn integrate2d_raw_with_variance(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         let w = *values_ptr.add(k);
                                         sum_sig += w * *intensity_ptr.add(j);
@@ -997,6 +1031,7 @@ pub fn integrate2d_raw_with_variance(
                                 while k < end {
                                     let w = *values_ptr.add(k);
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += w * *intensity_ptr.add(j);
                                     sum_var += w * w * *variance_ptr.add(j);
                                     sum_norm += w * *norm_ptr.add(j);
@@ -1024,6 +1059,7 @@ pub fn integrate2d_raw_with_variance(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     if *mask_ptr.add(j) == 0 {
                                         sum_sig += *intensity_ptr.add(j);
                                         sum_var += *variance_ptr.add(j);
@@ -1037,6 +1073,7 @@ pub fn integrate2d_raw_with_variance(
                                 let mut k = start;
                                 while k < end {
                                     let j = *col_ptr.add(k);
+                                    check_pixel(j, limit);
                                     sum_sig += *intensity_ptr.add(j);
                                     sum_var += *variance_ptr.add(j);
                                     sum_norm += *norm_ptr.add(j);
@@ -1376,6 +1413,62 @@ mod tests {
             values,
             n_tth: 1,
             n_azimuthal: 1,
+        }
+    }
+
+    #[test]
+    fn every_public_kernel_checks_gathered_indices_with_weights_and_masks() {
+        for weighted in [false, true] {
+            for masked in [false, true] {
+                let two = lut(vec![0, 7], 2, weighted.then(|| vec![0.5; 2]));
+                let one = Lut1d {
+                    row_ptr: two.row_ptr.clone(),
+                    col_idx: two.col_idx.clone(),
+                    values: two.values.clone(),
+                    hist_min: 0.,
+                    hist_step: 1.,
+                };
+                let mask = masked.then_some([0u8; 8]);
+                for kernel in 0..8 {
+                    let rejected = std::panic::catch_unwind(|| {
+                        let mask = mask.as_ref().map(|m| m.as_slice());
+                        let signal = &[1.; 4];
+                        let norm = &[1.; 8];
+                        let variance = &[1.; 8];
+                        match kernel {
+                            0 => {
+                                integrate1d(signal, &one, mask, norm);
+                            }
+                            1 => {
+                                integrate1d_with_errors(signal, variance, &one, mask, norm);
+                            }
+                            2 => {
+                                integrate1d_raw(signal, &one, mask, norm);
+                            }
+                            3 => {
+                                integrate1d_raw_with_variance(signal, variance, &one, mask, norm);
+                            }
+                            4 => {
+                                integrate2d(signal, &two, mask, norm);
+                            }
+                            5 => {
+                                integrate2d_with_errors(signal, variance, &two, mask, norm);
+                            }
+                            6 => {
+                                integrate2d_raw(signal, &two, mask, norm);
+                            }
+                            7 => {
+                                integrate2d_raw_with_variance(signal, variance, &two, mask, norm);
+                            }
+                            _ => unreachable!(),
+                        }
+                    });
+                    assert!(
+                        rejected.is_err(),
+                        "kernel={kernel}, weighted={weighted}, masked={masked}"
+                    );
+                }
+            }
         }
     }
 

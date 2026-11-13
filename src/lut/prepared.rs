@@ -482,6 +482,9 @@ impl Prepared1d {
     /// Frame-parallel callers execute rows on their own worker; interactive
     /// callers can schedule independent rows in parallel. Only input addresses
     /// change; coefficient and summation order within each bin do not.
+    /// `FixedCsr1dInputPlan` checks the complete frame length against its fixed
+    /// shape before calling this method; that also covers flipped columns,
+    /// whose largest index can exceed the original table's `min_pixels`.
     pub(crate) fn integrate_input<const VAR: bool, P: Pixel, const PARALLEL: bool>(
         &self,
         signal: &[P],
@@ -651,6 +654,7 @@ impl Prepared2d {
         norm: &[f64],
     ) -> Vec<f64> {
         let table = self.fixed_table(mask);
+        table.check_pixels("image", signal.len());
         let normalization = table.normalization::<FAST>(None, norm);
         macro_rules! run {
             ($cols:expr) => {
@@ -799,10 +803,11 @@ fn row<
     let mut c = [0.0; 4];
     let mut k = start;
     // SAFETY: `PreparedCsr::new` checks that row pointers and weights fit the
-    // column indices, and every caller runs `check_pixels` on the image, mask
-    // and normalization arrays it passes, so each index read here is in
-    // bounds. Const branches avoid reads of absent arrays. Compact conversion
-    // checks every index before narrowing.
+    // column indices. Callers establish array bounds through `check_pixels`
+    // or frozen-plan frame dimensions. The typed input plan checks the full
+    // frame before using its private, shape-validated flipped columns.
+    // Const branches avoid reads of absent arrays. Compact conversion checks
+    // every index before narrowing.
     unsafe {
         macro_rules! visit {
             ($lane:expr, $at:expr) => {{
@@ -910,6 +915,12 @@ mod explicit_variance_tests {
 #[cfg(test)]
 mod bounds_tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses 6 pixels but the image has only 4")]
+    fn fixed_intensity_rejects_an_image_shorter_than_its_table() {
+        table().fixed_intensity::<true>(&[2.; 4], None, &[1.; 6]);
+    }
 
     #[test]
     #[should_panic(expected = "lookup table pixel index is too large")]

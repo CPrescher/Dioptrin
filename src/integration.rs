@@ -297,8 +297,7 @@ impl Integrator {
 
     // builder pattern for radial unit
     pub fn with_radial_unit(mut self, unit: RadialUnit) -> Self {
-        self.radial_unit = unit;
-        self.invalidate_caches();
+        self.set_radial_unit(unit);
         self
     }
 
