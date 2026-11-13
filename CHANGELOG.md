@@ -44,20 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panic in that case but silently lost the sixteenth of the data that contained
   the maximum; it now returns the complete result.
 - `IntegrationMethod::Histogram` in 2D (every `Integrator::integrate2d*`
-  method, the typed TIFF 2D path, and Python `integrate2d`, `batch2d` and
-  `batch2d_iter`) ignored `n_azimuthal` and the azimuthal range and returned
-  the 1D radial profile: `n_radial` values instead of
-  `n_radial * n_azimuthal`, which could not be reshaped into a cake (or was
-  silently reshaped to a single row). Histogram has no azimuthal binning, so
-  the Rust methods now panic with "`<method>` is not supported for Histogram
-  method" and Python raises `ValueError` before any work starts. 1D Histogram
-  integration is unchanged.
+  method, the typed TIFF 2D path, the `batch` helpers with a 2D task, and
+  Python `integrate2d`, `batch2d` and `batch2d_iter`) ignored `n_azimuthal`
+  and the azimuthal range and returned the 1D radial profile: `n_radial`
+  values instead of `n_radial * n_azimuthal`, which could not be reshaped
+  into a cake (or was silently reshaped to a single row). Histogram has no
+  azimuthal binning, so the `integrate2d*` methods now panic with
+  "`<method>` is not supported for Histogram method"; `batch::process_files`,
+  `process_files_sequential`, `process_files_streaming` and
+  `process_queue_streaming` return that message as an `Err` for every input
+  without integrating; and Python raises `ValueError` before any work starts.
+  1D Histogram integration is unchanged.
 
 ### Compatibility and validation
 
 - **Behaviour change:** 2D integration with the Histogram method now fails
   instead of returning a 1D profile; use `counting`, `pixel_split`,
-  `pyfai_full` or `supersampled` for 2D.
+  `pyfai_full` or `supersampled` for 2D. `IntegrationTask` has a new provided
+  method, `integrate2d_method`, which the built-in 2D tasks override; custom
+  tasks are unaffected.
 - **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
   patterns change wherever detectors share a bin with unequal coverage.
   Single-detector intensities and errors are unchanged up to floating-point
