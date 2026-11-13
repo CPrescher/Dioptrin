@@ -13,7 +13,7 @@ use crate::batch::{
 };
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
-use crate::integration::{Integrator, MaskMode, RadialUnit, SparseLayout};
+use crate::integration::{IntegrationMethod, Integrator, MaskMode, RadialUnit, SparseLayout};
 use crate::mask::Mask;
 use crate::poni::Poni;
 
@@ -60,6 +60,18 @@ pub struct PyIntegrator {
 impl PyIntegrator {
     pub fn inner(&self) -> &Arc<Integrator> {
         &self.integrator
+    }
+
+    /// The Histogram method has no azimuthal binning, so 2D integration rejects
+    /// it before any work starts instead of panicking inside Rust.
+    fn reject_histogram_2d(&self, function: &str) -> PyResult<()> {
+        if matches!(self.integrator.method(), IntegrationMethod::Histogram) {
+            return Err(PyValueError::new_err(format!(
+                "{function} is not supported for the 'histogram' method; \
+                 use 'counting', 'pixel_split', 'pyfai_full' or 'supersampled'"
+            )));
+        }
+        Ok(())
     }
 
     fn file_pool(&self, workers: usize, threads: usize) -> PyResult<Arc<FileWorkers>> {
@@ -387,6 +399,11 @@ impl PyIntegrator {
     /// IntegrationResult with flat intensity (and optional errors) sized
     /// `n_radial * n_azimuthal`
     ///
+    /// # Errors
+    ///
+    /// Raises `ValueError` if the integrator uses the Histogram method, which has
+    /// no azimuthal binning.
+    ///
     /// # Example
     ///
     /// ```python
@@ -405,6 +422,7 @@ impl PyIntegrator {
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
     ) -> PyResult<PyIntegrationResult> {
+        self.reject_histogram_2d("integrate2d")?;
         match image {
             ImageInput::Path(tiff_path) => {
                 let frame = Frame::from_tiff(tiff_path).map_err(|err| {
@@ -1298,6 +1316,11 @@ impl PyIntegrator {
     ///
     /// List of BatchResult objects, each containing filename and IntegrationResult.
     ///
+    /// # Errors
+    ///
+    /// Raises `ValueError` if the integrator uses the Histogram method, which has
+    /// no azimuthal binning.
+    ///
     /// # Example
     ///
     /// ```python
@@ -1323,6 +1346,7 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
     ) -> PyResult<Vec<PyBatchResult>> {
+        self.reject_histogram_2d("batch2d")?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match (errors, azimuthal_range) {
@@ -1485,6 +1509,11 @@ impl PyIntegrator {
     /// The iterator has `total`, `completed`, and `progress` properties.
     /// When using a generator, `total` is 0 and `progress` returns None.
     ///
+    /// # Errors
+    ///
+    /// Raises `ValueError` if the integrator uses the Histogram method, which has
+    /// no azimuthal binning.
+    ///
     /// # Example
     ///
     /// ```python
@@ -1509,6 +1538,7 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
     ) -> PyResult<PyBatchIterator> {
+        self.reject_histogram_2d("batch2d_iter")?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         let classified = classify_batch_input(images)?;

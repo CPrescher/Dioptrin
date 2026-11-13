@@ -624,6 +624,10 @@ impl Integrator {
     /// let y = integrator.integrate2d(&frame, 2, 2);
     /// assert_eq!(y.len(), 4);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     pub fn integrate2d(&self, frame: &Frame, n_radial: usize, n_azimuthal: usize) -> Vec<f64> {
         self.update_geometry_arrays(frame.dim1, frame.dim2);
         let normalization = self.get_normalization();
@@ -634,19 +638,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = frame
-                    .data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
+                panic!("integrate2d is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting {
@@ -672,6 +664,11 @@ impl Integrator {
         }
     }
 
+    /// Like [`Self::integrate2d`], for a row-major `dim1 x dim2` slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     pub fn integrate2d_from_slice(
         &self,
         data: &[f64],
@@ -689,18 +686,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
+                panic!("integrate2d_from_slice is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting {
@@ -733,7 +719,10 @@ impl Integrator {
     /// `azimuthal_start` that defines the center of the first bin (e.g. `0.0` for 0..2*pi).
     /// Azimuthal bins wrap periodically, so angles outside the total range fold into
     /// `0..n_azimuthal`.
-    /// Note: `IntegrationMethod::Histogram` ignores azimuthal binning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     pub fn integrate2d_with_azimuthal_range(
         &self,
         frame: &Frame,
@@ -752,19 +741,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = frame
-                    .data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
+                panic!("integrate2d_with_azimuthal_range is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
@@ -796,6 +773,11 @@ impl Integrator {
         }
     }
 
+    /// Like [`Self::integrate2d_with_azimuthal_range`], for a row-major `dim1 x dim2` slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_from_slice(
         &self,
@@ -817,18 +799,9 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                histogram::histogram(&radial, &corrected, n_radial, mask_data).1
+                panic!(
+                    "integrate2d_with_azimuthal_range_from_slice is not supported for Histogram method"
+                )
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
@@ -861,6 +834,10 @@ impl Integrator {
     }
 
     /// Integrate a frame to 2D and return per-bin errors (standard deviations).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     pub fn integrate2d_with_errors(
         &self,
         frame: &Frame,
@@ -876,32 +853,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = frame
-                    .data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                let variance: Vec<f64> = frame.data.iter().map(|&x| x.max(0.0)).collect();
-                let corrected_var: Vec<f64> = variance
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
-                    .collect();
-                let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial,
-                    &corrected,
-                    &corrected_var,
-                    n_radial,
-                    mask_data,
-                );
-                (y, sigma)
+                panic!("integrate2d_with_errors is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting {
@@ -927,6 +879,11 @@ impl Integrator {
         }
     }
 
+    /// Like [`Self::integrate2d_with_errors`], for a row-major `dim1 x dim2` slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     pub fn integrate2d_with_errors_from_slice(
         &self,
         data: &[f64],
@@ -944,31 +901,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
-                let corrected_var: Vec<f64> = variance
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
-                    .collect();
-                let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial,
-                    &corrected,
-                    &corrected_var,
-                    n_radial,
-                    mask_data,
-                );
-                (y, sigma)
+                panic!("integrate2d_with_errors_from_slice is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::Counting {
@@ -999,7 +932,10 @@ impl Integrator {
     /// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
     /// `azimuthal_start - azimuthal_step / 2`. Azimuthal bins wrap periodically, so angles outside
     /// the total range fold into `0..n_azimuthal`.
-    /// Note: `IntegrationMethod::Histogram` ignores azimuthal binning.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     pub fn integrate2d_with_azimuthal_range_and_errors(
         &self,
         frame: &Frame,
@@ -1018,32 +954,9 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = frame
-                    .data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                let variance: Vec<f64> = frame.data.iter().map(|&x| x.max(0.0)).collect();
-                let corrected_var: Vec<f64> = variance
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
-                    .collect();
-                let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial,
-                    &corrected,
-                    &corrected_var,
-                    n_radial,
-                    mask_data,
-                );
-                (y, sigma)
+                panic!(
+                    "integrate2d_with_azimuthal_range_and_errors is not supported for Histogram method"
+                )
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
@@ -1075,6 +988,12 @@ impl Integrator {
         }
     }
 
+    /// Like [`Self::integrate2d_with_azimuthal_range_and_errors`], for a row-major
+    /// `dim1 x dim2` slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_and_errors_from_slice(
         &self,
@@ -1096,31 +1015,9 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
-                let corrected: Vec<f64> = data
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                    .collect();
-                let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
-                let corrected_var: Vec<f64> = variance
-                    .iter()
-                    .zip(normalization.iter())
-                    .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
-                    .collect();
-                let (_bins, y, sigma) = histogram::histogram_with_errors(
-                    &radial,
-                    &corrected,
-                    &corrected_var,
-                    n_radial,
-                    mask_data,
-                );
-                (y, sigma)
+                panic!(
+                    "integrate2d_with_azimuthal_range_and_errors_from_slice is not supported for Histogram method"
+                )
             }
             IntegrationMethod::Counting => {
                 let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
