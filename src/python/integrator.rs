@@ -38,6 +38,32 @@ fn validate_azimuthal_range(
     Ok(())
 }
 
+/// Resolve the azimuthal rows of a 2D call: either `n_azimuthal` (with
+/// `azimuthal_range` as outer edges, as before) or `azimuthal_bracket` (rows of
+/// centre ± bracket, first centre at the start of `azimuthal_range`, default
+/// 0 to 2*pi). Returns the bin count and the range to integrate on.
+pub(super) fn resolve_azimuthal_bins(
+    n_azimuthal: Option<usize>,
+    azimuthal_range: Option<(f64, f64)>,
+    azimuthal_bracket: Option<f64>,
+) -> PyResult<(usize, Option<(f64, f64)>)> {
+    match (n_azimuthal, azimuthal_bracket) {
+        (Some(n), None) => Ok((n, azimuthal_range)),
+        (None, Some(bracket)) => {
+            let centres = azimuthal_range.unwrap_or((0.0, std::f64::consts::TAU));
+            let (n, edges) = crate::integration::azimuthal_bracket_bins(centres, bracket)
+                .map_err(PyValueError::new_err)?;
+            Ok((n, Some(edges)))
+        }
+        (Some(_), Some(_)) => Err(PyValueError::new_err(
+            "give either n_azimuthal or azimuthal_bracket, not both",
+        )),
+        (None, None) => Err(PyValueError::new_err(
+            "give either n_azimuthal or azimuthal_bracket",
+        )),
+    }
+}
+
 fn parse_mask_mode(value: &str) -> PyResult<MaskMode> {
     match value {
         "fixed" => Ok(MaskMode::Fixed),
@@ -404,8 +430,19 @@ impl PyIntegrator {
     ///
     /// * `image` - Path to the TIFF image file or 2D NumPy array
     /// * `n_radial` - Number of radial bins
-    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `n_azimuthal` - Number of azimuthal bins. Give either this or `azimuthal_bracket`.
     /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `azimuthal_bracket` - Keyword only, instead of `n_azimuthal`: half-width in radians of
+    ///   contiguous rows given by their centres. The first row is centred on the start of
+    ///   `azimuthal_range` (default (0, 2*pi)), every row covers its centre +- the bracket, and
+    ///   the number of rows is span / (2 * bracket), which must be a whole number. For example
+    ///   `azimuthal_bracket=np.radians(2.5)` gives 72 rows centred on 0, 5, ..., 355 degrees.
+    ///   `result.azimuthal` holds the centres and `result.n_azimuthal` the row count.
+    ///   In this mode `azimuthal_range` is (first centre, end) rather than edges, and the end is
+    ///   exclusive: (0, pi/2) with a 5 degree bracket gives centres 0, 10, ..., 80 degrees,
+    ///   covering -5 to 85 degrees. A first centre in [-pi, 2*pi] is kept as given; any other
+    ///   is corrected to the equivalent angle in [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
+    ///   below the first centre, so rows differ slightly from a default pyFAI cake.
     /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
     ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
     ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
@@ -436,16 +473,19 @@ impl PyIntegrator {
     ///     "pattern.tif", n_radial=100, n_azimuthal=90, azimuthal_range=(0, 1.57), errors=True
     /// )
     /// ```
-    #[pyo3(signature = (image, n_radial, n_azimuthal, errors=false, azimuthal_range=None))]
+    #[pyo3(signature = (image, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, *, azimuthal_bracket=None))]
     fn integrate2d(
         &self,
         image: ImageInput,
         n_radial: usize,
-        n_azimuthal: usize,
+        n_azimuthal: Option<usize>,
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
+        azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyIntegrationResult> {
         self.reject_histogram_2d("integrate2d")?;
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         match image {
             ImageInput::Path(tiff_path) => {
                 let frame = Frame::from_tiff(tiff_path).map_err(|err| {
@@ -1294,8 +1334,19 @@ impl PyIntegrator {
     ///
     /// * `tiff_paths` - List of TIFF file paths to process
     /// * `n_radial` - Number of radial bins
-    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `n_azimuthal` - Number of azimuthal bins. Give either this or `azimuthal_bracket`.
     /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `azimuthal_bracket` - Keyword only, instead of `n_azimuthal`: half-width in radians of
+    ///   contiguous rows given by their centres. The first row is centred on the start of
+    ///   `azimuthal_range` (default (0, 2*pi)), every row covers its centre +- the bracket, and
+    ///   the number of rows is span / (2 * bracket), which must be a whole number. For example
+    ///   `azimuthal_bracket=np.radians(2.5)` gives 72 rows centred on 0, 5, ..., 355 degrees.
+    ///   `result.azimuthal` holds the centres and `result.n_azimuthal` the row count.
+    ///   In this mode `azimuthal_range` is (first centre, end) rather than edges, and the end is
+    ///   exclusive: (0, pi/2) with a 5 degree bracket gives centres 0, 10, ..., 80 degrees,
+    ///   covering -5 to 85 degrees. A first centre in [-pi, 2*pi] is kept as given; any other
+    ///   is corrected to the equivalent angle in [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
+    ///   below the first centre, so rows differ slightly from a default pyFAI cake.
     /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
     ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
     ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
@@ -1332,18 +1383,21 @@ impl PyIntegrator {
     /// )
     /// ```
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal, errors=false, azimuthal_range=None, num_workers=None, num_threads=None))]
+    #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, num_workers=None, num_threads=None, *, azimuthal_bracket=None))]
     fn batch2d(
         &self,
         tiff_paths: Vec<String>,
         n_radial: usize,
-        n_azimuthal: usize,
+        n_azimuthal: Option<usize>,
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
         num_workers: Option<usize>,
         num_threads: Option<usize>,
+        azimuthal_bracket: Option<f64>,
     ) -> PyResult<Vec<PyBatchResult>> {
         self.reject_histogram_2d("batch2d")?;
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
@@ -1453,8 +1507,19 @@ impl PyIntegrator {
     /// * `images` - List of TIFF file paths, list of NumPy arrays, or a generator/iterator
     ///   yielding file paths (str) or NumPy arrays (2D float64)
     /// * `n_radial` - Number of radial bins
-    /// * `n_azimuthal` - Number of azimuthal bins
+    /// * `n_azimuthal` - Number of azimuthal bins. Give either this or `azimuthal_bracket`.
     /// * `errors` - Whether to compute error estimates (default: False)
+    /// * `azimuthal_bracket` - Keyword only, instead of `n_azimuthal`: half-width in radians of
+    ///   contiguous rows given by their centres. The first row is centred on the start of
+    ///   `azimuthal_range` (default (0, 2*pi)), every row covers its centre +- the bracket, and
+    ///   the number of rows is span / (2 * bracket), which must be a whole number. For example
+    ///   `azimuthal_bracket=np.radians(2.5)` gives 72 rows centred on 0, 5, ..., 355 degrees.
+    ///   `result.azimuthal` holds the centres and `result.n_azimuthal` the row count.
+    ///   In this mode `azimuthal_range` is (first centre, end) rather than edges, and the end is
+    ///   exclusive: (0, pi/2) with a 5 degree bracket gives centres 0, 10, ..., 80 degrees,
+    ///   covering -5 to 85 degrees. A first centre in [-pi, 2*pi] is kept as given; any other
+    ///   is corrected to the equivalent angle in [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
+    ///   below the first centre, so rows differ slightly from a default pyFAI cake.
     /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
     ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
     ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
@@ -1492,18 +1557,21 @@ impl PyIntegrator {
     ///     process(result.result)
     /// ```
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (images, n_radial, n_azimuthal, errors=false, azimuthal_range=None, num_workers=None, num_threads=None))]
+    #[pyo3(signature = (images, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, num_workers=None, num_threads=None, *, azimuthal_bracket=None))]
     fn batch2d_iter(
         &self,
         images: &Bound<'_, PyAny>,
         n_radial: usize,
-        n_azimuthal: usize,
+        n_azimuthal: Option<usize>,
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
         num_workers: Option<usize>,
         num_threads: Option<usize>,
+        azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyBatchIterator> {
         self.reject_histogram_2d("batch2d_iter")?;
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 

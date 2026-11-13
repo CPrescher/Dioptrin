@@ -673,3 +673,218 @@ fn full_circle_can_start_anywhere() {
         }
     }
 }
+
+/// Rows given as centre ± bracket are the range cake shifted back by one
+/// bracket: 0° and 90° are row centres, and the values are those of the
+/// explicit edges.
+#[test]
+fn brackets_centre_rows_on_the_requested_directions() {
+    let bracket = 2.5f64.to_radians();
+    assert_eq!(azimuthal_bracket_bins((0.0, TAU), bracket).unwrap().0, 72);
+    for method in methods() {
+        let ai = integrator(method);
+        let got = ai
+            .integrate2d_on_azimuthal_brackets_from_slice(
+                &image(),
+                ROWS,
+                COLS,
+                NR,
+                (0.0, TAU),
+                bracket,
+                true,
+            )
+            .unwrap();
+        assert_eq!(got.azimuthal.len(), 72);
+        for (i, centre) in got.azimuthal.iter().enumerate() {
+            assert!((centre - 2.0 * bracket * i as f64).abs() < 1e-12);
+        }
+        assert!((got.azimuthal[18] - PI / 2.0).abs() < 1e-12);
+        let reference = ai
+            .integrate2d_on_azimuthal_range_from_slice(
+                &image(),
+                ROWS,
+                COLS,
+                NR,
+                72,
+                (-bracket, TAU - bracket),
+                true,
+            )
+            .unwrap();
+        for (a, b) in got.intensity.iter().zip(&reference.intensity) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{method:?}");
+        }
+    }
+}
+
+#[test]
+fn brackets_also_describe_sectors_and_reject_uneven_tilings() {
+    // Centres 0°, 10°, …, 80°: nine rows with edges (-5°, 85°).
+    let (n, (lo, hi)) = azimuthal_bracket_bins((0.0, PI / 2.0), 5f64.to_radians()).unwrap();
+    assert_eq!(n, 9);
+    assert!((lo + 5f64.to_radians()).abs() < 1e-12);
+    assert!((hi - 85f64.to_radians()).abs() < 1e-12);
+    for (range, bracket) in [
+        ((0.0, TAU), 3.5f64.to_radians()),
+        ((0.0, TAU), 0.0),
+        ((0.0, TAU), -0.1),
+        ((0.0, TAU), f64::NAN),
+        ((0.0, TAU), TAU),
+        ((1.0, 1.0), 0.1),
+        ((0.0, f64::INFINITY), 0.1),
+    ] {
+        assert!(
+            azimuthal_bracket_bins(range, bracket).is_err(),
+            "{range:?} {bracket}"
+        );
+    }
+    // More than one turn is rejected.
+    assert!(azimuthal_bracket_bins((0.0, 2.0 * TAU), 0.1 * TAU).is_err());
+    let ai = integrator(IntegrationMethod::Counting);
+    assert!(
+        ai.integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            (0.0, 2.0 * TAU),
+            0.1 * TAU,
+            false
+        )
+        .is_err()
+    );
+}
+
+/// A single-precision bracket is accepted, and the first centre (not the first
+/// edge) decides whether a far-away start is corrected.
+#[test]
+fn brackets_accept_f32_and_correct_distant_centres() {
+    let bracket = 2.5f64.to_radians();
+    assert_eq!(
+        azimuthal_bracket_bins((0.0, TAU), 2.5f32.to_radians() as f64)
+            .unwrap()
+            .0,
+        72
+    );
+    let first_centre = |range| {
+        let (_, (lo, _)) = azimuthal_bracket_bins(range, bracket).unwrap();
+        lo + bracket
+    };
+    // In [-π, 2π]: kept as given.
+    assert!((first_centre((TAU, 2.0 * TAU)) - TAU).abs() < 1e-12);
+    assert!((first_centre((-PI, PI)) + PI).abs() < 1e-12);
+    // Outside: corrected to [-π, π), whatever the bracket size.
+    for rows in [1.0, 2.0, 100.0, 1000.0] {
+        for (start, expected) in [
+            (-TAU + 0.01, 0.01),
+            (-1.5 * PI, 0.5 * PI),
+            (-PI - 1e-9, PI - 1e-9),
+            (TAU + 1e-9, 1e-9),
+        ] {
+            let half = PI / rows;
+            let (n, (lo, hi)) = azimuthal_bracket_bins((start, start + TAU), half).unwrap();
+            assert_eq!(n as f64, rows);
+            assert!((lo + half - expected).abs() < 1e-9, "{start} {rows}");
+            // The grid must not shift the edges again.
+            let grid = IntegrationGrid2d::new(1, n, (0.0, 1.0), (lo, hi)).unwrap();
+            assert_eq!(grid.azimuthal_range(), (lo, hi), "{start} {rows}");
+        }
+    }
+    // A full turn that is a hair too long (or single precision) is one turn:
+    // the single row stays centred on the requested start.
+    for end in [PI + 4e-13, std::f32::consts::PI as f64] {
+        let start = -PI;
+        let (n, (lo, hi)) = azimuthal_bracket_bins((start, end), PI).unwrap();
+        assert_eq!(n, 1);
+        assert!((lo + PI - start).abs() < 1e-12 && hi - lo <= TAU);
+        assert!(IntegrationGrid2d::new(1, n, (0.0, 1.0), (lo, hi)).is_ok());
+    }
+    assert_eq!(
+        azimuthal_bracket_bins(
+            (0.0, std::f32::consts::TAU as f64),
+            2.5f32.to_radians() as f64
+        )
+        .unwrap()
+        .0,
+        72
+    );
+    // Very fine brackets must still divide the span: half a row off is rejected.
+    assert!(azimuthal_bracket_bins((0.0, TAU), PI / 1_000_000.5).is_err());
+    assert!(
+        (first_centre((TAU + 2.0 * bracket, 2.0 * TAU + 2.0 * bracket)) - 2.0 * bracket).abs()
+            < 1e-12
+    );
+    assert!(first_centre((-TAU, 0.0)).abs() < 1e-12);
+    assert!(first_centre((-3.0 * TAU, -2.0 * TAU)).abs() < 1e-12);
+    // The corrected cake is the same cake.
+    let ai = integrator(IntegrationMethod::PixelSplit);
+    let run = |range| {
+        ai.integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            range,
+            bracket,
+            true,
+        )
+        .unwrap()
+    };
+    let base = run((0.0, TAU));
+    for range in [(-TAU, 0.0), (5.0 * TAU, 6.0 * TAU)] {
+        let got = run(range);
+        for (a, b) in got.azimuthal.iter().zip(&base.azimuthal) {
+            assert!((a - b).abs() < 1e-9, "{range:?}");
+        }
+        for (a, b) in got.intensity.iter().zip(&base.intensity) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{range:?}");
+        }
+    }
+    // A start that is not a multiple of the row width: -270° becomes 90°, and
+    // the cake is the base cake rotated by 18 rows.
+    let got = run((-1.5 * PI, 0.5 * PI));
+    assert!((got.azimuthal[0] - 0.5 * PI).abs() < 1e-9);
+    let n = got.azimuthal.len();
+    for row in 0..n {
+        for r in 0..NR {
+            let (a, b) = (
+                got.intensity[row * NR + r],
+                base.intensity[(row + 18) % n * NR + r],
+            );
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0));
+        }
+    }
+}
+
+/// `PyfaiFull` runs in bracket mode and matches its own range cake on the same
+/// edges (its rows depend on where the seam lies, so only that is compared).
+#[test]
+fn brackets_work_with_pyfai_full() {
+    let bracket = 5f64.to_radians();
+    let ai = integrator(IntegrationMethod::PyfaiFull);
+    let got = ai
+        .integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            (0.0, TAU),
+            bracket,
+            true,
+        )
+        .unwrap();
+    let reference = ai
+        .integrate2d_on_azimuthal_range_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            36,
+            (-bracket, TAU - bracket),
+            true,
+        )
+        .unwrap();
+    assert_eq!(got.azimuthal.len(), 36);
+    assert_eq!(got.intensity, reference.intensity);
+    assert_eq!(got.errors, reference.errors);
+    assert!(got.intensity.iter().any(|v| *v > 0.0));
+}

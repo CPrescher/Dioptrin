@@ -15,8 +15,9 @@ The complete Python signatures are also available in the
 
 ## Combined detector cakes
 
-`MultiIntegrator.integrate2d(images, n_radial, n_azimuthal, errors=False,
-azimuthal_range=None, *, normalization="relative", normalization_factors=None)`
+`MultiIntegrator.integrate2d(images, n_radial, n_azimuthal=None, errors=False,
+azimuthal_range=None, *, normalization="relative", normalization_factors=None,
+azimuthal_bracket=None)`
 combines raw fractional contributions on common radial and azimuthal edges.
 Both coordinate arrays are populated in its `IntegrationResult`; flat outputs
 reshape to `(n_azimuthal, n_radial)`. For the pyFAI MultiGeometry absolute

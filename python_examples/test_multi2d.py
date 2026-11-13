@@ -42,6 +42,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((mixed.n_radial, mixed.n_azimuthal), (9, 13))
         self.assertIsNone(multi.integrate2d([a, b], 9, 13).errors)
 
+    def test_azimuthal_bracket_centres_rows(self):
+        a = np.arange(20, dtype=float).reshape(4, 5) + 1
+        multi = dioptrin.MultiIntegrator([integrator(), integrator()])
+        bracket = np.radians(5)
+        got = multi.integrate2d([a, a], 9, azimuthal_bracket=bracket, errors=True)
+        self.assertEqual(got.n_azimuthal, 36)
+        np.testing.assert_allclose(np.degrees(got.azimuthal), np.arange(36) * 10.0, atol=1e-9)
+        ref = multi.integrate2d([a, a], 9, 36, errors=True,
+                                azimuthal_range=(-bracket, 2 * np.pi - bracket))
+        np.testing.assert_allclose(got.intensity, ref.intensity, rtol=1e-9)
+        np.testing.assert_allclose(got.errors, ref.errors, rtol=1e-9)
+        for kwargs in (dict(), dict(n_azimuthal=36, azimuthal_bracket=bracket),
+                       dict(azimuthal_bracket=np.radians(3.5))):
+            with self.assertRaises(ValueError):
+                multi.integrate2d([a, a], 9, **kwargs)
+
     def test_invalid_inputs(self):
         data = np.ones((3, 4))
         multi = dioptrin.MultiIntegrator([integrator()])

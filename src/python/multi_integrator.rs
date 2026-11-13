@@ -5,7 +5,7 @@ use crate::frame::Frame;
 use crate::integration::PixelSplitMode;
 use crate::multi::{Multi2dOptions, MultiIntegrator, MultiNormalization};
 
-use super::integrator::PyIntegrator;
+use super::integrator::{PyIntegrator, resolve_azimuthal_bins};
 use super::results::PyIntegrationResult;
 use super::utils::{ImageInput, extract_array_dims};
 
@@ -27,19 +27,27 @@ impl PyMultiIntegrator {
     /// normalization_factors are one positive monitor denominator per detector.
     /// Result intensity/errors reshape to (n_azimuthal,n_radial); both coordinate
     /// arrays contain bin centers. Empty bins contain zero.
+    /// Instead of n_azimuthal, azimuthal_bracket (radians, keyword only) gives
+    /// contiguous rows of centre +- bracket; the first row is centred on the
+    /// start of azimuthal_range, which then defaults to (0, 2*pi) and has an
+    /// exclusive end, and the span must be a whole number of rows. A first
+    /// centre in [-pi, 2*pi] is kept; any other is corrected to [-pi, pi).
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (images, n_radial, n_azimuthal, errors=false, azimuthal_range=None, *, normalization="relative", normalization_factors=None))]
+    #[pyo3(signature = (images, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, *, normalization="relative", normalization_factors=None, azimuthal_bracket=None))]
     fn integrate2d(
         &self,
         py: Python<'_>,
         images: Vec<ImageInput>,
         n_radial: usize,
-        n_azimuthal: usize,
+        n_azimuthal: Option<usize>,
         errors: bool,
         azimuthal_range: Option<(f64, f64)>,
         normalization: &str,
         normalization_factors: Option<Vec<f64>>,
+        azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyIntegrationResult> {
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         if images.len() != self.multi.integrators().len() {
             return Err(PyValueError::new_err(format!(
                 "Expected {} images (one per detector), got {}",
