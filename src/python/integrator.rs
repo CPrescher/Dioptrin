@@ -397,6 +397,9 @@ impl PyIntegrator {
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
     ///   centres. Radial bins are the same as without a range.
+    ///   With `method="pyfai_full"`, individual bins depend on how the range is
+    ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
+    ///   circle, can differ); prefer `"pixel_split"` for sectors.
     ///
     /// # Returns
     ///
@@ -1281,6 +1284,9 @@ impl PyIntegrator {
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
     ///   centres. Radial bins are the same as without a range.
+    ///   With `method="pyfai_full"`, individual bins depend on how the range is
+    ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
+    ///   circle, can differ); prefer `"pixel_split"` for sectors.
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
@@ -1429,6 +1435,9 @@ impl PyIntegrator {
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
     ///   centres. Radial bins are the same as without a range.
+    ///   With `method="pyfai_full"`, individual bins depend on how the range is
+    ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
+    ///   circle, can differ); prefer `"pixel_split"` for sectors.
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///

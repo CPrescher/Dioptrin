@@ -382,6 +382,9 @@ class Integrator:
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
                 without a range. Invalid ranges raise ValueError.
+                With method="pyfai_full", individual bins depend on how the range
+                is written (a range shifted by 2*pi, or a sector vs the same rows
+                of a full circle, can differ); prefer "pixel_split" for sectors.
 
         Returns:
             IntegrationResult with flat intensity (and optional errors) sized
@@ -617,6 +620,9 @@ class Integrator:
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
                 without a range. Invalid ranges raise ValueError.
+                With method="pyfai_full", individual bins depend on how the range
+                is written (a range shifted by 2*pi, or a sector vs the same rows
+                of a full circle, can differ); prefer "pixel_split" for sectors.
             num_workers: Number of parallel workers (optional)
             num_threads: Threads per worker (optional)
 
@@ -664,6 +670,9 @@ class Integrator:
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
                 without a range. Invalid ranges raise ValueError.
+                With method="pyfai_full", individual bins depend on how the range
+                is written (a range shifted by 2*pi, or a sector vs the same rows
+                of a full circle, can differ); prefer "pixel_split" for sectors.
             num_workers: Number of parallel workers (optional)
             num_threads: Threads per worker (optional)
 

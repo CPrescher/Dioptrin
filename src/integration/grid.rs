@@ -27,6 +27,9 @@ pub struct IntegrationGrid2d {
     pub(crate) n_azimuthal: usize,
     radial: [u64; 2],
     azimuthal: [u64; 2],
+    /// Count a radial value exactly at the upper edge in the last bin and
+    /// clamp rounding overflow there, like the default 2D counting table.
+    clamp_radial_end: bool,
 }
 
 impl IntegrationGrid2d {
@@ -78,6 +81,7 @@ impl IntegrationGrid2d {
             n_azimuthal,
             radial: [radial_range.0.to_bits(), radial_range.1.to_bits()],
             azimuthal: [azimuthal_range.0.to_bits(), azimuthal_range.1.to_bits()],
+            clamp_radial_end: false,
         })
     }
 
@@ -87,6 +91,12 @@ impl IntegrationGrid2d {
     /// Select an alternative pixel-splitting convention without changing edges.
     pub fn with_pixel_split_mode(mut self, mode: PixelSplitMode) -> Self {
         self.pixel_split_mode = mode;
+        self
+    }
+    /// Include radial values equal to the upper edge in the last bin (the
+    /// default 2D counting convention, whose upper edge is the data maximum).
+    pub(crate) fn with_clamped_radial_end(mut self) -> Self {
+        self.clamp_radial_end = true;
         self
     }
     pub fn radial_range(&self) -> (f64, f64) {
@@ -122,12 +132,16 @@ impl IntegrationGrid2d {
         if !radial.is_finite()
             || !azimuthal.is_finite()
             || radial < r0
-            || radial >= r1
+            || radial > r1
+            || (radial == r1 && !self.clamp_radial_end)
             || azimuthal >= a1
         {
             return None;
         }
-        let r = ((radial - r0) / self.radial_step()) as usize;
+        let mut r = ((radial - r0) / self.radial_step()) as usize;
+        if self.clamp_radial_end {
+            r = r.min(self.n_radial - 1);
+        }
         let a = ((azimuthal - a0) / self.azimuthal_step()) as usize;
         (r < self.n_radial && a < self.n_azimuthal).then_some(a * self.n_radial + r)
     }
@@ -296,8 +310,16 @@ impl Integrator {
     /// pixel splitting uses exact fractional polygon areas and differs slightly
     /// from the legacy 2D pixel-split table (median 5e-5 relative per bin on the
     /// CeO2 Pilatus 1M test image).
-    /// `IntegrationMethod::Histogram` is rejected, and so are unmasked
-    /// non-finite pixels.
+    /// Non-finite pixels behave as on the default path: they are not rejected
+    /// and make only the bins they contribute to NaN or infinite.
+    /// `IntegrationMethod::Histogram` is rejected.
+    ///
+    /// With `IntegrationMethod::PyfaiFull`, individual bins depend on how the
+    /// range is written: a range and the same range shifted by 2π can differ,
+    /// as can the interior rows of a sector and the matching rows of a full
+    /// circle, because the pyFAI-style splitting places each pixel polygon
+    /// relative to the range start. Pixel splitting agrees to about 1e-6 in the
+    /// same comparison and is the better choice for sectors.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_on_azimuthal_range_from_slice(
         &self,
@@ -311,13 +333,21 @@ impl Integrator {
     ) -> Result<AzimuthalRange2dResult, String> {
         // Validate the azimuthal edges before any geometry work.
         IntegrationGrid2d::new(n_radial, n_azimuthal, (0.0, 1.0), azimuthal_range)?;
-        self.validate_2d_input(data, dim1, dim2)?;
+        // Like the default 2D path, non-finite pixels are not rejected: they
+        // propagate into the bins they contribute to.
+        self.validate_2d_setup(data, dim1, dim2)?;
         self.update_geometry_arrays(dim1, dim2);
         let radial_range = self.default_radial_edges_2d(dim1, dim2, n_radial);
         let mut grid =
             IntegrationGrid2d::new(n_radial, n_azimuthal, radial_range, azimuthal_range)?;
-        if matches!(self.method, IntegrationMethod::PyfaiFull) {
-            grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
+        match self.method {
+            IntegrationMethod::PyfaiFull => {
+                grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
+            }
+            // The default counting edges end at the largest pixel value, which
+            // `min_max_step`'s 10 ulp margin does not lift for values above ~32.
+            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
+            _ => (),
         }
         let normalization = self.get_normalization();
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
@@ -401,6 +431,21 @@ impl Integrator {
         dim1: usize,
         dim2: usize,
     ) -> Result<(), String> {
+        self.validate_2d_setup(data, dim1, dim2)?;
+        // Nonfinite pixels would poison raw sums. Masked pixels are allowed.
+        if data
+            .iter()
+            .enumerate()
+            .any(|(i, x)| !x.is_finite() && self.mask.as_ref().is_none_or(|m| m.data[i] == 0))
+        {
+            return Err("unmasked image pixels must be finite".into());
+        }
+        Ok(())
+    }
+
+    /// Shape, mask, geometry and method checks shared by the 2D grid paths;
+    /// the pixel values themselves are not inspected.
+    fn validate_2d_setup(&self, data: &[f64], dim1: usize, dim2: usize) -> Result<(), String> {
         if dim1 == 0
             || dim2 == 0
             || dim1.checked_mul(dim2) != Some(data.len())
@@ -447,14 +492,6 @@ impl Integrator {
                 return Err("n_ss must be positive and fit sampling indices".into());
             }
             _ => (),
-        }
-        // Nonfinite pixels would poison raw sums. Masked pixels are allowed.
-        if data
-            .iter()
-            .enumerate()
-            .any(|(i, x)| !x.is_finite() && self.mask.as_ref().is_none_or(|m| m.data[i] == 0))
-        {
-            return Err("unmasked image pixels must be finite".into());
         }
         Ok(())
     }

@@ -314,3 +314,159 @@ fn invalid_ranges_and_histogram_are_rejected() {
     let err = run(&hist, &data, (-PI, PI), false).unwrap_err();
     assert!(err.contains("Histogram"), "{err}");
 }
+
+fn nonfinite(v: &[f64]) -> Vec<usize> {
+    (0..v.len()).filter(|&i| !v[i].is_finite()).collect()
+}
+
+fn bit_identical(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+/// Non-finite pixels are not rejected: as on the default path they affect only
+/// the bins they contribute to, for intensity and errors, strict and fast math.
+#[test]
+fn non_finite_pixels_follow_the_default_path() {
+    // A pixel well away from the beam, at an azimuth inside (0, pi/2).
+    let g = geometry();
+    let azimuth = g.calc_azimuth_all();
+    let tth = g.calc_tth_all();
+    let pixel = (0..g.size())
+        .find(|&i| (0.6..0.9).contains(&azimuth[i]) && tth[i] > 0.03)
+        .unwrap();
+    let mut one_hot = vec![0.0; g.size()];
+    one_hot[pixel] = 1.0;
+    let all = [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+        IntegrationMethod::PyfaiFull,
+    ];
+    for bad in [f64::NAN, f64::INFINITY] {
+        let mut data = image();
+        data[pixel] = bad;
+        for method in all {
+            for fast in [true, false] {
+                let ai = integrator(method).with_fast_math(fast);
+                let (want, want_err) =
+                    ai.integrate2d_with_errors_from_slice(&data, ROWS, COLS, NR, NA);
+                let got = run(&ai, &data, (-PI, PI), true).unwrap();
+                let got_err = got.errors.clone().unwrap();
+                let touched = run(&ai, &one_hot, (-PI, PI), false).unwrap();
+                let touched: Vec<usize> = (0..NR * NA)
+                    .filter(|&k| touched.intensity[k] != 0.0)
+                    .collect();
+                assert!(!touched.is_empty());
+                assert_eq!(
+                    nonfinite(&got.intensity),
+                    touched,
+                    "{bad} {method:?} fast={fast}"
+                );
+                // NaN signal gives NaN intensity but a finite Poisson error,
+                // because max(NaN, 0) is 0; inf gives inf for both.
+                let err_bad = if bad.is_nan() {
+                    vec![]
+                } else {
+                    touched.clone()
+                };
+                assert_eq!(nonfinite(&got_err), err_bad, "{bad} {method:?} fast={fast}");
+                assert_eq!(
+                    nonfinite(&want).len(),
+                    touched.len(),
+                    "{bad} {method:?} default"
+                );
+                if matches!(method, IntegrationMethod::PyfaiFull) {
+                    // The default pyfai_full grid is the same full circle.
+                    assert!(bit_identical(&got.intensity, &want), "{bad} fast={fast}");
+                    assert!(bit_identical(&got_err, &want_err), "{bad} fast={fast}");
+                }
+                // A sector that does not contain the pixel stays finite.
+                let other = run(&ai, &data, (-2.0, -1.0), true).unwrap();
+                assert!(
+                    nonfinite(&other.intensity).is_empty()
+                        && nonfinite(&other.errors.unwrap()).is_empty()
+                );
+            }
+        }
+    }
+}
+
+/// Close detector: the largest radial value exceeds 32 in 2θ degrees and in
+/// q nm⁻¹, where `min_max_step`'s 10 ulp margin no longer lifts the upper
+/// edge above it. Counting must still put that pixel in the last bin, as the
+/// default path does, and reproduce the default cake on its own edges.
+#[test]
+fn counting_keeps_the_outermost_pixel_in_every_unit() {
+    let mut g = geometry();
+    g.poni.distance = 0.005;
+    for unit in [
+        RadialUnit::TthRad,
+        RadialUnit::TthDeg,
+        RadialUnit::QAngstrom,
+        RadialUnit::QNm,
+    ] {
+        let ai = Integrator::new(g.clone())
+            .with_method(IntegrationMethod::Counting)
+            .with_radial_unit(unit);
+        let radial = unit.convert_from_tth(&g.calc_tth_all(), g.poni.wavelength);
+        let outer = (0..radial.len())
+            .max_by(|a, b| radial[*a].total_cmp(&radial[*b]))
+            .unwrap();
+        if matches!(unit, RadialUnit::TthDeg | RadialUnit::QNm) {
+            assert!(radial[outer] > 32.0, "{unit:?}: {}", radial[outer]);
+        }
+        let (a0, a1, _) = histogram::min_max_step(&g.calc_azimuth_all(), NA);
+        let mut one_hot = vec![0.0; g.size()];
+        one_hot[outer] = 1000.0;
+        let want = ai.integrate2d_from_slice(&one_hot, ROWS, COLS, NR, NA);
+        let got = run(&ai, &one_hot, (a0, a1), false).unwrap();
+        assert!(want.iter().sum::<f64>() > 0.0);
+        assert!(
+            bit_identical(&got.intensity, &want),
+            "{unit:?}: outermost pixel"
+        );
+        let full = run(&ai, &one_hot, (-PI, PI), false).unwrap();
+        assert!(
+            full.intensity.iter().sum::<f64>() > 0.0,
+            "{unit:?}: dropped on (-pi, pi)"
+        );
+        let data = image();
+        let (want, want_err) = ai.integrate2d_with_errors_from_slice(&data, ROWS, COLS, NR, NA);
+        let got = run(&ai, &data, (a0, a1), true).unwrap();
+        assert!(bit_identical(&got.intensity, &want), "{unit:?}");
+        assert!(bit_identical(&got.errors.unwrap(), &want_err), "{unit:?}");
+    }
+}
+
+/// pyfai_full: the explicit full circle is the default pyfai_full cake, and
+/// a sector keeps only pixel fractions inside it.
+#[test]
+fn pyfai_full_on_the_range_path() {
+    let data = image();
+    let ai = integrator(IntegrationMethod::PyfaiFull);
+    let (want, want_err) = ai.integrate2d_with_errors_from_slice(&data, ROWS, COLS, NR, NA);
+    let got = run(&ai, &data, (-PI, PI), true).unwrap();
+    assert!(bit_identical(&got.intensity, &want));
+    assert!(bit_identical(&got.errors.unwrap(), &want_err));
+    let range = (0.0, PI / 2.0);
+    let azimuth = unwrapped_azimuth(range);
+    let radius_px: Vec<f64> = geometry()
+        .calc_tth_all()
+        .iter()
+        .map(|t| 0.05 * t.tan() / 1e-4)
+        .collect();
+    let far: Vec<f64> = azimuth
+        .iter()
+        .zip(&radius_px)
+        .map(|(a, r)| (*r > 15.0 && (*a < range.0 - 0.1 || *a > range.1 + 0.1)) as u8 as f64)
+        .collect();
+    assert!(
+        run(&ai, &far, range, false)
+            .unwrap()
+            .intensity
+            .iter()
+            .all(|v| *v == 0.0)
+    );
+    let sector = run(&ai, &data, range, false).unwrap();
+    assert!(sector.intensity.iter().filter(|v| **v > 0.0).count() > 40);
+}

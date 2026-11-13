@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outside are left out, and `result.azimuthal` holds the bin centres. Invalid
   ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
   `ValueError`; batches check before starting.
+  Non-finite pixels behave as without a range: they make only the bins they
+  contribute to NaN or infinite. With counting, the pixel at the largest radial
+  value lands in the last bin as on the default path, also for units whose
+  maximum is large (2θ in degrees, q in nm⁻¹).
+  With `pyfai_full`, individual sector bins depend on how the range is
+  written: on the CeO2 Pilatus 1M image (300×72 bins, 2θ in degrees),
+  `(2.5, 2.5 + π/2)` and the same range shifted by −2π differ in 276 of 21,600
+  bins (up to 2θ ≈ 27°, by up to about 100% relative), because the pyFAI-style
+  splitting places each pixel polygon relative to the range start. `pixel_split`
+  differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
 - 1D `pixel_split` (`IntegrationMethod::PixelSplit`, `build_lut1d_ps_csr`,
   `build_lut1d_ps_csr_with_range`) now weights every pixel by the **fraction
   of its own area** that falls into a radial bin (clipped polygon area divided

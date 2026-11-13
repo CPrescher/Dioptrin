@@ -53,7 +53,7 @@ class AzimuthalRangeTests(unittest.TestCase):
             # Pixels whose centre is 0.1 rad outside (and 15 px from the beam)
             # contribute nothing, for every method.
             far = ((radius > 15) & ((unwrapped < lo - 0.1) | (unwrapped > hi + 0.1))).astype(float)
-            for method in METHODS:
+            for method in METHODS + ("pyfai_full",):
                 ai = dioptrin.Integrator.from_poni_dict(PONI, method=method, n_ss=3)
                 out = ai.integrate2d(far, N_RADIAL, N_AZIMUTHAL, azimuthal_range=(lo, hi))
                 self.assertFalse(np.any(cake(out)), f"{method} {(lo, hi)} picked up outside pixels")
@@ -96,6 +96,56 @@ class AzimuthalRangeTests(unittest.TestCase):
                 np.testing.assert_array_equal(r.result.azimuthal, ref.azimuthal)
                 self.assertEqual(r.result.errors, ref.errors)
 
+    def test_nan_pixel_affects_only_its_bins(self):
+        # As without a range: no error, and only the bins the pixel feeds are NaN.
+        chi, radius = pixel_azimuth()
+        pixel = np.argwhere((chi > 0.6) & (chi < 0.9) & (radius > 20))[0]
+        image = np.random.default_rng(3).uniform(50, 100, SHAPE)
+        image[tuple(pixel)] = np.nan
+        one_hot = np.zeros(SHAPE)
+        one_hot[tuple(pixel)] = 1.0
+        for method in METHODS + ("pyfai_full",):
+            ai = dioptrin.Integrator.from_poni_dict(PONI, method=method, n_ss=3)
+            self.assertTrue(np.isnan(cake(ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL))).any())
+            for rng in [(0.0, np.pi / 2), (-np.pi, np.pi)]:
+                fed = cake(ai.integrate2d(one_hot, N_RADIAL, N_AZIMUTHAL, azimuthal_range=rng)) != 0
+                self.assertTrue(fed.any())
+                r = ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=True, azimuthal_range=rng)
+                np.testing.assert_array_equal(np.isnan(cake(r)), fed, err_msg=f"{method} {rng}")
+                b = list(ai.batch2d_iter([image], N_RADIAL, N_AZIMUTHAL, azimuthal_range=rng))[0]
+                self.assertTrue(b.is_ok(), b.error)
+                np.testing.assert_array_equal(np.isnan(cake(b.result)), fed)
+            other = ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=True, azimuthal_range=(-2.0, -1.0))
+            self.assertTrue(np.isfinite(other.intensity).all() and np.isfinite(other.errors).all())
+
+    def test_counting_keeps_the_outermost_pixel(self):
+        # Close detector: the largest 2θ (deg) and q (nm^-1) exceed 32.
+        close = dict(PONI, distance=0.005)
+        _, radius = pixel_azimuth()
+        outer = np.unravel_index(np.argmax(radius), SHAPE)
+        one_hot = np.zeros(SHAPE)
+        one_hot[outer] = 1000.0
+        for unit in ("2th_deg", "q_nm^-1", "2th_rad", "q_A^-1"):
+            ai = dioptrin.Integrator.from_poni_dict(close, method="counting", unit=unit)
+            default = np.sum(ai.integrate2d(one_hot, N_RADIAL, N_AZIMUTHAL).intensity)
+            ranged = np.sum(ai.integrate2d(one_hot, N_RADIAL, N_AZIMUTHAL, azimuthal_range=(-np.pi, np.pi)).intensity)
+            self.assertGreater(default, 0)
+            self.assertGreater(ranged, 0, unit)
+
+    def test_multi_worker_batches_with_a_range(self):
+        chi, _ = pixel_azimuth()
+        images = [chi * (k + 1) for k in range(5)]
+        ai = dioptrin.Integrator.from_poni_dict(PONI, method="supersampled", n_ss=3)
+        rng = (2.5, 2.5 + np.pi / 2)
+        refs = [ai.integrate2d(img, N_RADIAL, N_AZIMUTHAL, errors=True, azimuthal_range=rng) for img in images]
+        for source in (images, iter(images)):
+            got = list(ai.batch2d_iter(source, N_RADIAL, N_AZIMUTHAL, errors=True, azimuthal_range=rng, num_workers=3, num_threads=1))
+            self.assertEqual(len(got), len(images))
+            for r, ref in zip(got, refs):
+                self.assertTrue(r.is_ok(), r.error)
+                np.testing.assert_array_equal(r.result.intensity, ref.intensity)
+                np.testing.assert_array_equal(r.result.errors, ref.errors)
+
     @unittest.skipUnless(TIFF.exists(), "CeO2 TIFF not available")
     def test_path_and_batch_entry_points(self):
         files = [str(TIFF)]
@@ -115,6 +165,13 @@ class AzimuthalRangeTests(unittest.TestCase):
                         np.testing.assert_array_equal(r.result.intensity, ref.intensity)
                         np.testing.assert_array_equal(r.result.azimuthal, ref.azimuthal)
                         self.assertEqual(r.result.errors, ref.errors)
+            many = ai.batch2d(files * 4, 50, 90, errors=True, azimuthal_range=(0.0, 1.57), num_workers=2, num_threads=2)
+            ref = ai.integrate2d(str(TIFF), 50, 90, errors=True, azimuthal_range=(0.0, 1.57))
+            self.assertEqual(len(many), 4)
+            for r in many:
+                self.assertTrue(r.is_ok(), r.error)
+                np.testing.assert_array_equal(r.result.intensity, ref.intensity)
+                self.assertEqual(r.result.errors, ref.errors)
             with self.assertRaises(ValueError):
                 ai.batch2d(files, 50, 90, azimuthal_range=(0.0, 7.0))
             with self.assertRaises(ValueError):
