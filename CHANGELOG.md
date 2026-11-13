@@ -164,6 +164,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
 
+### Consolidation follow-up
+
+- Preserve non-finite signal, zero normalization, and signed/zero weights when
+  dynamic workers fall back to CSR with supplied variances. The optional spread
+  calculation retains its documented sample filtering.
+
 ### Range support
 
 - Accept finite, resolvable azimuthal starts outside ±2π on shared grids and

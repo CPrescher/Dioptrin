@@ -229,10 +229,20 @@ impl Dynamic1dWorker<'_> {
                 azimuthal_std: None,
             });
         }
-        if variance.is_none() {
+        let Some(variance) = variance else {
             return Ok(plan.integrate(data, mask, self.errors, azimuthal_std));
-        }
+        };
         let lut = &plan.lut;
+        if !azimuthal_std {
+            let (radial, intensity, errors) =
+                lut.integrate_with_variances(data, variance, mask, &plan.normalization);
+            return Ok(Dynamic1dResult {
+                radial,
+                intensity,
+                errors: Some(errors),
+                azimuthal_std: None,
+            });
+        }
         let result = crate::lut::azimuthal::integrate_with_columns(
             data,
             &lut.row_ptr,
@@ -241,7 +251,7 @@ impl Dynamic1dWorker<'_> {
             lut.bins(),
             mask,
             &plan.normalization,
-            variance,
+            Some(variance),
         );
         Ok(Dynamic1dResult {
             radial: result.radial,
@@ -258,6 +268,59 @@ mod tests {
     use crate::{geometry::Geometry, mask::Mask, poni::Poni};
     use rayon::prelude::*;
     use std::sync::Arc;
+
+    #[test]
+    fn supplied_variance_fallback_preserves_nonfinite_and_nonpositive_contributions() {
+        for values in [None, Some(vec![0.25, 0.75, -0.5, 0.25, 1., 0., 0.3])] {
+            let lut = crate::lut::Lut1d {
+                row_ptr: vec![0, 2, 4, 7, 7],
+                col_idx: vec![0, 1, 2, 3, 0, 2, 4],
+                values,
+                hist_min: 0.,
+                hist_step: 1.,
+            };
+            let norm = Arc::new(vec![2., 0., 1., 4., 0.]);
+            let variance = [4., 9., 16., 25., 36.];
+            for fast in [false, true] {
+                for layout in [SparseLayout::Csr, SparseLayout::Csc] {
+                    let mut plan = Dynamic1dPlan::new((1, 5), lut.clone(), norm.clone()).unwrap();
+                    plan.fast_math = fast;
+                    plan.csc = layout == SparseLayout::Csc;
+                    Arc::get_mut(&mut plan.lut)
+                        .unwrap()
+                        .set_sparse_layout(layout);
+                    let mut worker = plan.worker(true);
+                    for special in [3., f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                        let data = [special, 7., special, -2., 11.];
+                        for mask in [None, Some([1, 0, 1, 0, 0]), Some([1; 5])] {
+                            let mask = mask.as_ref().map(|m| m.as_slice());
+                            let expected = crate::lut::integrate1d_with_errors(
+                                &data, &variance, &lut, mask, &norm,
+                            );
+                            let actual = worker
+                                .integrate(&data, mask, Some(&variance), false)
+                                .unwrap();
+                            let same = |a: &[f64], b: &[f64]| {
+                                for (&a, &b) in a.iter().zip(b) {
+                                    assert!(
+                                        (a.is_nan() && b.is_nan())
+                                            || a == b
+                                            || (a.is_finite()
+                                                && b.is_finite()
+                                                && (a - b).abs() <= 1e-12 * (1. + b.abs())),
+                                        "{a} != {b}; fast={fast}, layout={layout:?}, signal={special}"
+                                    );
+                                }
+                            };
+                            same(&actual.intensity, &expected.1);
+                            same(actual.errors.as_ref().unwrap(), &expected.2);
+                            assert!(actual.azimuthal_std.is_none());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn reusable_workers_propagate_supplied_variances_and_changing_masks() {

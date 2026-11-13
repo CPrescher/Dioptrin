@@ -39,7 +39,7 @@ mod tests {
     use super::*;
     #[test]
     fn broad_estimate_retains_large_detectors_and_parallel_csc() {
-        for bins in [128, 256, 512, 1000, 2000, 2000, 8000] {
+        for bins in [128, 256, 512, 1000, 2000, 4000, 8000] {
             for errors in [false, true] {
                 let expected = if !errors && bins >= 2000 {
                     SparseLayout::Csc

@@ -9,7 +9,9 @@ the same order as the existing CSC implementation. This preserves intensity
 and Poisson standard-deviation bits while parallelizing over output bins and
 avoiding histogram scatter/merge work.
 
-Preparation is lazy. It applies outside outer Rayon workers, with at least 64
+Preparation is lazy. The default resident gather path times both kernels on
+first use in each error mode (two warmups and ten timed integrations) and uses
+the gather table only with a consistent measured advantage. It applies outside outer Rayon workers, with at least 64
 bins and two existing CSC chunks, and only when the additional resident table
 fits within 128 MiB. Other cases retain CSC. Streamed/typed block workers keep
 their existing execution and do not allocate this resident table. Subsequent
@@ -47,3 +49,9 @@ Poisson errors and 1/4/8-thread pools. A complete polygon-frame test also checks
 the lazy cache, error bars, and the outer-worker fallback. The matched desktop
 benchmark retains old/new arrays and timing samples in
 `desktop/artifacts/polygon-cache-optimization` in the Dioptas checkout.
+
+In Dioptas, current calls enter through an outer Rayon worker pool. Those calls
+retain CSC under this guard, including the opt-in selector; resident selection
+inside that application is not qualified by this library change. Layout builder
+methods use the last explicit selection: `with_auto_layout()` after
+`with_csc_layout()` selects the estimate.

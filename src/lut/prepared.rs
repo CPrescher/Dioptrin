@@ -535,6 +535,37 @@ impl Prepared1d {
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
     }
+    /// Strict CSR fallback for independently supplied variances. Preserve every
+    /// unmasked contribution, including non-finite signal and zero/negative
+    /// weights, just as the ordinary integration kernel does. The spread kernel
+    /// intentionally filters those samples and must not implement this path.
+    pub(crate) fn integrate_with_variances(
+        &self,
+        signal: &[f64],
+        variance: &[f64],
+        mask: Option<&[u8]>,
+        normalization: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let rows = (0..self.row_ptr.len() - 1)
+            .into_par_iter()
+            .map(|r| {
+                let mut sums = [0.; 4];
+                for k in self.row_ptr[r]..self.row_ptr[r + 1] {
+                    let j = self.col_idx.get(k);
+                    if mask.is_some_and(|m| m[j] != 0) {
+                        continue;
+                    }
+                    let weight = self.values.as_ref().map_or(1., |v| v[k]);
+                    sums[0] += weight * signal[j];
+                    sums[1] += weight * normalization[j];
+                    sums[2] += weight * weight * variance[j];
+                }
+                sums
+            })
+            .collect();
+        let (intensity, errors) = PreparedCsr::normalize_rows::<true>(rows);
+        (self.bins(), intensity, errors)
+    }
     pub(crate) fn integrate_pixels<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
         s: &[P],

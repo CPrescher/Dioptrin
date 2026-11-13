@@ -13,7 +13,7 @@ propagation, and documented pyFAI seam dependence remain unchanged.
 
 ## Numerical checks
 
-- 251 Rust unit tests and 6 detector-reference tests pass in debug and release;
+- 252 Rust unit tests and 6 detector-reference tests pass in debug and release;
   release also passes 16 doctests. Debug all-target tests exercise the benchmark
   harnesses and examples.
 - Strict Clippy passes for all targets, both with and without Python bindings.
@@ -64,3 +64,19 @@ RAYON_NUM_THREADS=8 cargo run --release --example benchmark_consolidated
 
 The existing Massif and layout-crossover reports retain their original workload
 scope. This consolidation does not establish new speed claims for those paths.
+
+## Independent review
+
+Claude Fable (`claude-fable-5-1`) reviewed PR #18 at `71cb466` after it was
+opened. The [initial review](claude-fable-initial-review.md) found no regression
+in the retained main fixes, and identified a supplied-variance CSR fallback that
+incorrectly reused the sample-filtering spread kernel. A new regression fails
+on the original fallback (finite intensity 1.5 instead of 5 with a zero-normalization
+contribution) and passes with the direct CSR fallback. It also covers NaN/Inf,
+signed and zero weights, masked/empty bins, and strict/fast CSR/CSC policies.
+The optional spread computation keeps its documented filtering behavior.
+
+The review's layout observations are documented in the resident-plan manual;
+layout builder calls keep last-selection-wins behavior. The Python stub now
+states the resolvable-edge requirement, and the duplicate layout test value
+was replaced by 4000 bins. No application scheduling policy was changed.

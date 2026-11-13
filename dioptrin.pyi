@@ -377,7 +377,7 @@ class Integrator:
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
-                at any finite angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
+                at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
                 are corrected to [-pi, pi), including the returned axis. The n_azimuthal bins split
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
@@ -621,7 +621,7 @@ class Integrator:
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
-                at any finite angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
+                at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
                 are corrected to [-pi, pi), including the returned axis. The n_azimuthal bins split
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
@@ -677,7 +677,7 @@ class Integrator:
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
-                at any finite angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
+                at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
                 are corrected to [-pi, pi), including the returned axis. The n_azimuthal bins split
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
