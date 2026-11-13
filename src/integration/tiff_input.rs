@@ -37,8 +37,8 @@ impl Integrator {
             };
         }
         let (h, w) = (frame.dim1, frame.dim2);
-        self.update_geometry_arrays(h, w);
-        let norm = self.get_normalization();
+        let view = self.for_shape(h, w);
+        let norm = view.normalization();
         let mask = self.mask.as_ref().map(|m| {
             m.assert_compatible(h, w);
             m.data.as_slice()
@@ -65,7 +65,7 @@ impl Integrator {
             },
             IntegrationMethod::Histogram => unreachable!(),
         };
-        let lut = self.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(key);
         pixels!(
             frame,
             data,
@@ -103,8 +103,8 @@ impl Integrator {
             };
         }
         let (h, w) = (frame.dim1, frame.dim2);
-        self.update_geometry_arrays(h, w);
-        let norm = self.get_normalization();
+        let view = self.for_shape(h, w);
+        let norm = view.normalization();
         let mask = self.mask.as_ref().map(|m| {
             m.assert_compatible(h, w);
             m.data.as_slice()
@@ -145,7 +145,7 @@ impl Integrator {
             }
             _ => unreachable!(),
         };
-        let lut = self.ensure_lut2d(key);
+        let lut = view.ensure_lut2d(key);
         pixels!(
             frame,
             data,

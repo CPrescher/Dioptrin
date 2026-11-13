@@ -95,7 +95,7 @@ impl Integrator {
             });
         }
         snapshot.prepare1d(shape.0, shape.1, n_points);
-        let normalization = snapshot.get_normalization();
+        let normalization = snapshot.for_shape(shape.0, shape.1).normalization();
         let mask = snapshot.mask.take();
         let lut = snapshot
             .cache_1d
@@ -103,6 +103,7 @@ impl Integrator {
             .map_err(|_| "poisoned lookup cache")?
             .lut
             .ok_or("missing prepared lookup table")?;
+        let lut = Arc::try_unwrap(lut).map_err(|_| "prepared lookup table is still shared")?;
         if lut.fixed_csc().is_none() {
             return Err("lookup table does not fit compact CSC".into());
         }

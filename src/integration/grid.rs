@@ -267,11 +267,11 @@ impl Integrator {
         if let Some(v) = variance {
             validate_variances(data, v)?;
         }
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
-        self.validate_grid_coordinates(&normalization)?;
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
+        Self::validate_grid_coordinates(&view.state, &normalization)?;
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
-        let lut = self.ensure_lut2d(self.shared_grid_key(grid));
+        let lut = view.ensure_lut2d(self.shared_grid_key(grid));
         Ok(if let Some(variance) = variance {
             lut.raw2d_with_variances(data, variance, mask, &normalization)
         } else if errors {
@@ -281,9 +281,11 @@ impl Integrator {
         })
     }
 
-    pub(super) fn validate_grid_coordinates(&self, normalization: &[f64]) -> Result<(), String> {
+    pub(super) fn validate_grid_coordinates(
+        state: &super::GeometryState,
+        normalization: &[f64],
+    ) -> Result<(), String> {
         {
-            let state = self.state.read().map_err(|e| e.to_string())?;
             if state
                 .radial
                 .iter()
@@ -394,8 +396,8 @@ impl Integrator {
         // Like the default 2D path, non-finite pixels are not rejected: they
         // propagate into the bins they contribute to.
         self.validate_2d_setup(dim1, dim2, data.len())?;
-        self.update_geometry_arrays(dim1, dim2);
-        let radial_range = self.default_radial_edges_2d(dim1, dim2, n_radial);
+        let view = self.for_shape(dim1, dim2);
+        let radial_range = self.default_radial_edges_2d(&view, n_radial);
         // Values inside the edges must land in a bin even when their index
         // rounds to `n`, as on the default path.
         let mut grid =
@@ -410,9 +412,9 @@ impl Integrator {
             IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
             _ => (),
         }
-        let normalization = self.get_normalization();
+        let normalization = view.normalization();
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
-        let lut = self.ensure_lut2d(self.shared_grid_key(grid));
+        let lut = view.ensure_lut2d(self.shared_grid_key(grid));
         let (intensity, errors) = if errors {
             let (intensity, errors) =
                 self.lut_integrate2d_with_errors(data, &lut, mask, &normalization);
@@ -430,7 +432,12 @@ impl Integrator {
 
     /// Radial edges the default 2D path uses for this method, unit and size.
     /// Cached: computing them needs a pass over all pixels (or pixel corners).
-    fn default_radial_edges_2d(&self, dim1: usize, dim2: usize, n_radial: usize) -> (f64, f64) {
+    fn default_radial_edges_2d(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+        n_radial: usize,
+    ) -> (f64, f64) {
+        let (dim1, dim2) = (view.state.dim1, view.state.dim2);
         let key = RadialEdgesKey {
             dim1,
             dim2,
@@ -453,7 +460,7 @@ impl Integrator {
         {
             return edges;
         }
-        let state = self.state.read().expect("geometry state lock poisoned");
+        let state = &view.state;
         let mut geom = self.geometry.clone();
         geom.dim1 = dim1;
         geom.dim2 = dim2;

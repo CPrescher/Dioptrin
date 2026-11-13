@@ -73,7 +73,7 @@ fn fixed_grid_snapshots_preserve_corrected_range_edges_and_error_bars() {
                     ] {
                         let mut data = image();
                         let first = run(&ai, &data, range, false).unwrap();
-                        let radial = ai.default_radial_edges_2d(ROWS, COLS, NR);
+                        let radial = ai.default_radial_edges_2d(&ai.for_shape(ROWS, COLS), NR);
                         let mut grid = IntegrationGrid2d::new(NR, NA, radial, range)
                             .unwrap()
                             .with_clamped_index_rounding();
@@ -231,7 +231,7 @@ fn default_edges_reproduce_the_default_cake() {
             dim1: ROWS,
             dim2: COLS,
         });
-        ai.update_geometry_arrays(ROWS, COLS);
+        ai.geometry_for(ROWS, COLS);
         let edges = {
             let state = ai.state.read().unwrap();
             match method {
@@ -367,7 +367,7 @@ fn explicit_full_circle_keeps_radial_grid_and_corrections() {
     for method in methods() {
         let mut ai = integrator(method);
         ai.set_polarization_factor(Some(0.95));
-        ai.update_geometry_arrays(ROWS, COLS);
+        ai.geometry_for(ROWS, COLS);
         let normalization = ai.get_normalization().to_vec();
         let default = ai.integrate2d_from_slice(&normalization, ROWS, COLS, NR, NA);
         let full = run(&ai, &normalization, (-PI, PI), false).unwrap();
@@ -382,7 +382,7 @@ fn explicit_full_circle_keeps_radial_grid_and_corrections() {
         // Radial centres are those of the default grid.
         let step = (full.radial[NR - 1] - full.radial[0]) / (NR - 1) as f64;
         let lo = full.radial[0] - 0.5 * step;
-        let expected = ai.default_radial_edges_2d(ROWS, COLS, NR);
+        let expected = ai.default_radial_edges_2d(&ai.for_shape(ROWS, COLS), NR);
         assert!(
             (lo - expected.0).abs() < 1e-12 && (lo + NR as f64 * step - expected.1).abs() < 1e-9
         );

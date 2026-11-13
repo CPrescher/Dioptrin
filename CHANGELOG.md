@@ -116,6 +116,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same: all 83 bins are among the 85 that change by more than 1% between
   `setChiDiscAtPi` and `setChiDiscAtZero`. See
   `docs/validation/pyfai-full-seam.md`.
+- One `Integrator` used from several threads with images of **different
+  shapes** (Python `batch1d`/`batch1d_iter`/`batch2d`/`batch2d_iter` with
+  workers on TIFFs or arrays of mixed sizes, or Rust threads sharing an
+  `Arc<Integrator>`) could crash with a segmentation fault, panic with
+  "Lut2dGuard created without LUT being built", hang, or silently integrate an
+  image with the lookup table of another shape. The cached geometry and lookup
+  tables belonged to whichever shape was requested last, and a call could pick
+  up a table that another thread had just rebuilt for its own image. Every call
+  now works on the geometry and table of its own image shape, so mixed shapes
+  give the same results as one integrator per shape. Each 1D/2D cache still
+  keeps one table, so switching shapes can rebuild it; warm, fixed-shape batches
+  continue to share their prepared tables.
+- The lookup-table kernels read pixels without bounds checks and trusted the
+  table to fit the image. They now verify once per call that the image, mask,
+  normalization and variance arrays cover every pixel the table addresses, and
+  panic with a clear message otherwise. This also covers the public
+  `lut::integrate1d*`/`integrate2d*` functions, which accept caller-built
+  `Lut1d`/`Lut2d` values and could read out of bounds from safe code.
 
 ### Compatibility and validation
 

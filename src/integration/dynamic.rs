@@ -48,7 +48,7 @@ impl Integrator {
         // Complete lazy geometry/CSR/CSC initialization ONCE, before any frame
         // workers start. There are no cache writers on the resulting plan.
         integrator.prepare1d(shape.0, shape.1, n_points);
-        let normalization = integrator.get_normalization();
+        let normalization = integrator.for_shape(shape.0, shape.1).normalization();
         let lut = integrator
             .cache_1d
             .into_inner()
@@ -56,7 +56,7 @@ impl Integrator {
             .lut
             .ok_or("missing prepared dynamic table")?;
         Ok(Dynamic1dPlan {
-            lut: Arc::new(lut),
+            lut,
             normalization,
             fast_math: self.fast_math,
             csc: self.sparse_layout == SparseLayout::Csc,
