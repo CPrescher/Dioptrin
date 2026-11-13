@@ -7,13 +7,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::batch::{
     FileWorkers, Integration1D, Integration1DWithAzimuthalStd, Integration1DWithErrors,
-    Integration2D, Integration2DWithAzimuthalRange, Integration2DWithAzimuthalRangeAndErrors,
-    Integration2DWithErrors, IntegrationTask, StreamingBatch, WorkItem,
-    process_files_streaming_with_pool, process_files_with_pool, process_queue_with_pool,
+    Integration2D, Integration2DOnAzimuthalRange, Integration2DWithErrors, IntegrationTask,
+    StreamingBatch, WorkItem, process_files_streaming_with_pool, process_files_with_pool,
+    process_queue_with_pool,
 };
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
-use crate::integration::{IntegrationMethod, Integrator, MaskMode, RadialUnit, SparseLayout};
+use crate::integration::{
+    IntegrationGrid2d, IntegrationMethod, Integrator, MaskMode, RadialUnit, SparseLayout,
+};
 use crate::mask::Mask;
 use crate::poni::Poni;
 
@@ -23,6 +25,18 @@ use super::utils::{
     extract_array_dims, extract_frame_from_pyany, parse_method, parse_unit, poni_from_dict,
     resolve_workers_threads,
 };
+
+/// Raise ValueError for an invalid `azimuthal_range=(min, max)` before a batch
+/// starts, instead of one error per frame.
+fn validate_azimuthal_range(
+    azimuthal_range: Option<(f64, f64)>,
+    n_azimuthal: usize,
+) -> PyResult<()> {
+    if let Some(range) = azimuthal_range {
+        IntegrationGrid2d::new(1, n_azimuthal, (0.0, 1.0), range).map_err(PyValueError::new_err)?;
+    }
+    Ok(())
+}
 
 fn parse_mask_mode(value: &str) -> PyResult<MaskMode> {
     match value {
@@ -384,7 +398,7 @@ impl PyIntegrator {
     /// Perform 2D integration.
     ///
     /// Set `errors=True` to include per-bin error estimates. Use `azimuthal_range`
-    /// to restrict the azimuthal range.
+    /// to integrate a sector or to choose where the azimuthal axis starts.
     ///
     /// # Arguments
     ///
@@ -392,12 +406,20 @@ impl PyIntegrator {
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `azimuthal_range` - Optional (min, max) tuple for azimuthal range in radians
+    /// * `azimuthal_range` - Optional (min, max) azimuthal edges in radians, with min in
+    ///   [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The `n_azimuthal` bins split it evenly
+    ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
+    ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
+    ///   centres. Radial bins are the same as without a range.
+    ///   With `method="pyfai_full"`, individual bins depend on how the range is
+    ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
+    ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
+    ///   sectors.
     ///
     /// # Returns
     ///
     /// IntegrationResult with flat intensity (and optional errors) sized
-    /// `n_radial * n_azimuthal`
+    /// `n_radial * n_azimuthal`; with `azimuthal_range`, also the azimuthal bin centres
     ///
     /// # Errors
     ///
@@ -445,32 +467,19 @@ impl PyIntegrator {
                             n_azimuthal,
                         )
                     }
-                    (false, Some((azimuthal_min, azimuthal_max))) => {
-                        let intensity = self.integrator.integrate2d_with_azimuthal_range(
-                            &frame,
-                            n_radial,
-                            n_azimuthal,
-                            azimuthal_min,
-                            azimuthal_max,
-                        );
-                        PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
-                    }
-                    (true, Some((azimuthal_min, azimuthal_max))) => {
-                        let (intensity, errs) =
-                            self.integrator.integrate2d_with_azimuthal_range_and_errors(
+                    (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
+                        self.integrator
+                            .integrate2d_on_azimuthal_range(
                                 &frame,
                                 n_radial,
                                 n_azimuthal,
-                                azimuthal_min,
-                                azimuthal_max,
-                            );
-                        PyIntegrationResult::from_2d_with_errors(
-                            intensity,
-                            errs,
-                            n_radial,
-                            n_azimuthal,
-                        )
-                    }
+                                range,
+                                errors,
+                            )
+                            .map_err(PyValueError::new_err)?,
+                        n_radial,
+                        n_azimuthal,
+                    ),
                 };
                 Ok(result)
             }
@@ -505,38 +514,21 @@ impl PyIntegrator {
                             n_azimuthal,
                         )
                     }
-                    (false, Some((azimuthal_min, azimuthal_max))) => {
-                        let intensity =
-                            self.integrator.integrate2d_with_azimuthal_range_from_slice(
+                    (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
+                        self.integrator
+                            .integrate2d_on_azimuthal_range_from_slice(
                                 slice,
                                 dim1,
                                 dim2,
                                 n_radial,
                                 n_azimuthal,
-                                azimuthal_min,
-                                azimuthal_max,
-                            );
-                        PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
-                    }
-                    (true, Some((azimuthal_min, azimuthal_max))) => {
-                        let (intensity, errs) = self
-                            .integrator
-                            .integrate2d_with_azimuthal_range_and_errors_from_slice(
-                                slice,
-                                dim1,
-                                dim2,
-                                n_radial,
-                                n_azimuthal,
-                                azimuthal_min,
-                                azimuthal_max,
-                            );
-                        PyIntegrationResult::from_2d_with_errors(
-                            intensity,
-                            errs,
-                            n_radial,
-                            n_azimuthal,
-                        )
-                    }
+                                range,
+                                errors,
+                            )
+                            .map_err(PyValueError::new_err)?,
+                        n_radial,
+                        n_azimuthal,
+                    ),
                 };
                 Ok(result)
             }
@@ -1308,7 +1300,15 @@ impl PyIntegrator {
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `azimuthal_range` - Optional (min, max) tuple for azimuthal range in radians
+    /// * `azimuthal_range` - Optional (min, max) azimuthal edges in radians, with min in
+    ///   [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The `n_azimuthal` bins split it evenly
+    ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
+    ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
+    ///   centres. Radial bins are the same as without a range.
+    ///   With `method="pyfai_full"`, individual bins depend on how the range is
+    ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
+    ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
+    ///   sectors.
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
@@ -1348,6 +1348,7 @@ impl PyIntegrator {
     ) -> PyResult<Vec<PyBatchResult>> {
         self.reject_histogram_2d("batch2d")?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
         match (errors, azimuthal_range) {
             (false, None) => {
@@ -1415,12 +1416,13 @@ impl PyIntegrator {
                     })
                     .collect())
             }
-            (false, Some((azimuthal_min, azimuthal_max))) => {
-                let task = Integration2DWithAzimuthalRange {
+            (errors, Some((azimuthal_min, azimuthal_max))) => {
+                let task = Integration2DOnAzimuthalRange {
                     n_radial,
                     n_azimuthal,
                     azimuthal_min,
                     azimuthal_max,
+                    errors,
                 };
                 let results = self.process_files(
                     &tiff_paths,
@@ -1431,56 +1433,13 @@ impl PyIntegrator {
                 );
                 Ok(results
                     .into_iter()
-                    .map(|(filename, result)| match result {
-                        Ok(intensity) => PyBatchResult {
+                    .map(|(filename, result)| {
+                        PyIntegrationResult::batch_azimuthal_range_2d(
                             filename,
-                            result: Some(PyIntegrationResult::from_2d(
-                                intensity,
-                                n_radial,
-                                n_azimuthal,
-                            )),
-                            error: None,
-                        },
-                        Err(err) => PyBatchResult {
-                            filename,
-                            result: None,
-                            error: Some(err),
-                        },
-                    })
-                    .collect())
-            }
-            (true, Some((azimuthal_min, azimuthal_max))) => {
-                let task = Integration2DWithAzimuthalRangeAndErrors {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal_min,
-                    azimuthal_max,
-                };
-                let results = self.process_files(
-                    &tiff_paths,
-                    Arc::clone(&self.integrator),
-                    task,
-                    num_workers,
-                    num_threads,
-                );
-                Ok(results
-                    .into_iter()
-                    .map(|(filename, result)| match result {
-                        Ok((intensity, errs)) => PyBatchResult {
-                            filename,
-                            result: Some(PyIntegrationResult::from_2d_with_errors(
-                                intensity,
-                                errs,
-                                n_radial,
-                                n_azimuthal,
-                            )),
-                            error: None,
-                        },
-                        Err(err) => PyBatchResult {
-                            filename,
-                            result: None,
-                            error: Some(err),
-                        },
+                            result,
+                            n_radial,
+                            n_azimuthal,
+                        )
                     })
                     .collect())
             }
@@ -1499,7 +1458,15 @@ impl PyIntegrator {
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `azimuthal_range` - Optional (min, max) tuple for azimuthal range in radians
+    /// * `azimuthal_range` - Optional (min, max) azimuthal edges in radians, with min in
+    ///   [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The `n_azimuthal` bins split it evenly
+    ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
+    ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
+    ///   centres. Radial bins are the same as without a range.
+    ///   With `method="pyfai_full"`, individual bins depend on how the range is
+    ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
+    ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
+    ///   sectors.
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
@@ -1540,6 +1507,7 @@ impl PyIntegrator {
     ) -> PyResult<PyBatchIterator> {
         self.reject_histogram_2d("batch2d_iter")?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+        validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
         let classified = classify_batch_input(images)?;
 
@@ -1596,12 +1564,13 @@ impl PyIntegrator {
                         next_index: 0,
                     })
                 }
-                (false, Some((azimuthal_min, azimuthal_max))) => {
-                    let task = Integration2DWithAzimuthalRange {
+                (errors, Some((azimuthal_min, azimuthal_max))) => {
+                    let task = Integration2DOnAzimuthalRange {
                         n_radial,
                         n_azimuthal,
                         azimuthal_min,
                         azimuthal_max,
+                        errors,
                     };
                     let batch = self.process_files_streaming(
                         tiff_paths,
@@ -1611,33 +1580,7 @@ impl PyIntegrator {
                         num_threads,
                     )?;
                     Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration2D {
-                            receiver: Mutex::new(batch.into_receiver()),
-                            n_radial,
-                            n_azimuthal,
-                        },
-                        total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
-                }
-                (true, Some((azimuthal_min, azimuthal_max))) => {
-                    let task = Integration2DWithAzimuthalRangeAndErrors {
-                        n_radial,
-                        n_azimuthal,
-                        azimuthal_min,
-                        azimuthal_max,
-                    };
-                    let batch = self.process_files_streaming(
-                        tiff_paths,
-                        Arc::clone(&self.integrator),
-                        task,
-                        num_workers,
-                        num_threads,
-                    )?;
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration2DWithErrors {
+                        receiver: BatchReceiver::Integration2DOnAzimuthalRange {
                             receiver: Mutex::new(batch.into_receiver()),
                             n_radial,
                             n_azimuthal,
@@ -1786,12 +1729,13 @@ impl PyIntegrator {
                     next_index: 0,
                 })
             }
-            (false, Some((azimuthal_min, azimuthal_max))) => {
-                let task = Integration2DWithAzimuthalRange {
+            (errors, Some((azimuthal_min, azimuthal_max))) => {
+                let task = Integration2DOnAzimuthalRange {
                     n_radial,
                     n_azimuthal,
                     azimuthal_min,
                     azimuthal_max,
+                    errors,
                 };
                 let batch = process_queue_with_pool(
                     work_rx,
@@ -1800,32 +1744,7 @@ impl PyIntegrator {
                     self.file_pool(num_workers, num_threads)?,
                 );
                 Ok(PyBatchIterator {
-                    receiver: BatchReceiver::Integration2D {
-                        receiver: Mutex::new(batch.into_receiver()),
-                        n_radial,
-                        n_azimuthal,
-                    },
-                    total,
-                    completed: 0,
-                    buffer: BTreeMap::new(),
-                    next_index: 0,
-                })
-            }
-            (true, Some((azimuthal_min, azimuthal_max))) => {
-                let task = Integration2DWithAzimuthalRangeAndErrors {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal_min,
-                    azimuthal_max,
-                };
-                let batch = process_queue_with_pool(
-                    work_rx,
-                    integrator,
-                    task,
-                    self.file_pool(num_workers, num_threads)?,
-                );
-                Ok(PyBatchIterator {
-                    receiver: BatchReceiver::Integration2DWithErrors {
+                    receiver: BatchReceiver::Integration2DOnAzimuthalRange {
                         receiver: Mutex::new(batch.into_receiver()),
                         n_radial,
                         n_azimuthal,

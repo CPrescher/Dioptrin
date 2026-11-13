@@ -455,7 +455,9 @@ for r in results:
         # r.result.n_radial and r.result.n_azimuthal for reshaping
         cake = np.array(r.result.intensity).reshape(r.result.n_azimuthal, r.result.n_radial)
 
-# Batch 2D with azimuthal range restriction
+# Batch 2D on an azimuthal sector: (min, max) edges in radians, split into
+# n_azimuthal equal bins; pixels outside are left out and r.result.azimuthal
+# holds the bin centres. Radial bins are the same as without a range.
 results = integrator.batch2d(
     files,
     n_radial=100,

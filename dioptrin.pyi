@@ -80,7 +80,8 @@ class IntegrationResult:
 
     Attributes:
         radial: Radial bin centers (1D and MultiIntegrator 2D; otherwise None)
-        azimuthal: Azimuthal bin centers in radians (MultiIntegrator 2D; otherwise None)
+        azimuthal: Azimuthal bin centers in radians (MultiIntegrator 2D and Integrator
+            2D with azimuthal_range; otherwise None)
         intensity: Integrated intensity values
         errors: Error estimates (present if errors=True was specified)
         azimuthal_std: Weighted population spread (1D, when explicitly requested)
@@ -95,7 +96,7 @@ class IntegrationResult:
 
     @property
     def azimuthal(self) -> Optional[list[float]]:
-        """Azimuthal bin centers (2D only)."""
+        """Azimuthal bin centers in radians (MultiIntegrator 2D, Integrator 2D with azimuthal_range)."""
         ...
 
     @property
@@ -375,7 +376,16 @@ class Integrator:
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
-            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
+            azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
+                in [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The n_azimuthal bins split
+                it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
+                outside are left out, so sectors work, also across the +-pi cut.
+                result.azimuthal holds the bin centres. Radial bins are the same as
+                without a range. Invalid ranges raise ValueError.
+                With method="pyfai_full", individual bins depend on how the range
+                is written (a range shifted by 2*pi, or a sector vs the same rows
+                of a full circle, can differ, as in pyFAI itself); prefer
+                "pixel_split" for sectors.
 
         Returns:
             IntegrationResult with flat intensity (and optional errors) sized
@@ -609,7 +619,16 @@ class Integrator:
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
-            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
+            azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
+                in [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The n_azimuthal bins split
+                it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
+                outside are left out, so sectors work, also across the +-pi cut.
+                result.azimuthal holds the bin centres. Radial bins are the same as
+                without a range. Invalid ranges raise ValueError.
+                With method="pyfai_full", individual bins depend on how the range
+                is written (a range shifted by 2*pi, or a sector vs the same rows
+                of a full circle, can differ, as in pyFAI itself); prefer
+                "pixel_split" for sectors.
             num_workers: Number of parallel workers (optional)
             num_threads: Threads per worker (optional)
 
@@ -655,7 +674,16 @@ class Integrator:
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins
             errors: Whether to compute error estimates (default: False)
-            azimuthal_range: Optional (min, max) tuple for azimuthal range in radians
+            azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
+                in [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The n_azimuthal bins split
+                it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
+                outside are left out, so sectors work, also across the +-pi cut.
+                result.azimuthal holds the bin centres. Radial bins are the same as
+                without a range. Invalid ranges raise ValueError.
+                With method="pyfai_full", individual bins depend on how the range
+                is written (a range shifted by 2*pi, or a sector vs the same rows
+                of a full circle, can differ, as in pyFAI itself); prefer
+                "pixel_split" for sectors.
             num_workers: Number of parallel workers (optional)
             num_threads: Threads per worker (optional)
 

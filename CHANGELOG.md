@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Integrator::integrate2d_on_azimuthal_range` (and `_from_slice`) integrates
+  2D on true azimuthal edges `(min, max)` in radians, including sectors and
+  sectors crossing the ±π cut, and returns intensity, optional errors and the
+  radial and azimuthal bin centres (`AzimuthalRange2dResult`). It bins through
+  the cached shared-grid tables and keeps the default 2D radial grid. The batch
+  task `batch::Integration2DOnAzimuthalRange` runs it per file. The existing
+  `integrate2d_with_azimuthal_range*` functions keep their meaning (first-bin
+  centre and step, wrapping periodically).
+
 ### Fixed
 
 - 1D `pixel_split` (`IntegrationMethod::PixelSplit`, `build_lut1d_ps_csr`,
@@ -75,6 +86,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `process_queue_streaming` return that message as an `Err` for every input
   without integrating; and Python raises `ValueError` before any work starts.
   1D Histogram integration is unchanged.
+- Python `Integrator.integrate2d`, `batch2d` and `batch2d_iter` (path and
+  array input, with and without errors) passed the documented
+  `azimuthal_range=(min, max)` to Rust as (first-bin centre, step), so
+  `(0, 1.57)` with 90 bins put the whole circle into five bins of 1.57 rad.
+  They now integrate the true range: the bins split `[min, max)` evenly, pixels
+  outside are left out, and `result.azimuthal` holds the bin centres. Invalid
+  ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
+  `ValueError`; batches check before starting.
+  Non-finite pixels behave as without a range: they make only the bins they
+  contribute to NaN or infinite. With counting, the pixel at the largest radial
+  value lands in the last bin as on the default path, also for units whose
+  maximum is large (2θ in degrees, q in nm⁻¹), and a pixel or subpixel inside
+  the range whose bin index rounds to `n` lands in the last bin instead of
+  being dropped. A full circle may start anywhere: `(0, 2π)` and `(-2π, 0)`
+  give the `(-π, π)` cake rotated by half a turn (identical for counting and
+  supersampling, within about 1e-9 relative for `pixel_split` on the CeO2
+  image).
+  With `pyfai_full`, individual sector bins depend on how the range is
+  written: on the CeO2 Pilatus 1M image (300×72 bins, 2θ in degrees),
+  `(2.5, 2.5 + π/2)` and the same range shifted by −2π differ in 276 of 21,600
+  bins (up to 2θ ≈ 27°, by up to 1.44 relative), because pyFAI's full
+  splitting unwraps pixels with a heuristic that depends on where the azimuth
+  seam lies (pyFAI itself behaves the same). `pixel_split`
+  differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
+  The same applies to where a `pyfai_full` full circle starts: `(0, 2π)`
+  differs from the rotated `(-π, π)` cake in 896 of 21,600 bins there (median
+  0.1%, 83 bins by more than 1%). pyFAI 2026.9.0's own full splitting shows the
+  same: all 83 bins are among the 85 that change by more than 1% between
+  `setChiDiscAtPi` and `setChiDiscAtZero`. See
+  `docs/validation/pyfai-full-seam.md`.
 
 ### Compatibility and validation
 
@@ -83,6 +124,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyfai_full` or `supersampled` for 2D. `IntegrationTask` has a new provided
   method, `integrate2d_method`, which the built-in 2D tasks override; custom
   tasks are unaffected.
+- **Behaviour change:** Python `Integrator` 2D calls with an explicit
+  `azimuthal_range` return different cakes. Ranges used to be read as (first-bin
+  centre, step); they are now true `(min, max)` ranges, sectors included, so
+  code that passed (centre, step) to work around the bug must pass
+  `(min, max)` instead. An explicit full circle `(-π, π)` follows exactly ±π,
+  while the default (no range) grid spans the detector's own azimuth extent, so
+  values differ slightly from the default cake; on the CeO2 Pilatus 1M test
+  image (500×360 bins, 2θ in degrees) the median relative difference per bin is
+  2e-5 for counting, 1.8e-3 for `pixel_split`, 1.0e-3 for `supersampled` and
+  0 for `pyfai_full`, with larger differences in sparsely filled bins at module
+  gaps. On the default path's own edges, counting and supersampling give
+  identical values except next to the beam centre, and `pixel_split` differs
+  slightly (fractional polygon areas vs the legacy 2D table). Calls without
+  `azimuthal_range` are unchanged.
 - **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
   patterns change wherever detectors share a bin with unequal coverage.
   Single-detector intensities and errors are unchanged up to floating-point
