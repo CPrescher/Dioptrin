@@ -43,9 +43,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before. `histogram_parallel`, which the integrator does not use, did not
   panic in that case but silently lost the sixteenth of the data that contained
   the maximum; it now returns the complete result.
+- `IntegrationMethod::Histogram` in 2D (every `Integrator::integrate2d*`
+  method, the typed TIFF 2D path, and Python `integrate2d`, `batch2d` and
+  `batch2d_iter`) ignored `n_azimuthal` and the azimuthal range and returned
+  the 1D radial profile: `n_radial` values instead of
+  `n_radial * n_azimuthal`, which could not be reshaped into a cake (or was
+  silently reshaped to a single row). Histogram has no azimuthal binning, so
+  the Rust methods now panic with "`<method>` is not supported for Histogram
+  method" and Python raises `ValueError` before any work starts. 1D Histogram
+  integration is unchanged.
 
 ### Compatibility and validation
 
+- **Behaviour change:** 2D integration with the Histogram method now fails
+  instead of returning a 1D profile; use `counting`, `pixel_split`,
+  `pyfai_full` or `supersampled` for 2D.
 - **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
   patterns change wherever detectors share a bin with unequal coverage.
   Single-detector intensities and errors are unchanged up to floating-point

@@ -141,6 +141,10 @@ and disabled paths with `python python_examples/bench_azimuthal_std.py`.
 
 ## 2D integration example (azimuthal range)
 
+2D integration supports the counting, pixel-split, `pyfai_full` and supersampled
+methods. The legacy Histogram method has no azimuthal binning and is 1D only:
+the `integrate2d*` methods panic for it, and Python raises `ValueError`.
+
 ```rust
 use std::f64::consts::PI;
 
@@ -310,7 +314,7 @@ import dioptrin
 # Create an integrator from a PONI calibration file
 integrator = dioptrin.Integrator(
     "calibration.poni",
-    method="pixel_split",      # "counting", "pixel_split", "histogram", or "supersampled"
+    method="pixel_split",      # "counting", "pixel_split", "histogram" (1D only), or "supersampled"
     polarization_factor=0.99,  # optional
     unit="2th_deg"             # "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
 )
@@ -603,7 +607,7 @@ cargo bench --bench build
 Select `method="pyfai_full"` in Python or `IntegrationMethod::PyfaiFull`
 in Rust to use approximate pyFAI full-histogram splitting for **both 1D and
 2D**. The default `pixel_split` convention is unchanged. `histogram` remains
-the separate unsplit legacy method.
+the separate unsplit legacy method and is 1D only.
 
 ```python
 ai = dioptrin.Integrator("calibration.poni", method="pyfai_full", unit="2th_deg")
