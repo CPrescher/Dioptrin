@@ -466,6 +466,25 @@ results = integrator.batch2d(
 )
 ```
 
+### Azimuthal Brackets (Texture Analysis)
+
+To get rows centred on chosen directions, give the half-width of a row instead
+of the number of rows. The first row is centred on the start of
+`azimuthal_range` (default `(0, 2*pi)`), and rows are contiguous:
+
+```python
+# 72 rows of +-2.5 degrees, centred on 0, 5, ..., 355 degrees
+result = integrator.integrate2d(
+    "pattern.tif", n_radial=1000, azimuthal_bracket=np.radians(2.5)
+)
+cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
+centres = np.degrees(result.azimuthal)   # row 0 -> 0 deg, row 18 -> 90 deg
+```
+
+Give either `n_azimuthal` or `azimuthal_bracket`, not both. The span must be a
+whole number of rows (`+-3.5` degrees over a full turn raises `ValueError`).
+`batch2d` and `batch2d_iter` accept the same keyword.
+
 ### Streaming Batch Processing
 
 For large batches, use streaming iterators to process results as they complete:

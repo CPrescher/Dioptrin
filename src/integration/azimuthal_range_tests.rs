@@ -673,3 +673,82 @@ fn full_circle_can_start_anywhere() {
         }
     }
 }
+
+/// Rows given as centre ± bracket are the range cake shifted back by one
+/// bracket: 0° and 90° are row centres, and the values are those of the
+/// explicit edges.
+#[test]
+fn brackets_centre_rows_on_the_requested_directions() {
+    let bracket = 2.5f64.to_radians();
+    assert_eq!(azimuthal_bracket_bins((0.0, TAU), bracket).unwrap().0, 72);
+    for method in methods() {
+        let ai = integrator(method);
+        let got = ai
+            .integrate2d_on_azimuthal_brackets_from_slice(
+                &image(),
+                ROWS,
+                COLS,
+                NR,
+                (0.0, TAU),
+                bracket,
+                true,
+            )
+            .unwrap();
+        assert_eq!(got.azimuthal.len(), 72);
+        for (i, centre) in got.azimuthal.iter().enumerate() {
+            assert!((centre - 2.0 * bracket * i as f64).abs() < 1e-12);
+        }
+        assert!((got.azimuthal[18] - PI / 2.0).abs() < 1e-12);
+        let reference = ai
+            .integrate2d_on_azimuthal_range_from_slice(
+                &image(),
+                ROWS,
+                COLS,
+                NR,
+                72,
+                (-bracket, TAU - bracket),
+                true,
+            )
+            .unwrap();
+        for (a, b) in got.intensity.iter().zip(&reference.intensity) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{method:?}");
+        }
+    }
+}
+
+#[test]
+fn brackets_also_describe_sectors_and_reject_uneven_tilings() {
+    // Centres 0°, 10°, …, 80°: nine rows with edges (-5°, 85°).
+    let (n, (lo, hi)) = azimuthal_bracket_bins((0.0, PI / 2.0), 5f64.to_radians()).unwrap();
+    assert_eq!(n, 9);
+    assert!((lo + 5f64.to_radians()).abs() < 1e-12);
+    assert!((hi - 85f64.to_radians()).abs() < 1e-12);
+    for (range, bracket) in [
+        ((0.0, TAU), 3.5f64.to_radians()),
+        ((0.0, TAU), 0.0),
+        ((0.0, TAU), -0.1),
+        ((0.0, TAU), f64::NAN),
+        ((0.0, TAU), TAU),
+        ((1.0, 1.0), 0.1),
+        ((0.0, f64::INFINITY), 0.1),
+    ] {
+        assert!(
+            azimuthal_bracket_bins(range, bracket).is_err(),
+            "{range:?} {bracket}"
+        );
+    }
+    // More than one turn is rejected by the range path.
+    let ai = integrator(IntegrationMethod::Counting);
+    assert!(
+        ai.integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            (0.0, 2.0 * TAU),
+            0.1 * TAU,
+            false
+        )
+        .is_err()
+    );
+}

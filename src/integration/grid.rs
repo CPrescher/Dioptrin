@@ -193,6 +193,41 @@ fn centers((lo, hi): (f64, f64), count: usize) -> Vec<f64> {
     (0..count).map(|i| lo + (i as f64 + 0.5) * step).collect()
 }
 
+/// Bin count and outer edges of contiguous azimuthal rows described by their
+/// centres: the first row is centred on `center_range.0`, every row covers its
+/// centre ± `half_width`, and the centres advance by `2 * half_width` until
+/// just before `center_range.1`. All angles are radians.
+///
+/// Returns `(n_azimuthal, (min, max))` for
+/// [`Integrator::integrate2d_on_azimuthal_range`]. For example `(0, 2π)` with a
+/// 2.5° bracket gives 72 rows centred on 0°, 5°, …, 355° with edges
+/// `(-2.5°, 357.5°)`. The span must be a whole number of rows (to 1e-9
+/// relative), otherwise an error is returned rather than adjusting the bracket.
+pub fn azimuthal_bracket_bins(
+    center_range: (f64, f64),
+    half_width: f64,
+) -> Result<(usize, (f64, f64)), String> {
+    let (first, end) = center_range;
+    let span = end - first;
+    if !first.is_finite() || !end.is_finite() || !span.is_finite() || span <= 0.0 {
+        return Err("azimuthal centre range must be finite and increasing".into());
+    }
+    if !half_width.is_finite() || half_width <= 0.0 {
+        return Err("azimuthal bracket must be finite and positive".into());
+    }
+    let rows = span / (2.0 * half_width);
+    let n = rows.round();
+    if !n.is_finite() || n < 1.0 || (rows - n).abs() > 1e-9 * n {
+        return Err(format!(
+            "azimuthal bracket of ±{half_width} rad does not divide the span of {span} rad \
+             into a whole number of rows ({rows} rows)"
+        ));
+    }
+    // Use the exact row width implied by the count, so the edges stay consistent.
+    let half = span / (2.0 * n);
+    Ok((n as usize, (first - half, end - half)))
+}
+
 /// 2D result on explicit `(min, max)` azimuthal edges, from
 /// [`Integrator::integrate2d_on_azimuthal_range`].
 #[derive(Clone, Debug, PartialEq)]
@@ -426,6 +461,60 @@ impl Integrator {
             radial: grid.radial_centers(),
             azimuthal: grid.azimuthal_centers(),
         })
+    }
+
+    /// Integrate a frame to 2D on contiguous rows given by their centres. See
+    /// [`Integrator::integrate2d_on_azimuthal_brackets_from_slice`].
+    pub fn integrate2d_on_azimuthal_brackets(
+        &self,
+        frame: &Frame,
+        n_radial: usize,
+        center_range: (f64, f64),
+        half_width: f64,
+        errors: bool,
+    ) -> Result<AzimuthalRange2dResult, String> {
+        self.integrate2d_on_azimuthal_brackets_from_slice(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            n_radial,
+            center_range,
+            half_width,
+            errors,
+        )
+    }
+
+    /// Integrate to 2D on contiguous azimuthal rows described by their centres,
+    /// as used in texture analysis: the first row is centred on
+    /// `center_range.0` and every row covers its centre ± `half_width`
+    /// (radians). `(0, 2π)` with a 2.5° bracket gives 72 rows centred on
+    /// 0°, 5°, …, 355°, so directions such as 0° and 90° each sit in the middle
+    /// of a row. The number of rows is `result.azimuthal.len()`.
+    ///
+    /// This is [`Integrator::integrate2d_on_azimuthal_range_from_slice`] on the
+    /// edges from [`azimuthal_bracket_bins`]; everything documented there
+    /// applies. The span must be a whole number of rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn integrate2d_on_azimuthal_brackets_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        center_range: (f64, f64),
+        half_width: f64,
+        errors: bool,
+    ) -> Result<AzimuthalRange2dResult, String> {
+        let (n_azimuthal, azimuthal_range) = azimuthal_bracket_bins(center_range, half_width)?;
+        self.integrate2d_on_azimuthal_range_from_slice(
+            data,
+            dim1,
+            dim2,
+            n_radial,
+            n_azimuthal,
+            azimuthal_range,
+            errors,
+        )
     }
 
     /// Radial edges the default 2D path uses for this method, unit and size.

@@ -364,9 +364,11 @@ class Integrator:
         self,
         image: Union[str, np.ndarray],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[Tuple[float, float]] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
     ) -> IntegrationResult:
         """
         Perform 2D integration.
@@ -374,7 +376,16 @@ class Integrator:
         Args:
             image: Path to the TIFF image file or 2D NumPy array
             n_radial: Number of radial bins
-            n_azimuthal: Number of azimuthal bins
+            n_azimuthal: Number of azimuthal bins. Give either this or
+                azimuthal_bracket.
+            azimuthal_bracket: Keyword only, instead of n_azimuthal: half-width in
+                radians of contiguous rows given by their centres. The first row is
+                centred on the start of azimuthal_range (default (0, 2*pi)), every
+                row covers its centre +- the bracket, and the number of rows is
+                span / (2 * bracket), which must be a whole number (else
+                ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
+                centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
+                centres and result.n_azimuthal the row count.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
                 at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
@@ -603,11 +614,13 @@ class Integrator:
         self,
         tiff_paths: list[str],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[Tuple[float, float]] = None,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
     ) -> list[BatchResult]:
         """
         Perform batch 2D integration.
@@ -618,7 +631,16 @@ class Integrator:
         Args:
             tiff_paths: List of TIFF file paths to process
             n_radial: Number of radial bins
-            n_azimuthal: Number of azimuthal bins
+            n_azimuthal: Number of azimuthal bins. Give either this or
+                azimuthal_bracket.
+            azimuthal_bracket: Keyword only, instead of n_azimuthal: half-width in
+                radians of contiguous rows given by their centres. The first row is
+                centred on the start of azimuthal_range (default (0, 2*pi)), every
+                row covers its centre +- the bracket, and the number of rows is
+                span / (2 * bracket), which must be a whole number (else
+                ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
+                centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
+                centres and result.n_azimuthal the row count.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
                 at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
@@ -658,11 +680,13 @@ class Integrator:
         self,
         images: Union[list[str], list[np.ndarray], Iterable[Union[str, np.ndarray]]],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[Tuple[float, float]] = None,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
     ) -> BatchIterator:
         """
         Perform streaming batch 2D integration.
@@ -674,7 +698,16 @@ class Integrator:
             images: List of TIFF file paths, list of NumPy arrays (2D float64),
                 or a generator/iterator yielding file paths or NumPy arrays
             n_radial: Number of radial bins
-            n_azimuthal: Number of azimuthal bins
+            n_azimuthal: Number of azimuthal bins. Give either this or
+                azimuthal_bracket.
+            azimuthal_bracket: Keyword only, instead of n_azimuthal: half-width in
+                radians of contiguous rows given by their centres. The first row is
+                centred on the start of azimuthal_range (default (0, 2*pi)), every
+                row covers its centre +- the bracket, and the number of rows is
+                span / (2 * bracket), which must be a whole number (else
+                ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
+                centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
+                centres and result.n_azimuthal the row count.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
                 at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
@@ -793,14 +826,22 @@ class MultiIntegrator:
         self,
         images: list[Union[str, np.ndarray]],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[tuple[float, float]] = None,
         *,
         normalization: str = "relative",
         normalization_factors: Optional[list[float]] = None,
+        azimuthal_bracket: Optional[float] = None,
     ) -> IntegrationResult:
         """Combine raw fractional pixel contributions onto shared 2D edges.
+
+        Give either n_azimuthal or azimuthal_bracket. azimuthal_bracket is the
+        half-width in radians of contiguous rows given by their centres: the
+        first row is centred on the start of azimuthal_range, which then
+        defaults to (0, 2*pi), and the span must be a whole number of rows
+        (else ValueError). E.g. np.radians(2.5) gives 72 rows centred on
+        0, 5, ..., 355 degrees.
 
         Radial edges use the common radial_range and unit. Azimuthal edges are
         radians (default -pi, pi), span at most 2*pi, and clip sectors without

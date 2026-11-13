@@ -4,7 +4,7 @@ mod cache;
 mod corrections;
 mod dynamic;
 pub(crate) mod grid;
-pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode};
+pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode, azimuthal_bracket_bins};
 mod fixed;
 mod fixed_csr;
 mod layout;
