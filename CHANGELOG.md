@@ -46,10 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `math::histogram::histogram_parallel` never binned the last `len % 16`
   values (and returned all NaN for fewer than 16 values) because it split the
   input into 16 equal chunks and dropped the remainder. It now bins every
-  value with rayon over fixed-size chunks, without copying the input or
-  silently swallowing worker panics. Bins and counts match `histogram`, sums
-  agree up to floating-point rounding, and the result no longer varies from
-  run to run.
+  value with rayon, without copying the input or silently swallowing worker
+  panics, and keeps at most 32 partial histograms whatever the input length.
+  Bins and counts match `histogram`; the bin sums hold the same terms but
+  are added in a different order, so they can differ by floating-point
+  rounding (relatively more where weights within a bin nearly cancel). The
+  result is now identical from run to run and for any thread count.
 
 ### Compatibility and validation
 
