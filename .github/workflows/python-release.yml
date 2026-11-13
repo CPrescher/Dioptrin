@@ -23,8 +23,10 @@ on:
 permissions:
   contents: read
 
+# Pull request runs share a group per ref so a new push cancels the old run.
+# Tag and manual runs each get their own group, so they never queue or cancel.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
