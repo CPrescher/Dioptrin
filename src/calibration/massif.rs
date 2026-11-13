@@ -15,9 +15,10 @@
 //! 6. For every pixel inside the region whose intensity is above the region
 //!    mean, walk uphill and dedupe — every distinct sub-peak is returned.
 //!
-//! The implementation skips pyFAI's binning/unbinning step: at calibration
-//! image sizes (≤ a few k × a few k), a separable Gaussian at full resolution
-//! is plenty fast.
+//! Background estimation retains full resolution. The separable convolution
+//! processes contiguous row slices in parallel while preserving the summation
+//! order for each output pixel. `PreparedMassif` reuses that background and
+//! connected-component labeling across seeds on an unchanged image.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -73,57 +74,70 @@ fn gaussian_kernel_1d(sigma: f64) -> Vec<f64> {
     k
 }
 
-/// Convolve each row of `input` (shape dim1 × dim2, row-major) with `kernel`,
-/// using reflect padding at the boundaries.
+use rayon::prelude::*;
+
+// Retain the original reflection/clamping rule, including kernels wider than
+// the image. The common interior is handled separately without index checks.
+fn reflected(index: isize, size: usize) -> usize {
+    let mut index = index;
+    if index < 0 {
+        index = -index;
+    }
+    if index >= size as isize {
+        index = 2 * size as isize - 2 - index;
+    }
+    index.clamp(0, size as isize - 1) as usize
+}
+
 fn convolve_horizontal(input: &[f64], dim1: usize, dim2: usize, kernel: &[f64]) -> Vec<f64> {
     let half = kernel.len() / 2;
     let mut out = vec![0.0; dim1 * dim2];
-    for i in 0..dim1 {
-        let row_off = i * dim2;
-        for j in 0..dim2 {
-            let mut s = 0.0;
-            for k in 0..kernel.len() {
-                // Reflect index around the boundary.
-                let mut jj = j as isize + k as isize - half as isize;
-                if jj < 0 {
-                    jj = -jj;
-                }
-                let dim2_i = dim2 as isize;
-                if jj >= dim2_i {
-                    jj = 2 * dim2_i - 2 - jj;
-                }
-                let jj = jj.clamp(0, dim2_i - 1) as usize;
-                s += kernel[k] * input[row_off + jj];
-            }
-            out[row_off + j] = s;
-        }
+    if dim2 == 0 {
+        return out;
     }
+    out.par_chunks_mut(dim2).enumerate().for_each(|(y, row)| {
+        let source = &input[y * dim2..(y + 1) * dim2];
+        for (k, &weight) in kernel.iter().enumerate() {
+            let offset = k as isize - half as isize;
+            let start = (-offset).clamp(0, dim2 as isize) as usize;
+            let end = (dim2 as isize - offset).clamp(start as isize, dim2 as isize) as usize;
+            for (x, value) in row[..start].iter_mut().enumerate() {
+                *value += weight * source[reflected(x as isize + offset, dim2)];
+            }
+            let source_start = (start as isize + offset) as usize;
+            if end > start {
+                // Each pixel still accumulates kernel taps in the original order.
+                // Contiguous independent outputs allow SIMD without reassociation.
+                for (value, &sample) in row[start..end]
+                    .iter_mut()
+                    .zip(&source[source_start..source_start + end - start])
+                {
+                    *value += weight * sample;
+                }
+            }
+            for (x, value) in row[end..].iter_mut().enumerate() {
+                *value += weight * source[reflected((x + end) as isize + offset, dim2)];
+            }
+        }
+    });
     out
 }
 
-/// Convolve each column of `input` (shape dim1 × dim2, row-major) with
-/// `kernel`, with reflect padding.
 fn convolve_vertical(input: &[f64], dim1: usize, dim2: usize, kernel: &[f64]) -> Vec<f64> {
     let half = kernel.len() / 2;
     let mut out = vec![0.0; dim1 * dim2];
-    for j in 0..dim2 {
-        for i in 0..dim1 {
-            let mut s = 0.0;
-            for k in 0..kernel.len() {
-                let mut ii = i as isize + k as isize - half as isize;
-                if ii < 0 {
-                    ii = -ii;
-                }
-                let dim1_i = dim1 as isize;
-                if ii >= dim1_i {
-                    ii = 2 * dim1_i - 2 - ii;
-                }
-                let ii = ii.clamp(0, dim1_i - 1) as usize;
-                s += kernel[k] * input[ii * dim2 + j];
-            }
-            out[i * dim2 + j] = s;
-        }
+    if dim2 == 0 {
+        return out;
     }
+    out.par_chunks_mut(dim2).enumerate().for_each(|(y, row)| {
+        for (k, &weight) in kernel.iter().enumerate() {
+            let source_y = reflected(y as isize + k as isize - half as isize, dim1);
+            let source = &input[source_y * dim2..(source_y + 1) * dim2];
+            for (value, &sample) in row.iter_mut().zip(source) {
+                *value += weight * sample;
+            }
+        }
+    });
     out
 }
 
@@ -261,6 +275,119 @@ pub(super) fn uphill_subpixel(
 
 // ---------- top-level find_peaks ----------
 
+/// Full-resolution Massif preprocessing for repeated seed searches.
+///
+/// Owns an immutable image and its connected-component labels. Construct a new
+/// instance whenever samples, image shape, masking, or valley size change.
+/// Peak order, subpixel fitting and deduplication match [`find_peaks`].
+pub struct PreparedMassif {
+    image: Vec<f64>,
+    labels: Vec<u32>,
+    dim1: usize,
+    dim2: usize,
+    options: MassifOptions,
+}
+
+impl PreparedMassif {
+    pub fn new(image: Vec<f64>, dim1: usize, dim2: usize, options: MassifOptions) -> Self {
+        assert_eq!(image.len(), dim1 * dim2, "image size mismatch");
+        let sigma = effective_valley_size(&options, dim1, dim2);
+        let bg = gaussian_blur(&image, dim1, dim2, sigma);
+        let binary: Vec<bool> = image.iter().zip(&bg).map(|(v, b)| v > b).collect();
+        let labels = label_components(&binary, dim1, dim2);
+        Self {
+            image,
+            labels,
+            dim1,
+            dim2,
+            options,
+        }
+    }
+
+    /// Immutable samples used for both preprocessing and subpixel localization.
+    pub fn image(&self) -> &[f64] {
+        &self.image
+    }
+
+    pub fn find_peaks(&self, seed: (usize, usize)) -> Vec<(f64, f64)> {
+        let Self {
+            image,
+            labels,
+            dim1,
+            dim2,
+            options,
+        } = self;
+        let (dim1, dim2) = (*dim1, *dim2);
+        if seed.0 >= dim1 || seed.1 >= dim2 {
+            return vec![];
+        }
+        let seed_label = labels[seed.0 * dim2 + seed.1];
+        if seed_label == 0 {
+            return vec![];
+        }
+
+        // 4. Region mean (over image values inside the seed's component).
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for k in 0..image.len() {
+            if labels[k] == seed_label {
+                sum += image[k];
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return vec![];
+        }
+        let mean = sum / count as f64;
+
+        // 5. Central peak via uphill walk from the seed.
+        let max_steps = (dim1 + dim2) * 2;
+        let mut peaks: Vec<(f64, f64)> = Vec::new();
+        if let Some(p) = uphill_subpixel(image, dim1, dim2, seed, max_steps) {
+            peaks.push(p);
+        }
+
+        // 6. Sub-peaks: every pixel in the region above mean, uphill-walk + dedupe.
+        let dedup2 = options.dedup_dist * options.dedup_dist;
+        'outer: for i in 0..dim1 {
+            for j in 0..dim2 {
+                let idx = i * dim2 + j;
+                if labels[idx] != seed_label || image[idx] <= mean {
+                    continue;
+                }
+                let p = match uphill_subpixel(image, dim1, dim2, (i, j), max_steps) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                // Confirm peak is inside the same massif.
+                let pi = p.0.round() as isize;
+                let pj = p.1.round() as isize;
+                if pi < 0 || pj < 0 || pi as usize >= dim1 || pj as usize >= dim2 {
+                    continue;
+                }
+                if labels[pi as usize * dim2 + pj as usize] != seed_label {
+                    continue;
+                }
+                // Dedupe.
+                let dup = peaks.iter().any(|q| {
+                    let di = q.0 - p.0;
+                    let dj = q.1 - p.1;
+                    di * di + dj * dj < dedup2
+                });
+                if !dup {
+                    peaks.push(p);
+                    if peaks.len() >= options.max_peaks {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        peaks
+    }
+}
+
+/// Find peaks for a single seed. For repeated picks, reuse [`PreparedMassif`].
 pub fn find_peaks(
     image: &[f64],
     dim1: usize,
@@ -272,87 +399,239 @@ pub fn find_peaks(
     if seed.0 >= dim1 || seed.1 >= dim2 {
         return vec![];
     }
-
-    // 1. Local-background estimate.
-    let sigma = effective_valley_size(options, dim1, dim2);
-    let bg = gaussian_blur(image, dim1, dim2, sigma);
-
-    // 2. Binarize: pixels above local background.
-    let mut binary: Vec<bool> = Vec::with_capacity(image.len());
-    for k in 0..image.len() {
-        binary.push(image[k] > bg[k]);
-    }
-
-    // 3. Connected components.
-    let labels = label_components(&binary, dim1, dim2);
-    let seed_label = labels[seed.0 * dim2 + seed.1];
-    if seed_label == 0 {
-        return vec![];
-    }
-
-    // 4. Region mean (over image values inside the seed's component).
-    let mut sum = 0.0;
-    let mut count = 0usize;
-    for k in 0..image.len() {
-        if labels[k] == seed_label {
-            sum += image[k];
-            count += 1;
-        }
-    }
-    if count == 0 {
-        return vec![];
-    }
-    let mean = sum / count as f64;
-
-    // 5. Central peak via uphill walk from the seed.
-    let max_steps = (dim1 + dim2) * 2;
-    let mut peaks: Vec<(f64, f64)> = Vec::new();
-    if let Some(p) = uphill_subpixel(image, dim1, dim2, seed, max_steps) {
-        peaks.push(p);
-    }
-
-    // 6. Sub-peaks: every pixel in the region above mean, uphill-walk + dedupe.
-    let dedup2 = options.dedup_dist * options.dedup_dist;
-    'outer: for i in 0..dim1 {
-        for j in 0..dim2 {
-            let idx = i * dim2 + j;
-            if labels[idx] != seed_label || image[idx] <= mean {
-                continue;
-            }
-            let p = match uphill_subpixel(image, dim1, dim2, (i, j), max_steps) {
-                Some(p) => p,
-                None => continue,
-            };
-            // Confirm peak is inside the same massif.
-            let pi = p.0.round() as isize;
-            let pj = p.1.round() as isize;
-            if pi < 0 || pj < 0 || pi as usize >= dim1 || pj as usize >= dim2 {
-                continue;
-            }
-            if labels[pi as usize * dim2 + pj as usize] != seed_label {
-                continue;
-            }
-            // Dedupe.
-            let dup = peaks.iter().any(|q| {
-                let di = q.0 - p.0;
-                let dj = q.1 - p.1;
-                di * di + dj * dj < dedup2
-            });
-            if !dup {
-                peaks.push(p);
-                if peaks.len() >= options.max_peaks {
-                    break 'outer;
-                }
-            }
-        }
-    }
-
-    peaks
+    PreparedMassif::new(image.to_vec(), dim1, dim2, *options).find_peaks(seed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Frozen pre-optimization convolution and seeded search. This comparison
+    // detects changes to background thresholds, traversal order and coordinates.
+    mod reference {
+        use super::super::*;
+        /// Convolve each row of `input` (shape dim1 × dim2, row-major) with `kernel`,
+        /// using reflect padding at the boundaries.
+        fn convolve_horizontal(
+            input: &[f64],
+            dim1: usize,
+            dim2: usize,
+            kernel: &[f64],
+        ) -> Vec<f64> {
+            let half = kernel.len() / 2;
+            let mut out = vec![0.0; dim1 * dim2];
+            for i in 0..dim1 {
+                let row_off = i * dim2;
+                for j in 0..dim2 {
+                    let mut s = 0.0;
+                    for k in 0..kernel.len() {
+                        // Reflect index around the boundary.
+                        let mut jj = j as isize + k as isize - half as isize;
+                        if jj < 0 {
+                            jj = -jj;
+                        }
+                        let dim2_i = dim2 as isize;
+                        if jj >= dim2_i {
+                            jj = 2 * dim2_i - 2 - jj;
+                        }
+                        let jj = jj.clamp(0, dim2_i - 1) as usize;
+                        s += kernel[k] * input[row_off + jj];
+                    }
+                    out[row_off + j] = s;
+                }
+            }
+            out
+        }
+
+        /// Convolve each column of `input` (shape dim1 × dim2, row-major) with
+        /// `kernel`, with reflect padding.
+        fn convolve_vertical(input: &[f64], dim1: usize, dim2: usize, kernel: &[f64]) -> Vec<f64> {
+            let half = kernel.len() / 2;
+            let mut out = vec![0.0; dim1 * dim2];
+            for j in 0..dim2 {
+                for i in 0..dim1 {
+                    let mut s = 0.0;
+                    for k in 0..kernel.len() {
+                        let mut ii = i as isize + k as isize - half as isize;
+                        if ii < 0 {
+                            ii = -ii;
+                        }
+                        let dim1_i = dim1 as isize;
+                        if ii >= dim1_i {
+                            ii = 2 * dim1_i - 2 - ii;
+                        }
+                        let ii = ii.clamp(0, dim1_i - 1) as usize;
+                        s += kernel[k] * input[ii * dim2 + j];
+                    }
+                    out[i * dim2 + j] = s;
+                }
+            }
+            out
+        }
+
+        pub(super) fn gaussian_blur(
+            input: &[f64],
+            dim1: usize,
+            dim2: usize,
+            sigma: f64,
+        ) -> Vec<f64> {
+            let kernel = gaussian_kernel_1d(sigma);
+            let intermediate = convolve_horizontal(input, dim1, dim2, &kernel);
+            convolve_vertical(&intermediate, dim1, dim2, &kernel)
+        }
+
+        pub fn find_peaks(
+            image: &[f64],
+            dim1: usize,
+            dim2: usize,
+            seed: (usize, usize),
+            options: &MassifOptions,
+        ) -> Vec<(f64, f64)> {
+            assert_eq!(image.len(), dim1 * dim2, "image size mismatch");
+            if seed.0 >= dim1 || seed.1 >= dim2 {
+                return vec![];
+            }
+
+            // 1. Local-background estimate.
+            let sigma = effective_valley_size(options, dim1, dim2);
+            let bg = gaussian_blur(image, dim1, dim2, sigma);
+
+            // 2. Binarize: pixels above local background.
+            let mut binary: Vec<bool> = Vec::with_capacity(image.len());
+            for k in 0..image.len() {
+                binary.push(image[k] > bg[k]);
+            }
+
+            // 3. Connected components.
+            let labels = label_components(&binary, dim1, dim2);
+            let seed_label = labels[seed.0 * dim2 + seed.1];
+            if seed_label == 0 {
+                return vec![];
+            }
+
+            // 4. Region mean (over image values inside the seed's component).
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for k in 0..image.len() {
+                if labels[k] == seed_label {
+                    sum += image[k];
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                return vec![];
+            }
+            let mean = sum / count as f64;
+
+            // 5. Central peak via uphill walk from the seed.
+            let max_steps = (dim1 + dim2) * 2;
+            let mut peaks: Vec<(f64, f64)> = Vec::new();
+            if let Some(p) = uphill_subpixel(image, dim1, dim2, seed, max_steps) {
+                peaks.push(p);
+            }
+
+            // 6. Sub-peaks: every pixel in the region above mean, uphill-walk + dedupe.
+            let dedup2 = options.dedup_dist * options.dedup_dist;
+            'outer: for i in 0..dim1 {
+                for j in 0..dim2 {
+                    let idx = i * dim2 + j;
+                    if labels[idx] != seed_label || image[idx] <= mean {
+                        continue;
+                    }
+                    let p = match uphill_subpixel(image, dim1, dim2, (i, j), max_steps) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    // Confirm peak is inside the same massif.
+                    let pi = p.0.round() as isize;
+                    let pj = p.1.round() as isize;
+                    if pi < 0 || pj < 0 || pi as usize >= dim1 || pj as usize >= dim2 {
+                        continue;
+                    }
+                    if labels[pi as usize * dim2 + pj as usize] != seed_label {
+                        continue;
+                    }
+                    // Dedupe.
+                    let dup = peaks.iter().any(|q| {
+                        let di = q.0 - p.0;
+                        let dj = q.1 - p.1;
+                        di * di + dj * dj < dedup2
+                    });
+                    if !dup {
+                        peaks.push(p);
+                        if peaks.len() >= options.max_peaks {
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            peaks
+        }
+    }
+
+    #[test]
+    fn convolution_is_bitwise_equal_to_original_for_edges_and_wide_kernels() {
+        for (h, w) in [(0, 0), (1, 1), (1, 7), (7, 1), (3, 5), (33, 29), (128, 131)] {
+            let image: Vec<_> = (0..h * w)
+                .map(|i| {
+                    let hash = (i as u64)
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    (hash >> 32) as f64 / 100003.0 - 9000.0
+                })
+                .collect();
+            for sigma in [0.5, 2.0, 5.0, 20.0] {
+                let actual = gaussian_blur(&image, h, w, sigma);
+                let expected = reference::gaussian_blur(&image, h, w, sigma);
+                assert_eq!(
+                    actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "shape {h}x{w}, sigma {sigma}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_and_single_seed_searches_match_original_peak_order_and_positions() {
+        let (h, w) = (71, 83);
+        let mut image: Vec<_> = (0..h * w)
+            .map(|i| ((i * 997) % 101) as f64 * 0.001)
+            .collect();
+        for (y, x) in [(3.2, 4.7), (30.4, 27.7), (32.6, 35.2), (68.7, 80.1)] {
+            add_gaussian(&mut image, h, w, y, x, 90.0, 2.0);
+        }
+        for valley_size in [None, Some(2.0), Some(20.0)] {
+            let options = MassifOptions {
+                valley_size,
+                max_peaks: 17,
+                dedup_dist: 1.5,
+            };
+            let prepared = PreparedMassif::new(image.clone(), h, w, options);
+            for seed in [
+                (0, 0),
+                (3, 5),
+                (30, 28),
+                (33, 35),
+                (69, 80),
+                (70, 82),
+                (h, w),
+            ] {
+                let expected = reference::find_peaks(&image, h, w, seed, &options);
+                assert_eq!(
+                    prepared.find_peaks(seed),
+                    expected,
+                    "prepared seed {seed:?}"
+                );
+                assert_eq!(
+                    find_peaks(&image, h, w, seed, &options),
+                    expected,
+                    "single seed {seed:?}"
+                );
+            }
+        }
+    }
 
     /// Place a 2-D Gaussian peak at (i0, j0) with amplitude A and width σ.
     fn add_gaussian(

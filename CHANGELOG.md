@@ -92,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(0, 1.57)` with 90 bins put the whole circle into five bins of 1.57 rad.
   They now integrate the true range: the bins split `[min, max)` evenly, pixels
   outside are left out, and `result.azimuthal` holds the bin centres. Invalid
-  ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
+  ranges (non-finite, `max <= min`, span above 2π) raise
   `ValueError`; batches check before starting.
   Non-finite pixels behave as without a range: they make only the bins they
   contribute to NaN or infinite. With counting, the pixel at the largest radial
@@ -163,6 +163,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still uses row-normalized polar areas.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
+### Range support
+
+- Accept finite, resolvable azimuthal starts outside ±2π on shared grids and
+  true-range 2D APIs. For example, (-3π, -π) uses the equivalent (-π, π)
+  calculation and returns the corrected (-π, π) axis. Spans above one full
+  turn, such as (-4π, 4π), remain rejected. Previously accepted ranges and
+  their documented pyFAI seam behavior are unchanged.
+
+### Performance
+
+- Add an opt-in resident 1D CSC/CSR selector using a broad detector-size/bin estimate:
+  CSR generally, with a CSC exception above about 8 MP for high bin counts
+  without Poisson errors. No runtime timing probes are used;
+  streamed/parallel block execution is unchanged.
+  Splitting weights are unchanged; ordinary CSR and CSC can differ in rounding.
+
+- Cache a bin-oriented execution table for sufficiently large resident fixed-mask
+  1D frames. Preserve CSC coefficients, chunk/lane reductions and Poisson errors
+  bitwise while avoiding histogram scatter/merge work. Streamed block and outer
+  Rayon batch workers retain CSC; the optional resident table is capped at 128 MiB.
+
+- Add strict `FixedCsr1dPlan` snapshots for compatibility LUTs, caching fixed-mask
+  normalization while retaining the original signal and error reduction order.
+- Add `prepare_fixed2d_on_grid` / `FixedGrid2dPlan` for normalized cached cakes,
+  validating static geometry once and avoiding unused raw-sum/count output arrays.
+  Frame dimensions and unmasked finite samples remain checked on each call.
+
+- Vectorize and parallelize the full-resolution Massif Gaussian background
+  filter while preserving each pixel's floating-point summation order.
+- Add Rust `PreparedMassif` to reuse immutable samples and component labels
+  across seed searches. Existing `find_peaks` remains available and preserves
+  peak ordering, deduplication and subpixel positions. The shared filter also
+  accelerates image-wide calibration candidate extraction.
+
 
 ## [0.12.0] - 2026-11-09
 

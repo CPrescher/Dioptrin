@@ -19,6 +19,136 @@ pub(crate) struct Sums {
     count: Vec<f64>,
 }
 
+/// Bin-oriented resident-frame execution in exactly the fixed CSC reduction
+/// order. Rows retain the original chunk and pixel-modulo-four lanes.
+pub(crate) struct FixedRows {
+    ptr: Vec<u32>,
+    pixels: Vec<u32>,
+    weights: Option<Vec<f64>>,
+    nbins: usize,
+    chunks: usize,
+    npix: usize,
+}
+
+impl FixedRows {
+    pub(crate) fn new(csc: &Csc, pixels: &[u32]) -> Option<Self> {
+        // Keep streamed/block plans lightweight. This optional resident cache is
+        // lazy and bounded; sparse tables beyond this budget retain CSC.
+        let chunks = csc.fixed_chunks(pixels.len());
+        if csc.nbins < 64 || chunks < 2 {
+            return None;
+        }
+        let entries: usize = pixels
+            .iter()
+            .map(|&p| (csc.ptr[p as usize + 1] - csc.ptr[p as usize]) as usize)
+            .sum();
+        let rows = csc.nbins.checked_mul(chunks)?.checked_mul(4)?;
+        let bytes = entries
+            .checked_mul(if csc.weights.is_some() { 12 } else { 4 })?
+            .checked_add(rows.checked_add(1)?.checked_mul(4)?)?;
+        if bytes > 128 * 1024 * 1024 {
+            return None;
+        }
+        let mut ptr = vec![0u32; rows + 1];
+        for chunk in 0..chunks {
+            for &p in &pixels[chunk * pixels.len() / chunks..(chunk + 1) * pixels.len() / chunks] {
+                for k in csc.ptr[p as usize] as usize..csc.ptr[p as usize + 1] as usize {
+                    ptr[(csc.bins[k] as usize * chunks + chunk) * 4 + p as usize % 4 + 1] += 1;
+                }
+            }
+        }
+        for i in 0..rows {
+            ptr[i + 1] += ptr[i];
+        }
+        let mut next = ptr[..rows].to_vec();
+        let mut columns = vec![0u32; entries];
+        let mut weights = csc.weights.as_ref().map(|_| vec![0.; entries]);
+        for chunk in 0..chunks {
+            for &p in &pixels[chunk * pixels.len() / chunks..(chunk + 1) * pixels.len() / chunks] {
+                for k in csc.ptr[p as usize] as usize..csc.ptr[p as usize + 1] as usize {
+                    let row = (csc.bins[k] as usize * chunks + chunk) * 4 + p as usize % 4;
+                    let at = next[row] as usize;
+                    next[row] += 1;
+                    columns[at] = p;
+                    if let Some(w) = weights.as_mut() {
+                        w[at] = csc.weights.as_ref().unwrap()[k];
+                    }
+                }
+            }
+        }
+        Some(Self {
+            ptr,
+            pixels: columns,
+            weights,
+            nbins: csc.nbins,
+            chunks,
+            npix: csc.ptr.len() - 1,
+        })
+    }
+    pub(crate) fn integrate<const VAR: bool>(
+        &self,
+        data: &[f64],
+        norm: &[f64],
+    ) -> (Vec<f64>, Vec<f64>) {
+        assert_eq!(data.len(), self.npix);
+        assert_eq!(norm.len(), self.nbins);
+        let rows: Vec<_> = (0..self.nbins)
+            .into_par_iter()
+            .map(|bin| {
+                let mut signal = 0.;
+                let mut variance = 0.;
+                for chunk in 0..self.chunks {
+                    let mut s = [0.; 4];
+                    let mut v = [0.; 4];
+                    // SAFETY: construction copies validated CSC columns/weights
+                    // and stable chunk partitions; Fixed1dPlan checks data length.
+                    unsafe {
+                        for lane in 0..4 {
+                            let row = (bin * self.chunks + chunk) * 4 + lane;
+                            let mut sig = 0.;
+                            let mut var = 0.;
+                            for k in self.ptr[row] as usize..self.ptr[row + 1] as usize {
+                                let p = *self.pixels.get_unchecked(k) as usize;
+                                let x = *data.get_unchecked(p);
+                                let w = self
+                                    .weights
+                                    .as_ref()
+                                    .map_or(1., |weights| *weights.get_unchecked(k));
+                                sig = madd(w, x, sig);
+                                if VAR {
+                                    var = madd(w * w, x.max(0.), var);
+                                }
+                            }
+                            s[lane] = sig;
+                            v[lane] = var;
+                        }
+                    }
+                    signal += (s[0] + s[1]) + (s[2] + s[3]);
+                    if VAR {
+                        variance += (v[0] + v[1]) + (v[2] + v[3]);
+                    }
+                }
+                let n = norm[bin];
+                (
+                    if n == 0. { 0. } else { signal / n },
+                    if VAR && n != 0. {
+                        (variance / (n * n)).max(0.).sqrt()
+                    } else {
+                        0.
+                    },
+                )
+            })
+            .collect();
+        let intensity = rows.iter().map(|r| r.0).collect();
+        let errors = if VAR {
+            rows.iter().map(|r| r.1).collect()
+        } else {
+            vec![]
+        };
+        (intensity, errors)
+    }
+}
+
 impl Csc {
     pub(super) fn new(
         rows: &[usize],
@@ -91,12 +221,7 @@ impl Csc {
         // Partition by geometry, not the active execution pool or requested
         // output fields. Direct, file-batch and array-batch APIs then preserve
         // the same reduction order across worker counts and pixel types.
-        let bytes_per_hist = self.nbins.saturating_mul(4 * 8 * 3);
-        let chunks = (32 * 1024 * 1024_usize)
-            .checked_div(bytes_per_hist)
-            .map_or(1, |limit| {
-                pixels.len().div_ceil(262_144).min(limit.max(1)).max(1)
-            });
+        let chunks = self.fixed_chunks(pixels.len());
         let accumulate = |i| {
             self.fixed_accumulate::<VAR, COUNT, P>(
                 signal,
@@ -128,6 +253,13 @@ impl Csc {
         rows
     }
 
+    fn fixed_chunks(&self, pixels: usize) -> usize {
+        let bytes_per_hist = self.nbins.saturating_mul(4 * 8 * 3);
+        (32 * 1024 * 1024_usize)
+            .checked_div(bytes_per_hist)
+            .map_or(1, |limit| pixels.div_ceil(262_144).min(limit.max(1)).max(1))
+    }
+
     pub(crate) fn block_sums(&self, errors: bool) -> Sums {
         Sums {
             signal: vec![0.; 4 * self.nbins],
@@ -135,6 +267,84 @@ impl Csc {
             variance: vec![0.; if errors { 4 * self.nbins } else { 0 }],
             count: vec![],
         }
+    }
+
+    pub(crate) fn dynamic_sums(&self, errors: bool) -> Sums {
+        let mut sums = self.block_sums(errors);
+        sums.norm = vec![0.; 4 * self.nbins];
+        sums
+    }
+
+    /// Reuse private histograms; geometry/weights are independent of each mask.
+    /// A supplied variance is already propagated from the original counts.
+    pub(crate) fn dynamic_frame(
+        &self,
+        signal: &[f64],
+        variance: Option<&[f64]>,
+        mask: Option<&[u8]>,
+        norm: &[f64],
+        sums: &mut Sums,
+    ) -> (Vec<f64>, Option<Vec<f64>>) {
+        assert_eq!(signal.len() + 1, self.ptr.len());
+        assert_eq!(norm.len(), signal.len());
+        assert!(mask.is_none_or(|v| v.len() == signal.len()));
+        assert!(variance.is_none_or(|v| v.len() == signal.len()));
+        sums.signal.fill(0.);
+        sums.norm.fill(0.);
+        sums.variance.fill(0.);
+        let errors = !sums.variance.is_empty();
+        // SAFETY: compact indices originate from checked CSR construction;
+        // the complete input dimensions are checked above. Sums are private.
+        unsafe {
+            for p in 0..signal.len() {
+                if mask.is_some_and(|m| *m.get_unchecked(p) != 0) {
+                    continue;
+                }
+                let x = *signal.get_unchecked(p);
+                let n = *norm.get_unchecked(p);
+                let v = if errors {
+                    variance.map_or_else(|| x.max(0.), |v| *v.get_unchecked(p))
+                } else {
+                    0.
+                };
+                let lane = (p % 4) * self.nbins;
+                for k in
+                    *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
+                {
+                    let b = *self.bins.get_unchecked(k) as usize + lane;
+                    let w = self.weights.as_ref().map_or(1., |w| *w.get_unchecked(k));
+                    let s = sums.signal.get_unchecked_mut(b);
+                    *s = madd(w, x, *s);
+                    let nsum = sums.norm.get_unchecked_mut(b);
+                    *nsum = madd(w, n, *nsum);
+                    if errors {
+                        let var = sums.variance.get_unchecked_mut(b);
+                        *var = madd(w * w, v, *var);
+                    }
+                }
+            }
+        }
+        let n = self.nbins;
+        let reduce = |s: &[f64], b| (s[b] + s[n + b]) + (s[2 * n + b] + s[3 * n + b]);
+        let mut intensity = Vec::with_capacity(n);
+        let mut sigma = errors.then(|| Vec::with_capacity(n));
+        for b in 0..n {
+            let norm = reduce(&sums.norm, b);
+            intensity.push(if norm == 0. {
+                0.
+            } else {
+                reduce(&sums.signal, b) / norm
+            });
+            if let Some(sigma) = &mut sigma {
+                let var = if norm == 0. {
+                    0.
+                } else {
+                    reduce(&sums.variance, b) / (norm * norm)
+                };
+                sigma.push(var.max(0.).sqrt());
+            }
+        }
+        (intensity, sigma)
     }
 
     pub(crate) fn add_fixed_block<P: Pixel>(
@@ -322,6 +532,94 @@ impl Csc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resident_rows_preserve_chunk_lane_bits_masks_errors_and_thread_counts() {
+        let npix = 540_013;
+        let nbins = 128;
+        let mut ptr = vec![0];
+        let mut cols = Vec::new();
+        let mut weights = Vec::new();
+        for b in 0..nbins {
+            for phase in [b, (b + nbins - 1) % nbins] {
+                for p in (phase..npix).step_by(nbins) {
+                    cols.push(p as u32);
+                    weights.push((p % 41 + 1) as f64 / 43.);
+                    if p % 131 == 0 {
+                        cols.push(p as u32);
+                        weights.push(0.125);
+                    }
+                }
+            }
+            ptr.push(cols.len());
+        }
+        let cols = Columns::Compact(cols);
+        let mut normalization = vec![1.3; nbins];
+        normalization[0] = 0.;
+        normalization[1] = 1e-280;
+        for weighted in [false, true] {
+            let csc = Csc::new(&ptr, &cols, weighted.then_some(weights.as_slice()), npix).unwrap();
+            for masked in [false, true] {
+                let mask: Vec<_> = (0..npix).map(|p| u8::from(p % 17 == 0)).collect();
+                let selected = csc.active_pixels(masked.then_some(mask.as_slice()));
+                let rows = FixedRows::new(&csc, &selected).unwrap();
+                assert!(rows.chunks > 1);
+                for factor in [1., -3.7] {
+                    let mut data: Vec<_> = (0..npix)
+                        .map(|p| ((p * 997) % 113) as f64 * factor - 5.3)
+                        .collect();
+                    if masked {
+                        data[0] = f64::NAN;
+                    }
+                    let reference =
+                        csc.fixed_results::<true, false, _>(&data, &selected, &normalization);
+                    let expected_y: Vec<_> = reference
+                        .iter()
+                        .map(|r| if r[1] == 0. { 0. } else { r[0] / r[1] })
+                        .collect();
+                    let expected_e: Vec<_> = reference
+                        .iter()
+                        .map(|r| {
+                            if r[1] == 0. {
+                                0.
+                            } else {
+                                (r[2] / (r[1] * r[1])).max(0.).sqrt()
+                            }
+                        })
+                        .collect();
+                    let check = || {
+                        let (y, e) = rows.integrate::<true>(&data, &normalization);
+                        assert_eq!(
+                            y.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                            expected_y.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+                        );
+                        assert_eq!(
+                            e.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                            expected_e.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+                        );
+                        let (y, e) = rows.integrate::<false>(&data, &normalization);
+                        assert!(e.is_empty());
+                        assert_eq!(
+                            y.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                            expected_y.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+                        );
+                    };
+                    check();
+                    if masked && weighted && factor == 1. {
+                        for threads in [1, 4, 8] {
+                            rayon::ThreadPoolBuilder::new()
+                                .num_threads(threads)
+                                .build()
+                                .unwrap()
+                                .install(check);
+                        }
+                    }
+                }
+            }
+        }
+        let small = Csc::new(&[0, 1], &Columns::Compact(vec![0]), None, 1).unwrap();
+        assert!(FixedRows::new(&small, &[0]).is_none());
+    }
 
     #[test]
     fn transpose_preserves_float64_weight_bits() {

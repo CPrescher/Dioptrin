@@ -75,7 +75,7 @@ class AzimuthalRangeTests(unittest.TestCase):
     def test_invalid_ranges_raise_value_error(self):
         image = np.ones(SHAPE)
         ai = dioptrin.Integrator.from_poni_dict(PONI, method="counting")
-        for rng in [(0.0, 7.0), (np.pi, -np.pi), (1.0, 1.0), (float("nan"), 1.0), (-7.0, -6.0)]:
+        for rng in [(0.0, 7.0), (-4 * np.pi, 4 * np.pi), (np.pi, -np.pi), (1.0, 1.0), (float("nan"), 1.0)]:
             for errors in (False, True):
                 with self.assertRaises(ValueError, msg=str(rng)):
                     ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)
@@ -83,6 +83,27 @@ class AzimuthalRangeTests(unittest.TestCase):
                     ai.batch2d_iter([image], N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)
                 with self.assertRaises(ValueError, msg=str(rng)):
                     ai.batch2d_iter(iter([image]), N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)
+
+    def test_distant_full_turn_is_corrected_in_results_and_axis(self):
+        image = np.arange(np.prod(SHAPE), dtype=np.float64).reshape(SHAPE)
+        for method in (*METHODS, "pyfai_full"):
+            ai = dioptrin.Integrator.from_poni_dict(PONI, method=method, n_ss=3)
+            for errors in (False, True):
+                expected = ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=(-np.pi, np.pi))
+                rng = (-3 * np.pi, -np.pi)
+                direct = ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)
+                for result in (direct, *ai.batch2d_iter([image], N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng), *ai.batch2d_iter(iter([image]), N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)):
+                    np.testing.assert_array_equal(result.intensity, expected.intensity)
+                    if errors:
+                        np.testing.assert_array_equal(result.errors, expected.errors)
+                    np.testing.assert_array_equal(result.azimuthal, expected.azimuthal)
+        # TIFF paths and the eager file batch use the same range validation.
+        ai = dioptrin.Integrator.from_poni(str(TIFF_PONI), method="counting")
+        expected = ai.integrate2d(str(TIFF), 20, 36, azimuthal_range=(-np.pi, np.pi))
+        shifted = ai.batch2d([str(TIFF)], 20, 36, azimuthal_range=(-3 * np.pi, -np.pi))[0]
+        np.testing.assert_array_equal(shifted.intensity, expected.intensity)
+        with self.assertRaisesRegex(ValueError, "one full turn"):
+            ai.batch2d([str(TIFF)], 20, 36, azimuthal_range=(-4 * np.pi, 4 * np.pi))
 
     def test_batch_iterators_match_integrate2d_for_arrays(self):
         chi, _ = pixel_azimuth()

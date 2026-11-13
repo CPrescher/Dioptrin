@@ -45,6 +45,72 @@ fn image() -> Vec<f64> {
         .collect()
 }
 
+#[test]
+fn fixed_grid_snapshots_preserve_corrected_range_edges_and_error_bars() {
+    // Exercise the cached execution with the exact edge policies of the corrected
+    // range API, including full circles written on either side of the seam.
+    for method in methods().into_iter().chain([IntegrationMethod::PyfaiFull]) {
+        for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
+            for fast in [false, true] {
+                let mut ai = integrator(method)
+                    .with_radial_unit(unit)
+                    .with_fast_math(fast)
+                    .with_polarization_factor(0.6);
+                for masking in 0..3 {
+                    ai.set_mask(Mask {
+                        data: (0..ROWS * COLS)
+                            .map(|i| u8::from(masking == 2 || (masking == 1 && i % 17 == 0)))
+                            .collect(),
+                        dim1: ROWS,
+                        dim2: COLS,
+                    });
+                    for range in [
+                        (-PI, PI),
+                        (0., TAU),
+                        (-TAU, 0.),
+                        (-3. * PI, -PI),
+                        (2.5, 2.5 + PI / 2.),
+                    ] {
+                        let mut data = image();
+                        let first = run(&ai, &data, range, false).unwrap();
+                        let radial = ai.default_radial_edges_2d(ROWS, COLS, NR);
+                        let mut grid = IntegrationGrid2d::new(NR, NA, radial, range)
+                            .unwrap()
+                            .with_clamped_index_rounding();
+                        if matches!(method, IntegrationMethod::Counting) {
+                            grid = grid.with_clamped_radial_end();
+                        }
+                        let plan = ai.prepare_fixed2d_on_grid((ROWS, COLS), &grid).unwrap();
+                        let same = |a: &[f64], b: &[f64]| {
+                            assert_eq!(a.len(), b.len());
+                            for (a, b) in a.iter().zip(b) {
+                                assert_eq!(
+                                    a.to_bits(),
+                                    b.to_bits(),
+                                    "{method:?} {unit:?} {range:?}"
+                                );
+                            }
+                        };
+                        same(
+                            &plan.integrate_frame(&data, false).unwrap().0,
+                            &first.intensity,
+                        );
+                        for scale in [1., -0.3] {
+                            for x in &mut data {
+                                *x *= scale;
+                            }
+                            let expected = run(&ai, &data, range, true).unwrap();
+                            let (actual, errors) = plan.integrate_frame(&data, true).unwrap();
+                            same(&actual, &expected.intensity);
+                            same(&errors.unwrap(), expected.errors.as_ref().unwrap());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn run(
     ai: &Integrator,
     data: &[f64],
@@ -370,7 +436,7 @@ fn invalid_ranges_and_histogram_are_rejected() {
         (1.0, 1.0),
         (1.0, -1.0),
         (0.0, TAU + 0.01),
-        (-7.0, -6.0),
+        (-4.0 * PI, 4.0 * PI),
     ] {
         assert!(run(&ai, &data, range, false).is_err(), "{range:?} accepted");
     }
@@ -385,6 +451,39 @@ fn nonfinite(v: &[f64]) -> Vec<usize> {
 
 fn bit_identical(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+#[test]
+fn distant_full_turns_are_corrected_with_consistent_axes_and_results() {
+    for method in methods().into_iter().chain([IntegrationMethod::PyfaiFull]) {
+        let data = image();
+        for fast in [false, true] {
+            let ai = integrator(method).with_fast_math(fast);
+            let expected = run(&ai, &data, (-PI, PI), true).unwrap();
+            let shifted = run(&ai, &data, (-3. * PI, -PI), true).unwrap();
+            assert!(bit_identical(&expected.intensity, &shifted.intensity));
+            assert!(bit_identical(
+                expected.errors.as_ref().unwrap(),
+                shifted.errors.as_ref().unwrap()
+            ));
+            assert_eq!(shifted.azimuthal, expected.azimuthal);
+            assert!(
+                run(&ai, &data, (-4. * PI, 4. * PI), false)
+                    .unwrap_err()
+                    .contains("one full turn")
+            );
+            // Reuse the same integrator for a distant sector too.
+            let range = (-7., -6.);
+            let equivalent = (range.0 + TAU, range.1 + TAU);
+            let a = run(&ai, &data, range, true).unwrap();
+            let b = run(&ai, &data, equivalent, true).unwrap();
+            assert!(bit_identical(&a.intensity, &b.intensity));
+            assert!(bit_identical(
+                a.errors.as_ref().unwrap(),
+                b.errors.as_ref().unwrap()
+            ));
+        }
+    }
 }
 
 /// Non-finite pixels are not rejected: as on the default path they affect only

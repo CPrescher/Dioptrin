@@ -370,6 +370,10 @@ impl PreparedCsr {
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
         let rows = self.results::<FAST, VAR, false, P>(s, m, n);
+        Self::normalize_rows::<VAR>(rows)
+    }
+
+    fn normalize_rows<const VAR: bool>(rows: Vec<[f64; 4]>) -> (Vec<f64>, Vec<f64>) {
         let mut intensity = Vec::with_capacity(rows.len());
         let mut errors = Vec::with_capacity(if VAR { rows.len() } else { 0 });
         for [signal, norm, variance, _] in rows {
@@ -412,6 +416,80 @@ impl PreparedCsr {
 }
 
 impl Prepared1d {
+    pub(crate) fn input_columns(&self, mask: Option<&[u8]>, shape: (usize, usize)) -> Columns {
+        let table = self.fixed_table(mask);
+        let (height, width) = shape;
+        Columns::new(
+            (0..table.col_idx_len())
+                .map(|k| {
+                    let j = table.col_idx.get(k);
+                    (height - 1 - j / width) * width + j % width
+                })
+                .collect(),
+        )
+    }
+
+    /// Frame-parallel callers execute rows on their own worker; interactive
+    /// callers can schedule independent rows in parallel. Only input addresses
+    /// change; coefficient and summation order within each bin do not.
+    pub(crate) fn integrate_input<const VAR: bool, P: Pixel, const PARALLEL: bool>(
+        &self,
+        signal: &[P],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+        columns: Option<&Columns>,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let table = self.fixed_table(mask);
+        let cached = table.normalization::<false>(None, norm);
+        let columns = columns.unwrap_or(&table.col_idx);
+        macro_rules! rows {
+            ($cols:expr) => {{
+                let row = |i| {
+                    let mut sums = table.sum::<_, P, false, true, false, VAR, false>(
+                        i,
+                        $cols,
+                        None,
+                        signal,
+                        &[],
+                    );
+                    sums[1] = cached[i];
+                    sums
+                };
+                if PARALLEL {
+                    (0..table.row_ptr.len() - 1)
+                        .into_par_iter()
+                        .map(row)
+                        .collect()
+                } else {
+                    (0..table.row_ptr.len() - 1).map(row).collect()
+                }
+            }};
+        }
+        let rows = match columns {
+            Columns::Compact(cols) => rows!(cols),
+            Columns::Wide(cols) => rows!(cols),
+        };
+        let (y, e) = PreparedCsr::normalize_rows::<VAR>(rows);
+        (self.bins(), y, e)
+    }
+
+    pub(crate) fn dynamic_csc(&self, pixels: usize) -> Option<&super::csc::Csc> {
+        self.csr.dynamic_csc(pixels)
+    }
+    /// Execute the existing fast CSR kernel without changing this plan's CSC
+    /// policy or its streamed workers. Mask compaction/normalization stay cached.
+    pub(crate) fn integrate_fixed_csr<const VAR: bool>(
+        &self,
+        data: &[f64],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let table = self.csr.fixed_table(mask);
+        let rows = table.cached_results::<true, VAR, false, f64>(data, None, norm);
+        let (y, e) = PreparedCsr::normalize_rows::<VAR>(rows);
+        (self.bins(), y, e)
+    }
+
     pub(crate) fn fixed_csc(&self) -> Option<&Csc> {
         self.csr.csc.get()?.as_ref()
     }
@@ -483,6 +561,39 @@ impl Prepared1d {
     }
 }
 impl Prepared2d {
+    /// Direct fixed-mask intensity output: preserve row arithmetic without
+    /// constructing raw signal/normalization/count arrays that are unused.
+    pub(crate) fn fixed_intensity<const FAST: bool>(
+        &self,
+        signal: &[f64],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> Vec<f64> {
+        let table = self.fixed_table(mask);
+        let normalization = table.normalization::<FAST>(None, norm);
+        macro_rules! run {
+            ($cols:expr) => {
+                (0..table.row_ptr.len() - 1)
+                    .into_par_iter()
+                    .map(|i| {
+                        let s = table.sum::<_, f64, FAST, true, false, false, false>(
+                            i,
+                            $cols,
+                            None,
+                            signal,
+                            &[],
+                        )[0];
+                        let n = normalization[i];
+                        if n == 0. { 0. } else { s / n }
+                    })
+                    .collect()
+            };
+        }
+        match &table.col_idx {
+            Columns::Compact(c) => run!(c),
+            Columns::Wide(c) => run!(c),
+        }
+    }
     pub(crate) fn raw2d_with_variances(
         &self,
         data: &[f64],

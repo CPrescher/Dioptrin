@@ -6,8 +6,12 @@ mod dynamic;
 pub(crate) mod grid;
 pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode};
 mod fixed;
-pub use dynamic::{Dynamic1dPlan, Dynamic1dResult};
+mod fixed_csr;
+mod layout;
+pub use dynamic::{Dynamic1dPlan, Dynamic1dResult, Dynamic1dWorker};
 pub use fixed::{Fixed1dPlan, Fixed1dResult, Fixed1dWorker, InputOrder};
+pub use fixed_csr::{FixedCsr1dInputPlan, FixedCsr1dPlan, FixedGrid2dPlan};
+pub use layout::{LayoutPrediction, predict_1d_layout};
 mod methods;
 #[cfg(test)]
 mod tests;

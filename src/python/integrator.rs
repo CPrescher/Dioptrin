@@ -406,8 +406,9 @@ impl PyIntegrator {
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `azimuthal_range` - Optional (min, max) azimuthal edges in radians, with min in
-    ///   [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The `n_azimuthal` bins split it evenly
+    /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
+    ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
+    ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
     ///   centres. Radial bins are the same as without a range.
@@ -1300,8 +1301,9 @@ impl PyIntegrator {
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `azimuthal_range` - Optional (min, max) azimuthal edges in radians, with min in
-    ///   [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The `n_azimuthal` bins split it evenly
+    /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
+    ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
+    ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
     ///   centres. Radial bins are the same as without a range.
@@ -1458,8 +1460,9 @@ impl PyIntegrator {
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins
     /// * `errors` - Whether to compute error estimates (default: False)
-    /// * `azimuthal_range` - Optional (min, max) azimuthal edges in radians, with min in
-    ///   [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The `n_azimuthal` bins split it evenly
+    /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
+    ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
+    ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
     ///   centres. Radial bins are the same as without a range.
