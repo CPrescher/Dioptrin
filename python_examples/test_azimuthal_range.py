@@ -92,16 +92,23 @@ class AzimuthalRangeTests(unittest.TestCase):
                 expected = ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=(-np.pi, np.pi))
                 rng = (-3 * np.pi, -np.pi)
                 direct = ai.integrate2d(image, N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)
-                for result in (direct, *ai.batch2d_iter([image], N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng), *ai.batch2d_iter(iter([image]), N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng)):
+                results = [direct]
+                for source in ([image], iter([image])):
+                    batch = list(ai.batch2d_iter(source, N_RADIAL, N_AZIMUTHAL, errors=errors, azimuthal_range=rng))[0]
+                    self.assertTrue(batch.is_ok(), batch.error)
+                    results.append(batch.result)
+                for result in results:
                     np.testing.assert_array_equal(result.intensity, expected.intensity)
                     if errors:
                         np.testing.assert_array_equal(result.errors, expected.errors)
                     np.testing.assert_array_equal(result.azimuthal, expected.azimuthal)
         # TIFF paths and the eager file batch use the same range validation.
-        ai = dioptrin.Integrator.from_poni(str(TIFF_PONI), method="counting")
+        ai = dioptrin.Integrator(str(TIFF_PONI), method="counting")
         expected = ai.integrate2d(str(TIFF), 20, 36, azimuthal_range=(-np.pi, np.pi))
         shifted = ai.batch2d([str(TIFF)], 20, 36, azimuthal_range=(-3 * np.pi, -np.pi))[0]
-        np.testing.assert_array_equal(shifted.intensity, expected.intensity)
+        self.assertTrue(shifted.is_ok(), shifted.error)
+        np.testing.assert_array_equal(shifted.result.intensity, expected.intensity)
+        np.testing.assert_array_equal(shifted.result.azimuthal, expected.azimuthal)
         with self.assertRaisesRegex(ValueError, "one full turn"):
             ai.batch2d([str(TIFF)], 20, 36, azimuthal_range=(-4 * np.pi, 4 * np.pi))
 

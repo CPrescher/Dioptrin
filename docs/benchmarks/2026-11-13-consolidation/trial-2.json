@@ -1,0 +1,33 @@
+{
+  "cake_setup_ms": 72.437666,
+  "fixture": "CeO2_Pilatus1M.tif",
+  "poni": "v1.poni",
+  "results": [
+    {
+      "bitwise_equal": true,
+      "cached_grid2d_ms": 0.41225,
+      "errors": false,
+      "ordinary_grid2d_ms": 1.879625,
+      "strict_f64_csr_ms": 0.25625000000000003,
+      "strict_u32_parallel_ms": 0.253792,
+      "strict_u32_serial_ms": 1.685333
+    },
+    {
+      "bitwise_equal": true,
+      "cached_grid2d_ms": 0.49716699999999997,
+      "errors": true,
+      "ordinary_grid2d_ms": 1.9669169999999998,
+      "strict_f64_csr_ms": 0.28608300000000003,
+      "strict_u32_parallel_ms": 0.25816700000000004,
+      "strict_u32_serial_ms": 1.879333
+    }
+  ],
+  "scope": "Warm in-memory execution, decoding/conversion excluded; negative TIFF pixels masked. Both paths use corrected main LUTs.",
+  "shape": [
+    1043,
+    981
+  ],
+  "threads": 8,
+  "trials": 15,
+  "warmups": 3
+}

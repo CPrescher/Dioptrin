@@ -163,6 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still uses row-normalized polar areas.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
+
 ### Range support
 
 - Accept finite, resolvable azimuthal starts outside ±2π on shared grids and
@@ -172,6 +173,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their documented pyFAI seam behavior are unchanged.
 
 ### Performance
+
+- Add reusable `Dynamic1dWorker` execution with supplied variances and changing
+  masks, sharing immutable geometry and correction data across frame workers.
+- Add `FixedCsr1dInputPlan` for strict uint16/uint32 integration without a
+  full-frame float64 conversion, with serial frame-worker and parallel-bin
+  single-image entry points.
 
 - Add an opt-in resident 1D CSC/CSR selector using a broad detector-size/bin estimate:
   CSR generally, with a CSC exception above about 8 MP for high bin counts
