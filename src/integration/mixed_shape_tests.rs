@@ -126,7 +126,7 @@ fn histogram_preparation_warms_geometry_without_a_lookup_table() {
 
 #[test]
 fn radial_unit_builder_refreshes_an_already_used_integrator() {
-    for method in METHODS.into_iter().take(4) {
+    for method in METHODS {
         let frame = frame(SHAPES[0]);
         let mut ai = integrator(method);
         ai.integrate1d(&frame, N_POINTS);

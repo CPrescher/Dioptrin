@@ -1463,9 +1463,15 @@ mod tests {
                             _ => unreachable!(),
                         }
                     });
+                    let panic = rejected.expect_err("invalid pixel index must be rejected");
+                    let message = panic
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .expect("bounds panic must contain a diagnostic");
                     assert!(
-                        rejected.is_err(),
-                        "kernel={kernel}, weighted={weighted}, masked={masked}"
+                        message.contains("lookup table addresses pixel 7"),
+                        "kernel={kernel}, weighted={weighted}, masked={masked}: {message}"
                     );
                 }
             }

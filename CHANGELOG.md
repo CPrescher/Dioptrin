@@ -141,6 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Invalid inputs panic with a clear message. This also covers the public
   `lut::integrate1d*`/`integrate2d*` functions, which accept caller-built
   `Lut1d`/`Lut2d` values and could read out of bounds from safe code.
+  Public caller-built tables pay for a check per gathered index; cached
+  Integrator/plan tables retain constant-time array-length checks.
 
 ### Compatibility and validation
 
