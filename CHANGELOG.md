@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before. `histogram_parallel`, which the integrator does not use, did not
   panic in that case but silently lost the sixteenth of the data that contained
   the maximum; it now returns the complete result.
+- 2D `counting` and `supersampled` without an explicit azimuthal range
+  (`build_lut2d_csr`, `build_lut2d_ss_csr`) wrapped a pixel or subpixel whose
+  azimuth rounded to bin index `n_azimuthal` into azimuthal bin 0 instead of
+  the last bin. On the `v1.poni` Pilatus 1M geometry, where the azimuth spans
+  the ±π cut, this moved one subpixel at +π to the −π side for most bin counts.
+  The maximum now lands in the last azimuthal bin; every other table entry is
+  unchanged. The `_with_azimuthal_range` variants still wrap periodically.
 
 ### Compatibility and validation
 

@@ -163,7 +163,9 @@ pub fn build_lut2d_csr(
         .zip(azimuthal.par_iter())
         .map(|(r, a)| {
             let rb = histogram::get_bin_clamped(*r, min_radial, step_radial, n_radial);
-            let ab = histogram::get_bin(*a, min_azimuthal, step_azimuthal) % n_azimuthal;
+            // The grid ends at the data's own maximum, so a value that rounds
+            // past it belongs in the last bin, not (by wrapping) in bin 0.
+            let ab = histogram::get_bin_clamped(*a, min_azimuthal, step_azimuthal, n_azimuthal);
             ab * n_radial + rb
         })
         .collect();
@@ -267,6 +269,27 @@ mod tests {
                 let last = &lut.col_idx[lut.row_ptr[n - 1]..];
                 assert!(last.contains(&4999), "hi {hi}, n {n}");
             }
+        }
+    }
+
+    #[test]
+    fn automatic_azimuthal_range_keeps_the_maximum_in_the_last_bin() {
+        // The largest azimuth can round to bin index n_azimuthal. The grid ends
+        // there, so it belongs to the last azimuthal bin, not (wrapped) to bin 0.
+        let azimuthal: Vec<f64> = (0..5000).map(|i| 1.0 + 59.0 * i as f64 / 4999.0).collect();
+        let radial = vec![0.5; azimuthal.len()];
+        for n in [7, 10, 36, 100] {
+            let lut = build_lut2d_csr(&radial, &azimuthal, 1, n);
+            assert_eq!(lut.col_idx.len(), azimuthal.len(), "n {n}");
+            let first = &lut.col_idx[lut.row_ptr[0]..lut.row_ptr[1]];
+            let last = &lut.col_idx[lut.row_ptr[n - 1]..lut.row_ptr[n]];
+            assert!(!first.contains(&4999), "n {n}: maximum wrapped to bin 0");
+            assert!(last.contains(&4999), "n {n}");
+            // Only the minimum end of the range is in the first bin.
+            assert!(
+                first.iter().all(|&p| azimuthal[p] < 1.0 + 59.0 / n as f64),
+                "n {n}"
+            );
         }
     }
 
