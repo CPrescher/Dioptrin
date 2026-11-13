@@ -22,3 +22,16 @@ license.key
 /.venv-docs/
 /docs/_build/
 /docs/__pycache__/
+
+# Generated benchmark measurements and machine-specific run metadata
+/benchmark-results/
+/docs/benchmarks/**/*.jsonl
+/docs/benchmarks/**/trial-*.json
+/docs/benchmarks/**/inputs.json
+/docs/benchmarks/**/predictor.json
+/docs/benchmarks/**/ballpark-predictor.json
+/docs/benchmarks/**/summary.csv
+/docs/benchmarks/**/summary.json
+/docs/benchmarks/**/*.log
+/docs/benchmarks/**/*.stderr
+/docs/benchmarks/**/*.npz

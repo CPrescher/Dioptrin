@@ -31,3 +31,7 @@
 ## Configuration & Data Tips
 - PONI geometry files live in `test_data/`; prefer adding new fixtures there with clear naming (e.g., `v3.poni`).
 - For large artifacts or external datasets, document download sources rather than committing binaries.
+
+- Keep generated benchmark timings, fitted models, run logs and machine-specific
+  input manifests out of Git. Keep benchmark code and reusable test fixtures in
+  the repository; summarize measured results and conditions in the PR.
