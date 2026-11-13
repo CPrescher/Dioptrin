@@ -48,7 +48,12 @@ class AzimuthalStdTests(unittest.TestCase):
                 valid = np.isfinite(both.azimuthal_std)
                 self.assertTrue(np.any(valid))
                 self.assertTrue(np.all(np.asarray(both.azimuthal_std)[valid] >= 0))
-                self.assertIsNone(ai.integrate2d(self.image, 10, 10).azimuthal_std)
+                if method == "histogram":
+                    # Histogram has no azimuthal binning; 2D integration rejects it.
+                    with self.assertRaisesRegex(ValueError, "histogram"):
+                        ai.integrate2d(self.image, 10, 10)
+                else:
+                    self.assertIsNone(ai.integrate2d(self.image, 10, 10).azimuthal_std)
 
     def test_all_masked_and_single_contribution(self):
         ai = integrator("counting")
