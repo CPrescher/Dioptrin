@@ -440,8 +440,8 @@ impl PyIntegrator {
     ///   `result.azimuthal` holds the centres and `result.n_azimuthal` the row count.
     ///   In this mode `azimuthal_range` is (first centre, end) rather than edges, and the end is
     ///   exclusive: (0, pi/2) with a 5 degree bracket gives centres 0, 10, ..., 80 degrees,
-    ///   covering -5 to 85 degrees. A first centre outside +-2*pi, or within one bracket of
-    ///   -2*pi, is corrected to [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
+    ///   covering -5 to 85 degrees. A first centre in [-pi, 2*pi] is kept as given; any other
+    ///   is corrected to the equivalent angle in [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
     ///   below the first centre, so rows differ slightly from a default pyFAI cake.
     /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
     ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
@@ -1349,8 +1349,8 @@ impl PyIntegrator {
     ///   `result.azimuthal` holds the centres and `result.n_azimuthal` the row count.
     ///   In this mode `azimuthal_range` is (first centre, end) rather than edges, and the end is
     ///   exclusive: (0, pi/2) with a 5 degree bracket gives centres 0, 10, ..., 80 degrees,
-    ///   covering -5 to 85 degrees. A first centre outside +-2*pi, or within one bracket of
-    ///   -2*pi, is corrected to [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
+    ///   covering -5 to 85 degrees. A first centre in [-pi, 2*pi] is kept as given; any other
+    ///   is corrected to the equivalent angle in [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
     ///   below the first centre, so rows differ slightly from a default pyFAI cake.
     /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
     ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to
@@ -1522,8 +1522,8 @@ impl PyIntegrator {
     ///   `result.azimuthal` holds the centres and `result.n_azimuthal` the row count.
     ///   In this mode `azimuthal_range` is (first centre, end) rather than edges, and the end is
     ///   exclusive: (0, pi/2) with a 5 degree bracket gives centres 0, 10, ..., 80 degrees,
-    ///   covering -5 to 85 degrees. A first centre outside +-2*pi, or within one bracket of
-    ///   -2*pi, is corrected to [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
+    ///   covering -5 to 85 degrees. A first centre in [-pi, 2*pi] is kept as given; any other
+    ///   is corrected to the equivalent angle in [-pi, pi). With `method="pyfai_full"` the seam lies one bracket
     ///   below the first centre, so rows differ slightly from a default pyFAI cake.
     /// * `azimuthal_range` - Optional finite (min, max) azimuthal edges in radians, with any start
     ///   and 0 < max - min <= 2*pi. Starts outside ±2*pi are corrected to

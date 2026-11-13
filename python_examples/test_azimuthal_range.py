@@ -251,10 +251,30 @@ class AzimuthalRangeTests(unittest.TestCase):
             self.assertAlmostEqual(first, np.degrees(start) % 360.0, places=9)
             shift = int(round(first / 5.0))
             np.testing.assert_allclose(cake(got), np.roll(cake(base), -shift, axis=0), rtol=1e-9)
-        # a start inside +-2*pi is kept as given
-        kept = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket,
-                              azimuthal_range=(2 * np.pi, 4 * np.pi))
-        self.assertAlmostEqual(np.degrees(kept.azimuthal[0]), 360.0, places=9)
+        # a first centre in [-pi, 2*pi] is kept as given
+        for start in (2 * np.pi, -np.pi, 0.0):
+            kept = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket,
+                                  azimuthal_range=(start, start + 2 * np.pi))
+            self.assertAlmostEqual(np.degrees(kept.azimuthal[0]), np.degrees(start), places=9)
+        # outside it the correction does not depend on the bracket size
+        for rows in (1, 100, 1000):
+            for start, expected in ((-2 * np.pi + 0.01, 0.01), (-1.5 * np.pi, 0.5 * np.pi)):
+                got = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=np.pi / rows,
+                                     azimuthal_range=(start, start + 2 * np.pi))
+                self.assertEqual(got.n_azimuthal, rows)
+                self.assertAlmostEqual(got.azimuthal[0], expected, places=9)
+        # -270 degrees is the base cake rotated by 18 rows of 5 degrees
+        rotated = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket,
+                                 azimuthal_range=(-1.5 * np.pi, 0.5 * np.pi))
+        np.testing.assert_allclose(cake(rotated), np.roll(cake(base), -18, axis=0), rtol=1e-9)
+        # single-precision range ends and a one-row full turn
+        f32_range = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=np.float32(bracket),
+                                   azimuthal_range=(0.0, float(np.float32(2 * np.pi))))
+        np.testing.assert_allclose(f32_range.intensity, base.intensity, rtol=1e-6)
+        one = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=np.pi,
+                             azimuthal_range=(-np.pi, np.pi + 4e-13))
+        self.assertEqual(one.n_azimuthal, 1)
+        self.assertAlmostEqual(np.degrees(one.azimuthal[0]), -180.0, places=9)
         with self.assertRaises(ValueError):
             ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket, azimuthal_range=(0, 4 * np.pi))
         # pyfai_full runs and matches its own range cake on the same edges

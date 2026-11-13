@@ -30,7 +30,8 @@ impl PyMultiIntegrator {
     /// Instead of n_azimuthal, azimuthal_bracket (radians, keyword only) gives
     /// contiguous rows of centre +- bracket; the first row is centred on the
     /// start of azimuthal_range, which then defaults to (0, 2*pi) and has an
-    /// exclusive end, and the span must be a whole number of rows.
+    /// exclusive end, and the span must be a whole number of rows. A first
+    /// centre in [-pi, 2*pi] is kept; any other is corrected to [-pi, pi).
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (images, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, *, normalization="relative", normalization_factors=None, azimuthal_bracket=None))]
     fn integrate2d(

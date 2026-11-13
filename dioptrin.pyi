@@ -389,8 +389,8 @@ class Integrator:
                 In this mode azimuthal_range is (first centre, end) rather than
                 edges, and the end is exclusive: (0, pi/2) with a 5 degree
                 bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
-                degrees. A first centre outside +-2*pi, or within one bracket of
-                -2*pi, is corrected to [-pi, pi). With method="pyfai_full" the
+                degrees. A first centre in [-pi, 2*pi] is kept as given; any
+                other is corrected to the equivalent angle in [-pi, pi). With method="pyfai_full" the
                 seam lies one bracket below the first centre, so rows differ
                 slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
@@ -651,8 +651,8 @@ class Integrator:
                 In this mode azimuthal_range is (first centre, end) rather than
                 edges, and the end is exclusive: (0, pi/2) with a 5 degree
                 bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
-                degrees. A first centre outside +-2*pi, or within one bracket of
-                -2*pi, is corrected to [-pi, pi). With method="pyfai_full" the
+                degrees. A first centre in [-pi, 2*pi] is kept as given; any
+                other is corrected to the equivalent angle in [-pi, pi). With method="pyfai_full" the
                 seam lies one bracket below the first centre, so rows differ
                 slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
@@ -725,8 +725,8 @@ class Integrator:
                 In this mode azimuthal_range is (first centre, end) rather than
                 edges, and the end is exclusive: (0, pi/2) with a 5 degree
                 bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
-                degrees. A first centre outside +-2*pi, or within one bracket of
-                -2*pi, is corrected to [-pi, pi). With method="pyfai_full" the
+                degrees. A first centre in [-pi, 2*pi] is kept as given; any
+                other is corrected to the equivalent angle in [-pi, pi). With method="pyfai_full" the
                 seam lies one bracket below the first centre, so rows differ
                 slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
@@ -863,13 +863,13 @@ class MultiIntegrator:
         defaults to (0, 2*pi), and the span must be a whole number of rows
         (else ValueError). E.g. np.radians(2.5) gives 72 rows centred on
         0, 5, ..., 355 degrees. The end of azimuthal_range is exclusive in this
-        mode: it is where the next centre would be.
+        mode: it is where the next centre would be. A first centre in
+        [-pi, 2*pi] is kept as given; any other is corrected to the equivalent
+        angle in [-pi, pi).
 
-        Without a bracket:
-
-        Radial edges use the common radial_range and unit. Azimuthal edges are
-        radians (default -pi, pi), span at most 2*pi, and clip sectors without
-        folding outliers. Supports counting, pixel_split and supersampled.
+        Radial edges use the common radial_range and unit. Without a bracket,
+        azimuthal edges are radians (default -pi, pi), span at most 2*pi, and
+        clip sectors without folding outliers. Supports counting, pixel_split and supersampled.
         Inputs are C-contiguous float64 arrays or TIFF paths; mixed lists work.
         normalization='absolute' additionally puts pixel1*pixel2/distance**2 in
         each detector's denominator for pyFAI MultiGeometry absolute scaling.

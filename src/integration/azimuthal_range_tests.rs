@@ -769,10 +769,46 @@ fn brackets_accept_f32_and_correct_distant_centres() {
         let (_, (lo, _)) = azimuthal_bracket_bins(range, bracket).unwrap();
         lo + bracket
     };
-    // Inside ±2π: kept as given.
+    // In [-π, 2π]: kept as given.
     assert!((first_centre((TAU, 2.0 * TAU)) - TAU).abs() < 1e-12);
     assert!((first_centre((-PI, PI)) + PI).abs() < 1e-12);
-    // Outside ±2π, or with the first edge below -2π: corrected to [-π, π).
+    // Outside: corrected to [-π, π), whatever the bracket size.
+    for rows in [1.0, 2.0, 100.0, 1000.0] {
+        for (start, expected) in [
+            (-TAU + 0.01, 0.01),
+            (-1.5 * PI, 0.5 * PI),
+            (-PI - 1e-9, PI - 1e-9),
+            (TAU + 1e-9, 1e-9),
+        ] {
+            let half = PI / rows;
+            let (n, (lo, hi)) = azimuthal_bracket_bins((start, start + TAU), half).unwrap();
+            assert_eq!(n as f64, rows);
+            assert!((lo + half - expected).abs() < 1e-9, "{start} {rows}");
+            // The grid must not shift the edges again.
+            let grid = IntegrationGrid2d::new(1, n, (0.0, 1.0), (lo, hi)).unwrap();
+            assert_eq!(grid.azimuthal_range(), (lo, hi), "{start} {rows}");
+        }
+    }
+    // A full turn that is a hair too long (or single precision) is one turn:
+    // the single row stays centred on the requested start.
+    for end in [PI + 4e-13, std::f32::consts::PI as f64] {
+        let start = -PI;
+        let (n, (lo, hi)) = azimuthal_bracket_bins((start, end), PI).unwrap();
+        assert_eq!(n, 1);
+        assert!((lo + PI - start).abs() < 1e-12 && hi - lo <= TAU);
+        assert!(IntegrationGrid2d::new(1, n, (0.0, 1.0), (lo, hi)).is_ok());
+    }
+    assert_eq!(
+        azimuthal_bracket_bins(
+            (0.0, std::f32::consts::TAU as f64),
+            2.5f32.to_radians() as f64
+        )
+        .unwrap()
+        .0,
+        72
+    );
+    // Very fine brackets must still divide the span: half a row off is rejected.
+    assert!(azimuthal_bracket_bins((0.0, TAU), PI / 1_000_000.5).is_err());
     assert!(
         (first_centre((TAU + 2.0 * bracket, 2.0 * TAU + 2.0 * bracket)) - 2.0 * bracket).abs()
             < 1e-12
@@ -801,6 +837,20 @@ fn brackets_accept_f32_and_correct_distant_centres() {
         }
         for (a, b) in got.intensity.iter().zip(&base.intensity) {
             assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{range:?}");
+        }
+    }
+    // A start that is not a multiple of the row width: -270° becomes 90°, and
+    // the cake is the base cake rotated by 18 rows.
+    let got = run((-1.5 * PI, 0.5 * PI));
+    assert!((got.azimuthal[0] - 0.5 * PI).abs() < 1e-9);
+    let n = got.azimuthal.len();
+    for row in 0..n {
+        for r in 0..NR {
+            let (a, b) = (
+                got.intensity[row * NR + r],
+                base.intensity[(row + 18) % n * NR + r],
+            );
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0));
         }
     }
 }
