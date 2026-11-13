@@ -1,14 +1,31 @@
 name: Python Build
 
+# Pull requests build a smoke matrix (one Python per OS) and only when
+# packaging-relevant files change. Tags and manual runs build every wheel.
+# Run this workflow manually on main before tagging to check the full matrix.
 on:
   push:
-    branches: [main]
     tags: ['v*']
   pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.*'
+      - 'pyproject.toml'
+      - 'dioptrin.pyi'
+      - 'README-pypi.md'
+      - 'LICENSE'
+      - 'licenses/**'
+      - 'scripts/**'
+      - 'python_examples/**'
+      - '.github/workflows/python-release.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   wheels:
@@ -17,15 +34,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest, macos-15-intel]
-        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
-        include:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-15-intel]
+        python: ${{ fromJSON(github.event_name == 'pull_request' && '["3.13"]' || '["3.11", "3.12", "3.13", "3.14", "3.15"]') }}
+        exclude:
           - os: windows-11-arm
-            python: '3.13'
+            python: '3.11'
           - os: windows-11-arm
-            python: '3.14'
-          - os: windows-11-arm
-            python: '3.15'
+            python: '3.12'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
