@@ -30,6 +30,9 @@ pub struct IntegrationGrid2d {
     /// Count a radial value exactly at the upper edge in the last bin and
     /// clamp rounding overflow there, like the default 2D counting table.
     clamp_radial_end: bool,
+    /// Put a value that lies inside the edges but whose bin index rounds to
+    /// `n` into the last bin, on both axes, like the default 2D tables.
+    clamp_index_rounding: bool,
 }
 
 impl IntegrationGrid2d {
@@ -82,6 +85,7 @@ impl IntegrationGrid2d {
             radial: [radial_range.0.to_bits(), radial_range.1.to_bits()],
             azimuthal: [azimuthal_range.0.to_bits(), azimuthal_range.1.to_bits()],
             clamp_radial_end: false,
+            clamp_index_rounding: false,
         })
     }
 
@@ -97,6 +101,13 @@ impl IntegrationGrid2d {
     /// default 2D counting convention, whose upper edge is the data maximum).
     pub(crate) fn with_clamped_radial_end(mut self) -> Self {
         self.clamp_radial_end = true;
+        self
+    }
+    /// Keep values inside the edges whose bin index rounds to `n` (or, in a
+    /// full circle, whose wrapped offset rounds to 2π) in the last bin instead
+    /// of dropping them.
+    pub(crate) fn with_clamped_index_rounding(mut self) -> Self {
+        self.clamp_index_rounding = true;
         self
     }
     pub fn radial_range(&self) -> (f64, f64) {
@@ -128,21 +139,43 @@ impl IntegrationGrid2d {
     pub(crate) fn bin(&self, radial: f64, azimuthal: f64) -> Option<usize> {
         let (r0, r1) = self.radial_range();
         let (a0, a1) = self.azimuthal_range();
-        let azimuthal = a0 + (azimuthal - a0).rem_euclid(TAU);
         if !radial.is_finite()
             || !azimuthal.is_finite()
             || radial < r0
             || radial > r1
             || (radial == r1 && !self.clamp_radial_end)
-            || azimuthal >= a1
         {
             return None;
         }
+        let offset = if self.clamp_index_rounding {
+            // Wrap only angles outside the edges, so a value just below `a1`
+            // is not rounded onto it. In a full circle a wrapped value can
+            // round up to `a1`; it lies just below `a0` and belongs to the
+            // last bin.
+            let wrapped = if azimuthal >= a0 && azimuthal < a1 {
+                azimuthal
+            } else {
+                a0 + (azimuthal - a0).rem_euclid(TAU)
+            };
+            if wrapped >= a1 && a1 - a0 < TAU {
+                return None;
+            }
+            wrapped - a0
+        } else {
+            let azimuthal = a0 + (azimuthal - a0).rem_euclid(TAU);
+            if azimuthal >= a1 {
+                return None;
+            }
+            azimuthal - a0
+        };
         let mut r = ((radial - r0) / self.radial_step()) as usize;
-        if self.clamp_radial_end {
+        let mut a = (offset / self.azimuthal_step()) as usize;
+        if self.clamp_radial_end || self.clamp_index_rounding {
             r = r.min(self.n_radial - 1);
         }
-        let a = ((azimuthal - a0) / self.azimuthal_step()) as usize;
+        if self.clamp_index_rounding {
+            a = a.min(self.n_azimuthal - 1);
+        }
         (r < self.n_radial && a < self.n_azimuthal).then_some(a * self.n_radial + r)
     }
 }
@@ -338,8 +371,11 @@ impl Integrator {
         self.validate_2d_setup(data, dim1, dim2)?;
         self.update_geometry_arrays(dim1, dim2);
         let radial_range = self.default_radial_edges_2d(dim1, dim2, n_radial);
+        // Values inside the edges must land in a bin even when their index
+        // rounds to `n`, as on the default path.
         let mut grid =
-            IntegrationGrid2d::new(n_radial, n_azimuthal, radial_range, azimuthal_range)?;
+            IntegrationGrid2d::new(n_radial, n_azimuthal, radial_range, azimuthal_range)?
+                .with_clamped_index_rounding();
         match self.method {
             IntegrationMethod::PyfaiFull => {
                 grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);

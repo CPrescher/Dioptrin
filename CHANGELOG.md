@@ -97,13 +97,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Non-finite pixels behave as without a range: they make only the bins they
   contribute to NaN or infinite. With counting, the pixel at the largest radial
   value lands in the last bin as on the default path, also for units whose
-  maximum is large (2θ in degrees, q in nm⁻¹).
+  maximum is large (2θ in degrees, q in nm⁻¹), and a pixel or subpixel inside
+  the range whose bin index rounds to `n` lands in the last bin instead of
+  being dropped. A full circle may start anywhere: `(0, 2π)` and `(-2π, 0)`
+  give the `(-π, π)` cake rotated by half a turn (identical for counting and
+  supersampling, within about 1e-9 relative for `pixel_split` on the CeO2
+  image).
   With `pyfai_full`, individual sector bins depend on how the range is
   written: on the CeO2 Pilatus 1M image (300×72 bins, 2θ in degrees),
   `(2.5, 2.5 + π/2)` and the same range shifted by −2π differ in 276 of 21,600
   bins (up to 2θ ≈ 27°, by up to about 100% relative), because the pyFAI-style
   splitting places each pixel polygon relative to the range start. `pixel_split`
   differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
+  The same applies to where a `pyfai_full` full circle starts: `(0, 2π)`
+  differs from the rotated `(-π, π)` cake in 896 of 21,600 bins there (median
+  0.1%, 83 bins by more than 1%).
 
 ### Compatibility and validation
 

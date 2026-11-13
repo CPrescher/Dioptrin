@@ -145,10 +145,10 @@ fn sectors_exclude_pixels_outside_their_edges() {
 /// identical for counting and supersampling, close for pixel splitting (exact
 /// fractional polygon areas vs the legacy pixel-split table). Pixels within
 /// 3 px of the beam are masked: the shared grid samples the pixel holding the
-/// beam densely, which changes the innermost radial bin. Supersampled row 0
-/// may differ slightly too: the default lower azimuth edge is estimated from
-/// hull points and subpixels just below it are clamped into bin 0 there,
-/// whereas the shared grid leaves them out.
+/// beam densely, which changes the innermost radial bin.
+///
+/// A subpixel inside the edges whose azimuthal index rounds to `n_azimuthal`
+/// lands in the last row on both paths.
 #[test]
 fn default_edges_reproduce_the_default_cake() {
     let data = image();
@@ -215,18 +215,82 @@ fn default_edges_reproduce_the_default_cake() {
                 .zip(&want)
                 .chain(got_err.iter().zip(&want_err));
             for (k, (a, b)) in pairs.enumerate() {
-                let row0 = (k % (NR * NA)) < NR;
-                let tol = match method {
-                    IntegrationMethod::Supersampled { .. } if row0 => 1e-2,
-                    _ => 1e-12,
-                };
                 assert!(
-                    (a - b).abs() <= tol * b.abs().max(1.0),
+                    (a - b).abs() <= 1e-12 * b.abs().max(1.0),
                     "{method:?} value {k}: {a} != {b}"
                 );
             }
         }
     }
+}
+
+/// The largest float below `x` (finite, nonzero `x`).
+fn next_down(x: f64) -> f64 {
+    if x > 0.0 {
+        f64::from_bits(x.to_bits() - 1)
+    } else {
+        f64::from_bits(x.to_bits() + 1)
+    }
+}
+
+/// Values inside the edges whose bin index rounds to `n` stay in the last bin
+/// on the range path (the default tables clamp the same way); without the
+/// clamp, as on `MultiIntegrator` grids, they are dropped. In a full circle a
+/// value just below the start edge wraps to the last bin.
+#[test]
+fn index_rounding_stays_in_the_last_bin() {
+    // Search for an azimuth just below `hi` whose index rounds to `n`.
+    let n = NA;
+    let mut found = None;
+    'search: for k in 1..2000 {
+        let lo = -PI + k as f64 * 1e-4;
+        let hi = lo + 2.0;
+        let step = (hi - lo) / n as f64;
+        let mut v = hi;
+        for _ in 0..4 {
+            v = next_down(v);
+            if ((v - lo) / step) as usize >= n {
+                found = Some((lo, hi, v));
+                break 'search;
+            }
+        }
+    }
+    let (lo, hi, v) = found.expect("no rounding case found");
+    let plain = IntegrationGrid2d::new(NR, n, (0.0, 1.0), (lo, hi)).unwrap();
+    let clamped = plain.with_clamped_index_rounding();
+    assert_eq!(plain.bin(0.5, v), None);
+    assert_eq!(clamped.bin(0.5, v), Some((n - 1) * NR + NR / 2));
+    assert_eq!(clamped.bin(0.5, hi), None);
+    assert_eq!(clamped.bin(0.5, lo - 1e-12), None);
+
+    // Radial: a value just below the upper edge that rounds to `n_radial`.
+    let mut found = None;
+    'radial: for k in 1..2000 {
+        let r1 = 30.0 + k as f64 * 1e-3;
+        let step = r1 / NR as f64;
+        let mut v = r1;
+        for _ in 0..4 {
+            v = next_down(v);
+            if (v / step) as usize >= NR {
+                found = Some((r1, v));
+                break 'radial;
+            }
+        }
+    }
+    let (r1, v) = found.expect("no radial rounding case found");
+    let plain = IntegrationGrid2d::new(NR, n, (0.0, r1), (0.0, 1.0)).unwrap();
+    assert_eq!(plain.bin(v, 0.5), None);
+    assert_eq!(
+        plain.with_clamped_index_rounding().bin(v, 0.5),
+        Some(9 * NR + NR - 1)
+    );
+
+    // Full circle: the smallest step below -π wraps into the last bin.
+    let circle = IntegrationGrid2d::new(NR, n, (0.0, 1.0), (-PI, PI))
+        .unwrap()
+        .with_clamped_index_rounding();
+    let below = next_down(-PI);
+    assert_eq!(circle.bin(0.5, below), Some((n - 1) * NR + NR / 2));
 }
 
 /// An explicit full circle keeps the default radial grid and applies the same
@@ -469,4 +533,44 @@ fn pyfai_full_on_the_range_path() {
     );
     let sector = run(&ai, &data, range, false).unwrap();
     assert!(sector.intensity.iter().filter(|v| **v > 0.0).count() > 40);
+}
+
+/// Full circles written as `(0, 2π)` or `(-2π, 0)` give the `(-π, π)` cake
+/// rotated by half a turn (rows shifted by `n_azimuthal / 2`), with the bin
+/// centres in the requested range: identical for counting and supersampling,
+/// equal up to rounding for pixel splitting.
+#[test]
+fn full_circle_can_start_anywhere() {
+    for method in [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+        IntegrationMethod::PyfaiFull,
+    ] {
+        let ai = integrator(method);
+        let base = run(&ai, &image(), (-PI, PI), true).unwrap();
+        for range in [(0.0, TAU), (-TAU, 0.0)] {
+            let got = run(&ai, &image(), range, true).unwrap();
+            assert!(got.azimuthal[0] > range.0 && got.azimuthal[NA - 1] < range.1);
+            assert_eq!(got.radial, base.radial);
+            let (gi, ge) = (&got.intensity, got.errors.as_ref().unwrap());
+            let (bi, be) = (&base.intensity, base.errors.as_ref().unwrap());
+            let mut worst = 0.0f64;
+            for row in 0..NA {
+                let src = (row + NA / 2) % NA;
+                for r in 0..NR {
+                    let (k, j) = (row * NR + r, src * NR + r);
+                    for (a, b) in [(gi[k], bi[j]), (ge[k], be[j])] {
+                        worst = worst.max((a - b).abs() / b.abs().max(1.0));
+                    }
+                }
+            }
+            // pyFAI-style splitting places pixel polygons relative to the
+            // range start, so individual pyfai_full bins depend on how the
+            // circle is written (documented caveat); only the grid is checked.
+            if !matches!(method, IntegrationMethod::PyfaiFull) {
+                assert!(worst <= 1e-9, "{method:?} {range:?}: {worst}");
+            }
+        }
+    }
 }

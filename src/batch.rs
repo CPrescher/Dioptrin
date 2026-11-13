@@ -298,6 +298,9 @@ impl IntegrationTask for Integration2DOnAzimuthalRange {
     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
         self.execute(integrator, &frame.to_frame())
     }
+    fn integrate2d_method(&self) -> Option<&'static str> {
+        Some("integrate2d_on_azimuthal_range")
+    }
 }
 
 /// Process multiple files in parallel using a shared integrator.
@@ -1074,6 +1077,18 @@ mod tests {
             },
             "integrate2d_with_azimuthal_range_and_errors is not supported for Histogram method",
         );
+        for errors in [false, true] {
+            check_histogram_2d_rejected(
+                Integration2DOnAzimuthalRange {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal_min,
+                    azimuthal_max,
+                    errors,
+                },
+                "integrate2d_on_azimuthal_range is not supported for Histogram method",
+            );
+        }
     }
 
     #[test]
