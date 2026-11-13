@@ -1,13 +1,16 @@
 """Fit a bounded layout prior; retain detector-family holdout results."""
 from pathlib import Path
 from collections import defaultdict
-import json, csv, hashlib, platform, subprocess
+import argparse, json, csv, hashlib
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-OUT = Path(__file__).resolve().parent
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('directory', type=Path,
+    help='Untracked run directory containing inputs.json and results.jsonl; outputs are written there')
+OUT = parser.parse_args().directory.expanduser().resolve()
 meta = json.loads((OUT/'inputs.json').read_text())
 raw = [json.loads(s) for s in (OUT/'results.jsonl').read_text().splitlines()]
 groups = defaultdict(list)

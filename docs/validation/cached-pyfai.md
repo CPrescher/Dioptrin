@@ -20,3 +20,11 @@ sectors and azimuth wrapping, beam-centered geometry, masks, changed frame
 samples, Poisson errors, strict/fast cake arithmetic, malformed LUT rejection,
 and snapshot isolation after source-integrator edits. Splitting conventions,
 singular-beam handling and approximate pyFAI compatibility are unchanged.
+
+`FixedCsr1dInputPlan` shares a strict 1D plan and maps decoder addresses once
+for detector order or a vertical flip. It accepts uint16/uint32 pixels directly,
+avoiding a full-frame float64 conversion. Serial entry points support separate
+frame workers; explicit parallel entry points schedule independent bins within
+one image while keeping the strict summation order inside each bin. This path
+requires uncorrected integer exposures with a fixed mask; corrected pixels,
+dynamic masks, and supplied variances use their existing execution paths.

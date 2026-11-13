@@ -37,11 +37,11 @@ execution on CSC, preserving the large-detector throughput baseline. Sectors,
 dynamic masks, external variances and spread retain their general paths. Cakes
 and pyFAI-compatible integration are outside this selector's qualification.
 
-The frozen benchmark fit and raw observations remain in
-`docs/benchmarks/2026-11-09-layout-crossover/` as research evidence. The fitted
-relationship is not the production policy: the user chose a broad estimate and
-manual overrides instead. The sweep covered four real detector files and two
-software-binned derivatives, 0.29–10.14 MP, 128–8000 bins and eight M4 Pro threads.
+The optional layout policy is a broad estimate rather than a fitted production
+model. For new measurements, keep the run metadata, raw observations, fitted
+models and plots in an external or ignored run directory. The analysis and
+prediction utilities are documented in
+`docs/benchmarks/2026-11-09-layout-crossover/README.md`.
 
 Regression tests compare the old CSC reduction with the new layout bitwise for
 weighted/unweighted tables, duplicates, masks, changed positive/negative samples,
