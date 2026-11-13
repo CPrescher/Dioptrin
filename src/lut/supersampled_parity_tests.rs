@@ -1,6 +1,9 @@
 //! Exact regression oracle: the pre-optimization collect/sort implementation.
 //! Kept test-only, on small tilted geometries, to catch boundary arithmetic,
 //! sample counting, CSR ordering and floating-point normalization changes.
+//! The 1D oracles follow two deliberate changes to the production tables:
+//! weights are pixel fractions (divided by n_ss², not by the bin total), and
+//! with an explicit range, subpixels outside it are dropped instead of clamped.
 #![allow(clippy::too_many_arguments)] // Preserve the previous kernel signatures as test oracles.
 use super::*;
 use crate::poni::Poni;
@@ -101,7 +104,7 @@ mod legacy {
         radial_min: f64,
         radial_max: f64,
     ) -> Lut1d {
-        let (hist_min, _hist_max, hist_step) =
+        let (hist_min, hist_max, hist_step) =
             histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
         let wavelength = geometry.poni.wavelength;
@@ -118,13 +121,11 @@ mod legacy {
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for (i, &v) in radial_ss.iter().enumerate() {
                         // Subpixels outside the explicit range belong to no bin.
-                        if v < hist_min {
+                        if !(hist_min..=hist_max).contains(&v) {
                             continue;
                         }
-                        let b = histogram::get_bin(v, hist_min, hist_step);
-                        if b < n_points {
-                            acc.push((b, actual_index[i]));
-                        }
+                        let b = histogram::get_bin(v, hist_min, hist_step).min(n_points - 1);
+                        acc.push((b, actual_index[i]));
                     }
                     acc
                 },

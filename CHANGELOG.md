@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and subpixels below the range into the first bin and those above it into the
   last bin. They are now dropped, as `pixel_split` and `pyfai_full` already
   did. A supersampled pixel partly outside the range keeps only its in-range
-  fraction. Integration without `radial_range` is not affected.
+  fraction. Both range limits are included: a value exactly at `radial_max`
+  belongs to the last bin. Integration without `radial_range` is not affected.
 
 ### Compatibility and validation
 

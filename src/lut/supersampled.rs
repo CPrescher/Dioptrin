@@ -198,8 +198,8 @@ pub fn build_lut1d_ss_csr(
 
 /// Build a supersampled 1D CSR LUT with explicit radial range.
 ///
-/// Subpixels outside the range are dropped (not assigned to the first or last
-/// bin), so a pixel partly outside the range keeps only its in-range fraction.
+/// Subpixels outside `[radial_min, radial_max]` are dropped (not assigned to
+/// the first or last bin), so a pixel partly outside the range keeps only its in-range fraction.
 pub fn build_lut1d_ss_csr_with_range(
     geometry: &Geometry,
     _radial: &[f64],
@@ -209,7 +209,7 @@ pub fn build_lut1d_ss_csr_with_range(
     radial_min: f64,
     radial_max: f64,
 ) -> Lut1d {
-    let (hist_min, _hist_max, hist_step) =
+    let (hist_min, hist_max, hist_step) =
         histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
     let transform = geometry.subpixel_transform();
@@ -217,7 +217,7 @@ pub fn build_lut1d_ss_csr_with_range(
     let (row_ptr, col_idx, values) =
         build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
             let radial = conversion.convert(transform.tth(d1, d2));
-            histogram::get_bin_in_range(radial, hist_min, hist_step, n_points)
+            histogram::get_bin_in_range(radial, hist_min, hist_max, hist_step, n_points)
         });
 
     Lut1d {
@@ -529,7 +529,7 @@ mod tests {
                     let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;
                     let d2 = ((col * n_ss + j) as f64 + 0.5) / n_ss as f64;
                     let r = transform.tth(d1, d2);
-                    if r >= lo && r < hi {
+                    if r >= lo && r <= hi {
                         *total += 1.0 / (n_ss * n_ss) as f64;
                         expected_bins[(((r - lo) / (hi - lo)) * n_points as f64) as usize] += 1;
                     }

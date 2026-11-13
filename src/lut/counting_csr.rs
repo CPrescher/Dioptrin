@@ -53,13 +53,15 @@ pub struct Lut2d {
 pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
     let (min, _max, step) = histogram::min_max_step(radial, n_points);
 
-    let index: Vec<Option<usize>> = radial
+    // Every value lies in [min, max]; the clamp only catches the maximum
+    // rounding to index n_points.
+    let index: Vec<usize> = radial
         .par_iter()
-        .map(|r| histogram::get_bin_in_range(*r, min, step, n_points))
+        .map(|r| histogram::get_bin_clamped(*r, min, step, n_points))
         .collect();
 
     let mut counts = vec![0usize; n_points];
-    for &idx in index.iter().flatten() {
+    for &idx in &index {
         counts[idx] += 1;
     }
 
@@ -69,12 +71,11 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
     }
 
     let mut next = row_ptr.clone();
-    let mut col_idx = vec![0usize; row_ptr[n_points]];
-    for (i, bin) in index.iter().enumerate() {
-        if let Some(bin) = *bin {
-            col_idx[next[bin]] = i;
-            next[bin] += 1;
-        }
+    let mut col_idx = vec![0usize; radial.len()];
+    for (i, &bin) in index.iter().enumerate() {
+        let pos = next[bin];
+        col_idx[pos] = i;
+        next[bin] += 1;
     }
 
     Lut1d {
@@ -88,19 +89,19 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
 
 /// Build an unweighted 1D CSR LUT with explicit radial range.
 ///
-/// Pixels whose radial value lies outside the range are left out of the table;
-/// they are not assigned to the first or last bin.
+/// Pixels whose radial value lies outside `[radial_min, radial_max]` are left
+/// out of the table; they are not assigned to the first or last bin.
 pub fn build_lut1d_csr_with_range(
     radial: &Vec<f64>,
     n_points: usize,
     radial_min: f64,
     radial_max: f64,
 ) -> Lut1d {
-    let (min, _max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
+    let (min, max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
     let index: Vec<Option<usize>> = radial
         .par_iter()
-        .map(|r| histogram::get_bin_in_range(*r, min, step, n_points))
+        .map(|r| histogram::get_bin_in_range(*r, min, max, step, n_points))
         .collect();
 
     let mut counts = vec![0usize; n_points];
@@ -253,9 +254,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_range_keeps_every_pixel() {
+        // The pixel at the maximum can round to bin index n; it belongs to the
+        // last bin and must not be lost.
+        for hi in [3.0, 30.8, 60.0, 1234.5] {
+            for n in [7, 100, 1000, 1500, 3000] {
+                let radial: Vec<f64> = (0..5000)
+                    .map(|i| 1.0 + (hi - 1.0) * i as f64 / 4999.0)
+                    .collect();
+                let lut = build_lut1d_csr(&radial, n);
+                assert_eq!(lut.col_idx.len(), radial.len(), "hi {hi}, n {n}");
+                let last = &lut.col_idx[lut.row_ptr[n - 1]..];
+                assert!(last.contains(&4999), "hi {hi}, n {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_range_includes_both_limits_at_any_magnitude() {
+        for hi in [3.0, 30.8, 60.0, 1234.5] {
+            for n in [7, 100, 1000, 1500, 3000] {
+                let radial = vec![1.0, hi, hi + hi * 1e-12, 1.0 - 1e-12];
+                let lut = build_lut1d_csr_with_range(&radial, n, 1.0, hi);
+                assert_eq!(lut.col_idx, vec![0, 1], "hi {hi}, n {n}");
+                assert_eq!(lut.row_ptr[1], 1, "hi {hi}, n {n}");
+                assert_eq!(lut.row_ptr[n - 1], 1, "hi {hi}, n {n}");
+            }
+        }
+    }
+
+    #[test]
     fn explicit_range_drops_pixels_outside_it() {
-        // Bins [1, 2) and [2, 3]. Values below 1 or above 3 belong to no bin; the
-        // upper range limit itself is included.
+        // Bins [1, 2) and [2, 3]. Values below 1 or above 3 belong to no bin.
         let radial = vec![0.5, 1.5, 2.5, 3.5, 1.0, 3.0, -4.0, f64::INFINITY];
         let lut = build_lut1d_csr_with_range(&radial, 2, 1.0, 3.0);
         assert_eq!(lut.row_ptr, vec![0, 2, 4]);
