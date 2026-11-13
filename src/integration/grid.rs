@@ -185,10 +185,10 @@ impl Integrator {
         if let Some(v) = variance {
             validate_variances(data, v)?;
         }
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         {
-            let state = self.state.read().map_err(|e| e.to_string())?;
+            let state = &view.state;
             if state
                 .radial
                 .iter()
@@ -214,7 +214,7 @@ impl Integrator {
                 IntegrationMethod::Histogram => unreachable!(),
             },
         };
-        let lut = self.ensure_lut2d(key);
+        let lut = view.ensure_lut2d(key);
         Ok(if let Some(variance) = variance {
             lut.raw2d_with_variances(data, variance, mask, &normalization)
         } else if errors {

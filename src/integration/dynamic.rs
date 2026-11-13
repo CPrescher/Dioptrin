@@ -76,6 +76,10 @@ impl Integrator {
 }
 
 impl Dynamic1dPlan {
+    #[cfg(test)]
+    fn view(&self) -> super::cache::ShapeView<'_> {
+        self.integrator.for_shape(self.shape.0, self.shape.1)
+    }
     pub fn shape(&self) -> (usize, usize) {
         self.shape
     }
@@ -97,8 +101,9 @@ impl Dynamic1dPlan {
             assert_eq!(mask.len(), data.len());
         }
         let integrator = &self.integrator;
-        let normalization = integrator.get_normalization();
-        let lut = integrator.ensure_lut1d(self.key);
+        let view = integrator.for_shape(self.shape.0, self.shape.1);
+        let normalization = view.normalization();
+        let lut = view.ensure_lut1d(self.key);
         if azimuthal_std {
             let variance = errors.then(|| data.iter().map(|&s| s.max(0.0)).collect::<Vec<_>>());
             let result = crate::lut::azimuthal::integrate_with_columns(
@@ -179,8 +184,8 @@ mod tests {
             for fast in [false, true] {
                 let source = source(method, fast);
                 let plan = Arc::new(source.prepare_dynamic1d((32, 64), 40).unwrap());
-                let table = plan.integrator.ensure_lut1d(plan.key).row_ptr.as_ptr() as usize;
-                let norm = plan.integrator.get_normalization();
+                let table = plan.view().ensure_lut1d(plan.key).row_ptr.as_ptr() as usize;
+                let norm = plan.view().normalization();
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(8)
                     .build()
@@ -235,9 +240,9 @@ mod tests {
                         }
                         assert_eq!(
                             table,
-                            plan.integrator.ensure_lut1d(plan.key).row_ptr.as_ptr() as usize
+                            plan.view().ensure_lut1d(plan.key).row_ptr.as_ptr() as usize
                         );
-                        assert!(Arc::ptr_eq(&norm, &plan.integrator.get_normalization()));
+                        assert!(Arc::ptr_eq(&norm, &plan.view().normalization()));
                     })
                 });
             }

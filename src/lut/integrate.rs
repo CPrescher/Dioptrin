@@ -5,6 +5,43 @@ use rayon::prelude::*;
 use crate::lut::counting_csr::{Lut1d, Lut2d};
 use crate::math::histogram;
 
+/// First half of the bounds check for the unchecked loops in this module:
+/// one weight per column index, and the length every per-pixel array is
+/// guaranteed to have (returned). [`check_row`] does the rest row by row.
+///
+/// `Lut1d`/`Lut2d` have public fields and the arrays come from the caller, so
+/// none of this can be assumed.
+fn pixel_limit(
+    col_idx: &[usize],
+    values: Option<&[f64]>,
+    mask: Option<&[u8]>,
+    arrays: &[usize],
+) -> usize {
+    if let Some(values) = values {
+        assert!(
+            values.len() >= col_idx.len(),
+            "lookup table has {} weights for {} column indices",
+            values.len(),
+            col_idx.len()
+        );
+    }
+    let arrays = arrays.iter().copied().min().unwrap_or(0);
+    mask.map_or(arrays, |m| m.len().min(arrays))
+}
+
+/// Second half: the row's entries `start..end` exist (the slice panics
+/// otherwise) and address only pixels below `limit`. Reading the row's
+/// indices here also brings them into cache for the gather that follows.
+#[inline]
+fn check_row(col_idx: &[usize], start: usize, end: usize, limit: usize) {
+    let largest = col_idx[start..end].iter().fold(0, |m, &j| m.max(j));
+    assert!(
+        start == end || largest < limit,
+        "lookup table addresses pixel {largest} but the image, mask, normalization \
+         or variance array has only {limit} pixels"
+    );
+}
+
 /// Integrate using either unweighted or weighted 1D CSR LUT with normalization.
 ///
 /// Uses pyFAI-style weighted-average: `I = Sum(c*signal) / Sum(c*norm)`.
@@ -38,12 +75,19 @@ pub fn integrate1d(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), normalization.len()],
+    );
     let n_points = lut.row_ptr.len() - 1;
     let pattern_intensity: Vec<f64> = (0..n_points)
         .into_par_iter()
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return 0.0;
             }
@@ -143,12 +187,19 @@ pub fn integrate1d_with_errors(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), variance.len(), normalization.len()],
+    );
     let n_points = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64)> = (0..n_points)
         .into_par_iter()
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return (0.0, 0.0);
             }
@@ -279,12 +330,19 @@ pub fn integrate2d(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> Vec<f64> {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), normalization.len()],
+    );
     let rows = lut.row_ptr.len() - 1;
     (0..rows)
         .into_par_iter()
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return 0.0;
             }
@@ -380,12 +438,19 @@ pub fn integrate2d_with_errors(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), variance.len(), normalization.len()],
+    );
     let rows = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64)> = (0..rows)
         .into_par_iter()
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return (0.0, 0.0);
             }
@@ -511,12 +576,19 @@ pub fn integrate1d_raw(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult1d {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), normalization.len()],
+    );
     let n_points = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64, f64)> = (0..n_points)
         .into_par_iter()
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return (0.0, 0.0, 0.0);
             }
@@ -625,12 +697,19 @@ pub fn integrate1d_raw_with_variance(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult1d {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), variance.len(), normalization.len()],
+    );
     let n_points = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64, f64, f64)> = (0..n_points)
         .into_par_iter()
         .map(|i| {
             let start = lut.row_ptr[i];
             let end = lut.row_ptr[i + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return (0.0, 0.0, 0.0, 0.0);
             }
@@ -748,12 +827,19 @@ pub fn integrate2d_raw(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult2d {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), normalization.len()],
+    );
     let rows = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64, f64)> = (0..rows)
         .into_par_iter()
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return (0.0, 0.0, 0.0);
             }
@@ -862,12 +948,19 @@ pub fn integrate2d_raw_with_variance(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult2d {
+    let limit = pixel_limit(
+        &lut.col_idx,
+        lut.values.as_deref(),
+        mask,
+        &[intensity.len(), variance.len(), normalization.len()],
+    );
     let rows = lut.row_ptr.len() - 1;
     let results: Vec<(f64, f64, f64, f64)> = (0..rows)
         .into_par_iter()
         .map(|row| {
             let start = lut.row_ptr[row];
             let end = lut.row_ptr[row + 1];
+            check_row(&lut.col_idx, start, end, limit);
             if start == end {
                 return (0.0, 0.0, 0.0, 0.0);
             }
@@ -1272,5 +1365,69 @@ mod tests {
         assert!((raw.sum_norm[0]).abs() < 1e-12);
         assert!((raw.count[0]).abs() < 1e-12);
         assert!((raw.sum_signal[1] - 10.0).abs() < 1e-12);
+    }
+
+    /// `Lut1d`/`Lut2d` fields are public, so the unchecked loops must not
+    /// trust them or the caller's arrays.
+    fn lut(col_idx: Vec<usize>, row_end: usize, values: Option<Vec<f64>>) -> Lut2d {
+        Lut2d {
+            row_ptr: vec![0, row_end],
+            col_idx,
+            values,
+            n_tth: 1,
+            n_azimuthal: 1,
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses pixel 7 but")]
+    fn rejects_pixel_indices_beyond_the_image() {
+        integrate2d(&[1.0; 4], &lut(vec![0, 7], 2, None), None, &[1.0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses pixel 7 but")]
+    fn rejects_pixel_indices_beyond_the_normalization() {
+        integrate2d_raw(&[1.0; 8], &lut(vec![0, 7], 2, None), None, &[1.0; 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses pixel 7 but")]
+    fn rejects_pixel_indices_beyond_the_variance() {
+        let lut = lut(vec![0, 7], 2, None);
+        integrate2d_with_errors(&[1.0; 8], &[1.0; 4], &lut, None, &[1.0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses pixel 7 but")]
+    fn rejects_pixel_indices_beyond_the_mask() {
+        let lut = lut(vec![0, 7], 2, None);
+        integrate2d_raw_with_variance(&[1.0; 8], &[1.0; 8], &lut, Some(&[0; 4]), &[1.0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range for slice")]
+    fn rejects_row_pointers_beyond_the_column_indices() {
+        integrate2d(&[1.0; 8], &lut(vec![0, 7], 5, None), None, &[1.0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table has 1 weights for 2 column indices")]
+    fn rejects_too_few_weights() {
+        let lut = lut(vec![0, 7], 2, Some(vec![1.0]));
+        integrate2d(&[1.0; 8], &lut, None, &[1.0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses pixel 7 but")]
+    fn rejects_1d_pixel_indices_beyond_the_image() {
+        let lut = Lut1d {
+            row_ptr: vec![0, 2],
+            col_idx: vec![0, 7],
+            values: None,
+            hist_min: 0.0,
+            hist_step: 1.0,
+        };
+        integrate1d(&[1.0; 4], &lut, None, &[1.0; 8]);
     }
 }

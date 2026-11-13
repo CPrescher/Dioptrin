@@ -39,8 +39,8 @@ impl Integrator {
     ) -> crate::lut::AzimuthalIntegrationResult {
         assert!(n_points > 0, "n_points must be positive");
         assert_eq!(data.len(), dim1 * dim2, "Image dimensions must match data");
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask = self.mask.as_ref().map(|m| {
             m.assert_compatible(dim1, dim2);
             m.data.as_slice()
@@ -49,12 +49,7 @@ impl Integrator {
         if matches!(self.method, IntegrationMethod::Histogram) {
             // Preserve Histogram's legacy mean of pre-corrected intensities and
             // its automatic radial range, rather than changing its weighting.
-            let radial = self
-                .state
-                .read()
-                .expect("geometry state lock poisoned")
-                .radial
-                .clone();
+            let radial = view.state.radial.clone();
             let lut = crate::lut::build_lut1d_csr(&radial, n_points);
             let corrected: Vec<_> = data
                 .iter()
@@ -97,7 +92,7 @@ impl Integrator {
             },
             IntegrationMethod::Histogram => unreachable!(),
         };
-        let lut = self.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(key);
         crate::lut::azimuthal::integrate_with_columns(
             data,
             &lut.row_ptr,
@@ -137,8 +132,8 @@ impl Integrator {
     /// assert_eq!(y_count.len(), 4);
     /// ```
     pub fn integrate1d(&self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -146,12 +141,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
+                let radial = view.state.radial.clone();
                 // Histogram uses pre-corrected intensity for backward compat
                 let corrected: Vec<f64> = frame
                     .data
@@ -162,7 +152,7 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -170,7 +160,7 @@ impl Integrator {
                 self.lut_integrate1d(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -179,7 +169,7 @@ impl Integrator {
                 self.lut_integrate1d(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -196,8 +186,8 @@ impl Integrator {
         frame: &Frame,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         // Variance under Poisson assumption: var(pixel) = signal (raw counts)
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
@@ -206,12 +196,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
+                let radial = view.state.radial.clone();
                 let corrected: Vec<f64> = frame
                     .data
                     .iter()
@@ -233,7 +218,7 @@ impl Integrator {
                 )
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -241,7 +226,7 @@ impl Integrator {
                 self.lut_integrate1d_with_errors(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -250,7 +235,7 @@ impl Integrator {
                 self.lut_integrate1d_with_errors(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -268,8 +253,8 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -277,12 +262,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
+                let radial = view.state.radial.clone();
                 let corrected: Vec<f64> = data
                     .iter()
                     .zip(normalization.iter())
@@ -291,7 +271,7 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_points, mask_data)
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -299,7 +279,7 @@ impl Integrator {
                 self.lut_integrate1d(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -308,7 +288,7 @@ impl Integrator {
                 self.lut_integrate1d(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -326,8 +306,8 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -335,12 +315,7 @@ impl Integrator {
         let unit = self.radial_unit;
         match self.method {
             IntegrationMethod::Histogram => {
-                let radial = self
-                    .state
-                    .read()
-                    .expect("geometry state lock poisoned")
-                    .radial
-                    .clone();
+                let radial = view.state.radial.clone();
                 let corrected: Vec<f64> = data
                     .iter()
                     .zip(normalization.iter())
@@ -361,7 +336,7 @@ impl Integrator {
                 )
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -369,7 +344,7 @@ impl Integrator {
                 self.lut_integrate1d_with_errors(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -378,7 +353,7 @@ impl Integrator {
                 self.lut_integrate1d_with_errors(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -396,8 +371,8 @@ impl Integrator {
         frame: &Frame,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -408,7 +383,7 @@ impl Integrator {
                 panic!("integrate1d_raw is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -416,7 +391,7 @@ impl Integrator {
                 self.lut_integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -425,7 +400,7 @@ impl Integrator {
                 self.lut_integrate1d_raw(&frame.data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -443,8 +418,8 @@ impl Integrator {
         frame: &Frame,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -455,7 +430,7 @@ impl Integrator {
                 panic!("integrate1d_raw_with_variance is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -468,7 +443,7 @@ impl Integrator {
                 )
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -482,7 +457,7 @@ impl Integrator {
                 )
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -507,8 +482,8 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -519,7 +494,7 @@ impl Integrator {
                 panic!("integrate1d_raw_from_slice is not supported for Histogram method")
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -527,7 +502,7 @@ impl Integrator {
                 self.lut_integrate1d_raw(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -536,7 +511,7 @@ impl Integrator {
                 self.lut_integrate1d_raw(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -556,8 +531,8 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -570,7 +545,7 @@ impl Integrator {
                 )
             }
             IntegrationMethod::Counting => {
-                let lut1d = self.ensure_lut1d(OneDKey::Counting {
+                let lut1d = view.ensure_lut1d(OneDKey::Counting {
                     n_points,
                     unit,
                     radial_range: self.radial_range_key(),
@@ -578,7 +553,7 @@ impl Integrator {
                 self.lut_integrate1d_raw_with_variance(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut1d = self.ensure_lut1d(OneDKey::PixelSplit {
+                let lut1d = view.ensure_lut1d(OneDKey::PixelSplit {
                     pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
                     n_points,
                     unit,
@@ -587,7 +562,7 @@ impl Integrator {
                 self.lut_integrate1d_raw_with_variance(data, &lut1d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut1d = self.ensure_lut1d(OneDKey::Supersampled {
+                let lut1d = view.ensure_lut1d(OneDKey::Supersampled {
                     n_points,
                     n_ss,
                     unit,
@@ -625,8 +600,8 @@ impl Integrator {
     /// assert_eq!(y.len(), 4);
     /// ```
     pub fn integrate2d(&self, frame: &Frame, n_radial: usize, n_azimuthal: usize) -> Vec<f64> {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -649,7 +624,7 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting {
+                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
                     n_radial,
                     n_azimuthal,
                     unit,
@@ -657,11 +632,11 @@ impl Integrator {
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
+                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -680,8 +655,8 @@ impl Integrator {
         n_radial: usize,
         n_azimuthal: usize,
     ) -> Vec<f64> {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -703,7 +678,7 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting {
+                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
                     n_radial,
                     n_azimuthal,
                     unit,
@@ -711,11 +686,11 @@ impl Integrator {
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
+                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -742,8 +717,8 @@ impl Integrator {
         azimuthal_start: f64,
         azimuthal_step: f64,
     ) -> Vec<f64> {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -767,7 +742,7 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
                     n_radial,
                     n_azimuthal,
                     azimuthal,
@@ -776,7 +751,7 @@ impl Integrator {
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
                     Some(azimuthal),
@@ -784,7 +759,7 @@ impl Integrator {
                 self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -807,8 +782,8 @@ impl Integrator {
         azimuthal_start: f64,
         azimuthal_step: f64,
     ) -> Vec<f64> {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -831,7 +806,7 @@ impl Integrator {
                 histogram::histogram(&radial, &corrected, n_radial, mask_data).1
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
                     n_radial,
                     n_azimuthal,
                     azimuthal,
@@ -840,7 +815,7 @@ impl Integrator {
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
                     Some(azimuthal),
@@ -848,7 +823,7 @@ impl Integrator {
                 self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -867,8 +842,8 @@ impl Integrator {
         n_radial: usize,
         n_azimuthal: usize,
     ) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -904,7 +879,7 @@ impl Integrator {
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting {
+                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
                     n_radial,
                     n_azimuthal,
                     unit,
@@ -912,11 +887,11 @@ impl Integrator {
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
+                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -935,8 +910,8 @@ impl Integrator {
         n_radial: usize,
         n_azimuthal: usize,
     ) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -971,7 +946,7 @@ impl Integrator {
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Counting {
+                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
                     n_radial,
                     n_azimuthal,
                     unit,
@@ -979,11 +954,11 @@ impl Integrator {
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::Supersampled {
+                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -1008,8 +983,8 @@ impl Integrator {
         azimuthal_start: f64,
         azimuthal_step: f64,
     ) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(frame.dim1, frame.dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(frame.dim1, frame.dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
@@ -1046,7 +1021,7 @@ impl Integrator {
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
                     n_radial,
                     n_azimuthal,
                     azimuthal,
@@ -1055,7 +1030,7 @@ impl Integrator {
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
                     Some(azimuthal),
@@ -1063,7 +1038,7 @@ impl Integrator {
                 self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
                     n_radial,
                     n_azimuthal,
                     n_ss,
@@ -1086,8 +1061,8 @@ impl Integrator {
         azimuthal_start: f64,
         azimuthal_step: f64,
     ) -> (Vec<f64>, Vec<f64>) {
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
@@ -1123,7 +1098,7 @@ impl Integrator {
                 (y, sigma)
             }
             IntegrationMethod::Counting => {
-                let lut2d = self.ensure_lut2d(TwoDKey::CountingAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
                     n_radial,
                     n_azimuthal,
                     azimuthal,
@@ -1132,7 +1107,7 @@ impl Integrator {
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = self.ensure_lut2d(self.pixel_split2d_key(
+                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
                     n_radial,
                     n_azimuthal,
                     Some(azimuthal),
@@ -1140,7 +1115,7 @@ impl Integrator {
                 self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
             }
             IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = self.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
+                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
                     n_radial,
                     n_azimuthal,
                     n_ss,
