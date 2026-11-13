@@ -32,7 +32,7 @@ python scripts/compare_azimuth_seam.py docs/validation/pyfai-full-seam.json
 
 Full circle, seam at 0 vs seam at ±π (21,600 bins):
 
-| Integrator | Bins differing > 1e-9 | Bins > 1% | Largest relative difference |
+| Integrator | Bins > 10⁻⁹ | Bins > 1% | Largest relative difference |
 |---|---:|---:|---:|
 | Dioptrin `counting` | 0 | 0 | 0 |
 | Dioptrin `supersampled` (n_ss = 3) | 0 | 0 | 0 |
