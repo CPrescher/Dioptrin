@@ -35,6 +35,10 @@ The new 1D sector rule includes a whole pixel when its azimuthal extent
 intersects the selected interval, following `fullSplit1D_engine`; it is not
 fractional sector clipping. The existing `pixel_split` convention is unchanged.
 
+2D `pyfai_full` cakes depend on where the azimuth seam lies, as pyFAI's own
+full-splitting engines do; see
+[Azimuth seam dependence](pyfai-full-seam.md).
+
 Primary algorithm sources (MIT; notice retained in the implementation):
 [splitPixel.pyx](https://github.com/silx-kit/pyFAI/blob/v2025.12.1/src/pyFAI/ext/splitPixel.pyx),
 [regrid_common.pxi](https://github.com/silx-kit/pyFAI/blob/v2025.12.1/src/pyFAI/ext/regrid_common.pxi).

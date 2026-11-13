@@ -106,12 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   With `pyfai_full`, individual sector bins depend on how the range is
   written: on the CeO2 Pilatus 1M image (300×72 bins, 2θ in degrees),
   `(2.5, 2.5 + π/2)` and the same range shifted by −2π differ in 276 of 21,600
-  bins (up to 2θ ≈ 27°, by up to about 100% relative), because the pyFAI-style
-  splitting places each pixel polygon relative to the range start. `pixel_split`
+  bins (up to 2θ ≈ 27°, by up to 1.44 relative), because pyFAI's full
+  splitting unwraps pixels with a heuristic that depends on where the azimuth
+  seam lies (pyFAI itself behaves the same). `pixel_split`
   differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
   The same applies to where a `pyfai_full` full circle starts: `(0, 2π)`
   differs from the rotated `(-π, π)` cake in 896 of 21,600 bins there (median
-  0.1%, 83 bins by more than 1%).
+  0.1%, 83 bins by more than 1%). pyFAI 2026.9.0's own full splitting shows the
+  same: all 83 bins are among the 85 that change by more than 1% between
+  `setChiDiscAtPi` and `setChiDiscAtZero`. See
+  `docs/validation/pyfai-full-seam.md`.
 
 ### Compatibility and validation
 

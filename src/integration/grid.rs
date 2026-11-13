@@ -350,9 +350,10 @@ impl Integrator {
     /// With `IntegrationMethod::PyfaiFull`, individual bins depend on how the
     /// range is written: a range and the same range shifted by 2π can differ,
     /// as can the interior rows of a sector and the matching rows of a full
-    /// circle, because the pyFAI-style splitting places each pixel polygon
-    /// relative to the range start. Pixel splitting agrees to about 1e-6 in the
-    /// same comparison and is the better choice for sectors.
+    /// circle, because pyFAI's full splitting unwraps pixels with a heuristic
+    /// that depends on where the azimuth seam lies. pyFAI itself behaves the
+    /// same (`docs/validation/pyfai-full-seam.md`). Pixel splitting agrees to
+    /// about 1e-6 in the same comparison and is the better choice for sectors.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_on_azimuthal_range_from_slice(
         &self,

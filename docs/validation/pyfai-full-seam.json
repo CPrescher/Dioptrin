@@ -1,0 +1,202 @@
+{
+  "image": "CeO2_Pilatus1M.tif",
+  "poni": "v1.poni",
+  "bins": [
+    72,
+    300
+  ],
+  "unit": "2th_deg",
+  "metric": "|got - ref| / max(|ref|, 1) per bin; ref is the seam-at-pi cake",
+  "versions": {
+    "dioptrin": "0.12.0",
+    "dioptrin_commit": "17cf5ab",
+    "pyFAI": "2026.9.0",
+    "numpy": "2.5.4",
+    "python": "3.13.5"
+  },
+  "dioptrin": {
+    "counting": {
+      "seam at 0: (0, 2pi) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 0.0,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      },
+      "seam at 0: (-2pi, 0) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 0.0,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      },
+      "sector (2.5, 2.5 + pi/2) vs shifted by -2pi": {
+        "bins": 21600,
+        "max_relative": 0.0,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      }
+    },
+    "pixel_split": {
+      "seam at 0: (0, 2pi) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 3.9770998215283296e-10,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      },
+      "seam at 0: (-2pi, 0) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 1.004208736858665e-09,
+        "median_relative_of_differing": 1.004208736858665e-09,
+        "bins_above_1e-09": 1,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 1,
+        "max_radial_bin_above_1e-2": null
+      },
+      "sector (2.5, 2.5 + pi/2) vs shifted by -2pi": {
+        "bins": 21600,
+        "max_relative": 2.349005490120959e-09,
+        "median_relative_of_differing": 1.7125390272543228e-09,
+        "bins_above_1e-09": 2,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 2,
+        "max_radial_bin_above_1e-2": null
+      }
+    },
+    "supersampled": {
+      "seam at 0: (0, 2pi) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 0.0,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      },
+      "seam at 0: (-2pi, 0) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 0.0,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      },
+      "sector (2.5, 2.5 + pi/2) vs shifted by -2pi": {
+        "bins": 21600,
+        "max_relative": 0.0,
+        "median_relative_of_differing": 0.0,
+        "bins_above_1e-09": 0,
+        "bins_above_1e-06": 0,
+        "bins_above_0.001": 0,
+        "bins_above_0.01": 0,
+        "rows_above_1e-9": 0,
+        "max_radial_bin_above_1e-2": null
+      }
+    },
+    "pyfai_full": {
+      "seam at 0: (0, 2pi) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 48.84408237304909,
+        "median_relative_of_differing": 0.0012357397545575226,
+        "bins_above_1e-09": 896,
+        "bins_above_1e-06": 887,
+        "bins_above_0.001": 519,
+        "bins_above_0.01": 83,
+        "rows_above_1e-9": 33,
+        "max_radial_bin_above_1e-2": 205
+      },
+      "seam at 0: (-2pi, 0) vs (-pi, pi)": {
+        "bins": 21600,
+        "max_relative": 48.84408237304909,
+        "median_relative_of_differing": 0.0012357397545575226,
+        "bins_above_1e-09": 896,
+        "bins_above_1e-06": 887,
+        "bins_above_0.001": 519,
+        "bins_above_0.01": 83,
+        "rows_above_1e-9": 33,
+        "max_radial_bin_above_1e-2": 205
+      },
+      "sector (2.5, 2.5 + pi/2) vs shifted by -2pi": {
+        "bins": 21600,
+        "max_relative": 1.443228182580585,
+        "median_relative_of_differing": 0.007949268607777445,
+        "bins_above_1e-09": 276,
+        "bins_above_1e-06": 275,
+        "bins_above_0.001": 246,
+        "bins_above_0.01": 118,
+        "rows_above_1e-9": 7,
+        "max_radial_bin_above_1e-2": 260
+      }
+    }
+  },
+  "pyFAI (setChiDiscAtPi (-180, 180) vs setChiDiscAtZero (0, 360))": {
+    "full/histogram/cython": {
+      "bins": 21600,
+      "max_relative": 48.821895599365234,
+      "median_relative_of_differing": 4.682052491727542e-07,
+      "bins_above_1e-09": 14686,
+      "bins_above_1e-06": 4829,
+      "bins_above_0.001": 522,
+      "bins_above_0.01": 85,
+      "rows_above_1e-9": 72,
+      "max_radial_bin_above_1e-2": 205,
+      "max_2th_deg_above_1e-2": 21.130181800838205
+    },
+    "full/csr/cython": {
+      "bins": 21600,
+      "max_relative": 42.64026641845703,
+      "median_relative_of_differing": 0.00011925668515524107,
+      "bins_above_1e-09": 17486,
+      "bins_above_1e-06": 15930,
+      "bins_above_0.001": 3337,
+      "bins_above_0.01": 1184,
+      "rows_above_1e-9": 72,
+      "max_radial_bin_above_1e-2": 205,
+      "max_2th_deg_above_1e-2": 21.130181800838205
+    },
+    "bbox/histogram/cython": {
+      "bins": 21600,
+      "max_relative": 49.552791595458984,
+      "median_relative_of_differing": 4.1174937284548443e-07,
+      "bins_above_1e-09": 14330,
+      "bins_above_1e-06": 4521,
+      "bins_above_0.001": 521,
+      "bins_above_0.01": 92,
+      "rows_above_1e-9": 72,
+      "max_radial_bin_above_1e-2": 205,
+      "max_2th_deg_above_1e-2": 21.122444469932045
+    }
+  },
+  "overlap of bins above 1e-2, dioptrin pyfai_full vs pyFAI full/histogram": {
+    "dioptrin": 83,
+    "pyFAI": 85,
+    "both": 83
+  }
+}

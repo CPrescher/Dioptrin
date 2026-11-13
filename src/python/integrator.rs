@@ -413,7 +413,8 @@ impl PyIntegrator {
     ///   centres. Radial bins are the same as without a range.
     ///   With `method="pyfai_full"`, individual bins depend on how the range is
     ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
-    ///   circle, can differ); prefer `"pixel_split"` for sectors.
+    ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
+    ///   sectors.
     ///
     /// # Returns
     ///
@@ -1306,7 +1307,8 @@ impl PyIntegrator {
     ///   centres. Radial bins are the same as without a range.
     ///   With `method="pyfai_full"`, individual bins depend on how the range is
     ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
-    ///   circle, can differ); prefer `"pixel_split"` for sectors.
+    ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
+    ///   sectors.
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
@@ -1463,7 +1465,8 @@ impl PyIntegrator {
     ///   centres. Radial bins are the same as without a range.
     ///   With `method="pyfai_full"`, individual bins depend on how the range is
     ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
-    ///   circle, can differ); prefer `"pixel_split"` for sectors.
+    ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
+    ///   sectors.
     /// * `num_workers` - Number of parallel workers (optional)
     /// * `num_threads` - Threads per worker (optional)
     ///
