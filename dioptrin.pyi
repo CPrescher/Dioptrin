@@ -386,6 +386,13 @@ class Integrator:
                 ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
                 centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
                 centres and result.n_azimuthal the row count.
+                In this mode azimuthal_range is (first centre, end) rather than
+                edges, and the end is exclusive: (0, pi/2) with a 5 degree
+                bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
+                degrees. A first centre outside +-2*pi, or within one bracket of
+                -2*pi, is corrected to [-pi, pi). With method="pyfai_full" the
+                seam lies one bracket below the first centre, so rows differ
+                slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
                 at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
@@ -641,6 +648,13 @@ class Integrator:
                 ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
                 centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
                 centres and result.n_azimuthal the row count.
+                In this mode azimuthal_range is (first centre, end) rather than
+                edges, and the end is exclusive: (0, pi/2) with a 5 degree
+                bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
+                degrees. A first centre outside +-2*pi, or within one bracket of
+                -2*pi, is corrected to [-pi, pi). With method="pyfai_full" the
+                seam lies one bracket below the first centre, so rows differ
+                slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
                 at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
@@ -708,6 +722,13 @@ class Integrator:
                 ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
                 centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
                 centres and result.n_azimuthal the row count.
+                In this mode azimuthal_range is (first centre, end) rather than
+                edges, and the end is exclusive: (0, pi/2) with a 5 degree
+                bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
+                degrees. A first centre outside +-2*pi, or within one bracket of
+                -2*pi, is corrected to [-pi, pi). With method="pyfai_full" the
+                seam lies one bracket below the first centre, so rows differ
+                slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
                 at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
@@ -841,7 +862,10 @@ class MultiIntegrator:
         first row is centred on the start of azimuthal_range, which then
         defaults to (0, 2*pi), and the span must be a whole number of rows
         (else ValueError). E.g. np.radians(2.5) gives 72 rows centred on
-        0, 5, ..., 355 degrees.
+        0, 5, ..., 355 degrees. The end of azimuthal_range is exclusive in this
+        mode: it is where the next centre would be.
+
+        Without a bracket:
 
         Radial edges use the common radial_range and unit. Azimuthal edges are
         radians (default -pi, pi), span at most 2*pi, and clip sectors without

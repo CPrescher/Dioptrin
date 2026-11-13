@@ -235,6 +235,41 @@ class AzimuthalRangeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ai.batch2d([str(TIFF)], N_RADIAL, **kwargs)
 
+    def test_bracket_edge_cases(self):
+        bracket = np.radians(2.5)
+        image = np.random.default_rng(2).uniform(10, 100, SHAPE)
+        ai = dioptrin.Integrator.from_poni_dict(PONI, method="pixel_split")
+        base = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket)
+        # single-precision brackets are accepted
+        f32 = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=np.float32(bracket))
+        self.assertEqual(f32.n_azimuthal, 72)
+        # distant or negative starts give the same cake and a corrected axis
+        for start in (-2 * np.pi, 4 * np.pi, 2 * np.pi + 2 * bracket):
+            got = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket,
+                                 azimuthal_range=(start, start + 2 * np.pi))
+            first = np.degrees(got.azimuthal[0])
+            self.assertAlmostEqual(first, np.degrees(start) % 360.0, places=9)
+            shift = int(round(first / 5.0))
+            np.testing.assert_allclose(cake(got), np.roll(cake(base), -shift, axis=0), rtol=1e-9)
+        # a start inside +-2*pi is kept as given
+        kept = ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket,
+                              azimuthal_range=(2 * np.pi, 4 * np.pi))
+        self.assertAlmostEqual(np.degrees(kept.azimuthal[0]), 360.0, places=9)
+        with self.assertRaises(ValueError):
+            ai.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket, azimuthal_range=(0, 4 * np.pi))
+        # pyfai_full runs and matches its own range cake on the same edges
+        full = dioptrin.Integrator.from_poni_dict(PONI, method="pyfai_full")
+        got = full.integrate2d(image, N_RADIAL, azimuthal_bracket=bracket)
+        ref = full.integrate2d(image, N_RADIAL, 72, azimuthal_range=(-bracket, 2 * np.pi - bracket))
+        np.testing.assert_array_equal(got.intensity, ref.intensity)
+        # generators go through their own streaming branch
+        streamed = list(ai.batch2d_iter((im for im in [image, image]), N_RADIAL, azimuthal_bracket=bracket))
+        self.assertEqual(len(streamed), 2)
+        for r in streamed:
+            self.assertTrue(r.is_ok(), r.error)
+            np.testing.assert_array_equal(r.result.intensity, base.intensity)
+            np.testing.assert_array_equal(r.result.azimuthal, base.azimuthal)
+
     @unittest.skipUnless(TIFF.exists(), "CeO2 TIFF not available")
     def test_bracket_in_file_batches(self):
         ai = dioptrin.Integrator(str(TIFF_PONI), method="pixel_split")
@@ -245,7 +280,14 @@ class AzimuthalRangeTests(unittest.TestCase):
         self.assertTrue(batch.is_ok(), batch.error)
         np.testing.assert_array_equal(batch.result.intensity, ref.intensity)
         np.testing.assert_array_equal(batch.result.azimuthal, ref.azimuthal)
-
+        streamed = list(ai.batch2d_iter([str(TIFF)], 50, azimuthal_bracket=bracket))[0]
+        self.assertTrue(streamed.is_ok(), streamed.error)
+        np.testing.assert_array_equal(streamed.result.intensity, ref.intensity)
+        np.testing.assert_array_equal(streamed.result.azimuthal, ref.azimuthal)
+        # legacy positional calls are unchanged
+        positional = ai.integrate2d(str(TIFF), 50, 36, False, (0.0, np.pi))
+        keyword = ai.integrate2d(str(TIFF), n_radial=50, n_azimuthal=36, azimuthal_range=(0.0, np.pi))
+        np.testing.assert_array_equal(positional.intensity, keyword.intensity)
 
 
 if __name__ == "__main__":

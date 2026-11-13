@@ -737,7 +737,8 @@ fn brackets_also_describe_sectors_and_reject_uneven_tilings() {
             "{range:?} {bracket}"
         );
     }
-    // More than one turn is rejected by the range path.
+    // More than one turn is rejected.
+    assert!(azimuthal_bracket_bins((0.0, 2.0 * TAU), 0.1 * TAU).is_err());
     let ai = integrator(IntegrationMethod::Counting);
     assert!(
         ai.integrate2d_on_azimuthal_brackets_from_slice(
@@ -751,4 +752,89 @@ fn brackets_also_describe_sectors_and_reject_uneven_tilings() {
         )
         .is_err()
     );
+}
+
+/// A single-precision bracket is accepted, and the first centre (not the first
+/// edge) decides whether a far-away start is corrected.
+#[test]
+fn brackets_accept_f32_and_correct_distant_centres() {
+    let bracket = 2.5f64.to_radians();
+    assert_eq!(
+        azimuthal_bracket_bins((0.0, TAU), 2.5f32.to_radians() as f64)
+            .unwrap()
+            .0,
+        72
+    );
+    let first_centre = |range| {
+        let (_, (lo, _)) = azimuthal_bracket_bins(range, bracket).unwrap();
+        lo + bracket
+    };
+    // Inside ±2π: kept as given.
+    assert!((first_centre((TAU, 2.0 * TAU)) - TAU).abs() < 1e-12);
+    assert!((first_centre((-PI, PI)) + PI).abs() < 1e-12);
+    // Outside ±2π, or with the first edge below -2π: corrected to [-π, π).
+    assert!(
+        (first_centre((TAU + 2.0 * bracket, 2.0 * TAU + 2.0 * bracket)) - 2.0 * bracket).abs()
+            < 1e-12
+    );
+    assert!(first_centre((-TAU, 0.0)).abs() < 1e-12);
+    assert!(first_centre((-3.0 * TAU, -2.0 * TAU)).abs() < 1e-12);
+    // The corrected cake is the same cake.
+    let ai = integrator(IntegrationMethod::PixelSplit);
+    let run = |range| {
+        ai.integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            range,
+            bracket,
+            true,
+        )
+        .unwrap()
+    };
+    let base = run((0.0, TAU));
+    for range in [(-TAU, 0.0), (5.0 * TAU, 6.0 * TAU)] {
+        let got = run(range);
+        for (a, b) in got.azimuthal.iter().zip(&base.azimuthal) {
+            assert!((a - b).abs() < 1e-9, "{range:?}");
+        }
+        for (a, b) in got.intensity.iter().zip(&base.intensity) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{range:?}");
+        }
+    }
+}
+
+/// `PyfaiFull` runs in bracket mode and matches its own range cake on the same
+/// edges (its rows depend on where the seam lies, so only that is compared).
+#[test]
+fn brackets_work_with_pyfai_full() {
+    let bracket = 5f64.to_radians();
+    let ai = integrator(IntegrationMethod::PyfaiFull);
+    let got = ai
+        .integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            (0.0, TAU),
+            bracket,
+            true,
+        )
+        .unwrap();
+    let reference = ai
+        .integrate2d_on_azimuthal_range_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            36,
+            (-bracket, TAU - bracket),
+            true,
+        )
+        .unwrap();
+    assert_eq!(got.azimuthal.len(), 36);
+    assert_eq!(got.intensity, reference.intensity);
+    assert_eq!(got.errors, reference.errors);
+    assert!(got.intensity.iter().any(|v| *v > 0.0));
 }

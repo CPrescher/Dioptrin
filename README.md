@@ -483,7 +483,10 @@ centres = np.degrees(result.azimuthal)   # row 0 -> 0 deg, row 18 -> 90 deg
 
 Give either `n_azimuthal` or `azimuthal_bracket`, not both. The span must be a
 whole number of rows (`+-3.5` degrees over a full turn raises `ValueError`).
-`batch2d` and `batch2d_iter` accept the same keyword.
+With a bracket, `azimuthal_range` is `(first centre, end)` and the end is
+exclusive: `(0, np.pi/2)` with a 5 degree bracket gives centres 0, 10, ..., 80
+degrees, covering -5 to 85 degrees. `batch2d`, `batch2d_iter` and
+`MultiIntegrator.integrate2d` accept the same keyword.
 
 ### Streaming Batch Processing
 

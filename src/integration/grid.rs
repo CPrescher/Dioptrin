@@ -196,13 +196,20 @@ fn centers((lo, hi): (f64, f64), count: usize) -> Vec<f64> {
 /// Bin count and outer edges of contiguous azimuthal rows described by their
 /// centres: the first row is centred on `center_range.0`, every row covers its
 /// centre ± `half_width`, and the centres advance by `2 * half_width` until
-/// just before `center_range.1`. All angles are radians.
+/// just before `center_range.1`. All angles are radians. The end is exclusive:
+/// it is where the next centre would be, not a centre itself, so the rows cover
+/// `[center_range.0 - half_width, center_range.1 - half_width)`.
 ///
 /// Returns `(n_azimuthal, (min, max))` for
 /// [`Integrator::integrate2d_on_azimuthal_range`]. For example `(0, 2π)` with a
 /// 2.5° bracket gives 72 rows centred on 0°, 5°, …, 355° with edges
-/// `(-2.5°, 357.5°)`. The span must be a whole number of rows (to 1e-9
-/// relative), otherwise an error is returned rather than adjusting the bracket.
+/// `(-2.5°, 357.5°)`. The span must be at most 2π and a whole number of rows
+/// (to 1e-6 relative, so single-precision brackets are accepted), otherwise an
+/// error is returned rather than adjusting the bracket.
+///
+/// A first centre outside ±2π, or within one bracket of -2π, is corrected to
+/// the equivalent angle in [-π, π), so that the returned axis does not depend
+/// on the bracket size. Other first centres are kept as given.
 pub fn azimuthal_bracket_bins(
     center_range: (f64, f64),
     half_width: f64,
@@ -215,9 +222,12 @@ pub fn azimuthal_bracket_bins(
     if !half_width.is_finite() || half_width <= 0.0 {
         return Err("azimuthal bracket must be finite and positive".into());
     }
+    if span > TAU + 1e-12 {
+        return Err("azimuthal centres must span at most 2π (one full turn)".into());
+    }
     let rows = span / (2.0 * half_width);
     let n = rows.round();
-    if !n.is_finite() || n < 1.0 || (rows - n).abs() > 1e-9 * n {
+    if !n.is_finite() || n < 1.0 || (rows - n).abs() > 1e-6 * n {
         return Err(format!(
             "azimuthal bracket of ±{half_width} rad does not divide the span of {span} rad \
              into a whole number of rows ({rows} rows)"
@@ -225,7 +235,19 @@ pub fn azimuthal_bracket_bins(
     }
     // Use the exact row width implied by the count, so the edges stay consistent.
     let half = span / (2.0 * n);
-    Ok((n as usize, (first - half, end - half)))
+    // The range path corrects first *edges* outside ±2π. Correct the centre
+    // here instead, whenever it or its edge would be outside.
+    let first = if first - half < -TAU || first > TAU {
+        let wrapped = first.rem_euclid(TAU);
+        if wrapped >= std::f64::consts::PI {
+            wrapped - TAU
+        } else {
+            wrapped
+        }
+    } else {
+        first
+    };
+    Ok((n as usize, (first - half, first - half + span)))
 }
 
 /// 2D result on explicit `(min, max)` azimuthal edges, from

@@ -92,7 +92,8 @@ Give either `n_azimuthal` or `azimuthal_bracket`. The bracket (radians) asks
 for contiguous rows of centre ± bracket, as used in texture analysis: the first
 row is centred on the start of `azimuthal_range`, which then means centres and
 defaults to `(0, 2*pi)`. `azimuthal_bracket=np.radians(2.5)` gives 72 rows
-centred on 0°, 5°, …, 355°. The span must be a whole number of rows.
+centred on 0°, 5°, …, 355°. The span must be a whole number of rows, and the
+end of the range is exclusive (it is where the next centre would be).
 
 Each detector retains its own shape, pixel sizes, distance, PONI offsets,
 rotations, mask and polarization. Images are C-contiguous 2D float64 arrays or

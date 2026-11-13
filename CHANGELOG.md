@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Azimuthal brackets for texture analysis: 2D rows can be given as centre ±
   half-width instead of a bin count. Python `integrate2d`, `batch2d`,
-  `batch2d_iter` and `MultiIntegrator.integrate2d` accept the keyword `azimuthal_bracket` (radians) in place of
-  `n_azimuthal`; the first row is centred on the start of `azimuthal_range`
-  (default `(0, 2π)`), e.g. `azimuthal_bracket=np.radians(2.5)` gives 72 rows
+  `batch2d_iter` and `MultiIntegrator.integrate2d` accept the keyword
+  `azimuthal_bracket` (radians) in place of `n_azimuthal`; the first row is
+  centred on the start of `azimuthal_range` (default `(0, 2π)`, end
+  exclusive), e.g. `azimuthal_bracket=np.radians(2.5)` gives 72 rows
   centred on 0°, 5°, …, 355°. Rows are contiguous and the span must be a whole
   number of rows. In Rust: `Integrator::integrate2d_on_azimuthal_brackets`
   (and `_from_slice`) and the helper `integration::azimuthal_bracket_bins`.
