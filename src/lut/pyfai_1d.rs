@@ -98,7 +98,7 @@ pub fn build_lut1d_pyfai_csr(
     })
 }
 
-fn singular(poly: &[(f64, f64); 4]) -> bool {
+pub(super) fn singular(poly: &[(f64, f64); 4]) -> bool {
     let mut winding = 0.0;
     for i in 0..4 {
         if poly[i].0 == 0.0 {
@@ -115,7 +115,7 @@ fn singular(poly: &[(f64, f64); 4]) -> bool {
 
 // Match the upstream safety convention: singular beam pixels use nonnegative
 // detector-plane fractions. These exceptional weights are not bitwise pyFAI.
-fn sample(
+pub(super) fn sample(
     g: &Geometry,
     pixel: usize,
     unit: RadialUnit,
