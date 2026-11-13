@@ -4,6 +4,8 @@
 //! The 1D oracles follow two deliberate changes to the production tables:
 //! weights are pixel fractions (divided by n_ss², not by the bin total), and
 //! with an explicit range, subpixels outside it are dropped instead of clamped.
+//! The automatic-azimuth 2D oracle follows a third: a subpixel past the top of
+//! the azimuthal range is clamped into the last bin instead of wrapped to bin 0.
 #![allow(clippy::too_many_arguments)] // Preserve the previous kernel signatures as test oracles.
 use super::*;
 use crate::poni::Poni;
@@ -219,8 +221,12 @@ mod legacy {
                             radial_step,
                             n_radial,
                         );
-                        let ab = histogram::get_bin(azimuthal_ss[i], azimuthal_min, azimuthal_step)
-                            % n_azimuthal;
+                        let ab = histogram::get_bin_clamped(
+                            azimuthal_ss[i],
+                            azimuthal_min,
+                            azimuthal_step,
+                            n_azimuthal,
+                        );
                         let row = ab * n_radial + rb;
                         acc.push((row, actual_index[i]));
                     }

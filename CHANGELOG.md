@@ -43,6 +43,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before. `histogram_parallel`, which the integrator does not use, did not
   panic in that case but silently lost the sixteenth of the data that contained
   the maximum; it now returns the complete result.
+- 2D `counting` and `supersampled` without an explicit azimuthal range
+  (`build_lut2d_csr`, `build_lut2d_ss_csr`) wrapped pixels and subpixels at or
+  slightly beyond the top of the automatic azimuthal grid into the first
+  azimuthal bin; they now go to the last. Values reach that point by rounding
+  to bin index `n_azimuthal`, or, on detectors rotated about the beam, by
+  interior subpixels lying above the grid maximum by a small fraction of a
+  bin. Counting 2D is not affected on real geometries (the range padding
+  covers radian azimuths). Supersampled 2D changes the first and last
+  azimuthal bin at one radius, e.g. one subpixel at +π on the `v1.poni`
+  Pilatus 1M geometry; every other table entry is unchanged. The
+  `_with_azimuthal_range` variants still wrap periodically.
+- `math::histogram::histogram_parallel` never binned the last `len % 16`
+  values (and returned all NaN for fewer than 16 values) because it split the
+  input into 16 equal chunks and dropped the remainder. It now bins every
+  value with rayon, without copying the input or silently swallowing worker
+  panics, and keeps at most 32 partial histograms whatever the input length.
+  Bins and counts match `histogram`; the bin sums hold the same terms but
+  are added in a different order, so they can differ by floating-point
+  rounding (relatively more where weights within a bin nearly cancel). The
+  result is now identical from run to run and for any thread count.
 - `IntegrationMethod::Histogram` in 2D (every `Integrator::integrate2d*`
   method, the typed TIFF 2D path, the `batch` helpers with a 2D task, and
   Python `integrate2d`, `batch2d` and `batch2d_iter`) ignored `n_azimuthal`

@@ -282,7 +282,11 @@ pub fn build_lut2d_ss_csr(
                 radial_step,
                 n_radial,
             );
-            let ab = histogram::get_bin(azimuth, azimuthal_min, azimuthal_step) % n_azimuthal;
+            // The grid ends at the largest pixel-centre or hull azimuth, so a
+            // subpixel that rounds (or lies) past it belongs in the last bin,
+            // not (by wrapping) in bin 0.
+            let ab =
+                histogram::get_bin_clamped(azimuth, azimuthal_min, azimuthal_step, n_azimuthal);
             Some(ab * n_radial + rb)
         });
 
@@ -300,6 +304,66 @@ mod tests {
     use super::*;
     use crate::geometry::Geometry;
     use crate::poni::Poni;
+
+    #[test]
+    fn automatic_azimuthal_range_keeps_the_maximum_in_the_last_bin() {
+        // On this real calibration (Pilatus 1M shape) the azimuth spans the
+        // -pi/pi cut, and the subpixel with the largest azimuth rounds to bin
+        // index n_azimuthal. It belongs to the last azimuthal bin, not bin 0.
+        let (dim1, dim2) = (1043, 981);
+        let geometry = Geometry::new(dim1, dim2, Poni::load("test_data/v1.poni").unwrap());
+        let radial = geometry.calc_tth_all();
+        let azimuthal = geometry.calc_azimuth_all();
+        let (n_radial, n_azimuthal, n_ss) = (50, 36, 1);
+        let lut = build_lut2d_ss_csr(
+            &geometry,
+            &radial,
+            &azimuthal,
+            n_radial,
+            n_azimuthal,
+            n_ss,
+            RadialUnit::TthRad,
+        );
+
+        // With one subpixel per pixel, every pixel has exactly one table entry.
+        let (r_min, _, r_step) =
+            histogram::ss_tth_min_max_step(&geometry, &radial, n_radial, n_ss, RadialUnit::TthRad);
+        let (a_min, _, a_step) = histogram::supersampled_azimuthal_min_max_step(
+            &geometry,
+            &azimuthal,
+            n_azimuthal,
+            n_ss,
+        );
+        let transform = geometry.subpixel_transform();
+        let mut expected = vec![usize::MAX; dim1 * dim2];
+        let mut rounds_past_the_end = 0;
+        for row in 0..dim1 {
+            for col in 0..dim2 {
+                let (tth, azimuth) = transform.tth_and_azimuth(row as f64 + 0.5, col as f64 + 0.5);
+                if histogram::get_bin(azimuth, a_min, a_step) >= n_azimuthal {
+                    rounds_past_the_end += 1;
+                }
+                let rb = histogram::get_bin_clamped(tth, r_min, r_step, n_radial);
+                let ab = histogram::get_bin_clamped(azimuth, a_min, a_step, n_azimuthal);
+                expected[row * dim2 + col] = ab * n_radial + rb;
+            }
+        }
+        assert!(
+            rounds_past_the_end > 0,
+            "geometry no longer exercises the case"
+        );
+
+        let mut actual = vec![usize::MAX; dim1 * dim2];
+        for bin in 0..n_radial * n_azimuthal {
+            for &pixel in &lut.col_idx[lut.row_ptr[bin]..lut.row_ptr[bin + 1]] {
+                assert_eq!(actual[pixel], usize::MAX, "pixel {pixel} in two bins");
+                actual[pixel] = bin;
+            }
+        }
+        for (pixel, (a, e)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(a, e, "pixel {pixel}: bin {a}, expected {e}");
+        }
+    }
 
     fn create_test_geometry() -> Geometry {
         let mut poni = Poni::new();
