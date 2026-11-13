@@ -53,13 +53,13 @@ pub struct Lut2d {
 pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
     let (min, _max, step) = histogram::min_max_step(radial, n_points);
 
-    let index: Vec<usize> = radial
+    let index: Vec<Option<usize>> = radial
         .par_iter()
-        .map(|r| histogram::get_bin_clamped(*r, min, step, n_points))
+        .map(|r| histogram::get_bin_in_range(*r, min, step, n_points))
         .collect();
 
     let mut counts = vec![0usize; n_points];
-    for &idx in &index {
+    for &idx in index.iter().flatten() {
         counts[idx] += 1;
     }
 
@@ -69,11 +69,12 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
     }
 
     let mut next = row_ptr.clone();
-    let mut col_idx = vec![0usize; radial.len()];
-    for (i, &bin) in index.iter().enumerate() {
-        let pos = next[bin];
-        col_idx[pos] = i;
-        next[bin] += 1;
+    let mut col_idx = vec![0usize; row_ptr[n_points]];
+    for (i, bin) in index.iter().enumerate() {
+        if let Some(bin) = *bin {
+            col_idx[next[bin]] = i;
+            next[bin] += 1;
+        }
     }
 
     Lut1d {
@@ -86,6 +87,9 @@ pub fn build_lut1d_csr(radial: &Vec<f64>, n_points: usize) -> Lut1d {
 }
 
 /// Build an unweighted 1D CSR LUT with explicit radial range.
+///
+/// Pixels whose radial value lies outside the range are left out of the table;
+/// they are not assigned to the first or last bin.
 pub fn build_lut1d_csr_with_range(
     radial: &Vec<f64>,
     n_points: usize,
@@ -94,13 +98,13 @@ pub fn build_lut1d_csr_with_range(
 ) -> Lut1d {
     let (min, _max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
-    let index: Vec<usize> = radial
+    let index: Vec<Option<usize>> = radial
         .par_iter()
-        .map(|r| histogram::get_bin_clamped(*r, min, step, n_points))
+        .map(|r| histogram::get_bin_in_range(*r, min, step, n_points))
         .collect();
 
     let mut counts = vec![0usize; n_points];
-    for &idx in &index {
+    for &idx in index.iter().flatten() {
         counts[idx] += 1;
     }
 
@@ -110,11 +114,12 @@ pub fn build_lut1d_csr_with_range(
     }
 
     let mut next = row_ptr.clone();
-    let mut col_idx = vec![0usize; radial.len()];
-    for (i, &bin) in index.iter().enumerate() {
-        let pos = next[bin];
-        col_idx[pos] = i;
-        next[bin] += 1;
+    let mut col_idx = vec![0usize; row_ptr[n_points]];
+    for (i, bin) in index.iter().enumerate() {
+        if let Some(bin) = *bin {
+            col_idx[next[bin]] = i;
+            next[bin] += 1;
+        }
     }
 
     Lut1d {
@@ -240,5 +245,20 @@ pub fn build_lut2d_csr_with_azimuthal_range(
         values: None,
         n_tth: n_radial,
         n_azimuthal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_range_drops_pixels_outside_it() {
+        // Bins [1, 2) and [2, 3]. Values below 1 or above 3 belong to no bin; the
+        // upper range limit itself is included.
+        let radial = vec![0.5, 1.5, 2.5, 3.5, 1.0, 3.0, -4.0, f64::INFINITY];
+        let lut = build_lut1d_csr_with_range(&radial, 2, 1.0, 3.0);
+        assert_eq!(lut.row_ptr, vec![0, 2, 4]);
+        assert_eq!(lut.col_idx, vec![1, 4, 2, 5]);
     }
 }

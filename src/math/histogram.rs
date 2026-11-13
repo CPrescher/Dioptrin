@@ -207,6 +207,17 @@ pub fn get_bin_clamped(value: f64, min: f64, step: f64, n_bins: usize) -> usize 
     bin.min(n_bins - 1)
 }
 
+/// Calculates the bin index for a value on an explicit grid of `n_bins` bins
+/// starting at `min`. Values outside `[min, min + n_bins * step)` belong to no
+/// bin and return `None`; they are not moved into the first or last bin.
+pub fn get_bin_in_range(value: f64, min: f64, step: f64, n_bins: usize) -> Option<usize> {
+    if value.is_nan() || value < min {
+        return None;
+    }
+    let bin = ((value - min) / step) as usize;
+    (bin < n_bins).then_some(bin)
+}
+
 /// Calculates a wrapped bin index for a value in a periodic histogram.
 ///
 /// The returned index is in `0..n_bins` using Euclidean wrapping.

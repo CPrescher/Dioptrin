@@ -117,8 +117,14 @@ mod legacy {
                     let tth_ss = geometry.calc_tth(&d1, &d2);
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for (i, &v) in radial_ss.iter().enumerate() {
-                        let b = histogram::get_bin_clamped(v, hist_min, hist_step, n_points);
-                        acc.push((b, actual_index[i]));
+                        // Subpixels outside the explicit range belong to no bin.
+                        if v < hist_min {
+                            continue;
+                        }
+                        let b = histogram::get_bin(v, hist_min, hist_step);
+                        if b < n_points {
+                            acc.push((b, actual_index[i]));
+                        }
                     }
                     acc
                 },

@@ -61,7 +61,7 @@ fn build_counted_csr<F>(
     sample_bin: F,
 ) -> (Vec<usize>, Vec<usize>, Vec<f64>)
 where
-    F: Fn(f64, f64) -> usize + Sync,
+    F: Fn(f64, f64) -> Option<usize> + Sync,
 {
     let rows: Vec<Box<[Contribution]>> = (0..geometry.dim1)
         .into_par_iter()
@@ -76,7 +76,10 @@ where
                         // Preserve subgrid's original global-column arithmetic;
                         // col + (j + .5)/n can round differently near an edge.
                         let d2 = ((col * n_ss + j) as f64 + 0.5) / n_ss as f64;
-                        let bin = sample_bin(d1, d2);
+                        // A sample outside the grid belongs to no bin.
+                        let Some(bin) = sample_bin(d1, d2) else {
+                            continue;
+                        };
                         match counts.iter_mut().find(|(b, _)| *b == bin) {
                             Some((_, count)) => *count += 1,
                             None => counts.push((bin, 1)),
@@ -179,7 +182,9 @@ pub fn build_lut1d_ss_csr(
     let (row_ptr, col_idx, values) =
         build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
             let radial = conversion.convert(transform.tth(d1, d2));
-            histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
+            Some(histogram::get_bin_clamped(
+                radial, hist_min, hist_step, n_points,
+            ))
         });
 
     Lut1d {
@@ -192,6 +197,9 @@ pub fn build_lut1d_ss_csr(
 }
 
 /// Build a supersampled 1D CSR LUT with explicit radial range.
+///
+/// Subpixels outside the range are dropped (not assigned to the first or last
+/// bin), so a pixel partly outside the range keeps only its in-range fraction.
 pub fn build_lut1d_ss_csr_with_range(
     geometry: &Geometry,
     _radial: &[f64],
@@ -209,7 +217,7 @@ pub fn build_lut1d_ss_csr_with_range(
     let (row_ptr, col_idx, values) =
         build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
             let radial = conversion.convert(transform.tth(d1, d2));
-            histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
+            histogram::get_bin_in_range(radial, hist_min, hist_step, n_points)
         });
 
     Lut1d {
@@ -275,7 +283,7 @@ pub fn build_lut2d_ss_csr(
                 n_radial,
             );
             let ab = histogram::get_bin(azimuth, azimuthal_min, azimuthal_step) % n_azimuthal;
-            ab * n_radial + rb
+            Some(ab * n_radial + rb)
         });
 
     Lut2d {
@@ -476,6 +484,75 @@ mod tests {
             );
         }
     }
+
+    fn pixel_totals(lut: &Lut1d, n_pixels: usize) -> Vec<f64> {
+        let mut totals = vec![0.0; n_pixels];
+        for (&pixel, &w) in lut.col_idx.iter().zip(lut.values.as_ref().unwrap()) {
+            totals[pixel] += w;
+        }
+        totals
+    }
+
+    #[test]
+    fn weights_1d_are_fractions_of_the_pixel() {
+        // 16 subpixels per pixel: a pixel fully inside the range has weight one.
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let lut = build_lut1d_ss_csr(&geometry, &tth, 7, 4, RadialUnit::TthRad);
+        for (pixel, total) in pixel_totals(&lut, geometry.size()).iter().enumerate() {
+            assert_eq!(*total, 1.0, "pixel {pixel}");
+        }
+    }
+
+    #[test]
+    fn explicit_range_drops_subpixels_outside_it() {
+        let geometry = create_test_geometry();
+        let tth = geometry.calc_tth_all();
+        let (n_ss, n_points) = (4, 6);
+        let (lo, hi) = (0.004, 0.009);
+        let lut = build_lut1d_ss_csr_with_range(
+            &geometry,
+            &tth,
+            n_points,
+            n_ss,
+            RadialUnit::TthRad,
+            lo,
+            hi,
+        );
+        let transform = geometry.subpixel_transform();
+        let mut expected = vec![0.0; geometry.size()];
+        let mut expected_bins = vec![0usize; n_points];
+        for (pixel, total) in expected.iter_mut().enumerate() {
+            let (row, col) = (pixel / geometry.dim2, pixel % geometry.dim2);
+            for i in 0..n_ss {
+                for j in 0..n_ss {
+                    let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;
+                    let d2 = ((col * n_ss + j) as f64 + 0.5) / n_ss as f64;
+                    let r = transform.tth(d1, d2);
+                    if r >= lo && r < hi {
+                        *total += 1.0 / (n_ss * n_ss) as f64;
+                        expected_bins[(((r - lo) / (hi - lo)) * n_points as f64) as usize] += 1;
+                    }
+                }
+            }
+        }
+        let totals = pixel_totals(&lut, geometry.size());
+        assert_eq!(totals, expected);
+        // The range cuts the detector: pixels fully inside, fully outside and split.
+        assert!(totals.contains(&1.0));
+        assert!(totals.contains(&0.0));
+        assert!(totals.iter().any(|&t| t > 0.0 && t < 1.0));
+        // In particular the edge bins hold only their own subpixels.
+        let values = lut.values.as_ref().unwrap();
+        for bin in [0, n_points - 1] {
+            let sum: f64 = values[lut.row_ptr[bin]..lut.row_ptr[bin + 1]].iter().sum();
+            assert_eq!(
+                sum,
+                expected_bins[bin] as f64 / (n_ss * n_ss) as f64,
+                "bin {bin}"
+            );
+        }
+    }
 }
 
 /// Build a supersampled 2D CSR LUT using an explicit azimuthal binning definition.
@@ -512,7 +589,7 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
             );
             let ab =
                 histogram::get_bin_wrapped(azimuth, min_azimuthal, azimuthal_step, n_azimuthal);
-            ab * n_radial + rb
+            Some(ab * n_radial + rb)
         });
 
     Lut2d {

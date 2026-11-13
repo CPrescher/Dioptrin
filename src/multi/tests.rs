@@ -1050,3 +1050,65 @@ fn split_detector_merges_to_the_whole_detector_pattern_in_1d() {
         }
     }
 }
+
+/// Pixels entirely outside the radial range must not reach any bin, in
+/// particular not the first or last one, for one detector or several.
+#[test]
+fn pixels_outside_the_radial_range_do_not_leak_into_edge_bins() {
+    let (rows, cols, n) = (20, 20, 12);
+    let mut g = geometry(rows, cols);
+    g.poni.poni1 = -0.001;
+    g.poni.poni2 = -0.001;
+    // A second detector further out, entirely above the range.
+    let mut outside = g.clone();
+    outside.poni.poni1 = -0.006;
+    let outside = Geometry::new(rows, cols, outside.poni);
+    let (lo, hi) = (0.018, 0.034);
+    let (tth, _) = g.angular_corners();
+    let out_of_range: Vec<bool> = (0..g.size())
+        .map(|p| {
+            let r = g.corner_indices(p).map(|i| tth[i]);
+            r.iter().all(|&r| r < lo) || r.iter().all(|&r| r > hi)
+        })
+        .collect();
+    assert!(out_of_range.iter().filter(|&&o| o).count() > 50);
+    assert!(out_of_range.iter().filter(|&&o| !o).count() > 50);
+    let (tth_outside, _) = outside.angular_corners();
+    assert!(tth_outside.iter().all(|&r| r > hi));
+
+    let clean: Vec<_> = (0..g.size()).map(|i| 10.0 + (i % 13) as f64).collect();
+    let dirty: Vec<_> = clean
+        .iter()
+        .zip(&out_of_range)
+        .map(|(&v, &out)| if out { 1e6 } else { v })
+        .collect();
+    let bright = vec![1e6; rows * cols];
+    for method in methods().into_iter().chain([IntegrationMethod::PyfaiFull]) {
+        let ranged = |g: &Geometry| {
+            Integrator::new(g.clone())
+                .with_method(method)
+                .with_radial_range(lo, hi)
+        };
+        let (_, expected, expected_sigma) =
+            ranged(&g).integrate1d_with_errors_from_slice(&clean, rows, cols, n);
+        assert!(expected.iter().all(|&y| y > 0.0), "{method:?}");
+        let (_, single, single_sigma) =
+            ranged(&g).integrate1d_with_errors_from_slice(&dirty, rows, cols, n);
+        let multi = MultiIntegrator::new(vec![ranged(&g), ranged(&outside)]);
+        let (_, merged, merged_sigma) = multi
+            .integrate1d_with_errors_from_slices(&[(&clean, rows, cols), (&bright, rows, cols)], n);
+        for (name, got, want) in [
+            ("single intensity", &single, &expected),
+            ("single sigma", &single_sigma, &expected_sigma),
+            ("merged intensity", &merged, &expected),
+            ("merged sigma", &merged_sigma, &expected_sigma),
+        ] {
+            for (bin, (&got, &want)) in got.iter().zip(want).enumerate() {
+                assert!(
+                    (got - want).abs() <= 1e-12 * want.abs(),
+                    "{method:?} {name} bin {bin}: {got} != {want}"
+                );
+            }
+        }
+    }
+}

@@ -21,13 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polar quadrilateral. The 1D polygon builder now uses the same detector-plane
   sampling fallback as the shared-grid 2D and `pyfai_full` paths; before, the
   innermost bins could receive no weight from it at all.
-
 - `MultiIntegrator` 1D merging with `pixel_split` or `supersampled` gave every
   detector the same total weight in a bin, however many pixels it contributed
   there, because the 1D tables were normalized per bin. The tables
   (`build_lut1d_ps_csr*`, `build_lut1d_ss_csr*`) now hold plain pixel fractions,
-  so merged bins weight every pixel equally. Counting and `pyfai_full` merges
-  were already correct.
+  so merged bins weight every pixel by its in-range fraction. Counting and
+  `pyfai_full` tables were never normalized per bin.
+- 1D `counting` and `supersampled` with an explicit `radial_range`
+  (`build_lut1d_csr_with_range`, `build_lut1d_ss_csr_with_range`) moved pixels
+  and subpixels below the range into the first bin and those above it into the
+  last bin. They are now dropped, as `pixel_split` and `pyfai_full` already
+  did. A supersampled pixel partly outside the range keeps only its in-range
+  fraction. Integration without `radial_range` is not affected.
 
 ### Compatibility and validation
 
@@ -37,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rounding, but the raw sums (`integrate1d_raw*`: `sum_signal`, `sum_norm`,
   `sum_variance`, `count`) and the 1D table values are now on the pixel-fraction
   scale instead of normalized per bin.
+- **Behaviour change:** with an explicit `radial_range` that does not cover the
+  whole detector, the first and last bin of 1D `counting` and `supersampled`
+  patterns change, for one detector and for `MultiIntegrator`: they no longer
+  contain intensity from outside the range. A detector lying entirely outside
+  the shared range now contributes nothing to a merged pattern. The other bins
+  are unchanged.
 - **Behaviour change:** 1D `pixel_split` intensities and errors change
   slightly for every 1D path that uses the polygon table (ordinary, typed,
   fixed/dynamic plans, CSR/CSC layouts, batch and `MultiIntegrator` 1D). On the
@@ -44,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to pyFAI full splitting drops from 1.0e-3 to 1.2e-4, and to 3.4e-5 (maximum
   deviation 0.16σ, previously 4.8σ) when the two bins at each end of the range
   are left out; there the range-clipping conventions differ on purpose.
-  Counting, supersampled, `pyfai_full` and all 2D outputs are bit-identical.
+  The polygon change itself does not touch counting, supersampled,
+  `pyfai_full` or any 2D output.
   The legacy single-detector 2D polygon builder (`build_lut2d_ps_csr*`) is
   unchanged and still uses row-normalized polar areas.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for

@@ -231,11 +231,13 @@ it does not honor its `radial_range` as shared 2D edges. The new shared-grid
 raw Rust API below is available for one detector too. Legacy polygon 2D LUTs
 use row-normalized **areas**, rather than fractions of original pixel areas,
 so a nonuniform single-detector polygon cake can also differ from the new
-fractional path. Existing ordinary 2D and all 1D outputs are unchanged.
+fractional path. Existing ordinary 2D outputs are unchanged.
 
 1D `pixel_split` and `supersampled` tables hold fractions of each pixel and
 are not normalized per bin, so every pixel enters a merged 1D bin with its own
 weight regardless of how many pixels its detector contributes to that bin.
+Pixels, or the parts of pixels, outside `radial_range` are dropped by every 1D
+method; they are never moved into the first or last bin.
 
 ### Fallible Rust API
 
@@ -394,7 +396,7 @@ let (bins, intensity) = multi.integrate1d_from_slices(
 
 ## Choosing the Radial Range
 
-Choose `radial_range` to cover the desired combined angular range. For 2D, it may intentionally clip detector coverage. Include pixel corners/subsamples when full split-pixel coverage is required; bin centers are not exact detector limits. A quick 1D estimate is:
+Choose `radial_range` to cover the desired combined angular range. It may intentionally clip detector coverage, in 1D and 2D: whatever lies outside the range is left out. Include pixel corners/subsamples when full split-pixel coverage is required; bin centers are not exact detector limits. A quick 1D estimate is:
 
 ```python
 import dioptrin
