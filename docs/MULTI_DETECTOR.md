@@ -233,6 +233,10 @@ use row-normalized **areas**, rather than fractions of original pixel areas,
 so a nonuniform single-detector polygon cake can also differ from the new
 fractional path. Existing ordinary 2D and all 1D outputs are unchanged.
 
+1D `pixel_split` and `supersampled` tables hold fractions of each pixel and
+are not normalized per bin, so every pixel enters a merged 1D bin with its own
+weight regardless of how many pixels its detector contributes to that bin.
+
 ### Fallible Rust API
 
 ```rust

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 1D `pixel_split` (`IntegrationMethod::PixelSplit`, `build_lut1d_ps_csr`,
   `build_lut1d_ps_csr_with_range`) now weights every pixel by the **fraction
   of its own area** that falls into a radial bin (clipped polygon area divided
-  by the pixel's quadrilateral area) before the per-bin normalization. It
+  by the pixel's quadrilateral area). It
   previously used the clipped polar-plane area itself, which weighted pixels
   within one bin by roughly 1/r and biased bins towards their low-angle side.
   A pixel partly outside the radial range still contributes only its in-range
@@ -22,8 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sampling fallback as the shared-grid 2D and `pyfai_full` paths; before, the
   innermost bins could receive no weight from it at all.
 
+- `MultiIntegrator` 1D merging with `pixel_split` or `supersampled` gave every
+  detector the same total weight in a bin, however many pixels it contributed
+  there, because the 1D tables were normalized per bin. The tables
+  (`build_lut1d_ps_csr*`, `build_lut1d_ss_csr*`) now hold plain pixel fractions,
+  so merged bins weight every pixel equally. Counting and `pyfai_full` merges
+  were already correct.
+
 ### Compatibility and validation
 
+- **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
+  patterns change wherever detectors share a bin with unequal coverage.
+  Single-detector intensities and errors are unchanged up to floating-point
+  rounding, but the raw sums (`integrate1d_raw*`: `sum_signal`, `sum_norm`,
+  `sum_variance`, `count`) and the 1D table values are now on the pixel-fraction
+  scale instead of normalized per bin.
 - **Behaviour change:** 1D `pixel_split` intensities and errors change
   slightly for every 1D path that uses the polygon table (ordinary, typed,
   fixed/dynamic plans, CSR/CSC layouts, batch and `MultiIntegrator` 1D). On the

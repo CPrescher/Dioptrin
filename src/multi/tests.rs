@@ -997,3 +997,56 @@ fn explicit_variances_follow_squared_weights_and_detector_normalization() {
         );
     }
 }
+
+/// Cut one detector into an 3-row and a 17-row strip. The merged 1D pattern of
+/// the strips must equal the pattern of the whole detector: every pixel keeps
+/// its own weight, however many pixels its strip puts into a bin.
+#[test]
+fn split_detector_merges_to_the_whole_detector_pattern_in_1d() {
+    let (rows, cols, cut) = (20, 20, 3);
+    let mut whole = geometry(rows, cols);
+    whole.poni.poni1 = -0.001;
+    whole.poni.poni2 = -0.001;
+    let mut top = whole.clone();
+    top.dim1 = cut;
+    let mut bottom = whole.clone();
+    bottom.dim1 = rows - cut;
+    bottom.poni.poni1 -= cut as f64 * whole.poni.pixel1;
+    let top = Geometry::new(top.dim1, cols, top.poni);
+    let bottom = Geometry::new(bottom.dim1, cols, bottom.poni);
+
+    let data: Vec<_> = (0..rows * cols)
+        .map(|i| 10.0 + (i * 7 % 31) as f64 + 40.0 * (i / cols < cut) as u8 as f64)
+        .collect();
+    let (data_top, data_bottom) = data.split_at(cut * cols);
+    let n = 40;
+    let ranged = |g: Geometry, method| {
+        Integrator::new(g)
+            .with_method(method)
+            .with_radial_range(0.012, 0.046)
+    };
+    for method in methods() {
+        let (_, expected, expected_sigma) =
+            ranged(whole.clone(), method).integrate1d_with_errors_from_slice(&data, rows, cols, n);
+        let multi = MultiIntegrator::new(vec![
+            ranged(top.clone(), method),
+            ranged(bottom.clone(), method),
+        ]);
+        let slices = [(data_top, cut, cols), (data_bottom, rows - cut, cols)];
+        let (_, merged) = multi.integrate1d_from_slices(&slices, n);
+        let (_, merged_e, sigma) = multi.integrate1d_with_errors_from_slices(&slices, n);
+        assert!(expected.iter().filter(|&&y| y > 0.0).count() > 20);
+        for (name, got, want) in [
+            ("intensity", &merged, &expected),
+            ("intensity (errors path)", &merged_e, &expected),
+            ("sigma", &sigma, &expected_sigma),
+        ] {
+            for (bin, (&got, &want)) in got.iter().zip(want).enumerate() {
+                assert!(
+                    (got - want).abs() <= 1e-9 * want.abs().max(1.0),
+                    "{method:?} {name} bin {bin}: {got} != {want}"
+                );
+            }
+        }
+    }
+}

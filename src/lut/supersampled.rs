@@ -57,6 +57,7 @@ fn build_counted_csr<F>(
     geometry: &Geometry,
     n_ss: usize,
     n_bins: usize,
+    normalize_bins: bool,
     sample_bin: F,
 ) -> (Vec<usize>, Vec<usize>, Vec<f64>)
 where
@@ -119,7 +120,13 @@ where
     }
     for bin in 0..n_bins {
         if totals[bin] != 0 {
-            let denom = totals[bin] as f64;
+            // Per-bin totals for the 2D tables; the pixel's own sample count for
+            // 1D, so that a weight is the fraction of the pixel in the bin.
+            let denom = if normalize_bins {
+                totals[bin] as f64
+            } else {
+                (n_ss * n_ss) as f64
+            };
             for value in &mut values[row_ptr[bin]..row_ptr[bin + 1]] {
                 *value /= denom;
             }
@@ -129,6 +136,10 @@ where
 }
 
 /// Build a supersampled 1D CSR LUT directly (no HashMap in the public type).
+///
+/// A weight is the fraction of the pixel's `n_ss²` subpixels that fall into the
+/// bin. Bins (rows) are not normalized, so the raw sums of several detectors
+/// can be added.
 ///
 /// The `radial` array contains pixel center values in the selected radial unit.
 /// The `unit` parameter specifies the radial unit for proper subpixel conversion.
@@ -165,10 +176,11 @@ pub fn build_lut1d_ss_csr(
 
     let transform = geometry.subpixel_transform();
     let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
-    let (row_ptr, col_idx, values) = build_counted_csr(geometry, n_ss, n_points, |d1, d2| {
-        let radial = conversion.convert(transform.tth(d1, d2));
-        histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
-    });
+    let (row_ptr, col_idx, values) =
+        build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
+            let radial = conversion.convert(transform.tth(d1, d2));
+            histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
+        });
 
     Lut1d {
         row_ptr,
@@ -194,10 +206,11 @@ pub fn build_lut1d_ss_csr_with_range(
 
     let transform = geometry.subpixel_transform();
     let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
-    let (row_ptr, col_idx, values) = build_counted_csr(geometry, n_ss, n_points, |d1, d2| {
-        let radial = conversion.convert(transform.tth(d1, d2));
-        histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
-    });
+    let (row_ptr, col_idx, values) =
+        build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
+            let radial = conversion.convert(transform.tth(d1, d2));
+            histogram::get_bin_clamped(radial, hist_min, hist_step, n_points)
+        });
 
     Lut1d {
         row_ptr,
@@ -253,7 +266,7 @@ pub fn build_lut2d_ss_csr(
     let transform = geometry.subpixel_transform();
     let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
     let (row_ptr, col_idx, values) =
-        build_counted_csr(geometry, n_ss, n_radial * n_azimuthal, |d1, d2| {
+        build_counted_csr(geometry, n_ss, n_radial * n_azimuthal, true, |d1, d2| {
             let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
             let rb = histogram::get_bin_clamped(
                 conversion.convert(tth),
@@ -489,7 +502,7 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
     let transform = geometry.subpixel_transform();
     let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
     let (row_ptr, col_idx, values) =
-        build_counted_csr(geometry, n_ss, n_radial * n_azimuthal, |d1, d2| {
+        build_counted_csr(geometry, n_ss, n_radial * n_azimuthal, true, |d1, d2| {
             let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
             let rb = histogram::get_bin_clamped(
                 conversion.convert(tth),

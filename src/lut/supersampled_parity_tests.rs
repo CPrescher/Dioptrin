@@ -70,7 +70,8 @@ mod legacy {
                 bin_total += cnt;
             }
             if bin_total > 0 {
-                let denom = bin_total as f64;
+                // 1D weights are pixel fractions, not normalized per bin.
+                let denom = (n_ss * n_ss) as f64;
                 for w in &mut values[bin_start..] {
                     *w /= denom;
                 }
@@ -155,7 +156,8 @@ mod legacy {
                 bin_total += cnt;
             }
             if bin_total > 0 {
-                let denom = bin_total as f64;
+                // 1D weights are pixel fractions, not normalized per bin.
+                let denom = (n_ss * n_ss) as f64;
                 for w in &mut values[bin_start..] {
                     *w /= denom;
                 }
