@@ -40,7 +40,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::frame::{Frame, TiffFrame};
-use crate::integration::Integrator;
+use crate::integration::{IntegrationMethod, Integrator};
 
 mod file_workers;
 #[cfg(feature = "python")]
@@ -68,6 +68,21 @@ pub trait IntegrationTask: Send + Sync {
     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
         self.execute(integrator, &frame.to_frame())
     }
+
+    /// The `Integrator::integrate2d*` method this task calls, if it is a 2D
+    /// task. The batch helpers use it to reject the Histogram method, which
+    /// has no 2D binning, with one error per input instead of a worker panic.
+    fn integrate2d_method(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Error message for a task the integrator's method cannot run: a 2D task
+/// with the Histogram method. Matches the `integrate2d*` panic message.
+fn rejection<T: IntegrationTask>(integrator: &Integrator, task: &T) -> Option<String> {
+    let method = task.integrate2d_method()?;
+    matches!(integrator.method(), IntegrationMethod::Histogram)
+        .then(|| format!("{method} is not supported for Histogram method"))
 }
 
 /// 1D integration task without error propagation.
@@ -144,6 +159,9 @@ impl IntegrationTask for Integration2D {
             .integrate_tiff2d::<false>(frame, self.n_radial, self.n_azimuthal, None)
             .0
     }
+    fn integrate2d_method(&self) -> Option<&'static str> {
+        Some("integrate2d")
+    }
 }
 
 /// 2D integration task with per-bin error estimation.
@@ -163,6 +181,9 @@ impl IntegrationTask for Integration2DWithErrors {
     }
     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
         integrator.integrate_tiff2d::<true>(frame, self.n_radial, self.n_azimuthal, None)
+    }
+    fn integrate2d_method(&self) -> Option<&'static str> {
+        Some("integrate2d_with_errors")
     }
 }
 
@@ -202,6 +223,9 @@ impl IntegrationTask for Integration2DWithAzimuthalRange {
             )
             .0
     }
+    fn integrate2d_method(&self) -> Option<&'static str> {
+        Some("integrate2d_with_azimuthal_range")
+    }
 }
 
 /// 2D integration with azimuthal range restriction and error estimation.
@@ -237,6 +261,9 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
             self.n_azimuthal,
             Some((self.azimuthal_min, self.azimuthal_max)),
         )
+    }
+    fn integrate2d_method(&self) -> Option<&'static str> {
+        Some("integrate2d_with_azimuthal_range_and_errors")
     }
 }
 
@@ -287,6 +314,10 @@ impl IntegrationTask for Integration2DOnAzimuthalRange {
 ///
 /// Vector of `(filename, Result<Output>)` pairs in the same order as input filenames.
 ///
+/// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
+/// integrator using `IntegrationMethod::Histogram` is not run: every input gets
+/// `Err("<integrate2d method> is not supported for Histogram method")`.
+///
 /// # Notes
 ///
 /// - Each worker gets its own Rayon thread pool with `num_threads` threads
@@ -325,6 +356,12 @@ pub fn process_files<T>(
 where
     T: IntegrationTask + Clone + 'static,
 {
+    if let Some(message) = rejection(&integrator, &task) {
+        return filenames
+            .iter()
+            .map(|f| (f.clone(), Err(message.clone())))
+            .collect();
+    }
     let num_workers = num_workers.max(1);
     let num_files = filenames.len();
 
@@ -401,6 +438,10 @@ where
 /// * `integrator` - Integrator instance to use
 /// * `task` - Integration task defining which method to use
 ///
+/// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
+/// integrator using `IntegrationMethod::Histogram` is not run: every input gets
+/// `Err("<integrate2d method> is not supported for Histogram method")`.
+///
 /// # Examples
 ///
 /// ```
@@ -429,6 +470,12 @@ pub fn process_files_sequential<T>(
 where
     T: IntegrationTask,
 {
+    if let Some(message) = rejection(integrator, &task) {
+        return filenames
+            .iter()
+            .map(|f| (f.clone(), Err(message.clone())))
+            .collect();
+    }
     let mut results = Vec::new();
 
     for filename in filenames {
@@ -493,6 +540,10 @@ impl<T> StreamingBatch<T> {
 /// # Returns
 ///
 /// A `StreamingBatch` that yields `(filename, Result<Output>)` pairs as they complete.
+///
+/// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
+/// integrator using `IntegrationMethod::Histogram` is not run: every input gets
+/// `Err("<integrate2d method> is not supported for Histogram method")`.
 pub fn process_files_streaming<T>(
     filenames: &[String],
     integrator: Arc<Integrator>,
@@ -510,6 +561,19 @@ where
 
     #[allow(clippy::type_complexity)]
     let (tx, rx): (Sender<(usize, String, Result<T::Output, String>)>, _) = mpsc::channel();
+
+    if let Some(message) = rejection(&integrator, &task) {
+        for (index, filename) in filenames.iter().enumerate() {
+            let _ = tx.send((index, filename.clone(), Err(message.clone())));
+        }
+        completed.store(num_files, Ordering::Relaxed);
+        return StreamingBatch {
+            receiver: rx,
+            total_files: num_files,
+            completed,
+            handles: Vec::new(),
+        };
+    }
 
     // Distribute files across workers
     let chunk_size = num_files.div_ceil(num_workers).max(1);
@@ -600,6 +664,10 @@ pub enum WorkItem {
 ///
 /// A `StreamingBatch` that yields `(name, Result<Output>)` pairs as they complete.
 /// The `total_files` field is set to 0 since the total is unknown for queue-based input.
+///
+/// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
+/// integrator using `IntegrationMethod::Histogram` is not run: every input gets
+/// `Err("<integrate2d method> is not supported for Histogram method")`.
 pub fn process_queue_streaming<T>(
     work_rx: std::sync::mpsc::Receiver<WorkItem>,
     integrator: Arc<Integrator>,
@@ -619,6 +687,9 @@ where
 
     let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
     let mut handles = Vec::new();
+    // Queue input is consumed lazily, so a rejected task answers each item
+    // with this error instead of integrating it.
+    let rejected = rejection(&integrator, &task);
 
     for _ in 0..num_workers {
         let integrator = Arc::clone(&integrator);
@@ -626,6 +697,7 @@ where
         let tx = tx.clone();
         let completed = Arc::clone(&completed);
         let work_rx = Arc::clone(&work_rx);
+        let rejected = rejected.clone();
 
         let handle = thread::spawn(move || {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -655,8 +727,12 @@ where
                     }
                 };
 
-                let (index, name, result) = match item {
-                    WorkItem::Path { index, path } => {
+                let (index, name, result) = match (item, rejected.as_deref()) {
+                    (
+                        WorkItem::Path { index, path: name } | WorkItem::Frame { index, name, .. },
+                        Some(message),
+                    ) => (index, name, Err(message.to_owned())),
+                    (WorkItem::Path { index, path }, None) => {
                         let name = path.clone();
                         let result = pool.install(|| match path_frame.reload_from_tiff(path) {
                             Ok(()) => Ok(task.execute(&integrator, &path_frame)),
@@ -664,7 +740,7 @@ where
                         });
                         (index, name, result)
                     }
-                    WorkItem::Frame { index, name, frame } => {
+                    (WorkItem::Frame { index, name, frame }, None) => {
                         let result = pool.install(|| Ok(task.execute(&integrator, &frame)));
                         (index, name, result)
                     }
@@ -891,5 +967,130 @@ mod tests {
         let (intensity, errors) = task_2d_errors.execute(&integrator, &frame);
         assert_eq!(intensity.len(), 6);
         assert_eq!(errors.len(), 6);
+    }
+
+    /// Writes `n` small TIFFs and returns their paths.
+    fn write_tiffs(tag: &str, n: usize) -> Vec<String> {
+        use tiff::encoder::{TiffEncoder, colortype};
+        (0..n)
+            .map(|i| {
+                let path = std::env::temp_dir().join(format!(
+                    "dioptrin-batch-{tag}-{}-{i}.tif",
+                    std::process::id()
+                ));
+                let mut enc = TiffEncoder::new(std::fs::File::create(&path).unwrap()).unwrap();
+                enc.write_image::<colortype::Gray16>(3, 3, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+                    .unwrap();
+                path.to_str().unwrap().to_owned()
+            })
+            .collect()
+    }
+
+    /// Every batch helper answers a 2D task with the Histogram method with one
+    /// error per input. Before, `process_files` and both streaming helpers
+    /// lost the inputs to worker panics and returned nothing.
+    fn check_histogram_2d_rejected<T>(task: T, expected: &str)
+    where
+        T: IntegrationTask + Clone + 'static,
+        T::Output: 'static,
+    {
+        let files = write_tiffs(expected, 4);
+        let integrator = Arc::new(
+            Integrator::new(Geometry::new(3, 3, test_poni()))
+                .with_method(IntegrationMethod::Histogram),
+        );
+        let check = |helper: &str, mut results: Vec<(usize, String, Result<T::Output, String>)>| {
+            assert_eq!(results.len(), files.len(), "{helper}");
+            results.sort_by_key(|r| r.0);
+            for (i, (index, name, result)) in results.into_iter().enumerate() {
+                assert_eq!((index, &name), (i, &files[i]), "{helper}");
+                assert_eq!(result.err().as_deref(), Some(expected), "{helper}");
+            }
+        };
+        let indexed = |v: Vec<(String, Result<T::Output, String>)>| {
+            v.into_iter()
+                .enumerate()
+                .map(|(i, (name, r))| (i, name, r))
+                .collect()
+        };
+
+        let results = process_files(&files, Arc::clone(&integrator), task.clone(), 2, 1);
+        check("process_files", indexed(results));
+        let results = process_files_sequential(&files, &integrator, task.clone());
+        check("process_files_sequential", indexed(results));
+        let batch = process_files_streaming(&files, Arc::clone(&integrator), task.clone(), 2, 1);
+        assert_eq!((batch.total(), batch.completed()), (4, 4));
+        check("process_files_streaming", batch.into_iter().collect());
+        let (work_tx, work_rx) = mpsc::channel();
+        for (index, path) in files.iter().enumerate() {
+            work_tx
+                .send(WorkItem::Path {
+                    index,
+                    path: path.clone(),
+                })
+                .unwrap();
+        }
+        drop(work_tx);
+        let batch = process_queue_streaming(work_rx, integrator, task, 2, 1);
+        check("process_queue_streaming", batch.into_iter().collect());
+        for file in files {
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+
+    #[test]
+    fn batch_helpers_reject_histogram_for_every_2d_task() {
+        let (n_radial, n_azimuthal) = (5, 4);
+        let (azimuthal_min, azimuthal_max) = (0.0, 0.5);
+        check_histogram_2d_rejected(
+            Integration2D {
+                n_radial,
+                n_azimuthal,
+            },
+            "integrate2d is not supported for Histogram method",
+        );
+        check_histogram_2d_rejected(
+            Integration2DWithErrors {
+                n_radial,
+                n_azimuthal,
+            },
+            "integrate2d_with_errors is not supported for Histogram method",
+        );
+        check_histogram_2d_rejected(
+            Integration2DWithAzimuthalRange {
+                n_radial,
+                n_azimuthal,
+                azimuthal_min,
+                azimuthal_max,
+            },
+            "integrate2d_with_azimuthal_range is not supported for Histogram method",
+        );
+        check_histogram_2d_rejected(
+            Integration2DWithAzimuthalRangeAndErrors {
+                n_radial,
+                n_azimuthal,
+                azimuthal_min,
+                azimuthal_max,
+            },
+            "integrate2d_with_azimuthal_range_and_errors is not supported for Histogram method",
+        );
+    }
+
+    #[test]
+    fn batch_helpers_still_run_1d_histogram_tasks() {
+        let files = write_tiffs("hist1d", 3);
+        let integrator = Arc::new(
+            Integrator::new(Geometry::new(3, 3, test_poni()))
+                .with_method(IntegrationMethod::Histogram),
+        );
+        let results = process_files(&files, integrator, Integration1D { n_bins: 4 }, 2, 1);
+        assert_eq!(results.len(), 3);
+        for (_, result) in results {
+            let (x, y) = result.unwrap();
+            assert_eq!((x.len(), y.len()), (4, 4));
+        }
+        for file in files {
+            std::fs::remove_file(file).unwrap();
+        }
     }
 }

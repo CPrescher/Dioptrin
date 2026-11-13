@@ -20,24 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Python `Integrator.integrate2d`, `batch2d` and `batch2d_iter` (path and
-  array input, with and without errors) passed the documented
-  `azimuthal_range=(min, max)` to Rust as (first-bin centre, step), so
-  `(0, 1.57)` with 90 bins put the whole circle into five bins of 1.57 rad.
-  They now integrate the true range: the bins split `[min, max)` evenly, pixels
-  outside are left out, and `result.azimuthal` holds the bin centres. Invalid
-  ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
-  `ValueError`; batches check before starting.
-  Non-finite pixels behave as without a range: they make only the bins they
-  contribute to NaN or infinite. With counting, the pixel at the largest radial
-  value lands in the last bin as on the default path, also for units whose
-  maximum is large (2θ in degrees, q in nm⁻¹).
-  With `pyfai_full`, individual sector bins depend on how the range is
-  written: on the CeO2 Pilatus 1M image (300×72 bins, 2θ in degrees),
-  `(2.5, 2.5 + π/2)` and the same range shifted by −2π differ in 276 of 21,600
-  bins (up to 2θ ≈ 27°, by up to about 100% relative), because the pyFAI-style
-  splitting places each pixel polygon relative to the range start. `pixel_split`
-  differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
 - 1D `pixel_split` (`IntegrationMethod::PixelSplit`, `build_lut1d_ps_csr`,
   `build_lut1d_ps_csr_with_range`) now weights every pixel by the **fraction
   of its own area** that falls into a radial bin (clipped polygon area divided
@@ -72,9 +54,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before. `histogram_parallel`, which the integrator does not use, did not
   panic in that case but silently lost the sixteenth of the data that contained
   the maximum; it now returns the complete result.
+- 2D `counting` and `supersampled` without an explicit azimuthal range
+  (`build_lut2d_csr`, `build_lut2d_ss_csr`) wrapped pixels and subpixels at or
+  slightly beyond the top of the automatic azimuthal grid into the first
+  azimuthal bin; they now go to the last. Values reach that point by rounding
+  to bin index `n_azimuthal`, or, on detectors rotated about the beam, by
+  interior subpixels lying above the grid maximum by a small fraction of a
+  bin. Counting 2D is not affected on real geometries (the range padding
+  covers radian azimuths). Supersampled 2D changes the first and last
+  azimuthal bin at one radius, e.g. one subpixel at +π on the `v1.poni`
+  Pilatus 1M geometry; every other table entry is unchanged. The
+  `_with_azimuthal_range` variants still wrap periodically.
+- `math::histogram::histogram_parallel` never binned the last `len % 16`
+  values (and returned all NaN for fewer than 16 values) because it split the
+  input into 16 equal chunks and dropped the remainder. It now bins every
+  value with rayon, without copying the input or silently swallowing worker
+  panics, and keeps at most 32 partial histograms whatever the input length.
+  Bins and counts match `histogram`; the bin sums hold the same terms but
+  are added in a different order, so they can differ by floating-point
+  rounding (relatively more where weights within a bin nearly cancel). The
+  result is now identical from run to run and for any thread count.
+- `IntegrationMethod::Histogram` in 2D (every `Integrator::integrate2d*`
+  method, the typed TIFF 2D path, the `batch` helpers with a 2D task, and
+  Python `integrate2d`, `batch2d` and `batch2d_iter`) ignored `n_azimuthal`
+  and the azimuthal range and returned the 1D radial profile: `n_radial`
+  values instead of `n_radial * n_azimuthal`, which could not be reshaped
+  into a cake (or was silently reshaped to a single row). Histogram has no
+  azimuthal binning, so the `integrate2d*` methods now panic with
+  "`<method>` is not supported for Histogram method"; `batch::process_files`,
+  `process_files_sequential`, `process_files_streaming` and
+  `process_queue_streaming` return that message as an `Err` for every input
+  without integrating; and Python raises `ValueError` before any work starts.
+  1D Histogram integration is unchanged.
+- Python `Integrator.integrate2d`, `batch2d` and `batch2d_iter` (path and
+  array input, with and without errors) passed the documented
+  `azimuthal_range=(min, max)` to Rust as (first-bin centre, step), so
+  `(0, 1.57)` with 90 bins put the whole circle into five bins of 1.57 rad.
+  They now integrate the true range: the bins split `[min, max)` evenly, pixels
+  outside are left out, and `result.azimuthal` holds the bin centres. Invalid
+  ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
+  `ValueError`; batches check before starting.
+  Non-finite pixels behave as without a range: they make only the bins they
+  contribute to NaN or infinite. With counting, the pixel at the largest radial
+  value lands in the last bin as on the default path, also for units whose
+  maximum is large (2θ in degrees, q in nm⁻¹).
+  With `pyfai_full`, individual sector bins depend on how the range is
+  written: on the CeO2 Pilatus 1M image (300×72 bins, 2θ in degrees),
+  `(2.5, 2.5 + π/2)` and the same range shifted by −2π differ in 276 of 21,600
+  bins (up to 2θ ≈ 27°, by up to about 100% relative), because the pyFAI-style
+  splitting places each pixel polygon relative to the range start. `pixel_split`
+  differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
 
 ### Compatibility and validation
 
+- **Behaviour change:** 2D integration with the Histogram method now fails
+  instead of returning a 1D profile; use `counting`, `pixel_split`,
+  `pyfai_full` or `supersampled` for 2D. `IntegrationTask` has a new provided
+  method, `integrate2d_method`, which the built-in 2D tasks override; custom
+  tasks are unaffected.
 - **Behaviour change:** Python `Integrator` 2D calls with an explicit
   `azimuthal_range` return different cakes. Ranges used to be read as (first-bin
   centre, step); they are now true `(min, max)` ranges, sectors included, so

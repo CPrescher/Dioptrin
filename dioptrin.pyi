@@ -390,6 +390,10 @@ class Integrator:
             IntegrationResult with flat intensity (and optional errors) sized
             n_radial * n_azimuthal
 
+        Raises:
+            ValueError: If the integrator uses the "histogram" method, which has
+                no azimuthal binning
+
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> # From file
@@ -629,6 +633,10 @@ class Integrator:
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
 
+        Raises:
+            ValueError: If the integrator uses the "histogram" method, which has
+                no azimuthal binning
+
         Example:
             >>> # Full 2D integration
             >>> results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
@@ -680,6 +688,10 @@ class Integrator:
             BatchIterator that yields BatchResult objects as they complete.
             The iterator has `total`, `completed`, and `progress` properties.
             When using a generator, `total` is 0 and `progress` returns None.
+
+        Raises:
+            ValueError: If the integrator uses the "histogram" method, which has
+                no azimuthal binning
 
         Example:
             >>> # With a list

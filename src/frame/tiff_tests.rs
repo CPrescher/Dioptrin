@@ -87,6 +87,10 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
                         let actual = ai.integrate_tiff1d::<false>(&typed, 7);
                         same(&expected.0, &actual.0);
                         same(&expected.1, &actual.1);
+                        // Histogram has no 2D binning; its rejection is tested below.
+                        if matches!(method, IntegrationMethod::Histogram) {
+                            continue;
+                        }
                         for az in [None, Some((-0.3, 0.7))] {
                             let expected = if let Some((a, b)) = az {
                                 ai.integrate2d_with_azimuthal_range_and_errors(
@@ -155,4 +159,31 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
     assert!(typed.reload("/no/such/dioptrin-image.tif").is_err());
     typed.reload(path.to_str().unwrap()).unwrap();
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "is not supported for Histogram method")]
+fn typed_tiff_2d_rejects_histogram() {
+    let path = std::env::temp_dir().join(format!(
+        "dioptrin-typed-hist2d-{}-{}.tif",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let mut enc = TiffEncoder::new(File::create(&path).unwrap()).unwrap();
+        enc.write_image::<colortype::Gray16>(3, 3, &[1u16, 2, 3, 4, 5, 6, 7, 8, 9])
+            .unwrap();
+    }
+    let mut typed = TiffFrame::default();
+    typed.reload(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let mut p = Poni::new();
+    p.pixel1 = 0.1;
+    p.pixel2 = 0.1;
+    p.distance = 1.0;
+    let ai = Integrator::new(Geometry::new(3, 3, p)).with_method(IntegrationMethod::Histogram);
+    let _ = ai.integrate_tiff2d::<false>(&typed, 5, 4, None);
 }

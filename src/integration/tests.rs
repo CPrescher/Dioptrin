@@ -1392,3 +1392,99 @@ fn histogram_method_keeps_the_outermost_pixel_in_range() {
         }
     }
 }
+
+/// Histogram has no azimuthal binning. Every 2D entry point used to return the
+/// 1D radial profile (`n_radial` values instead of `n_radial * n_azimuthal`);
+/// they now panic with a clear message instead.
+#[test]
+fn histogram_method_is_rejected_by_every_2d_entry_point() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let (rows, cols) = (8, 9);
+    let mut poni = Poni::new();
+    poni.pixel1 = 0.1;
+    poni.pixel2 = 0.1;
+    poni.distance = 1.0;
+    poni.poni1 = 0.4;
+    poni.poni2 = 0.45;
+    let data: Vec<f64> = (0..rows * cols).map(|i| 1.0 + (i % 5) as f64).collect();
+    let frame = Frame {
+        name: "hist2d".into(),
+        data: data.clone(),
+        dim1: rows,
+        dim2: cols,
+    };
+    let integrator =
+        Integrator::new(Geometry::new(rows, cols, poni)).with_method(IntegrationMethod::Histogram);
+    let (nr, na, start, step) = (6, 4, 0.0, PI / 2.0);
+
+    type Call<'a> = (&'a str, Box<dyn Fn() + 'a>);
+    let it = &integrator;
+    let (f, d) = (&frame, &data);
+    let calls: Vec<Call> = vec![
+        (
+            "integrate2d",
+            Box::new(move || drop(it.integrate2d(f, nr, na))),
+        ),
+        (
+            "integrate2d_from_slice",
+            Box::new(move || drop(it.integrate2d_from_slice(d, rows, cols, nr, na))),
+        ),
+        (
+            "integrate2d_with_azimuthal_range",
+            Box::new(move || {
+                drop(it.integrate2d_with_azimuthal_range(f, nr, na, start, step));
+            }),
+        ),
+        (
+            "integrate2d_with_azimuthal_range_from_slice",
+            Box::new(move || {
+                drop(it.integrate2d_with_azimuthal_range_from_slice(
+                    d, rows, cols, nr, na, start, step,
+                ));
+            }),
+        ),
+        (
+            "integrate2d_with_errors",
+            Box::new(move || drop(it.integrate2d_with_errors(f, nr, na))),
+        ),
+        (
+            "integrate2d_with_errors_from_slice",
+            Box::new(move || drop(it.integrate2d_with_errors_from_slice(d, rows, cols, nr, na))),
+        ),
+        (
+            "integrate2d_with_azimuthal_range_and_errors",
+            Box::new(move || {
+                drop(it.integrate2d_with_azimuthal_range_and_errors(f, nr, na, start, step));
+            }),
+        ),
+        (
+            "integrate2d_with_azimuthal_range_and_errors_from_slice",
+            Box::new(move || {
+                drop(it.integrate2d_with_azimuthal_range_and_errors_from_slice(
+                    d, rows, cols, nr, na, start, step,
+                ));
+            }),
+        ),
+    ];
+    for (name, call) in calls {
+        let payload = catch_unwind(AssertUnwindSafe(call))
+            .expect_err(&format!("{name} accepted the Histogram method"));
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default();
+        assert_eq!(
+            message,
+            format!("{name} is not supported for Histogram method")
+        );
+    }
+
+    // 1D Histogram integration is unaffected.
+    let (x, y) = integrator.integrate1d(&frame, nr);
+    assert_eq!((x.len(), y.len()), (nr, nr));
+    assert!(y.iter().any(|&v| v > 0.0));
+    let (x, y, sigma) = integrator.integrate1d_with_errors_from_slice(&data, rows, cols, nr);
+    assert_eq!((x.len(), y.len(), sigma.len()), (nr, nr, nr));
+}
