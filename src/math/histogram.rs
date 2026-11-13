@@ -21,7 +21,10 @@ pub fn histogram(
     let mut count = vec![0.0; n_points];
 
     // calculate bin index for each data point
-    let index: Vec<usize> = data.par_iter().map(|x| get_bin(*x, min, step)).collect();
+    let index: Vec<usize> = data
+        .par_iter()
+        .map(|x| get_bin_clamped(*x, min, step, n_points))
+        .collect();
 
     // Calulate the histogram
     match mask {
@@ -74,7 +77,10 @@ pub fn histogram_with_errors(
     let mut sum_var = vec![0.0; n_points];
     let mut count = vec![0usize; n_points];
 
-    let index: Vec<usize> = data.par_iter().map(|x| get_bin(*x, min, step)).collect();
+    let index: Vec<usize> = data
+        .par_iter()
+        .map(|x| get_bin_clamped(*x, min, step, n_points))
+        .collect();
 
     match mask {
         Some(mask) => {
@@ -148,14 +154,14 @@ pub fn histogram_parallel(
                         if mask_thread[i] != 0 {
                             continue;
                         }
-                        let index = get_bin(*y, min, step);
+                        let index = get_bin_clamped(*y, min, step, n_points);
                         sum_thread[index] += weights_thread[i];
                         count_thread[index] += 1.0;
                     }
                 }
                 None => {
                     for (i, y) in data_thread.iter().enumerate() {
-                        let index = get_bin(*y, min, step);
+                        let index = get_bin_clamped(*y, min, step, n_points);
                         sum_thread[index] += weights_thread[i];
                         count_thread[index] += 1.0;
                     }
@@ -195,7 +201,9 @@ pub fn histogram_parallel(
 
 /// Calculates the bin index for a value in a histogram
 /// min is the min value of the data, step is the bin width
-/// Note: This can return an index >= n_bins if value >= max; caller should clamp if needed
+/// Note: This can return an index >= n_bins if value >= max, and even for the
+/// maximum of the data a grid was derived from, because `(max - min) / step`
+/// can round to `n_bins`. Use [`get_bin_clamped`] to index a histogram.
 pub fn get_bin(value: f64, min: f64, step: f64) -> usize {
     ((value - min) / step) as usize
 }
@@ -267,4 +275,45 @@ pub fn bins(n_points: usize, min: f64, step: f64) -> Vec<f64> {
     (0..n_points)
         .map(|i| min + ((i as f64) + 0.5) * step)
         .collect::<Vec<f64>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Evenly spaced values from 1 to `hi`; the last one is the maximum, which
+    /// can round to bin index `n_points` once `hi` is too large for the
+    /// epsilon padding of the range to have any effect.
+    fn ramp(hi: f64, len: usize) -> Vec<f64> {
+        (0..len)
+            .map(|i| 1.0 + (hi - 1.0) * i as f64 / (len - 1) as f64)
+            .collect()
+    }
+
+    #[test]
+    fn maximum_value_lands_in_the_last_bin() {
+        let len = 4800; // a multiple of histogram_parallel's 16 threads
+        for hi in [3.0, 30.8, 60.0, 1234.5] {
+            let data = ramp(hi, len);
+            // Mark the maximum so that the bin holding it is recognizable.
+            let mut weights = vec![1.0; len];
+            weights[len - 1] = 1e6;
+            let variances = vec![1.0; len];
+            let mask = vec![0u8; len];
+            for n in [7, 100, 1000, 1500, 3000] {
+                for mask in [None, Some(mask.as_slice())] {
+                    let (_, y) = histogram(&data, &weights, n, mask);
+                    let (_, y_err, sigma) =
+                        histogram_with_errors(&data, &weights, &variances, n, mask);
+                    let (_, y_par) = histogram_parallel(&data, &weights, n, mask);
+                    for y in [&y, &y_err, &y_par] {
+                        assert_eq!(y.len(), n);
+                        assert!(y[n - 1] > 1e3, "hi {hi}, n {n}: {}", y[n - 1]);
+                        assert!(y[..n - 1].iter().all(|&v| v <= 1.0), "hi {hi}, n {n}");
+                    }
+                    assert!(sigma[n - 1] > 0.0, "hi {hi}, n {n}");
+                }
+            }
+        }
+    }
 }

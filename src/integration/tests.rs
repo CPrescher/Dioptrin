@@ -1369,3 +1369,23 @@ fn polarization_setter_reuses_unchanged_corrections_and_updates_changed_factors(
         }
     }
 }
+
+/// The outermost pixel can round to bin index `n_points`; it belongs to the last
+/// bin. The Histogram method used to index out of bounds here.
+#[test]
+fn histogram_method_keeps_the_outermost_pixel_in_range() {
+    let (rows, cols) = (1043, 981);
+    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+    let data = vec![1.0; rows * cols];
+    for n in [1000, 1500, 2000, 3000] {
+        for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
+            let integrator = Integrator::new(Geometry::new(rows, cols, poni.clone()))
+                .with_method(IntegrationMethod::Histogram)
+                .with_radial_unit(unit);
+            let (x, y) = integrator.integrate1d_from_slice(&data, rows, cols, n);
+            assert_eq!((x.len(), y.len()), (n, n));
+            let (_, y, sigma) = integrator.integrate1d_with_errors_from_slice(&data, rows, cols, n);
+            assert_eq!((y.len(), sigma.len()), (n, n));
+        }
+    }
+}
