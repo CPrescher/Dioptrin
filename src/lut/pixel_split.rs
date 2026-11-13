@@ -5,8 +5,9 @@ use std::f64::consts::PI;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::geometry::Geometry;
-use crate::integration::RadialUnit;
+use crate::integration::{IntegrationGrid2d, RadialUnit};
 use crate::lut::counting_csr::{Lut1d, Lut2d};
+use crate::lut::pyfai_1d;
 use crate::math::{self, histogram};
 
 /// Compute the signed area of a polygon given as (x, y) vertices.
@@ -173,11 +174,202 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
     a
 }
 
+/// Per-bin `(pixel, fraction)` contributions of the 1D polygon builders,
+/// before the per-bin normalization applied by the public builders.
+///
+/// `fraction = area(pixel ∩ bin) / area(pixel)`, both measured on the pixel's
+/// quadrilateral in (radial, azimuth) space, so a pixel that lies completely
+/// inside the radial range contributes a total weight of one, independent of
+/// its distance from the beam. A pixel partly outside `[min, min + n·step)`
+/// keeps only its in-range fraction. Pixels that contain or touch the point of
+/// normal incidence have no single polar quadrilateral; they use the same
+/// detector-plane sampling as the shared-grid 2D and pyFAI-compatible paths.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lut1d_ps_fractions(
+    geometry: &Geometry,
+    radial: &[f64],
+    n_points: usize,
+    unit: RadialUnit,
+    min: f64,
+    step: f64,
+    radial_corners: &[f64],
+    azimuthal_corners: &[f64],
+) -> Vec<Vec<(usize, f64)>> {
+    let azimuthal = geometry.calc_azimuth_all();
+    // Only used for singular beam pixels; an unrepresentable grid (for example a
+    // degenerate range) falls back to the polygon for those pixels as before.
+    let sample_grid =
+        IntegrationGrid2d::new(n_points, 1, (min, min + n_points as f64 * step), (-PI, PI)).ok();
+
+    // Single pass: build per-row buckets in parallel, then flatten to CSR.
+    let (buckets, _, _) = radial
+        .par_iter()
+        .enumerate()
+        .fold(
+            || {
+                (
+                    vec![Vec::<(usize, f64)>::new(); n_points],
+                    Vec::with_capacity(8),
+                    Vec::with_capacity(8),
+                )
+            },
+            |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
+                let [i00, i01, i11, i10] = geometry.corner_indices(idx);
+
+                let r00 = radial_corners[i00];
+                let r01 = radial_corners[i01];
+                let r10 = radial_corners[i10];
+                let r11 = radial_corners[i11];
+
+                if let Some(grid) = &sample_grid {
+                    let raw =
+                        [i00, i01, i11, i10].map(|i| (radial_corners[i], azimuthal_corners[i]));
+                    if pyfai_1d::singular(&raw) {
+                        for (bin, fraction) in pyfai_1d::sample(geometry, idx, unit, grid) {
+                            acc[bin].push((idx, fraction));
+                        }
+                        return (acc, buf1, buf2);
+                    }
+                }
+
+                let center_azimuthal = azimuthal[idx];
+                let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
+                let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
+                let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
+                let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
+
+                let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
+                let area_total = polygon_area(&poly).abs();
+                if area_total <= 0.0 {
+                    // Degenerate quadrilateral: assign the whole pixel to the bin
+                    // of its centre, or drop it if the centre is out of range.
+                    let pos = (center_radial - min) / step;
+                    if pos < 0.0 {
+                        return (acc, buf1, buf2);
+                    }
+                    let bin = pos.floor() as isize;
+                    if bin >= 0 && (bin as usize) < n_points {
+                        acc[bin as usize].push((idx, 1.0));
+                    }
+                    return (acc, buf1, buf2);
+                }
+
+                let mut rmin = r00;
+                let mut rmax = r00;
+                for v in [r01, r10, r11] {
+                    if v < rmin {
+                        rmin = v;
+                    }
+                    if v > rmax {
+                        rmax = v;
+                    }
+                }
+
+                let mut start = ((rmin - min) / step).floor() as isize;
+                let mut end = ((rmax - min) / step).floor() as isize;
+                if end < 0 || start >= n_points as isize {
+                    return (acc, buf1, buf2);
+                }
+                if start < 0 {
+                    start = 0;
+                }
+                if end >= n_points as isize {
+                    end = n_points as isize - 1;
+                }
+
+                let mut amin = a00;
+                let mut amax = a00;
+                for v in [a01, a10, a11] {
+                    if v < amin {
+                        amin = v;
+                    }
+                    if v > amax {
+                        amax = v;
+                    }
+                }
+
+                for b in start..=end {
+                    let bin_min = min + b as f64 * step;
+                    let bin_max = bin_min + step;
+                    let clipped = clip_polygon_rect_scratch(
+                        &poly, bin_min, bin_max, amin, amax, &mut buf1, &mut buf2,
+                    );
+                    let area = polygon_area(clipped).abs();
+                    if area > 0.0 {
+                        // Fraction of this pixel, not polar-plane area: areas of
+                        // different pixels are not comparable (they scale ~1/r).
+                        acc[b as usize].push((idx, area / area_total));
+                    }
+                }
+                (acc, buf1, buf2)
+            },
+        )
+        .reduce(
+            || {
+                (
+                    vec![Vec::<(usize, f64)>::new(); n_points],
+                    Vec::new(),
+                    Vec::new(),
+                )
+            },
+            |(mut a, _, _), (b, _, _)| {
+                for (row, mut v) in b.into_iter().enumerate() {
+                    a[row].append(&mut v);
+                }
+                (a, Vec::new(), Vec::new())
+            },
+        );
+    buckets
+}
+
+/// Flatten per-bin fractions to CSR and normalize each bin (row) to unit sum.
+fn lut1d_from_fractions(buckets: Vec<Vec<(usize, f64)>>, min: f64, step: f64) -> Lut1d {
+    let n_points = buckets.len();
+    // Prefix sum
+    let mut row_ptr = vec![0usize; n_points + 1];
+    for i in 0..n_points {
+        row_ptr[i + 1] = row_ptr[i] + buckets[i].len();
+    }
+    let total = *row_ptr.last().unwrap();
+    let mut col_idx = Vec::with_capacity(total);
+    let mut values = Vec::with_capacity(total);
+    for bucket in &buckets {
+        for (idx, val) in bucket {
+            col_idx.push(*idx);
+            values.push(*val);
+        }
+    }
+
+    // Normalize per row
+    for i in 0..n_points {
+        let (s, e) = (row_ptr[i], row_ptr[i + 1]);
+        let ssum: f64 = values[s..e].iter().sum();
+        if ssum > 0.0 {
+            for v in &mut values[s..e] {
+                *v /= ssum;
+            }
+        }
+    }
+
+    Lut1d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        hist_min: min,
+        hist_step: step,
+    }
+}
+
 /// Pixel-split CSR builders using full pixel splitting with unified LUT types.
 ///
 /// Uses pixel corner coordinates from `Geometry` to compute bin overlaps.
 /// The `radial` array contains pixel center values in the selected radial unit.
 /// The `unit` parameter specifies the radial unit for proper corner conversion.
+///
+/// Each pixel is weighted by the fraction of its own (radial, azimuth)
+/// quadrilateral that falls into a bin; each bin (row) is then normalized to
+/// unit sum. Pixels containing or touching the point of normal incidence use
+/// detector-plane sampling instead of a polar quadrilateral.
 ///
 /// Example (1D)
 /// ```
@@ -209,153 +401,30 @@ pub fn build_lut1d_ps_csr(
 
     let (tth_corners, azimuthal_corners) = geometry.angular_corners();
     let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
-    let azimuthal = geometry.calc_azimuth_all();
 
     let min = math::min(&radial_corners);
     let mut max = math::max(&radial_corners);
     max += 10.0 * f64::EPSILON;
     let step = (max - min) / n_points as f64;
 
-    // Single pass: build per-row buckets in parallel, then flatten to CSR.
-    let (buckets, _, _) = radial
-        .par_iter()
-        .enumerate()
-        .fold(
-            || {
-                (
-                    vec![Vec::<(usize, f64)>::new(); n_points],
-                    Vec::with_capacity(8),
-                    Vec::with_capacity(8),
-                )
-            },
-            |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
-                let [i00, i01, i11, i10] = geometry.corner_indices(idx);
-
-                let r00 = radial_corners[i00];
-                let r01 = radial_corners[i01];
-                let r10 = radial_corners[i10];
-                let r11 = radial_corners[i11];
-
-                let center_azimuthal = azimuthal[idx];
-                let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
-                let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
-                let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
-                let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
-
-                let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
-                let area_total = polygon_area(&poly).abs();
-                if area_total <= 0.0 {
-                    let pos = (center_radial - min) / step;
-                    if pos < 0.0 {
-                        return (acc, buf1, buf2);
-                    }
-                    let bin = pos.floor() as isize;
-                    if bin >= 0 && (bin as usize) < n_points {
-                        acc[bin as usize].push((idx, 1.0));
-                    }
-                    return (acc, buf1, buf2);
-                }
-
-                let mut rmin = r00;
-                let mut rmax = r00;
-                for v in [r01, r10, r11] {
-                    if v < rmin {
-                        rmin = v;
-                    }
-                    if v > rmax {
-                        rmax = v;
-                    }
-                }
-
-                let mut start = ((rmin - min) / step).floor() as isize;
-                let mut end = ((rmax - min) / step).floor() as isize;
-                if end < 0 || start >= n_points as isize {
-                    return (acc, buf1, buf2);
-                }
-                if start < 0 {
-                    start = 0;
-                }
-                if end >= n_points as isize {
-                    end = n_points as isize - 1;
-                }
-
-                let mut amin = a00;
-                let mut amax = a00;
-                for v in [a01, a10, a11] {
-                    if v < amin {
-                        amin = v;
-                    }
-                    if v > amax {
-                        amax = v;
-                    }
-                }
-
-                for b in start..=end {
-                    let bin_min = min + b as f64 * step;
-                    let bin_max = bin_min + step;
-                    let clipped = clip_polygon_rect_scratch(
-                        &poly, bin_min, bin_max, amin, amax, &mut buf1, &mut buf2,
-                    );
-                    let area = polygon_area(clipped).abs();
-                    if area > 0.0 {
-                        acc[b as usize].push((idx, area));
-                    }
-                }
-                (acc, buf1, buf2)
-            },
-        )
-        .reduce(
-            || {
-                (
-                    vec![Vec::<(usize, f64)>::new(); n_points],
-                    Vec::new(),
-                    Vec::new(),
-                )
-            },
-            |(mut a, _, _), (b, _, _)| {
-                for (row, mut v) in b.into_iter().enumerate() {
-                    a[row].append(&mut v);
-                }
-                (a, Vec::new(), Vec::new())
-            },
-        );
-
-    // Prefix sum
-    let mut row_ptr = vec![0usize; n_points + 1];
-    for i in 0..n_points {
-        row_ptr[i + 1] = row_ptr[i] + buckets[i].len();
-    }
-    let total = *row_ptr.last().unwrap();
-    let mut col_idx = Vec::with_capacity(total);
-    let mut values = Vec::with_capacity(total);
-    for bucket in buckets.iter().take(n_points) {
-        for (idx, val) in bucket {
-            col_idx.push(*idx);
-            values.push(*val);
-        }
-    }
-
-    // Normalize per row
-    for i in 0..n_points {
-        let (s, e) = (row_ptr[i], row_ptr[i + 1]);
-        let ssum: f64 = values[s..e].iter().sum();
-        if ssum > 0.0 {
-            for v in &mut values[s..e] {
-                *v /= ssum;
-            }
-        }
-    }
-
-    Lut1d {
-        row_ptr,
-        col_idx,
-        values: Some(values),
-        hist_min: min,
-        hist_step: step,
-    }
+    let buckets = lut1d_ps_fractions(
+        geometry,
+        radial,
+        n_points,
+        unit,
+        min,
+        step,
+        &radial_corners,
+        &azimuthal_corners,
+    );
+    lut1d_from_fractions(buckets, min, step)
 }
 
 /// Build a pixel-splitting 1D CSR LUT with explicit radial range.
+///
+/// Weights are per-pixel area fractions as in [`build_lut1d_ps_csr`]; a pixel
+/// partly outside `[radial_min, radial_max)` contributes only its in-range
+/// fraction (it is not renormalized to one) before the per-bin normalization.
 pub fn build_lut1d_ps_csr_with_range(
     geometry: &Geometry,
     radial: &[f64],
@@ -370,144 +439,20 @@ pub fn build_lut1d_ps_csr_with_range(
 
     let (tth_corners, azimuthal_corners) = geometry.angular_corners();
     let radial_corners = unit.convert_from_tth(&tth_corners, wavelength);
-    let azimuthal = geometry.calc_azimuth_all();
 
     let (min, _max, step) = histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
-    let (buckets, _, _) = radial
-        .par_iter()
-        .enumerate()
-        .fold(
-            || {
-                (
-                    vec![Vec::<(usize, f64)>::new(); n_points],
-                    Vec::with_capacity(8),
-                    Vec::with_capacity(8),
-                )
-            },
-            |(mut acc, mut buf1, mut buf2), (idx, &center_radial)| {
-                let [i00, i01, i11, i10] = geometry.corner_indices(idx);
-
-                let r00 = radial_corners[i00];
-                let r01 = radial_corners[i01];
-                let r10 = radial_corners[i10];
-                let r11 = radial_corners[i11];
-
-                let center_azimuthal = azimuthal[idx];
-                let a00 = unwrap_angle(azimuthal_corners[i00], center_azimuthal);
-                let a01 = unwrap_angle(azimuthal_corners[i01], center_azimuthal);
-                let a10 = unwrap_angle(azimuthal_corners[i10], center_azimuthal);
-                let a11 = unwrap_angle(azimuthal_corners[i11], center_azimuthal);
-
-                let poly = [(r00, a00), (r01, a01), (r11, a11), (r10, a10)];
-                let area_total = polygon_area(&poly).abs();
-                if area_total <= 0.0 {
-                    let pos = (center_radial - min) / step;
-                    if pos < 0.0 {
-                        return (acc, buf1, buf2);
-                    }
-                    let bin = pos.floor() as isize;
-                    if bin >= 0 && (bin as usize) < n_points {
-                        acc[bin as usize].push((idx, 1.0));
-                    }
-                    return (acc, buf1, buf2);
-                }
-
-                let mut rmin = r00;
-                let mut rmax = r00;
-                for v in [r01, r10, r11] {
-                    if v < rmin {
-                        rmin = v;
-                    }
-                    if v > rmax {
-                        rmax = v;
-                    }
-                }
-
-                let mut start = ((rmin - min) / step).floor() as isize;
-                let mut end = ((rmax - min) / step).floor() as isize;
-                if end < 0 || start >= n_points as isize {
-                    return (acc, buf1, buf2);
-                }
-                if start < 0 {
-                    start = 0;
-                }
-                if end >= n_points as isize {
-                    end = n_points as isize - 1;
-                }
-
-                let mut amin = a00;
-                let mut amax = a00;
-                for v in [a01, a10, a11] {
-                    if v < amin {
-                        amin = v;
-                    }
-                    if v > amax {
-                        amax = v;
-                    }
-                }
-
-                for b in start..=end {
-                    let bin_min = min + b as f64 * step;
-                    let bin_max = bin_min + step;
-                    let clipped = clip_polygon_rect_scratch(
-                        &poly, bin_min, bin_max, amin, amax, &mut buf1, &mut buf2,
-                    );
-                    let area = polygon_area(clipped).abs();
-                    if area > 0.0 {
-                        acc[b as usize].push((idx, area));
-                    }
-                }
-                (acc, buf1, buf2)
-            },
-        )
-        .reduce(
-            || {
-                (
-                    vec![Vec::<(usize, f64)>::new(); n_points],
-                    Vec::new(),
-                    Vec::new(),
-                )
-            },
-            |(mut a, _, _), (b, _, _)| {
-                for (row, mut v) in b.into_iter().enumerate() {
-                    a[row].append(&mut v);
-                }
-                (a, Vec::new(), Vec::new())
-            },
-        );
-
-    let mut row_ptr = vec![0usize; n_points + 1];
-    for i in 0..n_points {
-        row_ptr[i + 1] = row_ptr[i] + buckets[i].len();
-    }
-    let total = *row_ptr.last().unwrap();
-    let mut col_idx = Vec::with_capacity(total);
-    let mut values = Vec::with_capacity(total);
-    for bucket in buckets.iter().take(n_points) {
-        for (idx, val) in bucket {
-            col_idx.push(*idx);
-            values.push(*val);
-        }
-    }
-
-    for i in 0..n_points {
-        let (s, e) = (row_ptr[i], row_ptr[i + 1]);
-        let ssum: f64 = values[s..e].iter().sum();
-        if ssum > 0.0 {
-            for v in &mut values[s..e] {
-                *v /= ssum;
-            }
-        }
-    }
-
-    Lut1d {
-        row_ptr,
-        col_idx,
-        values: Some(values),
-        hist_min: min,
-        hist_step: step,
-    }
+    let buckets = lut1d_ps_fractions(
+        geometry,
+        radial,
+        n_points,
+        unit,
+        min,
+        step,
+        &radial_corners,
+        &azimuthal_corners,
+    );
+    lut1d_from_fractions(buckets, min, step)
 }
 
 fn build_lut2d_ps_csr_with_azimuthal(
@@ -979,6 +924,172 @@ mod tests {
             rel_diff < 0.2,
             "Total intensity should be similar across units, got {}% difference",
             rel_diff * 100.0
+        );
+    }
+
+    /// One row of pixels that are long along the radial direction and only 1 µm
+    /// wide, starting `offset` pixels away from the point of normal incidence.
+    /// Their true bin fractions are plain length fractions along the row.
+    fn radial_strip(n: usize, offset: f64, distance: f64) -> Geometry {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1e-6;
+        poni.pixel2 = 1e-4;
+        poni.distance = distance;
+        poni.poni1 = 0.5e-6;
+        poni.poni2 = -offset * 1e-4;
+        poni.wavelength = 1e-10;
+        Geometry::new(1, n, poni)
+    }
+
+    fn corners(geometry: &Geometry) -> (Vec<f64>, Vec<f64>) {
+        geometry.angular_corners()
+    }
+
+    fn pixel_radial_extent(geometry: &Geometry, pixel: usize) -> (f64, f64) {
+        let (tth, _) = corners(geometry);
+        let values = geometry.corner_indices(pixel).map(|i| tth[i]);
+        (
+            values.iter().copied().fold(f64::INFINITY, f64::min),
+            values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    }
+
+    fn fractions(geometry: &Geometry, n: usize, min: f64, step: f64) -> Vec<Vec<(usize, f64)>> {
+        let (tth, azimuth) = corners(geometry);
+        let radial = geometry.calc_tth_all();
+        lut1d_ps_fractions(
+            geometry,
+            &radial,
+            n,
+            RadialUnit::TthRad,
+            min,
+            step,
+            &tth,
+            &azimuth,
+        )
+    }
+
+    fn pixel_total(buckets: &[Vec<(usize, f64)>], pixel: usize) -> f64 {
+        buckets
+            .iter()
+            .flatten()
+            .filter(|(p, _)| *p == pixel)
+            .map(|(_, w)| w)
+            .sum()
+    }
+
+    #[test]
+    fn split_pixel_gets_fractions_of_its_own_area_at_any_radius() {
+        // The same 30/70 split 300 and 3000 pixels from the beam: the polar
+        // quadrilateral areas differ by an order of magnitude, the fractions
+        // must not.
+        for (offset, distance) in [(300.0, 1.0), (3000.0, 10.0)] {
+            let geometry = radial_strip(1, offset, distance);
+            let (lo, hi) = pixel_radial_extent(&geometry, 0);
+            let step = hi - lo;
+            let buckets = fractions(&geometry, 2, lo - 0.7 * step, step);
+            assert_eq!(buckets[0].len(), 1);
+            assert_eq!(buckets[1].len(), 1);
+            let (w0, w1) = (buckets[0][0].1, buckets[1][0].1);
+            assert!((w0 - 0.3).abs() < 1e-3, "offset {offset}: {w0}");
+            assert!((w1 - 0.7).abs() < 1e-3, "offset {offset}: {w1}");
+            assert!((w0 + w1 - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn fully_included_pixels_have_unit_total_weight_before_bin_normalization() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1.7e-4;
+        poni.pixel2 = 2.1e-4;
+        poni.distance = 0.14;
+        poni.poni1 = -0.003;
+        poni.poni2 = -0.002;
+        poni.rot1 = 0.007;
+        poni.rot2 = -0.009;
+        poni.wavelength = 1e-10;
+        let geometry = Geometry::new(23, 29, poni);
+        let (tth, _) = corners(&geometry);
+        let lo = math::min(&tth);
+        let hi = math::max(&tth) + 10.0 * f64::EPSILON;
+        let buckets = fractions(&geometry, 40, lo, (hi - lo) / 40.0);
+        for pixel in 0..geometry.size() {
+            let total = pixel_total(&buckets, pixel);
+            assert!((total - 1.0).abs() < 1e-9, "pixel {pixel}: {total}");
+        }
+    }
+
+    #[test]
+    fn range_clipped_pixel_keeps_only_its_in_range_fraction() {
+        let geometry = radial_strip(1, 300.0, 1.0);
+        let (lo, hi) = pixel_radial_extent(&geometry, 0);
+        // The radial range ends 40% into the pixel.
+        let max = lo + 0.4 * (hi - lo);
+        let min = lo - (max - lo);
+        let buckets = fractions(&geometry, 4, min, (max - min) / 4.0);
+        let total = pixel_total(&buckets, 0);
+        assert!((total - 0.4).abs() < 1e-3, "{total}");
+
+        // The public builder normalizes the bin but must not hide the pixel.
+        let tth = geometry.calc_tth_all();
+        let lut = build_lut1d_ps_csr_with_range(&geometry, &tth, 4, RadialUnit::TthRad, min, max);
+        assert!(lut.col_idx.iter().all(|&pixel| pixel == 0));
+        assert_eq!(lut.row_ptr[4] - lut.row_ptr[3], 1);
+        assert_eq!(lut.values.unwrap()[lut.row_ptr[3]], 1.0);
+    }
+
+    #[test]
+    fn bin_weights_follow_pixel_fractions_not_polar_area() {
+        // Pixels 1..=3 of the strip span 11-12, 12-13 and 13-14 pixel lengths
+        // from the beam. One bin covers the outer half of the first, all of the
+        // second and the inner half of the third: weights 1/4, 1/2, 1/4.
+        // Polar-area weights (~1/r) would give 0.267, 0.499, 0.234.
+        let geometry = radial_strip(5, 10.0, 0.1);
+        let (lo1, hi1) = pixel_radial_extent(&geometry, 1);
+        let (lo3, hi3) = pixel_radial_extent(&geometry, 3);
+        let min = 0.5 * (lo1 + hi1);
+        let max = 0.5 * (lo3 + hi3);
+        let tth = geometry.calc_tth_all();
+        let lut = build_lut1d_ps_csr_with_range(&geometry, &tth, 1, RadialUnit::TthRad, min, max);
+        assert_eq!(lut.col_idx, vec![1, 2, 3]);
+        let values = lut.values.unwrap();
+        for (value, expected) in values.iter().zip([0.25, 0.5, 0.25]) {
+            assert!((value - expected).abs() < 0.01, "{values:?}");
+        }
+        assert!((values.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn beam_pixel_uses_detector_plane_fractions() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1e-4;
+        poni.pixel2 = 1e-4;
+        poni.distance = 0.1;
+        poni.poni1 = 4.3e-4;
+        poni.poni2 = 5.6e-4;
+        poni.wavelength = 1e-10;
+        let geometry = Geometry::new(9, 11, poni);
+        let beam_pixel = 4 * 11 + 5;
+        let (tth, _) = corners(&geometry);
+        let hi = math::max(&tth) + 10.0 * f64::EPSILON;
+        let n = 200;
+        let step = hi / n as f64;
+        let buckets = fractions(&geometry, n, 0.0, step);
+        // Every pixel, including the one containing the beam, is conserved.
+        for pixel in 0..geometry.size() {
+            let total = pixel_total(&buckets, pixel);
+            assert!((total - 1.0).abs() < 1e-9, "pixel {pixel}: {total}");
+        }
+        // The first bin is a disc of radius distance·tan(step) inside the beam
+        // pixel; no polar quadrilateral of that pixel reaches it.
+        let radius = 0.1 * step.tan();
+        let expected = PI * radius * radius / 1e-8;
+        assert_eq!(buckets[0].len(), 1);
+        let (pixel, weight) = buckets[0][0];
+        assert_eq!(pixel, beam_pixel);
+        assert!(
+            (weight / expected - 1.0).abs() < 0.05,
+            "{weight} {expected}"
         );
     }
 }

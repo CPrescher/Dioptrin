@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 1D `pixel_split` (`IntegrationMethod::PixelSplit`, `build_lut1d_ps_csr`,
+  `build_lut1d_ps_csr_with_range`) now weights every pixel by the **fraction
+  of its own area** that falls into a radial bin (clipped polygon area divided
+  by the pixel's quadrilateral area) before the per-bin normalization. It
+  previously used the clipped polar-plane area itself, which weighted pixels
+  within one bin by roughly 1/r and biased bins towards their low-angle side.
+  A pixel partly outside the radial range still contributes only its in-range
+  fraction.
+- The pixel containing or touching the point of normal incidence has no single
+  polar quadrilateral. The 1D polygon builder now uses the same detector-plane
+  sampling fallback as the shared-grid 2D and `pyfai_full` paths; before, the
+  innermost bins could receive no weight from it at all.
+
+### Compatibility and validation
+
+- **Behaviour change:** 1D `pixel_split` intensities and errors change
+  slightly for every 1D path that uses the polygon table (ordinary, typed,
+  fixed/dynamic plans, CSR/CSC layouts, batch and `MultiIntegrator` 1D). On the
+  CeO2 Pilatus 1M test image (1000 bins, 1–30° 2θ) the relative L2 difference
+  to pyFAI full splitting drops from 1.0e-3 to 1.2e-4, and to 3.4e-5 (maximum
+  deviation 0.16σ, previously 4.8σ) when the two bins at each end of the range
+  are left out; there the range-clipping conventions differ on purpose.
+  Counting, supersampled, `pyfai_full` and all 2D outputs are bit-identical.
+  The legacy single-detector 2D polygon builder (`build_lut2d_ps_csr*`) is
+  unchanged and still uses row-normalized polar areas.
+- `examples/export_1d_weights.rs` exports single-pixel 1D weights for
+  comparison with independent references.
+
 ## [0.12.0] - 2026-11-09
 
 ### Added
