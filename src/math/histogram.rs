@@ -1,8 +1,5 @@
 #![allow(dead_code)]
 
-use std::sync::mpsc;
-use std::thread;
-
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;
@@ -121,82 +118,65 @@ pub fn histogram_with_errors(
     (bins, normed_sum, sigma)
 }
 
-/// Calculates a normalized histogram of weights at data values using a parallel implementation
+/// Calculates a normalized histogram of weights at data values using a parallel implementation.
+///
+/// Gives the same bins and counts as [`histogram`]; the per-bin sums can differ
+/// from it in the last bits because they are added in a different order. The
+/// input is split into fixed-size chunks whose partial sums are combined in
+/// chunk order, so the result does not depend on the thread count or scheduling.
 pub fn histogram_parallel(
     data: &[f64],
     weights: &[f64],
     n_points: usize,
     mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
+    const CHUNK: usize = 1 << 14;
     let (min, _max, step) = min_max_step(data, n_points);
+
+    let partials: Vec<(Vec<f64>, Vec<f64>)> = data
+        .par_chunks(CHUNK)
+        .zip(weights.par_chunks(CHUNK))
+        .enumerate()
+        .map(|(c, (data, weights))| {
+            let mask = mask.map(|m| &m[c * CHUNK..c * CHUNK + data.len()]);
+            let mut sum = vec![0.0; n_points];
+            let mut count = vec![0.0; n_points];
+            for (i, (x, y)) in data.iter().zip(weights).enumerate() {
+                if mask.is_some_and(|m| m[i] != 0) {
+                    continue;
+                }
+                let index = get_bin_clamped(*x, min, step, n_points);
+                sum[index] += y;
+                count[index] += 1.0;
+            }
+            (sum, count)
+        })
+        .collect();
 
     let mut sum = vec![0.0; n_points];
     let mut count = vec![0.0; n_points];
-
-    let (tx, rx) = mpsc::channel();
-
-    let n_threads = 16;
-    let chunk_size = data.len() / n_threads;
-
-    for i in 0..n_threads {
-        let tx_thread = mpsc::Sender::clone(&tx);
-        let data_thread = data[i * chunk_size..(i + 1) * chunk_size].to_vec();
-        let weights_thread = weights[i * chunk_size..(i + 1) * chunk_size].to_vec();
-        let mask_thread = mask.map(|mask| mask[i * chunk_size..(i + 1) * chunk_size].to_vec());
-
-        thread::spawn(move || {
-            let mut sum_thread = vec![0.0; n_points];
-            let mut count_thread = vec![0.0; n_points];
-
-            match mask_thread.as_ref() {
-                Some(mask_thread) => {
-                    for (i, y) in data_thread.iter().enumerate() {
-                        if mask_thread[i] != 0 {
-                            continue;
-                        }
-                        let index = get_bin_clamped(*y, min, step, n_points);
-                        sum_thread[index] += weights_thread[i];
-                        count_thread[index] += 1.0;
-                    }
-                }
-                None => {
-                    for (i, y) in data_thread.iter().enumerate() {
-                        let index = get_bin_clamped(*y, min, step, n_points);
-                        sum_thread[index] += weights_thread[i];
-                        count_thread[index] += 1.0;
-                    }
-                }
-            }
-
-            tx_thread.send((sum_thread, count_thread)).unwrap();
-        });
-    }
-    drop(tx);
-
-    for (sum_thread, count_thread) in rx {
+    for (sum_chunk, count_chunk) in &partials {
         for i in 0..n_points {
-            sum[i] += sum_thread[i];
-            count[i] += count_thread[i];
+            sum[i] += sum_chunk[i];
+            count[i] += count_chunk[i];
         }
     }
 
     // normalize to amount of points
-    let normed_sum = match mask {
-        Some(_) => sum
-            .iter()
-            .zip(count.iter())
-            .map(|(sum, count)| if *count == 0.0 { 0.0 } else { sum / count })
-            .collect::<Vec<f64>>(),
-        None => sum
-            .iter()
-            .zip(count.iter())
-            .map(|(sum, count)| sum / count)
-            .collect::<Vec<f64>>(),
-    };
+    let normed_sum = sum
+        .iter()
+        .zip(&count)
+        .map(|(sum, count)| {
+            if mask.is_some() && *count == 0.0 {
+                0.0
+            } else {
+                sum / count
+            }
+        })
+        .collect();
 
     // create tth values for bin centers
-    let bin = bins(n_points, min, step);
-    (bin, normed_sum)
+    (bins(n_points, min, step), normed_sum)
 }
 
 /// Calculates the bin index for a value in a histogram
@@ -300,6 +280,46 @@ mod tests {
         (0..len)
             .map(|i| 1.0 + (hi - 1.0) * i as f64 / (len - 1) as f64)
             .collect()
+    }
+
+    /// NaN-aware comparison with a tight relative tolerance.
+    fn assert_close(a: &[f64], b: &[f64], ctx: &str) {
+        assert_eq!(a.len(), b.len(), "{ctx}");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            let same = (x.is_nan() && y.is_nan()) || (x - y).abs() <= 1e-12 * x.abs().max(1.0);
+            assert!(same, "{ctx}, bin {i}: {x} != {y}");
+        }
+    }
+
+    #[test]
+    fn parallel_histogram_bins_every_element() {
+        // The reported case: the last 4 of 20 values carry a large weight.
+        let data = ramp(2.0, 20);
+        let mut weights = vec![1.0; 20];
+        weights[16..].fill(100.0);
+        let (_, y) = histogram(&data, &weights, 2, None);
+        let (_, y_par) = histogram_parallel(&data, &weights, 2, None);
+        assert_eq!(y, vec![1.0, 40.6]);
+        assert_close(&y_par, &y, "len 20");
+
+        // Lengths that are not multiples of 16, including lengths below 16,
+        // and lengths spanning several parallel chunks.
+        for len in [1, 2, 5, 15, 17, 20, 33, 1001, 40_007, 100_003] {
+            let data: Vec<f64> = (0..len)
+                .map(|i| 5.0 + 3.0 * ((i as f64) * 0.37).sin())
+                .collect();
+            let weights: Vec<f64> = (0..len).map(|i| 1.0 + (i % 7) as f64 * 0.3).collect();
+            let mask: Vec<u8> = (0..len).map(|i| u8::from(i % 5 == 3)).collect();
+            for n in [1, 2, 7, 100] {
+                for mask in [None, Some(mask.as_slice())] {
+                    let (x, y) = histogram(&data, &weights, n, mask);
+                    let (x_par, y_par) = histogram_parallel(&data, &weights, n, mask);
+                    let ctx = format!("len {len}, n {n}, mask {}", mask.is_some());
+                    assert_eq!(x_par, x, "{ctx}");
+                    assert_close(&y_par, &y, &ctx);
+                }
+            }
+        }
     }
 
     #[test]

@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before. `histogram_parallel`, which the integrator does not use, did not
   panic in that case but silently lost the sixteenth of the data that contained
   the maximum; it now returns the complete result.
+- `math::histogram::histogram_parallel` never binned the last `len % 16`
+  values (and returned all NaN for fewer than 16 values) because it split the
+  input into 16 equal chunks and dropped the remainder. It now bins every
+  value with rayon over fixed-size chunks, without copying the input or
+  silently swallowing worker panics. Bins and counts match `histogram`, sums
+  agree up to floating-point rounding, and the result no longer varies from
+  run to run.
 
 ### Compatibility and validation
 
