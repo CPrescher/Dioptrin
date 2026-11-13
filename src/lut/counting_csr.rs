@@ -163,8 +163,10 @@ pub fn build_lut2d_csr(
         .zip(azimuthal.par_iter())
         .map(|(r, a)| {
             let rb = histogram::get_bin_clamped(*r, min_radial, step_radial, n_radial);
-            // The grid ends at the data's own maximum, so a value that rounds
-            // past it belongs in the last bin, not (by wrapping) in bin 0.
+            // The grid ends at the data's own maximum (plus a few epsilon of
+            // padding), so no value lies past it; only the maximum itself can
+            // round to index n_azimuthal. It belongs in the last bin, not (by
+            // wrapping) in bin 0.
             let ab = histogram::get_bin_clamped(*a, min_azimuthal, step_azimuthal, n_azimuthal);
             ab * n_radial + rb
         })
