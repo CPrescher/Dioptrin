@@ -37,9 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IntegrationMethod::Histogram` (and `math::histogram::histogram`,
   `histogram_with_errors`, `histogram_parallel`) panicked with an index out of
   bounds when the largest radial value rounded to bin index `n_points`. This
-  happened for many bin counts once the radial maximum was 32 or larger, for
-  example 2θ in degrees or q in nm⁻¹ on the Pilatus 1M test geometry. The
-  maximum now lands in the last bin; all other values are binned as before.
+  happened for many bin counts when the radial maximum was large (roughly 30
+  or more), for example 2θ in degrees or q in nm⁻¹ on the Pilatus 1M test
+  geometry. The maximum now lands in the last bin; all other values are binned
+  as before. `histogram_parallel`, which the integrator does not use, did not
+  panic in that case but silently lost the sixteenth of the data that contained
+  the maximum; it now returns the complete result.
 
 ### Compatibility and validation
 

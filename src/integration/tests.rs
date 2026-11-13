@@ -1384,8 +1384,11 @@ fn histogram_method_keeps_the_outermost_pixel_in_range() {
                 .with_radial_unit(unit);
             let (x, y) = integrator.integrate1d_from_slice(&data, rows, cols, n);
             assert_eq!((x.len(), y.len()), (n, n));
+            // The last bin holds the outermost pixel, so it is not empty.
+            assert!(y[n - 1] > 0.0, "{unit:?}, n {n}");
             let (_, y, sigma) = integrator.integrate1d_with_errors_from_slice(&data, rows, cols, n);
             assert_eq!((y.len(), sigma.len()), (n, n));
+            assert!(y[n - 1] > 0.0 && sigma[n - 1] > 0.0, "{unit:?}, n {n}");
         }
     }
 }
