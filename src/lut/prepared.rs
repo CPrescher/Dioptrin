@@ -71,6 +71,10 @@ pub(crate) struct PreparedCsr {
     fixed_pixels: OnceLock<Vec<u32>>,
     fixed_csc_enabled: bool,
     prefer_csc: bool,
+    /// One more than the largest pixel index in `col_idx`: the shortest image,
+    /// mask or normalization array the unchecked kernels may read through
+    /// this table.
+    min_pixels: usize,
 }
 
 pub(crate) struct Prepared1d {
@@ -99,7 +103,25 @@ impl std::ops::Deref for Prepared2d {
 
 impl PreparedCsr {
     fn new(row_ptr: Vec<usize>, col_idx: Vec<usize>, values: Option<Vec<f64>>) -> Self {
+        // The kernels in `row` index without bounds checks, so establish once
+        // that the table itself is well formed; `check_pixels` then covers the
+        // per-call arrays.
+        let nnz = col_idx.len();
+        assert!(
+            row_ptr.windows(2).all(|r| r[0] <= r[1])
+                && row_ptr.last().is_none_or(|&end| end <= nnz),
+            "lookup table row pointers must be non-decreasing and within its column indices"
+        );
+        assert!(
+            values.as_ref().is_none_or(|v| v.len() == nnz),
+            "lookup table weights must match its column indices"
+        );
+        let min_pixels = col_idx.iter().max().map_or(0, |&j| {
+            j.checked_add(1)
+                .expect("lookup table pixel index is too large")
+        });
         Self {
+            min_pixels,
             row_ptr,
             col_idx: Columns::new(col_idx),
             values,
@@ -169,6 +191,21 @@ impl PreparedCsr {
             .unwrap_or(self)
     }
 
+    /// Bounds check for the unchecked kernels: every array they read through
+    /// this table must cover all pixels the table addresses. The Integrator
+    /// only pairs a table with arrays of the shape it was built for, so this
+    /// can fail only on a logic error; it turns that into a panic instead of
+    /// an out-of-bounds read.
+    #[inline]
+    fn check_pixels(&self, what: &str, len: usize) {
+        assert!(
+            len >= self.min_pixels,
+            "lookup table addresses {} pixels but the {what} has only {len}; \
+             the table was built for a different image shape",
+            self.min_pixels
+        );
+    }
+
     fn col_idx_len(&self) -> usize {
         *self.row_ptr.last().unwrap_or(&0)
     }
@@ -186,6 +223,10 @@ impl PreparedCsr {
             &self.strict_norm
         };
         cache.get_or_init(|| {
+            self.check_pixels("normalization", norm.len());
+            if let Some(mask) = mask {
+                self.check_pixels("mask", mask.len());
+            }
             // Serial initialization cannot block a Rayon worker waiting for work
             // queued behind another worker initializing this same OnceLock.
             macro_rules! build {
@@ -296,6 +337,10 @@ impl PreparedCsr {
         norm: &[f64],
     ) -> Vec<[f64; 4]> {
         let cached = self.normalization::<FAST>(mask, norm);
+        self.check_pixels("image", signal.len());
+        if let Some(mask) = mask {
+            self.check_pixels("mask", mask.len());
+        }
         macro_rules! run {
             ($cols:expr) => {
                 (0..self.row_ptr.len() - 1)
@@ -347,6 +392,11 @@ impl PreparedCsr {
             return csc.results::<VAR, COUNT, P>(signal, mask, norm);
         }
         // Strict reduction order (or a table too large for compact CSC).
+        self.check_pixels("image", signal.len());
+        self.check_pixels("normalization", norm.len());
+        if let Some(mask) = mask {
+            self.check_pixels("mask", mask.len());
+        }
         macro_rules! run {
             ($cols:expr) => {
                 (0..self.row_ptr.len() - 1)
@@ -432,6 +482,9 @@ impl Prepared1d {
     /// Frame-parallel callers execute rows on their own worker; interactive
     /// callers can schedule independent rows in parallel. Only input addresses
     /// change; coefficient and summation order within each bin do not.
+    /// `FixedCsr1dInputPlan` checks the complete frame length against its fixed
+    /// shape before calling this method; that also covers flipped columns,
+    /// whose largest index can exceed the original table's `min_pixels`.
     pub(crate) fn integrate_input<const VAR: bool, P: Pixel, const PARALLEL: bool>(
         &self,
         signal: &[P],
@@ -601,6 +654,7 @@ impl Prepared2d {
         norm: &[f64],
     ) -> Vec<f64> {
         let table = self.fixed_table(mask);
+        table.check_pixels("image", signal.len());
         let normalization = table.normalization::<FAST>(None, norm);
         macro_rules! run {
             ($cols:expr) => {
@@ -748,9 +802,12 @@ fn row<
     let mut v = [0.0; 4];
     let mut c = [0.0; 4];
     let mut k = start;
-    // SAFETY: these tables are private and constructed only from valid LUTs.
-    // Integrator validates image/mask dimensions; const branches avoid reads of
-    // absent arrays. Compact conversion checks every index before narrowing.
+    // SAFETY: `PreparedCsr::new` checks that row pointers and weights fit the
+    // column indices. Callers establish array bounds through `check_pixels`
+    // or frozen-plan frame dimensions. The typed input plan checks the full
+    // frame before using its private, shape-validated flipped columns.
+    // Const branches avoid reads of absent arrays. Compact conversion checks
+    // every index before narrowing.
     unsafe {
         macro_rules! visit {
             ($lane:expr, $at:expr) => {{
@@ -852,5 +909,83 @@ mod explicit_variance_tests {
         assert_eq!(r.sum_norm, [0.5, 1.5]);
         assert_eq!(r.sum_variance.unwrap(), [0.5625, 5.0625]);
         assert_eq!(r.count, [0.25, 0.75]);
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses 6 pixels but the image has only 4")]
+    fn fixed_intensity_rejects_an_image_shorter_than_its_table() {
+        table().fixed_intensity::<true>(&[2.; 4], None, &[1.; 6]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table pixel index is too large")]
+    fn rejects_an_overflowing_pixel_bound_in_release_too() {
+        Prepared2d::new(Lut2d {
+            row_ptr: vec![0, 1],
+            col_idx: vec![usize::MAX],
+            values: None,
+            n_tth: 1,
+            n_azimuthal: 1,
+        });
+    }
+
+    fn table() -> Prepared2d {
+        // Addresses pixels 0..=5.
+        Prepared2d::new(Lut2d {
+            row_ptr: vec![0, 2, 4],
+            col_idx: vec![0, 5, 1, 3],
+            values: Some(vec![0.5; 4]),
+            n_tth: 2,
+            n_azimuthal: 1,
+        })
+    }
+
+    #[test]
+    fn integrates_arrays_that_cover_the_table() {
+        for fast in [false, true] {
+            let (y, _) = if fast {
+                table().integrate::<true, false>(&[2.0; 6], None, &[1.0; 6])
+            } else {
+                table().integrate::<false, false>(&[2.0; 6], None, &[1.0; 6])
+            };
+            assert_eq!(y, [2.0, 2.0]);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses 6 pixels but the image has only 4")]
+    fn rejects_an_image_shorter_than_the_table() {
+        table().integrate::<true, false>(&[2.0; 4], None, &[1.0; 6]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses 6 pixels but the normalization has only 4")]
+    fn rejects_a_normalization_shorter_than_the_table() {
+        table().integrate::<false, false>(&[2.0; 6], None, &[1.0; 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "lookup table addresses 6 pixels but the mask has only 4")]
+    fn rejects_a_mask_shorter_than_the_table() {
+        let mut table = table();
+        table.set_mask_mode(MaskMode::Dynamic);
+        table.raw2d::<false, false>(&[2.0; 6], Some(&[0; 4]), &[1.0; 6]);
+    }
+
+    #[test]
+    #[should_panic(expected = "row pointers")]
+    fn rejects_row_pointers_beyond_the_column_indices() {
+        Prepared2d::new(Lut2d {
+            row_ptr: vec![0, 9],
+            col_idx: vec![0, 1],
+            values: None,
+            n_tth: 1,
+            n_azimuthal: 1,
+        });
     }
 }

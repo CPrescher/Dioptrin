@@ -188,12 +188,12 @@ impl Integrator {
             dim2: m.dim2,
         });
         snapshot.validate_2d_setup(shape.0, shape.1, pixels)?;
-        snapshot.update_geometry_arrays(shape.0, shape.1);
-        let norm = snapshot.get_normalization();
-        snapshot.validate_grid_coordinates(&norm)?;
+        let view = snapshot.for_shape(shape.0, shape.1);
+        let norm = view.normalization();
+        Self::validate_grid_coordinates(&view.state, &norm)?;
         let key = snapshot.grid_lut_key(grid);
         {
-            let lut = snapshot.ensure_lut2d(key);
+            let lut = view.ensure_lut2d(key);
             lut.prepare_normalization(
                 snapshot.mask.as_ref().map(|m| m.data.as_slice()),
                 &norm,
@@ -206,6 +206,7 @@ impl Integrator {
             .map_err(|_| "poisoned lookup cache")?
             .lut
             .ok_or("missing grid LUT")?;
+        let lut = Arc::try_unwrap(lut).map_err(|_| "prepared grid LUT is still shared")?;
         Ok(FixedGrid2dPlan {
             lut,
             shape,

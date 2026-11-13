@@ -14,6 +14,8 @@ pub use fixed_csr::{FixedCsr1dInputPlan, FixedCsr1dPlan, FixedGrid2dPlan};
 pub use layout::{LayoutPrediction, predict_1d_layout};
 mod methods;
 #[cfg(test)]
+mod mixed_shape_tests;
+#[cfg(test)]
 mod tests;
 mod tiff_input;
 
@@ -25,8 +27,13 @@ use crate::mask::Mask;
 
 use cache::{Lut1dCache, Lut2dCache};
 
-/// Mutable geometry state that can be lazily initialized.
-/// Wrapped in RwLock for thread-safe access.
+/// Per-pixel geometry arrays for one image shape, computed lazily.
+///
+/// A published state is immutable: `Integrator::state` holds the most recent
+/// one behind an `Arc`, and every integration call works on its own snapshot
+/// for its own image shape (see `Integrator::geometry_for`), so a concurrent
+/// call with another shape cannot change the arrays underneath it.
+#[derive(Clone)]
 struct GeometryState {
     /// Dimensions the state was computed for
     dim1: usize,
@@ -178,8 +185,9 @@ pub enum SparseLayout {
 
 pub struct Integrator {
     geometry: Geometry,
-    /// Mutable geometry state (tth, radial, azimuth, corrections) in RwLock for thread-safe access
-    state: RwLock<GeometryState>,
+    /// Most recently used geometry state (tth, radial, azimuth, corrections).
+    /// Readers clone the `Arc` and release the lock before doing any work.
+    state: RwLock<Arc<GeometryState>>,
     cache_1d: RwLock<Lut1dCache>,
     cache_2d: RwLock<Lut2dCache>,
     mask: Option<Mask>,
@@ -198,7 +206,7 @@ impl Integrator {
     pub fn new(geometry: Geometry) -> Integrator {
         Integrator {
             geometry,
-            state: RwLock::new(GeometryState::new()),
+            state: RwLock::new(Arc::new(GeometryState::new())),
             cache_1d: RwLock::new(Lut1dCache::new()),
             cache_2d: RwLock::new(Lut2dCache::new()),
             mask: None,
@@ -241,15 +249,10 @@ impl Integrator {
     /// Select execution without discarding geometry, weights or valid caches.
     pub fn set_sparse_layout(&mut self, layout: SparseLayout) {
         self.sparse_layout = layout;
-        if let Some(lut) = self
-            .cache_1d
+        self.cache_1d
             .write()
             .expect("1D LUT cache poisoned")
-            .lut
-            .as_mut()
-        {
-            lut.set_sparse_layout(layout);
-        }
+            .modify(|lut| lut.set_sparse_layout(layout));
     }
 
     pub fn mask_mode(&self) -> MaskMode {
@@ -265,24 +268,14 @@ impl Integrator {
     pub fn set_mask_mode(&mut self, mode: MaskMode) {
         if self.mask_mode != mode {
             self.mask_mode = mode;
-            if let Some(lut) = self
-                .cache_1d
+            self.cache_1d
                 .write()
                 .expect("1D LUT cache lock poisoned")
-                .lut
-                .as_mut()
-            {
-                lut.set_mask_mode(mode);
-            }
-            if let Some(lut) = self
-                .cache_2d
+                .modify(|lut| lut.set_mask_mode(mode));
+            self.cache_2d
                 .write()
                 .expect("2D LUT cache lock poisoned")
-                .lut
-                .as_mut()
-            {
-                lut.set_mask_mode(mode);
-            }
+                .modify(|lut| lut.set_mask_mode(mode));
         }
     }
 
@@ -304,8 +297,7 @@ impl Integrator {
 
     // builder pattern for radial unit
     pub fn with_radial_unit(mut self, unit: RadialUnit) -> Self {
-        self.radial_unit = unit;
-        self.invalidate_caches();
+        self.set_radial_unit(unit);
         self
     }
 
@@ -320,12 +312,12 @@ impl Integrator {
             self.radial_unit = unit;
             // Recompute radial values and invalidate caches
             let mut state = self.state.write().expect("geometry state lock poisoned");
+            let state = Arc::make_mut(&mut state);
             if !state.tth.is_empty() {
                 state.radial = self
                     .radial_unit
                     .convert_from_tth(&state.tth, self.geometry.poni.wavelength);
             }
-            drop(state);
             self.invalidate_caches();
         }
     }
@@ -448,12 +440,13 @@ impl Integrator {
 
     // helper to invalidate LUT caches
     fn invalidate_caches(&self) {
-        let mut cache_1d = self.cache_1d.write().expect("1D LUT cache lock poisoned");
-        cache_1d.key = None;
-        cache_1d.lut = None;
-        drop(cache_1d);
-        let mut cache_2d = self.cache_2d.write().expect("2D LUT cache lock poisoned");
-        cache_2d.key = None;
-        cache_2d.lut = None;
+        self.cache_1d
+            .write()
+            .expect("1D LUT cache lock poisoned")
+            .clear();
+        self.cache_2d
+            .write()
+            .expect("2D LUT cache lock poisoned")
+            .clear();
     }
 }

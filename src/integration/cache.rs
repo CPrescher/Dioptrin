@@ -1,9 +1,9 @@
-use std::sync::RwLockReadGuard;
+use std::sync::Arc;
 
 use crate::lut;
 use crate::lut::prepared::{Prepared1d, Prepared2d};
 
-use super::{Integrator, RadialUnit};
+use super::{GeometryState, Integrator, RadialUnit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RadialRangeKey {
@@ -107,16 +107,62 @@ impl AzimuthalRangeKey {
     }
 }
 
+/// One memoized lookup table, tagged with everything it was built from: the
+/// image shape and the binning key. A request for another shape or key
+/// replaces it; callers that still hold the old table keep it alive through
+/// their `Arc`.
 pub(super) struct LutCache<K, L> {
+    /// `(dim1, dim2)` of the image the table was built for.
+    pub(super) shape: (usize, usize),
     pub(super) key: Option<K>,
-    pub(super) lut: Option<L>,
+    pub(super) lut: Option<Arc<L>>,
 }
 
-impl<K, L> LutCache<K, L> {
+impl<K: PartialEq, L> LutCache<K, L> {
     pub(super) fn new() -> Self {
         Self {
+            shape: (0, 0),
             key: None,
             lut: None,
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.key = None;
+        self.lut = None;
+    }
+
+    fn get(&self, shape: (usize, usize), key: &K) -> Option<Arc<L>> {
+        if self.shape == shape && self.key.as_ref() == Some(key) {
+            self.lut.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Stores a freshly built table, unless another thread stored one for the
+    /// same shape and key first: then that one is returned so all callers share
+    /// a single table.
+    fn insert(&mut self, shape: (usize, usize), key: K, lut: L) -> Arc<L> {
+        if let Some(existing) = self.get(shape, &key) {
+            return existing;
+        }
+        let lut = Arc::new(lut);
+        self.shape = shape;
+        self.key = Some(key);
+        self.lut = Some(Arc::clone(&lut));
+        lut
+    }
+
+    /// Changes the cached table in place. Settings are changed through
+    /// `&mut Integrator`, so no integration call can hold the table; should a
+    /// prepared plan or similar still share it, it is dropped and rebuilt on
+    /// demand instead.
+    pub(super) fn modify(&mut self, change: impl FnOnce(&mut L)) {
+        match self.lut.as_mut().map(Arc::get_mut) {
+            Some(Some(lut)) => change(lut),
+            Some(None) => self.clear(),
+            None => {}
         }
     }
 }
@@ -124,32 +170,24 @@ impl<K, L> LutCache<K, L> {
 pub(super) type Lut1dCache = LutCache<OneDKey, Prepared1d>;
 pub(super) type Lut2dCache = LutCache<TwoDKey, Prepared2d>;
 
-/// A mapped read guard that provides access to the LUT inside the cache.
-pub(super) struct Lut1dGuard<'a> {
-    _guard: RwLockReadGuard<'a, Lut1dCache>,
-}
+/// Shared handle to a cached lookup table for one image shape. It owns a
+/// reference to the table rather than a lock on the cache, so integrating with
+/// it never blocks another thread that needs a table for a different shape.
+pub(super) struct Lut1dGuard(Arc<Prepared1d>);
 
-impl<'a> std::ops::Deref for Lut1dGuard<'a> {
+impl std::ops::Deref for Lut1dGuard {
     type Target = Prepared1d;
     fn deref(&self) -> &Self::Target {
-        self._guard
-            .lut
-            .as_ref()
-            .expect("Lut1dGuard created without LUT being built")
+        &self.0
     }
 }
 
-pub(super) struct Lut2dGuard<'a> {
-    _guard: RwLockReadGuard<'a, Lut2dCache>,
-}
+pub(super) struct Lut2dGuard(Arc<Prepared2d>);
 
-impl<'a> std::ops::Deref for Lut2dGuard<'a> {
+impl std::ops::Deref for Lut2dGuard {
     type Target = Prepared2d;
     fn deref(&self) -> &Self::Target {
-        self._guard
-            .lut
-            .as_ref()
-            .expect("Lut2dGuard created without LUT being built")
+        &self.0
     }
 }
 
@@ -157,55 +195,35 @@ impl Integrator {
     /// Mask/correction changes preserve sampling tables but invalidate both
     /// arithmetic policies' frame-independent denominators.
     pub(super) fn invalidate_normalization(&self) {
-        if let Some(lut) = self
-            .cache_1d
+        self.cache_1d
             .write()
             .expect("1D LUT cache lock poisoned")
-            .lut
-            .as_mut()
-        {
-            lut.invalidate_normalization();
-        }
-        if let Some(lut) = self
-            .cache_2d
+            .modify(|lut| lut.invalidate_normalization());
+        self.cache_2d
             .write()
             .expect("2D LUT cache lock poisoned")
-            .lut
-            .as_mut()
-        {
-            lut.invalidate_normalization();
-        }
+            .modify(|lut| lut.invalidate_normalization());
     }
 
     pub(super) fn invalidate_mask(&self) {
-        if let Some(lut) = self
-            .cache_1d
+        self.cache_1d
             .write()
             .expect("1D LUT cache lock poisoned")
-            .lut
-            .as_mut()
-        {
-            lut.invalidate_mask();
-        }
-        if let Some(lut) = self
-            .cache_2d
+            .modify(|lut| lut.invalidate_mask());
+        self.cache_2d
             .write()
             .expect("2D LUT cache lock poisoned")
-            .lut
-            .as_mut()
-        {
-            lut.invalidate_mask();
-        }
+            .modify(|lut| lut.invalidate_mask());
     }
 
     /// Initialize a common batch geometry/LUT before entering parallel frame work.
-    /// Lazy initialization itself uses Rayon; completing it first avoids nested
-    /// frame jobs waiting on geometry or cache write locks held by their callers.
+    /// Workers that find the cache cold would each build the same geometry and
+    /// table; completing it first lets all of them share one.
     pub(crate) fn prepare1d(&self, dim1: usize, dim2: usize, n_points: usize) {
-        self.update_geometry_arrays(dim1, dim2);
         if let Some(mask) = &self.mask {
             mask.assert_compatible(dim1, dim2);
         }
+        let view = self.for_shape(dim1, dim2);
         let unit = self.radial_unit;
         let radial_range = self.radial_range_key();
         let key = match self.method {
@@ -230,7 +248,7 @@ impl Integrator {
             },
             super::IntegrationMethod::Histogram => return,
         };
-        drop(self.ensure_lut1d(key));
+        drop(view.ensure_lut1d(key));
     }
 
     pub(super) fn pixel_split2d_key(
@@ -262,22 +280,56 @@ impl Integrator {
             }
         }
     }
+}
 
-    /// Ensures the 1D LUT is built for the given key, using double-checked locking.
-    /// Thread-safe: uses RwLock for interior mutability.
-    pub(super) fn ensure_lut1d(&self, key: OneDKey) -> Lut1dGuard<'_> {
-        // First check with read lock
-        let needs_rebuild = {
-            let cache = self.cache_1d.read().expect("1D LUT cache lock poisoned");
-            match &cache.key {
-                None => true,
-                Some(k) => k != &key,
-            }
-        };
+/// An [`Integrator`] together with the geometry snapshot of one image shape.
+///
+/// Every integration call takes one view for the shape of its image and reads
+/// normalization and lookup tables through it, so all of them belong to that
+/// shape even while other threads integrate images of other shapes with the
+/// same integrator.
+pub(super) struct ShapeView<'a> {
+    integrator: &'a Integrator,
+    pub(super) state: Arc<GeometryState>,
+}
 
-        if needs_rebuild {
-            // Get state for building LUT
-            let state = self.state.read().expect("geometry state lock poisoned");
+impl Integrator {
+    pub(super) fn for_shape(&self, dim1: usize, dim2: usize) -> ShapeView<'_> {
+        if let Some(mask) = &self.mask {
+            mask.assert_compatible(dim1, dim2);
+        }
+        ShapeView {
+            integrator: self,
+            state: self.geometry_for(dim1, dim2),
+        }
+    }
+}
+
+impl ShapeView<'_> {
+    /// Normalization array (pol * sa) for weighted-average integration. An
+    /// `Arc` clone: callers share the buffer without copying it.
+    pub(super) fn normalization(&self) -> Arc<Vec<f64>> {
+        Arc::clone(&self.state.normalization)
+    }
+
+    /// Returns the 1D LUT for this view's image shape and the given key,
+    /// building it if the cache holds a table for another shape or key.
+    ///
+    /// Thread-safe for any mix of shapes: the table is built from the geometry
+    /// snapshot of exactly this shape and handed out as a shared reference, and
+    /// no lock is held while building or integrating. Threads that race on a
+    /// missing table may each build it; the first one stored is shared.
+    pub(super) fn ensure_lut1d(&self, key: OneDKey) -> Lut1dGuard {
+        let ShapeView { integrator, state } = self;
+        let shape = (state.dim1, state.dim2);
+        let cached = integrator
+            .cache_1d
+            .read()
+            .expect("1D LUT cache lock poisoned")
+            .get(shape, &key);
+        let lut = if let Some(lut) = cached {
+            lut
+        } else {
             let radial = &state.radial;
 
             // Build the LUT (this can take time, but we're not holding the cache lock)
@@ -301,7 +353,7 @@ impl Integrator {
                     unit,
                     radial_range,
                 } => {
-                    let mut geom = self.geometry.clone();
+                    let mut geom = integrator.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
                     if pyfai {
@@ -335,7 +387,7 @@ impl Integrator {
                     unit,
                     radial_range,
                 } => {
-                    let mut geom = self.geometry.clone();
+                    let mut geom = integrator.geometry.clone();
                     geom.dim1 = state.dim1;
                     geom.dim2 = state.dim2;
                     match radial_range {
@@ -352,49 +404,40 @@ impl Integrator {
                     }
                 }
             };
-            drop(state);
 
-            // Acquire write lock and double-check (another thread may have built it)
-            let mut cache = self.cache_1d.write().expect("1D LUT cache lock poisoned");
-            if cache.key.as_ref() != Some(&key) {
-                cache.key = Some(key);
-                let mut prepared = Prepared1d::new(lut1d);
-                prepared.set_mask_mode(self.mask_mode);
-                prepared.set_sparse_layout(self.sparse_layout);
-                cache.lut = Some(prepared);
-            }
-        }
-
-        // Return read guard
-        let guard = Lut1dGuard {
-            _guard: self.cache_1d.read().expect("1D LUT cache lock poisoned"),
+            let mut prepared = Prepared1d::new(lut1d);
+            prepared.set_mask_mode(integrator.mask_mode);
+            prepared.set_sparse_layout(integrator.sparse_layout);
+            integrator
+                .cache_1d
+                .write()
+                .expect("1D LUT cache lock poisoned")
+                .insert(shape, key, prepared)
         };
-        guard.prepare_normalization(
-            self.mask.as_ref().map(|m| m.data.as_slice()),
-            &self.get_normalization(),
-            self.fast_math,
+        lut.prepare_normalization(
+            integrator.mask.as_ref().map(|m| m.data.as_slice()),
+            &state.normalization,
+            integrator.fast_math,
         );
-        guard
+        Lut1dGuard(lut)
     }
 
-    /// Ensures the 2D LUT is built for the given key, using double-checked locking.
-    /// Thread-safe: uses RwLock for interior mutability.
-    pub(super) fn ensure_lut2d(&self, key: TwoDKey) -> Lut2dGuard<'_> {
-        // First check with read lock
-        let needs_rebuild = {
-            let cache = self.cache_2d.read().expect("2D LUT cache lock poisoned");
-            match &cache.key {
-                None => true,
-                Some(k) => k != &key,
-            }
-        };
-
-        if needs_rebuild {
-            // Get state for building LUT
-            let state = self.state.read().expect("geometry state lock poisoned");
+    /// Returns the 2D LUT for this view's image shape and the given key.
+    /// Same guarantees as [`Self::ensure_lut1d`].
+    pub(super) fn ensure_lut2d(&self, key: TwoDKey) -> Lut2dGuard {
+        let ShapeView { integrator, state } = self;
+        let shape = (state.dim1, state.dim2);
+        let cached = integrator
+            .cache_2d
+            .read()
+            .expect("2D LUT cache lock poisoned")
+            .get(shape, &key);
+        let lut = if let Some(lut) = cached {
+            lut
+        } else {
             let radial = &state.radial;
             let azimuth = &state.azimuth;
-            let mut geom = self.geometry.clone();
+            let mut geom = integrator.geometry.clone();
             geom.dim1 = state.dim1;
             geom.dim2 = state.dim2;
 
@@ -517,27 +560,20 @@ impl Integrator {
                     unit,
                 ),
             };
-            drop(state);
 
-            // Acquire write lock and double-check
-            let mut cache = self.cache_2d.write().expect("2D LUT cache lock poisoned");
-            if cache.key.as_ref() != Some(&key) {
-                cache.key = Some(key);
-                let mut prepared = Prepared2d::new(lut2d);
-                prepared.set_mask_mode(self.mask_mode);
-                cache.lut = Some(prepared);
-            }
-        }
-
-        // Return read guard
-        let guard = Lut2dGuard {
-            _guard: self.cache_2d.read().expect("2D LUT cache lock poisoned"),
+            let mut prepared = Prepared2d::new(lut2d);
+            prepared.set_mask_mode(integrator.mask_mode);
+            integrator
+                .cache_2d
+                .write()
+                .expect("2D LUT cache lock poisoned")
+                .insert(shape, key, prepared)
         };
-        guard.prepare_normalization(
-            self.mask.as_ref().map(|m| m.data.as_slice()),
-            &self.get_normalization(),
-            self.fast_math,
+        lut.prepare_normalization(
+            integrator.mask.as_ref().map(|m| m.data.as_slice()),
+            &state.normalization,
+            integrator.fast_math,
         );
-        guard
+        Lut2dGuard(lut)
     }
 }

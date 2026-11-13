@@ -945,17 +945,12 @@ impl PyIntegrator {
                         error: None,
                     }
                 };
-                let results = if let Some(&(_, dim1, dim2)) = frames.first() {
-                    if frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2)) {
-                        self.integrator.prepare1d(dim1, dim2, n_points);
-                        frames.par_iter().enumerate().map(integrate).collect()
-                    } else {
-                        // One shared geometry cannot change dimensions in parallel.
-                        frames.iter().enumerate().map(integrate).collect()
-                    }
-                } else {
-                    Vec::new()
-                };
+                if let Some(&(_, dim1, dim2)) = frames.first()
+                    && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                {
+                    self.integrator.prepare1d(dim1, dim2, n_points);
+                }
+                let results = frames.par_iter().enumerate().map(integrate).collect();
 
                 Ok(results)
             }

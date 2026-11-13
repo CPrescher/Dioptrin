@@ -1,70 +1,79 @@
 use std::sync::Arc;
 
-use super::Integrator;
+use super::{GeometryState, Integrator};
 
 impl Integrator {
-    /// Checks whether current tth, radial, azimuth, solid angle and polarization are calculated for the same
-    /// image dimension as dim1 x dim2, if not, they are recalculated.
-    /// Thread-safe: uses RwLock for interior mutability.
-    pub(super) fn update_geometry_arrays(&self, dim1: usize, dim2: usize) {
-        let size = dim1 * dim2;
-
-        // First check with read lock if update is needed
-        let needs_update = {
+    /// Returns tth, radial, azimuth, solid angle, polarization and
+    /// normalization for a `dim1 x dim2` image, computing them if the shared
+    /// state holds another shape.
+    ///
+    /// The result is an immutable snapshot, so it stays valid for this shape
+    /// whatever other threads do. No lock is held while the arrays are computed
+    /// (that uses Rayon, and a lock held across Rayon work can deadlock when
+    /// the waiting thread steals another frame of the same batch). Threads
+    /// that race on a cold or different-shape state may each compute the
+    /// arrays once; the values are identical and the first one published wins.
+    pub(super) fn geometry_for(&self, dim1: usize, dim2: usize) -> Arc<GeometryState> {
+        {
             let state = self.state.read().expect("geometry state lock poisoned");
-            (state.dim1 * state.dim2) != size || state.dim1 != dim1 || state.dim2 != dim2
-        };
+            if state.dim1 == dim1 && state.dim2 == dim2 {
+                return Arc::clone(&state);
+            }
+        }
+        let computed = Arc::new(self.compute_geometry(dim1, dim2));
+        let mut state = self.state.write().expect("geometry state lock poisoned");
+        if state.dim1 != dim1 || state.dim2 != dim2 {
+            *state = computed;
+        }
+        Arc::clone(&state)
+    }
 
-        if needs_update {
-            self.refresh_geometry_arrays(dim1, dim2);
+    fn compute_geometry(&self, dim1: usize, dim2: usize) -> GeometryState {
+        let size = dim1 * dim2;
+        let mut temp_geometry = self.geometry.clone();
+        temp_geometry.dim1 = dim1;
+        temp_geometry.dim2 = dim2;
+
+        let tth = temp_geometry.calc_tth_all();
+        let radial = self
+            .radial_unit
+            .convert_from_tth(&tth, self.geometry.poni.wavelength);
+        let azimuth = temp_geometry.calc_azimuth_all();
+        let solid_angle = temp_geometry.calc_solid_angle();
+        let polarization = match self.polarization_factor {
+            Some(factor) => temp_geometry.calc_polarization(factor, &tth, &azimuth),
+            None => vec![1.0; size],
+        };
+        // Normalization: pol * sa (pyFAI-style)
+        let normalization = Arc::new(
+            (0..size)
+                .map(|i| polarization[i] * solid_angle[i])
+                .collect(),
+        );
+        GeometryState {
+            dim1,
+            dim2,
+            tth,
+            radial,
+            azimuth,
+            solid_angle,
+            polarization,
+            normalization,
         }
     }
 
-    fn refresh_geometry_arrays(&self, dim1: usize, dim2: usize) {
-        let size = dim1 * dim2;
-        // Cache readers may read normalization from state. Acquire cache
-        // writers first, then state, and publish geometry plus invalidation
-        // together. A late cold-start worker must not clear another worker's
-        // freshly built LUT after discovering that geometry is already ready.
-        let mut cache_1d = self.cache_1d.write().expect("1D LUT cache lock poisoned");
-        let mut cache_2d = self.cache_2d.write().expect("2D LUT cache lock poisoned");
-        let mut state = self.state.write().expect("geometry state lock poisoned");
-        if (state.dim1 * state.dim2) != size || state.dim1 != dim1 || state.dim2 != dim2 {
-            // Update geometry dimensions temporarily for calculations
-            let mut temp_geometry = self.geometry.clone();
-            temp_geometry.dim1 = dim1;
-            temp_geometry.dim2 = dim2;
-
-            state.dim1 = dim1;
-            state.dim2 = dim2;
-            state.tth = temp_geometry.calc_tth_all();
-            state.radial = self
-                .radial_unit
-                .convert_from_tth(&state.tth, self.geometry.poni.wavelength);
-            state.azimuth = temp_geometry.calc_azimuth_all();
-            state.solid_angle = temp_geometry.calc_solid_angle();
-
-            // Update polarization
-            state.polarization = match self.polarization_factor {
-                Some(factor) => temp_geometry.calc_polarization(factor, &state.tth, &state.azimuth),
-                None => vec![1.0; size],
-            };
-
-            // Update normalization: pol * sa (pyFAI-style)
-            state.normalization = Arc::new(
-                (0..size)
-                    .map(|i| state.polarization[i] * state.solid_angle[i])
-                    .collect(),
-            );
-            cache_1d.key = None;
-            cache_1d.lut = None;
-            cache_2d.key = None;
-            cache_2d.lut = None;
-        }
+    /// Normalization of the most recently used image shape. Integration code
+    /// must take it from [`Self::for_shape`] instead, which cannot be switched
+    /// to another shape by a concurrent call.
+    #[cfg(test)]
+    pub(super) fn get_normalization(&self) -> Arc<Vec<f64>> {
+        let state = self.state.read().expect("geometry state lock poisoned");
+        Arc::clone(&state.normalization)
     }
 
     pub(super) fn update_polarization(&self) {
-        let mut state = self.state.write().expect("geometry state lock poisoned");
+        let mut guard = self.state.write().expect("geometry state lock poisoned");
+        let state = Arc::make_mut(&mut guard);
         let size = state.dim1 * state.dim2;
         if size == 0 {
             return;
@@ -88,16 +97,8 @@ impl Integrator {
                     .collect(),
             );
         }
-        drop(state);
+        drop(guard);
         self.invalidate_normalization();
-    }
-
-    /// Get the normalization array (pol * sa) for weighted-average integration.
-    /// Thread-safe: only reads from state. Returns an `Arc` clone so callers
-    /// share the underlying buffer without copying it (cheap atomic refcount bump).
-    pub(super) fn get_normalization(&self) -> Arc<Vec<f64>> {
-        let state = self.state.read().expect("geometry state lock poisoned");
-        Arc::clone(&state.normalization)
     }
 }
 
@@ -123,9 +124,10 @@ mod concurrent_tests {
         };
         integrator.integrate1d(&frame, 4);
         integrator.integrate2d(&frame, 4, 2);
-        // Model a worker that observed cold state before another worker built
-        // the geometry and both LUTs, then reached the write-side double check.
-        integrator.refresh_geometry_arrays(2, 2);
+        // A worker that observed cold state before another worker built the
+        // geometry and both LUTs must reuse them, not clear them.
+        let state = integrator.geometry_for(2, 2);
+        assert!(Arc::ptr_eq(&state, &integrator.geometry_for(2, 2)));
         assert!(integrator.cache_1d.read().unwrap().lut.is_some());
         assert!(integrator.cache_2d.read().unwrap().lut.is_some());
     }
