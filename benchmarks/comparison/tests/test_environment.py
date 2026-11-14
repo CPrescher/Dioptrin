@@ -1,6 +1,7 @@
 """Persistent cache invalidation, publication, and concurrent construction."""
 
 import multiprocessing
+import errno
 import os
 from pathlib import Path
 import sys
@@ -52,6 +53,28 @@ def concurrent_warm_request(root, barrier, queue):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_lock_contention_accepts_eacces_but_preserves_other_errors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch(
+                "environment.fcntl.lockf",
+                side_effect=[PermissionError(errno.EACCES, "busy lock"), None],
+            ):
+                result = ensure_cached(
+                    Path(temporary),
+                    {"cpu": "a"},
+                    lambda generation: (generation / "complete").write_text("ok"),
+                    lambda generation: (generation / "complete").is_file(),
+                )
+                self.assertFalse(result["reused"])
+            with (
+                patch(
+                    "environment.fcntl.lockf",
+                    side_effect=PermissionError(errno.EPERM, "denied"),
+                ),
+                self.assertRaises(PermissionError),
+            ):
+                ensure_cached(Path(temporary), {"cpu": "b"}, None, None)
+
     def test_native_cpu_identity_ignores_counts_but_rejects_mixed_instruction_sets(
         self,
     ):

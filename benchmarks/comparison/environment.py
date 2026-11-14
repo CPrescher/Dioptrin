@@ -3,6 +3,7 @@
 
 import argparse
 from dataclasses import dataclass
+import errno
 import fcntl
 import hashlib
 import json
@@ -276,7 +277,9 @@ def ensure_cached(cache_root, identity, build, validate, rebuild=False):
     with (entry / "build.lock").open("a+") as lock:
         try:
             fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        except OSError as error:
+            if error.errno not in (errno.EAGAIN, errno.EACCES):
+                raise
             print(f"Waiting for environment build lock: {entry}", flush=True)
             fcntl.lockf(lock, fcntl.LOCK_EX)
         lock.seek(0)
@@ -308,7 +311,7 @@ def ensure_cached(cache_root, identity, build, validate, rebuild=False):
                 )
         except BaseException:
             # This generation has never been visible to a benchmark job.
-            shutil.rmtree(generation)
+            shutil.rmtree(generation, ignore_errors=True)
             raise
         # Mark before publication: a marked generation might be in use, even
         # if a kill arrives between marker creation and pointer replacement.
