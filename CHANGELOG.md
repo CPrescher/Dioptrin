@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Azimuthal brackets for texture analysis: 2D rows can be given as centre ±
+  half-width instead of a bin count. Python `integrate2d`, `batch2d`,
+  `batch2d_iter` and `MultiIntegrator.integrate2d` accept the keyword
+  `azimuthal_bracket` (radians) in place of `n_azimuthal`; the first row is
+  centred on the start of `azimuthal_range` (default `(0, 2π)`, end
+  exclusive), e.g. `azimuthal_bracket=np.radians(2.5)` gives 72 rows
+  centred on 0°, 5°, …, 355°. Rows are contiguous and the span must be a whole
+  number of rows. In Rust: `Integrator::integrate2d_on_azimuthal_brackets`
+  (and `_from_slice`) and the helper `integration::azimuthal_bracket_bins`.
+  `n_azimuthal` is now optional in those Python signatures; existing calls are
+  unchanged.
 - `Integrator::integrate2d_on_azimuthal_range` (and `_from_slice`) integrates
   2D on true azimuthal edges `(min, max)` in radians, including sectors and
   sectors crossing the ±π cut, and returns intensity, optional errors and the
@@ -92,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(0, 1.57)` with 90 bins put the whole circle into five bins of 1.57 rad.
   They now integrate the true range: the bins split `[min, max)` evenly, pixels
   outside are left out, and `result.azimuthal` holds the bin centres. Invalid
-  ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
+  ranges (non-finite, `max <= min`, span above 2π) raise
   `ValueError`; batches check before starting.
   Non-finite pixels behave as without a range: they make only the bins they
   contribute to NaN or infinite. Radially nothing the default path keeps is
@@ -181,6 +192,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dioptrin.pyi` now covers the calibration API (`Calibrant`,
   `CalibrationPoints`, `refine`, `auto_calibrate`, `find_peaks_image` and the
   related functions and result classes), which was missing from the stubs.
+- One `Integrator` used from several threads with images of **different
+  shapes** (Python file batches and list/generator `_iter` calls with workers,
+  or Rust threads sharing an `Arc<Integrator>`) could crash with a segmentation fault, panic with
+  "Lut2dGuard created without LUT being built", hang, or silently integrate an
+  image with the lookup table of another shape. The cached geometry and lookup
+  tables belonged to whichever shape was requested last, and a call could pick
+  up a table that another thread had just rebuilt for its own image. Every call
+  now works on the geometry and table of its own image shape, so mixed shapes
+  give the same results as one integrator per shape. Each 1D/2D cache still
+  keeps one table, so switching shapes can rebuild it; warm, fixed-shape batches
+  continue to share their prepared tables. Mixed-shape array lists in Python
+  `batch1d` now use parallel processing too; they previously ran serially.
+  Histogram prewarming retains its shared geometry, and Histogram integration
+  borrows the immutable radial snapshot instead of copying it for every frame.
+- Calling `with_radial_unit` on an already-used Rust integrator now refreshes
+  its cached radial coordinates, like `set_radial_unit`. Previously it could
+  rebuild tables using the old unit's coordinates. A wrong-shape mask is also
+  rejected before publishing geometry for the rejected image.
+- The lookup-table kernels read pixels without bounds checks and trusted the
+  table to fit the image. Prepared tables now verify once per call
+  that the image, mask, normalization and variance arrays cover every pixel
+  the table addresses; public caller-built tables validate each gathered index.
+  Invalid inputs panic with a clear message. This also covers the public
+  `lut::integrate1d*`/`integrate2d*` functions, which accept caller-built
+  `Lut1d`/`Lut2d` values and could read out of bounds from safe code.
+  Public caller-built tables pay for a check per gathered index; cached
+  Integrator/plan tables retain constant-time array-length checks.
 
 ### Compatibility and validation
 
@@ -237,6 +275,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still uses row-normalized polar areas.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
+
+### Consolidation follow-up
+
+- Preserve non-finite signal, zero normalization, and signed/zero weights when
+  dynamic workers fall back to CSR with supplied variances. The optional spread
+  calculation retains its documented sample filtering.
+
+### Range support
+
+- Accept finite, resolvable azimuthal starts outside ±2π on shared grids and
+  true-range 2D APIs. For example, (-3π, -π) uses the equivalent (-π, π)
+  calculation and returns the corrected (-π, π) axis. Spans above one full
+  turn, such as (-4π, 4π), remain rejected. Previously accepted ranges and
+  their documented pyFAI seam behavior are unchanged.
+
+### Performance
+
+- Add reusable `Dynamic1dWorker` execution with supplied variances and changing
+  masks, sharing immutable geometry and correction data across frame workers.
+- Add `FixedCsr1dInputPlan` for strict uint16/uint32 integration without a
+  full-frame float64 conversion, with serial frame-worker and parallel-bin
+  single-image entry points.
+
+- Add an opt-in resident 1D CSC/CSR selector using a broad detector-size/bin estimate:
+  CSR generally, with a CSC exception above about 8 MP for high bin counts
+  without Poisson errors. No runtime timing probes are used;
+  streamed/parallel block execution is unchanged.
+  Splitting weights are unchanged; ordinary CSR and CSC can differ in rounding.
+
+- Cache a bin-oriented execution table for sufficiently large resident fixed-mask
+  1D frames. Preserve CSC coefficients, chunk/lane reductions and Poisson errors
+  bitwise while avoiding histogram scatter/merge work. Streamed block and outer
+  Rayon batch workers retain CSC; the optional resident table is capped at 128 MiB.
+
+- Add strict `FixedCsr1dPlan` snapshots for compatibility LUTs, caching fixed-mask
+  normalization while retaining the original signal and error reduction order.
+- Add `prepare_fixed2d_on_grid` / `FixedGrid2dPlan` for normalized cached cakes,
+  validating static geometry once and avoiding unused raw-sum/count output arrays.
+  Frame dimensions and unmasked finite samples remain checked on each call.
+
+- Vectorize and parallelize the full-resolution Massif Gaussian background
+  filter while preserving each pixel's floating-point summation order.
+- Add Rust `PreparedMassif` to reuse immutable samples and component labels
+  across seed searches. Existing `find_peaks` remains available and preserves
+  peak ordering, deduplication and subpixel positions. The shared filter also
+  accelerates image-wide calibration candidate extraction.
+
 
 ## [0.12.0] - 2026-11-09
 

@@ -45,6 +45,77 @@ fn image() -> Vec<f64> {
         .collect()
 }
 
+#[test]
+fn fixed_grid_snapshots_preserve_corrected_range_edges_and_error_bars() {
+    // Exercise the cached execution with the exact edge policies of the corrected
+    // range API, including full circles written on either side of the seam.
+    for method in methods().into_iter().chain([IntegrationMethod::PyfaiFull]) {
+        for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
+            for fast in [false, true] {
+                let mut ai = integrator(method)
+                    .with_radial_unit(unit)
+                    .with_fast_math(fast)
+                    .with_polarization_factor(0.6);
+                for masking in 0..3 {
+                    ai.set_mask(Mask {
+                        data: (0..ROWS * COLS)
+                            .map(|i| u8::from(masking == 2 || (masking == 1 && i % 17 == 0)))
+                            .collect(),
+                        dim1: ROWS,
+                        dim2: COLS,
+                    });
+                    for range in [
+                        (-PI, PI),
+                        (0., TAU),
+                        (-TAU, 0.),
+                        (-3. * PI, -PI),
+                        (2.5, 2.5 + PI / 2.),
+                    ] {
+                        let mut data = image();
+                        let first = run(&ai, &data, range, false).unwrap();
+                        let radial = ai.default_radial_edges_2d(&ai.for_shape(ROWS, COLS), NR);
+                        let mut grid = IntegrationGrid2d::new(NR, NA, radial, range)
+                            .unwrap()
+                            .with_clamped_index_rounding();
+                        // Mirror the radial clamping of the range path.
+                        match method {
+                            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
+                            IntegrationMethod::Supersampled { .. } => {
+                                grid = grid.with_clamped_radial_outside()
+                            }
+                            _ => (),
+                        }
+                        let plan = ai.prepare_fixed2d_on_grid((ROWS, COLS), &grid).unwrap();
+                        let same = |a: &[f64], b: &[f64]| {
+                            assert_eq!(a.len(), b.len());
+                            for (a, b) in a.iter().zip(b) {
+                                assert_eq!(
+                                    a.to_bits(),
+                                    b.to_bits(),
+                                    "{method:?} {unit:?} {range:?}"
+                                );
+                            }
+                        };
+                        same(
+                            &plan.integrate_frame(&data, false).unwrap().0,
+                            &first.intensity,
+                        );
+                        for scale in [1., -0.3] {
+                            for x in &mut data {
+                                *x *= scale;
+                            }
+                            let expected = run(&ai, &data, range, true).unwrap();
+                            let (actual, errors) = plan.integrate_frame(&data, true).unwrap();
+                            same(&actual, &expected.intensity);
+                            same(&errors.unwrap(), expected.errors.as_ref().unwrap());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn run(
     ai: &Integrator,
     data: &[f64],
@@ -238,9 +309,9 @@ fn default_edges_reproduce_the_default_cake() {
                 dim2: COLS,
             });
         }
-        ai.update_geometry_arrays(ROWS, COLS);
+        ai.geometry_for(ROWS, COLS);
         if let IntegrationMethod::Supersampled { n_ss } = method {
-            let (r0, _) = ai.default_radial_edges_2d(ROWS, COLS, NR);
+            let (r0, _) = ai.default_radial_edges_2d(&ai.for_shape(ROWS, COLS), NR);
             below_lower_edge += subpixel_radial(&g, RadialUnit::TthDeg, n_ss)
                 .iter()
                 .filter(|r| **r < r0)
@@ -358,7 +429,7 @@ fn explicit_full_circle_keeps_radial_grid_and_corrections() {
     for method in methods() {
         let mut ai = integrator(method);
         ai.set_polarization_factor(Some(0.95));
-        ai.update_geometry_arrays(ROWS, COLS);
+        ai.geometry_for(ROWS, COLS);
         let normalization = ai.get_normalization().to_vec();
         let default = ai.integrate2d_from_slice(&normalization, ROWS, COLS, NR, NA);
         let full = run(&ai, &normalization, (-PI, PI), false).unwrap();
@@ -373,7 +444,7 @@ fn explicit_full_circle_keeps_radial_grid_and_corrections() {
         // Radial centres are those of the default grid.
         let step = (full.radial[NR - 1] - full.radial[0]) / (NR - 1) as f64;
         let lo = full.radial[0] - 0.5 * step;
-        let expected = ai.default_radial_edges_2d(ROWS, COLS, NR);
+        let expected = ai.default_radial_edges_2d(&ai.for_shape(ROWS, COLS), NR);
         assert!(
             (lo - expected.0).abs() < 1e-12 && (lo + NR as f64 * step - expected.1).abs() < 1e-9
         );
@@ -427,7 +498,7 @@ fn invalid_ranges_and_histogram_are_rejected() {
         (1.0, 1.0),
         (1.0, -1.0),
         (0.0, TAU + 0.01),
-        (-7.0, -6.0),
+        (-4.0 * PI, 4.0 * PI),
     ] {
         assert!(run(&ai, &data, range, false).is_err(), "{range:?} accepted");
     }
@@ -442,6 +513,39 @@ fn nonfinite(v: &[f64]) -> Vec<usize> {
 
 fn bit_identical(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+#[test]
+fn distant_full_turns_are_corrected_with_consistent_axes_and_results() {
+    for method in methods().into_iter().chain([IntegrationMethod::PyfaiFull]) {
+        let data = image();
+        for fast in [false, true] {
+            let ai = integrator(method).with_fast_math(fast);
+            let expected = run(&ai, &data, (-PI, PI), true).unwrap();
+            let shifted = run(&ai, &data, (-3. * PI, -PI), true).unwrap();
+            assert!(bit_identical(&expected.intensity, &shifted.intensity));
+            assert!(bit_identical(
+                expected.errors.as_ref().unwrap(),
+                shifted.errors.as_ref().unwrap()
+            ));
+            assert_eq!(shifted.azimuthal, expected.azimuthal);
+            assert!(
+                run(&ai, &data, (-4. * PI, 4. * PI), false)
+                    .unwrap_err()
+                    .contains("one full turn")
+            );
+            // Reuse the same integrator for a distant sector too.
+            let range = (-7., -6.);
+            let equivalent = (range.0 + TAU, range.1 + TAU);
+            let a = run(&ai, &data, range, true).unwrap();
+            let b = run(&ai, &data, equivalent, true).unwrap();
+            assert!(bit_identical(&a.intensity, &b.intensity));
+            assert!(bit_identical(
+                a.errors.as_ref().unwrap(),
+                b.errors.as_ref().unwrap()
+            ));
+        }
+    }
 }
 
 /// Non-finite pixels are not rejected: as on the default path they affect only
@@ -588,7 +692,7 @@ fn supersampled_keeps_the_outermost_subpixel_in_every_unit() {
                 dim1: ROWS,
                 dim2: COLS,
             });
-            ai.update_geometry_arrays(ROWS, COLS);
+            ai.geometry_for(ROWS, COLS);
             let (a0, a1, _) = {
                 let state = ai.state.read().unwrap();
                 histogram::supersampled_azimuthal_min_max_step(
@@ -708,8 +812,8 @@ fn supersampled_keeps_a_subpixel_just_above_the_upper_edge() {
     let ai = Integrator::new(g.clone())
         .with_method(IntegrationMethod::Supersampled { n_ss })
         .with_radial_unit(RadialUnit::TthDeg);
-    ai.update_geometry_arrays(rows, cols);
-    let (_, r1) = ai.default_radial_edges_2d(rows, cols, NR);
+    ai.geometry_for(rows, cols);
+    let (_, r1) = ai.default_radial_edges_2d(&ai.for_shape(rows, cols), NR);
     assert!(
         subpixel_radial(&g, RadialUnit::TthDeg, n_ss)
             .iter()
@@ -783,8 +887,8 @@ fn supersampled_radial_axis_matches_the_default_on_random_geometries() {
                 let ai = Integrator::new(g.clone())
                     .with_method(IntegrationMethod::Supersampled { n_ss })
                     .with_radial_unit(unit);
-                ai.update_geometry_arrays(rows, cols);
-                let (r0, r1) = ai.default_radial_edges_2d(rows, cols, NR);
+                ai.geometry_for(rows, cols);
+                let (r0, r1) = ai.default_radial_edges_2d(&ai.for_shape(rows, cols), NR);
                 let radial = subpixel_radial(&g, unit, n_ss);
                 above += radial.iter().any(|r| *r > r1) as usize;
                 below += radial.iter().any(|r| *r < r0) as usize;
@@ -900,7 +1004,7 @@ fn shared_grids_keep_values_whose_index_rounds_to_n() {
 
     // Through the real paths: a one-hot pixel just below the upper edge.
     let ai = integrator(IntegrationMethod::Counting);
-    ai.update_geometry_arrays(ROWS, COLS);
+    ai.geometry_for(ROWS, COLS);
     let (radial, azimuth) = {
         let state = ai.state.read().unwrap();
         (state.radial.clone(), state.azimuth.clone())
@@ -945,4 +1049,219 @@ fn shared_grids_keep_values_whose_index_rounds_to_n() {
     assert_eq!(kept(lo, v, (-PI, PI)), [0.0, 0.0]);
     // Outside a sector: dropped.
     assert_eq!(kept(lo, hi, (-2.0, -1.0)), [0.0, 0.0]);
+}
+
+/// Rows given as centre ± bracket are the range cake shifted back by one
+/// bracket: 0° and 90° are row centres, and the values are those of the
+/// explicit edges.
+#[test]
+fn brackets_centre_rows_on_the_requested_directions() {
+    let bracket = 2.5f64.to_radians();
+    assert_eq!(azimuthal_bracket_bins((0.0, TAU), bracket).unwrap().0, 72);
+    for method in methods() {
+        let ai = integrator(method);
+        let got = ai
+            .integrate2d_on_azimuthal_brackets_from_slice(
+                &image(),
+                ROWS,
+                COLS,
+                NR,
+                (0.0, TAU),
+                bracket,
+                true,
+            )
+            .unwrap();
+        assert_eq!(got.azimuthal.len(), 72);
+        for (i, centre) in got.azimuthal.iter().enumerate() {
+            assert!((centre - 2.0 * bracket * i as f64).abs() < 1e-12);
+        }
+        assert!((got.azimuthal[18] - PI / 2.0).abs() < 1e-12);
+        let reference = ai
+            .integrate2d_on_azimuthal_range_from_slice(
+                &image(),
+                ROWS,
+                COLS,
+                NR,
+                72,
+                (-bracket, TAU - bracket),
+                true,
+            )
+            .unwrap();
+        for (a, b) in got.intensity.iter().zip(&reference.intensity) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{method:?}");
+        }
+    }
+}
+
+#[test]
+fn brackets_also_describe_sectors_and_reject_uneven_tilings() {
+    // Centres 0°, 10°, …, 80°: nine rows with edges (-5°, 85°).
+    let (n, (lo, hi)) = azimuthal_bracket_bins((0.0, PI / 2.0), 5f64.to_radians()).unwrap();
+    assert_eq!(n, 9);
+    assert!((lo + 5f64.to_radians()).abs() < 1e-12);
+    assert!((hi - 85f64.to_radians()).abs() < 1e-12);
+    for (range, bracket) in [
+        ((0.0, TAU), 3.5f64.to_radians()),
+        ((0.0, TAU), 0.0),
+        ((0.0, TAU), -0.1),
+        ((0.0, TAU), f64::NAN),
+        ((0.0, TAU), TAU),
+        ((1.0, 1.0), 0.1),
+        ((0.0, f64::INFINITY), 0.1),
+    ] {
+        assert!(
+            azimuthal_bracket_bins(range, bracket).is_err(),
+            "{range:?} {bracket}"
+        );
+    }
+    // More than one turn is rejected.
+    assert!(azimuthal_bracket_bins((0.0, 2.0 * TAU), 0.1 * TAU).is_err());
+    let ai = integrator(IntegrationMethod::Counting);
+    assert!(
+        ai.integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            (0.0, 2.0 * TAU),
+            0.1 * TAU,
+            false
+        )
+        .is_err()
+    );
+}
+
+/// A single-precision bracket is accepted, and the first centre (not the first
+/// edge) decides whether a far-away start is corrected.
+#[test]
+fn brackets_accept_f32_and_correct_distant_centres() {
+    let bracket = 2.5f64.to_radians();
+    assert_eq!(
+        azimuthal_bracket_bins((0.0, TAU), 2.5f32.to_radians() as f64)
+            .unwrap()
+            .0,
+        72
+    );
+    let first_centre = |range| {
+        let (_, (lo, _)) = azimuthal_bracket_bins(range, bracket).unwrap();
+        lo + bracket
+    };
+    // In [-π, 2π]: kept as given.
+    assert!((first_centre((TAU, 2.0 * TAU)) - TAU).abs() < 1e-12);
+    assert!((first_centre((-PI, PI)) + PI).abs() < 1e-12);
+    // Outside: corrected to [-π, π), whatever the bracket size.
+    for rows in [1.0, 2.0, 100.0, 1000.0] {
+        for (start, expected) in [
+            (-TAU + 0.01, 0.01),
+            (-1.5 * PI, 0.5 * PI),
+            (-PI - 1e-9, PI - 1e-9),
+            (TAU + 1e-9, 1e-9),
+        ] {
+            let half = PI / rows;
+            let (n, (lo, hi)) = azimuthal_bracket_bins((start, start + TAU), half).unwrap();
+            assert_eq!(n as f64, rows);
+            assert!((lo + half - expected).abs() < 1e-9, "{start} {rows}");
+            // The grid must not shift the edges again.
+            let grid = IntegrationGrid2d::new(1, n, (0.0, 1.0), (lo, hi)).unwrap();
+            assert_eq!(grid.azimuthal_range(), (lo, hi), "{start} {rows}");
+        }
+    }
+    // A full turn that is a hair too long (or single precision) is one turn:
+    // the single row stays centred on the requested start.
+    for end in [PI + 4e-13, std::f32::consts::PI as f64] {
+        let start = -PI;
+        let (n, (lo, hi)) = azimuthal_bracket_bins((start, end), PI).unwrap();
+        assert_eq!(n, 1);
+        assert!((lo + PI - start).abs() < 1e-12 && hi - lo <= TAU);
+        assert!(IntegrationGrid2d::new(1, n, (0.0, 1.0), (lo, hi)).is_ok());
+    }
+    assert_eq!(
+        azimuthal_bracket_bins(
+            (0.0, std::f32::consts::TAU as f64),
+            2.5f32.to_radians() as f64
+        )
+        .unwrap()
+        .0,
+        72
+    );
+    // Very fine brackets must still divide the span: half a row off is rejected.
+    assert!(azimuthal_bracket_bins((0.0, TAU), PI / 1_000_000.5).is_err());
+    assert!(
+        (first_centre((TAU + 2.0 * bracket, 2.0 * TAU + 2.0 * bracket)) - 2.0 * bracket).abs()
+            < 1e-12
+    );
+    assert!(first_centre((-TAU, 0.0)).abs() < 1e-12);
+    assert!(first_centre((-3.0 * TAU, -2.0 * TAU)).abs() < 1e-12);
+    // The corrected cake is the same cake.
+    let ai = integrator(IntegrationMethod::PixelSplit);
+    let run = |range| {
+        ai.integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            range,
+            bracket,
+            true,
+        )
+        .unwrap()
+    };
+    let base = run((0.0, TAU));
+    for range in [(-TAU, 0.0), (5.0 * TAU, 6.0 * TAU)] {
+        let got = run(range);
+        for (a, b) in got.azimuthal.iter().zip(&base.azimuthal) {
+            assert!((a - b).abs() < 1e-9, "{range:?}");
+        }
+        for (a, b) in got.intensity.iter().zip(&base.intensity) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{range:?}");
+        }
+    }
+    // A start that is not a multiple of the row width: -270° becomes 90°, and
+    // the cake is the base cake rotated by 18 rows.
+    let got = run((-1.5 * PI, 0.5 * PI));
+    assert!((got.azimuthal[0] - 0.5 * PI).abs() < 1e-9);
+    let n = got.azimuthal.len();
+    for row in 0..n {
+        for r in 0..NR {
+            let (a, b) = (
+                got.intensity[row * NR + r],
+                base.intensity[(row + 18) % n * NR + r],
+            );
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0));
+        }
+    }
+}
+
+/// `PyfaiFull` runs in bracket mode and matches its own range cake on the same
+/// edges (its rows depend on where the seam lies, so only that is compared).
+#[test]
+fn brackets_work_with_pyfai_full() {
+    let bracket = 5f64.to_radians();
+    let ai = integrator(IntegrationMethod::PyfaiFull);
+    let got = ai
+        .integrate2d_on_azimuthal_brackets_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            (0.0, TAU),
+            bracket,
+            true,
+        )
+        .unwrap();
+    let reference = ai
+        .integrate2d_on_azimuthal_range_from_slice(
+            &image(),
+            ROWS,
+            COLS,
+            NR,
+            36,
+            (-bracket, TAU - bracket),
+            true,
+        )
+        .unwrap();
+    assert_eq!(got.azimuthal.len(), 36);
+    assert_eq!(got.intensity, reference.intensity);
+    assert_eq!(got.errors, reference.errors);
+    assert!(got.intensity.iter().any(|v| *v > 0.0));
 }

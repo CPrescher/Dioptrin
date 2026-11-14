@@ -82,10 +82,18 @@ The exact Python signature is:
 
 ```python
 MultiIntegrator.integrate2d(
-    images, n_radial, n_azimuthal, errors=False, azimuthal_range=None,
+    images, n_radial, n_azimuthal=None, errors=False, azimuthal_range=None,
     *, normalization="relative", normalization_factors=None,
+    azimuthal_bracket=None,
 ) -> IntegrationResult
 ```
+
+Give either `n_azimuthal` or `azimuthal_bracket`. The bracket (radians) asks
+for contiguous rows of centre ± bracket, as used in texture analysis: the first
+row is centred on the start of `azimuthal_range`, which then means centres and
+defaults to `(0, 2*pi)`. `azimuthal_bracket=np.radians(2.5)` gives 72 rows
+centred on 0°, 5°, …, 355°. The span must be a whole number of rows, and the
+end of the range is exclusive (it is where the next centre would be).
 
 Each detector retains its own shape, pixel sizes, distance, PONI offsets,
 rotations, mask and polarization. Images are C-contiguous 2D float64 arrays or
@@ -104,8 +112,9 @@ multi-integrator when calibration or mask settings change.
 - Units: `2th_rad`, `2th_deg`, `q_A^-1`, `q_nm^-1`. q requires a positive finite
   wavelength in meters for each detector. Geometry distances and pixel sizes
   use meters; rotations and azimuthal coordinates use radians.
-- Azimuthal edges default to `(-pi, pi)`. The start is in `[-2*pi, 2*pi]` and
-  the increasing span is at most `2*pi`. A sector crossing the discontinuity
+- Azimuthal edges default to `(-pi, pi)`. Any finite, resolvable start is accepted;
+  the increasing span is at most `2*pi`. Starts outside ±`2*pi` are translated
+  to an equivalent start in [-π, π), including the returned axis labels. A sector crossing the discontinuity
   can be expressed as `(3*pi/4, 5*pi/4)`. Angles wrap over `2*pi`, then the
   requested sector is **clipped**. They never fold over the sector width.
 - Bins are half-open. Out-of-range centers/samples are excluded; split pixels

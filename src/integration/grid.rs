@@ -79,12 +79,20 @@ impl IntegrationGrid2d {
         if radial_range.0 < 0.0 {
             return Err("radial range must be nonnegative".into());
         }
-        if azimuthal_range.0 < -TAU
-            || azimuthal_range.0 > TAU
-            || azimuthal_range.1 - azimuthal_range.0 > TAU + 1e-12
-        {
-            return Err("azimuthal start must be in [-2π, 2π] and span must be at most 2π".into());
+        if azimuthal_range.1 - azimuthal_range.0 > TAU + 1e-12 {
+            return Err("azimuthal span must be at most 2π (one full turn)".into());
         }
+        // Correct distant starts before computing weights or axis labels. Keep
+        // all previously accepted ranges, including pyFAI's documented seams.
+        let azimuthal_range = if !(-TAU..=TAU).contains(&azimuthal_range.0) {
+            let mut start = azimuthal_range.0.rem_euclid(TAU);
+            if start >= std::f64::consts::PI {
+                start -= TAU;
+            }
+            (start, start + (azimuthal_range.1 - azimuthal_range.0))
+        } else {
+            azimuthal_range
+        };
         Ok(Self {
             pixel_split_mode: PixelSplitMode::Fractional,
             n_radial,
@@ -203,6 +211,69 @@ fn centers((lo, hi): (f64, f64), count: usize) -> Vec<f64> {
     (0..count).map(|i| lo + (i as f64 + 0.5) * step).collect()
 }
 
+/// Bin count and outer edges of contiguous azimuthal rows described by their
+/// centres: the first row is centred on `center_range.0`, every row covers its
+/// centre ± `half_width`, and the centres advance by `2 * half_width` until
+/// just before `center_range.1`. All angles are radians. The end is exclusive:
+/// it is where the next centre would be, not a centre itself, so the rows end
+/// one half-width before it.
+///
+/// Returns `(n_azimuthal, (min, max))` for
+/// [`Integrator::integrate2d_on_azimuthal_range`]. For example `(0, 2π)` with a
+/// 2.5° bracket gives 72 rows centred on 0°, 5°, …, 355° with edges
+/// `(-2.5°, 357.5°)`. The span must be at most 2π and a whole number of rows,
+/// otherwise an error is returned rather than adjusting the bracket. Both
+/// checks allow 1e-6 relative, so single-precision angles are accepted; the
+/// row width actually used is the span divided by the row count.
+///
+/// A first centre in [-π, 2π] is kept as given, which covers both the
+/// -180°…180° and the 0°…360° convention. Any other first centre is corrected
+/// to the equivalent angle in [-π, π), independent of the bracket size.
+pub fn azimuthal_bracket_bins(
+    center_range: (f64, f64),
+    half_width: f64,
+) -> Result<(usize, (f64, f64)), String> {
+    let (first, end) = center_range;
+    let span = end - first;
+    if !first.is_finite() || !end.is_finite() || !span.is_finite() || span <= 0.0 {
+        return Err("azimuthal centre range must be finite and increasing".into());
+    }
+    if !half_width.is_finite() || half_width <= 0.0 {
+        return Err("azimuthal bracket must be finite and positive".into());
+    }
+    if span > TAU * (1.0 + 1e-6) {
+        return Err("azimuthal centres must span at most 2π (one full turn)".into());
+    }
+    // A full turn written in single precision, or far from zero, is a full turn.
+    let span = span.min(TAU);
+    let rows = span / (2.0 * half_width);
+    let n = rows.round();
+    // Relative for rounding in the bracket, capped so that very fine brackets
+    // cannot be off by a visible fraction of a row.
+    if !n.is_finite() || n < 1.0 || (rows - n).abs() > (1e-6 * n).min(1e-3) {
+        return Err(format!(
+            "azimuthal bracket of ±{half_width} rad does not divide the span of {span} rad \
+             into a whole number of rows ({rows} rows)"
+        ));
+    }
+    // Use the exact row width implied by the count, so the edges stay consistent.
+    let half = span / (2.0 * n);
+    // The range path corrects first *edges* outside ±2π, which would depend on
+    // the bracket. Correct the centre here instead: with `half <= π`, a centre
+    // in [-π, 2π] always has its edge inside ±2π, so the grid leaves it alone.
+    let first = if (-std::f64::consts::PI..=TAU).contains(&first) {
+        first
+    } else {
+        let wrapped = first.rem_euclid(TAU);
+        if wrapped >= std::f64::consts::PI {
+            wrapped - TAU
+        } else {
+            wrapped
+        }
+    };
+    Ok((n as usize, (first - half, first - half + span)))
+}
+
 /// 2D result on explicit `(min, max)` azimuthal edges, from
 /// [`Integrator::integrate2d_on_azimuthal_range`].
 #[derive(Clone, Debug, PartialEq)]
@@ -281,10 +352,25 @@ impl Integrator {
         if let Some(v) = variance {
             validate_variances(data, v)?;
         }
-        self.update_geometry_arrays(dim1, dim2);
-        let normalization = self.get_normalization();
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
+        Self::validate_grid_coordinates(&view.state, &normalization)?;
+        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
+        let lut = view.ensure_lut2d(self.shared_grid_key(grid));
+        Ok(if let Some(variance) = variance {
+            lut.raw2d_with_variances(data, variance, mask, &normalization)
+        } else if errors {
+            self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
+        } else {
+            self.lut_integrate2d_raw(data, &lut, mask, &normalization)
+        })
+    }
+
+    pub(super) fn validate_grid_coordinates(
+        state: &super::GeometryState,
+        normalization: &[f64],
+    ) -> Result<(), String> {
         {
-            let state = self.state.read().map_err(|e| e.to_string())?;
             if state
                 .radial
                 .iter()
@@ -298,15 +384,16 @@ impl Integrator {
                 );
             }
         }
-        let mask = self.mask.as_ref().map(|m| m.data.as_slice());
-        let lut = self.ensure_lut2d(self.shared_grid_key(grid));
-        Ok(if let Some(variance) = variance {
-            lut.raw2d_with_variances(data, variance, mask, &normalization)
-        } else if errors {
-            self.lut_integrate2d_raw_with_variance(data, &lut, mask, &normalization)
+        Ok(())
+    }
+
+    pub(super) fn grid_lut_key(&self, grid: &IntegrationGrid2d) -> super::cache::TwoDKey {
+        let grid = if matches!(self.method, IntegrationMethod::PyfaiFull) {
+            grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)
         } else {
-            self.lut_integrate2d_raw(data, &lut, mask, &normalization)
-        })
+            *grid
+        };
+        self.shared_grid_key(grid)
     }
 
     /// Cache key of the shared-grid table for this integrator's method and unit.
@@ -352,8 +439,10 @@ impl Integrator {
     /// and step, wrapping periodically) this is a true range: a sector such as
     /// `(0, PI / 2)` receives only the pixels (or pixel fractions) inside it.
     /// Angles are periodic, so a sector may cross the ±π cut, e.g.
-    /// `(2.5, 2.5 + PI / 2)`. `min` must lie in `[-2π, 2π]` and the span must
-    /// be positive and at most 2π.
+    /// `(2.5, 2.5 + PI / 2)`. Edges must be finite and resolvable, with a
+    /// positive span of at most 2π. Any starting angle is accepted; starts
+    /// outside ±2π are corrected to [-π, π), including the returned axis.
+    /// For example, (-3π, -π) is corrected to the full turn (-π, π).
     ///
     /// The radial edges are the ones [`Integrator::integrate2d`] uses for the
     /// same method, unit and `n_radial`, so the radial axis matches the default
@@ -411,9 +500,9 @@ impl Integrator {
         IntegrationGrid2d::new(n_radial, n_azimuthal, (0.0, 1.0), azimuthal_range)?;
         // Like the default 2D path, non-finite pixels are not rejected: they
         // propagate into the bins they contribute to.
-        self.validate_2d_setup(data, dim1, dim2)?;
-        self.update_geometry_arrays(dim1, dim2);
-        let radial_range = self.default_radial_edges_2d(dim1, dim2, n_radial);
+        self.validate_2d_setup(dim1, dim2, data.len())?;
+        let view = self.for_shape(dim1, dim2);
+        let radial_range = self.default_radial_edges_2d(&view, n_radial);
         // Values inside the edges must land in a bin even when their index
         // rounds to `n`, as on the default path.
         let mut grid =
@@ -438,9 +527,9 @@ impl Integrator {
             IntegrationMethod::Supersampled { .. } => grid = grid.with_clamped_radial_outside(),
             _ => (),
         }
-        let normalization = self.get_normalization();
+        let normalization = view.normalization();
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
-        let lut = self.ensure_lut2d(self.shared_grid_key(grid));
+        let lut = view.ensure_lut2d(self.shared_grid_key(grid));
         let (intensity, errors) = if errors {
             let (intensity, errors) =
                 self.lut_integrate2d_with_errors(data, &lut, mask, &normalization);
@@ -456,9 +545,68 @@ impl Integrator {
         })
     }
 
+    /// Integrate a frame to 2D on contiguous rows given by their centres. See
+    /// [`Integrator::integrate2d_on_azimuthal_brackets_from_slice`].
+    pub fn integrate2d_on_azimuthal_brackets(
+        &self,
+        frame: &Frame,
+        n_radial: usize,
+        center_range: (f64, f64),
+        half_width: f64,
+        errors: bool,
+    ) -> Result<AzimuthalRange2dResult, String> {
+        self.integrate2d_on_azimuthal_brackets_from_slice(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            n_radial,
+            center_range,
+            half_width,
+            errors,
+        )
+    }
+
+    /// Integrate to 2D on contiguous azimuthal rows described by their centres,
+    /// as used in texture analysis: the first row is centred on
+    /// `center_range.0` and every row covers its centre ± `half_width`
+    /// (radians). `(0, 2π)` with a 2.5° bracket gives 72 rows centred on
+    /// 0°, 5°, …, 355°, so directions such as 0° and 90° each sit in the middle
+    /// of a row. The number of rows is `result.azimuthal.len()`.
+    ///
+    /// This is [`Integrator::integrate2d_on_azimuthal_range_from_slice`] on the
+    /// edges from [`azimuthal_bracket_bins`]; everything documented there
+    /// applies. The span must be a whole number of rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn integrate2d_on_azimuthal_brackets_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        center_range: (f64, f64),
+        half_width: f64,
+        errors: bool,
+    ) -> Result<AzimuthalRange2dResult, String> {
+        let (n_azimuthal, azimuthal_range) = azimuthal_bracket_bins(center_range, half_width)?;
+        self.integrate2d_on_azimuthal_range_from_slice(
+            data,
+            dim1,
+            dim2,
+            n_radial,
+            n_azimuthal,
+            azimuthal_range,
+            errors,
+        )
+    }
+
     /// Radial edges the default 2D path uses for this method, unit and size.
     /// Cached: computing them needs a pass over all pixels (or pixel corners).
-    fn default_radial_edges_2d(&self, dim1: usize, dim2: usize, n_radial: usize) -> (f64, f64) {
+    fn default_radial_edges_2d(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+        n_radial: usize,
+    ) -> (f64, f64) {
+        let (dim1, dim2) = (view.state.dim1, view.state.dim2);
         let key = RadialEdgesKey {
             dim1,
             dim2,
@@ -481,7 +629,7 @@ impl Integrator {
         {
             return edges;
         }
-        let state = self.state.read().expect("geometry state lock poisoned");
+        let state = &view.state;
         let mut geom = self.geometry.clone();
         geom.dim1 = dim1;
         geom.dim2 = dim2;
@@ -520,7 +668,7 @@ impl Integrator {
         dim1: usize,
         dim2: usize,
     ) -> Result<(), String> {
-        self.validate_2d_setup(data, dim1, dim2)?;
+        self.validate_2d_setup(dim1, dim2, data.len())?;
         // Nonfinite pixels would poison raw sums. Masked pixels are allowed.
         if data
             .iter()
@@ -534,10 +682,15 @@ impl Integrator {
 
     /// Shape, mask, geometry and method checks shared by the 2D grid paths;
     /// the pixel values themselves are not inspected.
-    fn validate_2d_setup(&self, data: &[f64], dim1: usize, dim2: usize) -> Result<(), String> {
+    pub(super) fn validate_2d_setup(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        data_len: usize,
+    ) -> Result<(), String> {
         if dim1 == 0
             || dim2 == 0
-            || dim1.checked_mul(dim2) != Some(data.len())
+            || dim1.checked_mul(dim2) != Some(data_len)
             || dim1
                 .checked_add(1)
                 .and_then(|d| dim2.checked_add(1).and_then(|e| d.checked_mul(e)))
@@ -546,7 +699,7 @@ impl Integrator {
             return Err("image dimensions must be positive and match data length".into());
         }
         if let Some(mask) = &self.mask
-            && (mask.dim1 != dim1 || mask.dim2 != dim2 || mask.data.len() != data.len())
+            && (mask.dim1 != dim1 || mask.dim2 != dim2 || mask.data.len() != data_len)
         {
             return Err("mask dimensions must match its detector image".into());
         }

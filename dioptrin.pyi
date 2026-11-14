@@ -403,9 +403,11 @@ class Integrator:
         self,
         image: Union[str, np.ndarray],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[Tuple[float, float]] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
     ) -> IntegrationResult:
         """
         Perform 2D integration.
@@ -413,10 +415,27 @@ class Integrator:
         Args:
             image: Path to the TIFF image file or 2D NumPy array
             n_radial: Number of radial bins
-            n_azimuthal: Number of azimuthal bins
+            n_azimuthal: Number of azimuthal bins. Give either this or
+                azimuthal_bracket.
+            azimuthal_bracket: Keyword only, instead of n_azimuthal: half-width in
+                radians of contiguous rows given by their centres. The first row is
+                centred on the start of azimuthal_range (default (0, 2*pi)), every
+                row covers its centre +- the bracket, and the number of rows is
+                span / (2 * bracket), which must be a whole number (else
+                ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
+                centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
+                centres and result.n_azimuthal the row count.
+                In this mode azimuthal_range is (first centre, end) rather than
+                edges, and the end is exclusive: (0, pi/2) with a 5 degree
+                bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
+                degrees. A first centre in [-pi, 2*pi] is kept as given; any
+                other is corrected to the equivalent angle in [-pi, pi). With method="pyfai_full" the
+                seam lies one bracket below the first centre, so rows differ
+                slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
-                in [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The n_azimuthal bins split
+                at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
+                are corrected to [-pi, pi), including the returned axis. The n_azimuthal bins split
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
@@ -665,11 +684,13 @@ class Integrator:
         self,
         tiff_paths: list[str],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[Tuple[float, float]] = None,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
     ) -> list[BatchResult]:
         """
         Perform batch 2D integration.
@@ -680,10 +701,27 @@ class Integrator:
         Args:
             tiff_paths: List of TIFF file paths to process
             n_radial: Number of radial bins
-            n_azimuthal: Number of azimuthal bins
+            n_azimuthal: Number of azimuthal bins. Give either this or
+                azimuthal_bracket.
+            azimuthal_bracket: Keyword only, instead of n_azimuthal: half-width in
+                radians of contiguous rows given by their centres. The first row is
+                centred on the start of azimuthal_range (default (0, 2*pi)), every
+                row covers its centre +- the bracket, and the number of rows is
+                span / (2 * bracket), which must be a whole number (else
+                ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
+                centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
+                centres and result.n_azimuthal the row count.
+                In this mode azimuthal_range is (first centre, end) rather than
+                edges, and the end is exclusive: (0, pi/2) with a 5 degree
+                bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
+                degrees. A first centre in [-pi, 2*pi] is kept as given; any
+                other is corrected to the equivalent angle in [-pi, pi). With method="pyfai_full" the
+                seam lies one bracket below the first centre, so rows differ
+                slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
-                in [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The n_azimuthal bins split
+                at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
+                are corrected to [-pi, pi), including the returned axis. The n_azimuthal bins split
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
@@ -719,11 +757,13 @@ class Integrator:
         self,
         images: Union[list[str], list[np.ndarray], Iterable[Union[str, np.ndarray]]],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[Tuple[float, float]] = None,
         num_workers: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
     ) -> BatchIterator:
         """
         Perform streaming batch 2D integration.
@@ -735,10 +775,27 @@ class Integrator:
             images: List of TIFF file paths, list of NumPy arrays (2D float64),
                 or a generator/iterator yielding file paths or NumPy arrays
             n_radial: Number of radial bins
-            n_azimuthal: Number of azimuthal bins
+            n_azimuthal: Number of azimuthal bins. Give either this or
+                azimuthal_bracket.
+            azimuthal_bracket: Keyword only, instead of n_azimuthal: half-width in
+                radians of contiguous rows given by their centres. The first row is
+                centred on the start of azimuthal_range (default (0, 2*pi)), every
+                row covers its centre +- the bracket, and the number of rows is
+                span / (2 * bracket), which must be a whole number (else
+                ValueError). E.g. azimuthal_bracket=np.radians(2.5) gives 72 rows
+                centred on 0, 5, ..., 355 degrees. result.azimuthal holds the
+                centres and result.n_azimuthal the row count.
+                In this mode azimuthal_range is (first centre, end) rather than
+                edges, and the end is exclusive: (0, pi/2) with a 5 degree
+                bracket gives centres 0, 10, ..., 80 degrees, covering -5 to 85
+                degrees. A first centre in [-pi, 2*pi] is kept as given; any
+                other is corrected to the equivalent angle in [-pi, pi). With method="pyfai_full" the
+                seam lies one bracket below the first centre, so rows differ
+                slightly from a default pyFAI cake.
             errors: Whether to compute error estimates (default: False)
             azimuthal_range: Optional (min, max) azimuthal edges in radians, with min
-                in [-2*pi, 2*pi] and 0 < max - min <= 2*pi. The n_azimuthal bins split
+                at any finite, resolvable angle and 0 < max - min <= 2*pi. Starts outside ±2*pi
+                are corrected to [-pi, pi), including the returned axis. The n_azimuthal bins split
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
@@ -860,18 +917,29 @@ class MultiIntegrator:
         self,
         images: list[Union[str, np.ndarray]],
         n_radial: int,
-        n_azimuthal: int,
+        n_azimuthal: Optional[int] = None,
         errors: bool = False,
         azimuthal_range: Optional[tuple[float, float]] = None,
         *,
         normalization: str = "relative",
         normalization_factors: Optional[list[float]] = None,
+        azimuthal_bracket: Optional[float] = None,
     ) -> IntegrationResult:
         """Combine raw fractional pixel contributions onto shared 2D edges.
 
-        Radial edges use the common radial_range and unit. Azimuthal edges are
-        radians (default -pi, pi), span at most 2*pi, and clip sectors without
-        folding outliers. Supports counting, pixel_split and supersampled.
+        Give either n_azimuthal or azimuthal_bracket. azimuthal_bracket is the
+        half-width in radians of contiguous rows given by their centres: the
+        first row is centred on the start of azimuthal_range, which then
+        defaults to (0, 2*pi), and the span must be a whole number of rows
+        (else ValueError). E.g. np.radians(2.5) gives 72 rows centred on
+        0, 5, ..., 355 degrees. The end of azimuthal_range is exclusive in this
+        mode: it is where the next centre would be. A first centre in
+        [-pi, 2*pi] is kept as given; any other is corrected to the equivalent
+        angle in [-pi, pi).
+
+        Radial edges use the common radial_range and unit. Without a bracket,
+        azimuthal edges are radians (default -pi, pi), span at most 2*pi, and
+        clip sectors without folding outliers. Supports counting, pixel_split and supersampled.
         Inputs are C-contiguous float64 arrays or TIFF paths; mixed lists work.
         normalization='absolute' additionally puts pixel1*pixel2/distance**2 in
         each detector's denominator for pyFAI MultiGeometry absolute scaling.
