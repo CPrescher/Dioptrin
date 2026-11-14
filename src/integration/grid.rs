@@ -353,7 +353,7 @@ impl Integrator {
     /// circle, because pyFAI's full splitting unwraps pixels with a heuristic
     /// that depends on where the azimuth seam lies. pyFAI itself behaves the
     /// same (`docs/validation/pyfai-full-seam.md`). Pixel splitting agrees to
-    /// about 1e-6 in the same comparison and is the better choice for sectors.
+    /// about 2e-9 in the same comparison and is the better choice for sectors.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_on_azimuthal_range_from_slice(
         &self,
@@ -381,9 +381,13 @@ impl Integrator {
             IntegrationMethod::PyfaiFull => {
                 grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
             }
-            // The default counting edges end at the largest pixel value, which
-            // `min_max_step`'s 10 ulp margin does not lift for values above ~32.
-            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
+            // The default counting and supersampled edges end at the largest
+            // (sub)pixel value: the few-ulp margin of `min_max_step` and
+            // `ss_tth_min_max_step` does not lift the edge for values above
+            // ~32 and ~8 respectively.
+            IntegrationMethod::Counting | IntegrationMethod::Supersampled { .. } => {
+                grid = grid.with_clamped_radial_end()
+            }
             _ => (),
         }
         let normalization = self.get_normalization();

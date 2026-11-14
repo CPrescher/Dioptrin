@@ -34,7 +34,7 @@ All integrators in a `MultiIntegrator` must:
 1. Have the **same `radial_unit`** (e.g., all `"q_A^-1"`)
 2. Have an **explicit `radial_range`** set (so all detectors share the same bin grid)
 3. Have the **same `radial_range`** values
-4. **Not** use the `"histogram"` method (use `"counting"`, `"pixel_split"`, or `"supersampled"`)
+4. **Not** use the `"histogram"` method (use `"counting"`, `"pixel_split"`, `"pyfai_full"`, or `"supersampled"`)
 
 ## Shared-grid 2D cakes
 
@@ -89,7 +89,8 @@ MultiIntegrator.integrate2d(
 
 Each detector retains its own shape, pixel sizes, distance, PONI offsets,
 rotations, mask and polarization. Images are C-contiguous 2D float64 arrays or
-TIFF paths, in detector order; mixed lists are supported by this 2D method.
+TIFF paths, in detector order; mixed lists are accepted by both the 1D and 2D
+calls.
 TIFF loading retains Dioptrin's existing vertical flip; NumPy arrays retain
 caller orientation. Supply the same pixel order as the calibration. Configure
 masks before constructing the multi-integrator: its shared Integrator references
@@ -112,7 +113,8 @@ multi-integrator when calibration or mask settings change.
   supersampling. The optional pyFAI histogram convention renormalizes clipped
   pixels, as described below. Empty bins contain zero intensity/std.
 - Methods: `counting` (pixel centers), `pixel_split` (by default quadrilateral clipping in
-  radial/azimuthal space, with a beam-pixel sampling fallback), `supersampled` (`n_ss > 0`, n_ss² samples/pixel).
+  radial/azimuthal space, with a beam-pixel sampling fallback), `pyfai_full` (polygon splitting
+  that always uses the `"pyfai_histogram"` convention below), `supersampled` (`n_ss > 0`, n_ss² samples/pixel).
   `histogram` is unsupported. Detectors can use different supported methods.
 - Results flatten as `azimuthal_index * n_radial + radial_index`. Both
   coordinate arrays contain bin centers; neither contains edges.
@@ -226,8 +228,10 @@ clips/recenters vertices. Their seam, beam-center and partial-range behavior
 can differ. Supersampling offers an alternative when polar pixel polygons
 are poorly resolved near the beam center.
 
-The old ordinary `Integrator.integrate2d` chooses a detector-local radial grid;
-it does not honor its `radial_range` as shared 2D edges. The new shared-grid
+The old ordinary `Integrator.integrate2d` with `counting`, `pixel_split` or
+`supersampled` chooses a detector-local radial grid; it does not honor its
+`radial_range` as shared 2D edges. With `pyfai_full` it bins between the
+`radial_range` limits when one is set. The new shared-grid
 raw Rust API below is available for one detector too. Legacy polygon 2D LUTs
 use row-normalized **areas**, rather than fractions of original pixel areas,
 so a nonuniform single-detector polygon cake can also differ from the new
@@ -396,7 +400,7 @@ let (bins, intensity) = multi.integrate1d_from_slices(
 
 ## Choosing the Radial Range
 
-Choose `radial_range` to cover the desired combined angular range. It may intentionally clip detector coverage, in 1D and 2D: whatever lies outside the range is left out. Include pixel corners/subsamples when full split-pixel coverage is required; bin centers are not exact detector limits. A quick 1D estimate is:
+Choose `radial_range` to cover the desired combined angular range. It may intentionally clip detector coverage, in 1D and 2D: whatever lies outside the range is left out. Include pixel corners/subsamples when full split-pixel coverage is required; bin centers are not exact detector limits. Every 1D method drops pixels outside an explicit `radial_range`, so a range taken from the first and last bin centres would lose the outer half bin on each side; derive it from the outer bin edges instead (and do not round it inwards). A quick 1D estimate is:
 
 ```python
 import dioptrin
@@ -410,10 +414,16 @@ int2 = dioptrin.Integrator("det2.poni", unit="q_A^-1")
 r1 = int1.integrate1d(img1, n_points=1000)
 r2 = int2.integrate1d(img2, n_points=1000)
 
-# Find combined range
-q_min = min(r1.radial[0], r2.radial[0])
-q_max = max(r1.radial[-1], r2.radial[-1])
-print(f"Suggested radial_range: ({q_min:.2f}, {q_max:.2f})")
+# radial holds bin centres; extend each end by half a bin width to reach
+# the outer bin edges
+def edges(r):
+    half = 0.5 * (r.radial[1] - r.radial[0])
+    return r.radial[0] - half, r.radial[-1] + half
+
+(lo1, hi1), (lo2, hi2) = edges(r1), edges(r2)
+q_min = max(0.0, min(lo1, lo2))  # the 2D shared grid requires nonnegative edges
+q_max = max(hi1, hi2)
+print(f"Suggested radial_range: ({q_min}, {q_max})")
 
 # Then recreate with the shared range
 int1 = dioptrin.Integrator("det1.poni", unit="q_A^-1", radial_range=(q_min, q_max))
@@ -428,6 +438,6 @@ multi = dioptrin.MultiIntegrator(integrators=[int1, int2])
 | Merge method | Sum raw sums, divide once | Same |
 | Solid angle correction | Relative per-pixel × detector constant | 2D: explicit relative/absolute; 1D: legacy relative |
 | Radial range | Auto or explicit | Explicit (required) |
-| Methods | CSR, LUT, histogram | Counting, pixel-split, supersampled |
+| Methods | CSR, LUT, histogram | Counting, pixel-split, pyfai_full, supersampled |
 | Error propagation | Several models/explicit variances | Poisson; squared fractional weights in new 2D |
 | Batch processing | Manual loop | Built-in `batch1d`; 2D via repeated `integrate2d` |

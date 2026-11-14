@@ -107,6 +107,58 @@ impl AzimuthalRangeKey {
     }
 }
 
+/// Lower and upper sector edge of a PyfaiFull cake whose first bin is
+/// centred on `start` with width `step`.
+fn pyfai_sector_edges(start: f64, step: f64, n_azimuthal: usize) -> (f64, f64) {
+    (
+        start - 0.5 * step,
+        start + (n_azimuthal as f64 - 0.5) * step,
+    )
+}
+
+/// Validate a legacy (start, step) pair for PyfaiFull, which bins into the
+/// sector `[start - step/2, start + (n - 0.5)*step)` and does not fold angles
+/// periodically. A lower edge outside `[-2π, 2π]` is shifted by whole turns
+/// into that window; pairs already inside it are returned unchanged, so their
+/// tables stay bit-identical.
+///
+/// # Panics
+///
+/// Panics with a descriptive message if `start` is not finite, `step` is not
+/// finite and positive, or the sector spans more than 2π.
+fn pyfai_sector_key(key: AzimuthalRangeKey, n_azimuthal: usize) -> AzimuthalRangeKey {
+    use std::f64::consts::TAU;
+    let mut start = f64::from_bits(key.start_bits);
+    let step = f64::from_bits(key.step_bits);
+    assert!(
+        step.is_finite() && step > 0.0,
+        "integrate2d_with_azimuthal_range: PyfaiFull needs a finite, positive azimuthal_step (got {step})"
+    );
+    assert!(
+        start.is_finite(),
+        "integrate2d_with_azimuthal_range: PyfaiFull needs a finite azimuthal_start (got {start})"
+    );
+    let (lo, hi) = pyfai_sector_edges(start, step, n_azimuthal);
+    assert!(
+        hi - lo <= TAU + 1e-12,
+        "integrate2d_with_azimuthal_range: PyfaiFull needs n_azimuthal * azimuthal_step <= 2π \
+         (got {n_azimuthal} * {step} = {} rad > {TAU} rad); it does not fold a longer range periodically",
+        n_azimuthal as f64 * step
+    );
+    if (-TAU..=TAU).contains(&lo) {
+        return key;
+    }
+    start -= (lo / TAU).floor() * TAU;
+    // Rounding can leave the shifted edge a hair outside the window.
+    let lo = start - 0.5 * step;
+    if lo > TAU {
+        start -= TAU;
+    } else if lo < -TAU {
+        start += TAU;
+    }
+    AzimuthalRangeKey::new(start, step)
+}
+
 pub(super) struct LutCache<K, L> {
     pub(super) key: Option<K>,
     pub(super) lut: Option<L>,
@@ -243,7 +295,7 @@ impl Integrator {
             TwoDKey::PyfaiFull {
                 n_radial,
                 n_azimuthal,
-                azimuthal,
+                azimuthal: azimuthal.map(|a| pyfai_sector_key(a, n_azimuthal)),
                 unit: self.radial_unit,
                 radial_range: self.radial_range_key(),
             }
@@ -420,12 +472,9 @@ impl Integrator {
                         n_radial,
                         n_azimuthal,
                         (lo, hi),
-                        (
-                            start - 0.5 * step,
-                            start + (n_azimuthal as f64 - 0.5) * step,
-                        ),
+                        pyfai_sector_edges(start, step, n_azimuthal),
                     )
-                    .expect("valid pyFAI cake grid")
+                    .unwrap_or_else(|e| panic!("PyfaiFull 2D cake: {e}"))
                     .with_pixel_split_mode(super::PixelSplitMode::PyfaiHistogram);
                     lut::shared_grid::build(
                         &geom,

@@ -502,6 +502,59 @@ fn counting_keeps_the_outermost_pixel_in_every_unit() {
     }
 }
 
+/// Supersampled twin of the test above: the default upper radial edge is the
+/// largest subpixel value plus three epsilons, which no longer lifts it for
+/// values of 8 or more (2θ in degrees, q in nm⁻¹). The outermost subpixel must
+/// still land in the last radial bin, as on the default path.
+#[test]
+fn supersampled_keeps_the_outermost_subpixel_in_every_unit() {
+    let mut g = geometry();
+    g.poni.distance = 0.005;
+    let near_beam: Vec<u8> = g
+        .calc_tth_all()
+        .iter()
+        .map(|t| (g.poni.distance * t.tan() / g.poni.pixel1 < 3.0) as u8)
+        .collect();
+    let data = image();
+    for n_ss in [1, 2, 3, 4] {
+        for unit in [
+            RadialUnit::TthRad,
+            RadialUnit::TthDeg,
+            RadialUnit::QAngstrom,
+            RadialUnit::QNm,
+        ] {
+            let mut ai = Integrator::new(g.clone())
+                .with_method(IntegrationMethod::Supersampled { n_ss })
+                .with_radial_unit(unit);
+            ai.set_mask(Mask {
+                data: near_beam.clone(),
+                dim1: ROWS,
+                dim2: COLS,
+            });
+            ai.update_geometry_arrays(ROWS, COLS);
+            let (a0, a1, _) = {
+                let state = ai.state.read().unwrap();
+                histogram::supersampled_azimuthal_min_max_step(
+                    &ai.geometry,
+                    &state.azimuth,
+                    NA,
+                    n_ss,
+                )
+            };
+            let want = ai.integrate2d_from_slice(&data, ROWS, COLS, NR, NA);
+            let got = run(&ai, &data, (a0, a1), false).unwrap();
+            for (k, (a, b)) in got.intensity.iter().zip(&want).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-12 * b.abs(),
+                    "n_ss={n_ss} {unit:?} row {} radial bin {}: {a} vs {b}",
+                    k / NR,
+                    k % NR
+                );
+            }
+        }
+    }
+}
+
 /// pyfai_full: the explicit full circle is the default pyfai_full cake, and
 /// a sector keeps only pixel fractions inside it.
 #[test]

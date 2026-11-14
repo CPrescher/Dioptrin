@@ -18,6 +18,20 @@ __all__ = [
     "LicenseError",
     "LicenseNotFoundError",
     "LicenseExpiredError",
+    "Calibrant",
+    "CalibrationPoints",
+    "CalibrationResult",
+    "EllipseFit",
+    "RansacEllipseResult",
+    "RingIdResult",
+    "AutoCalibrateResult",
+    "refine",
+    "find_peaks_massif",
+    "ransac_ellipses",
+    "identify_rings",
+    "find_peaks_image",
+    "auto_calibrate",
+    "estimate_ring_center",
 ]
 
 
@@ -239,6 +253,11 @@ class Integrator:
                 Required when using MultiIntegrator to ensure all detectors
                 share the same bin grid. Units must match the selected unit.
 
+        Raises:
+            ValueError: If an option is invalid: unknown method/unit, n_ss = 0,
+                polarization_factor outside [-1, 1], radial_range not finite with
+                min < max, or a q unit without a positive PONI wavelength
+
         Example:
             >>> import dioptrin
             >>> integrator = dioptrin.Integrator(
@@ -280,6 +299,10 @@ class Integrator:
 
         Returns:
             New Integrator instance
+
+        Raises:
+            ValueError: If an option is invalid, as for Integrator(); a q unit
+                needs a positive "wavelength" in the dictionary
 
         Example:
             >>> import dioptrin
@@ -349,6 +372,10 @@ class Integrator:
         Returns:
             IntegrationResult with radial values, intensities, and optional errors
 
+        Raises:
+            ValueError: If n_points is 0, the image is empty or not C-contiguous,
+                or its shape does not match the mask
+
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
             >>> # From file
@@ -393,7 +420,8 @@ class Integrator:
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning
+                no azimuthal binning; if n_radial or n_azimuthal is 0; or if the
+                image is empty or its shape does not match the mask
 
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
@@ -416,7 +444,7 @@ class Integrator:
             n_ss: Number of subpixels per pixel for supersampled method (required if method is "supersampled")
 
         Raises:
-            ValueError: If the method name is invalid
+            ValueError: If the method name is invalid or n_ss is 0
 
         Example:
             >>> integrator.set_method("supersampled", n_ss=7)
@@ -432,6 +460,9 @@ class Integrator:
 
         Args:
             polarization_factor: Polarization factor (0.0 to 1.0) or None to disable
+
+        Raises:
+            ValueError: If the factor is not finite or outside [-1, 1]
 
         Example:
             >>> integrator.set_polarization_factor(0.99)  # Enable correction
@@ -449,7 +480,8 @@ class Integrator:
             unit: Radial unit: "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
 
         Raises:
-            ValueError: If the unit name is invalid
+            ValueError: If the unit name is invalid, or a q unit is requested
+                and the PONI wavelength is not positive
 
         Example:
             >>> integrator.set_unit("q_A^-1")  # Switch to q-space in inverse Angstroms
@@ -540,6 +572,11 @@ class Integrator:
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
 
+        Raises:
+            ValueError: If n_points is 0, or an array is empty, not C-contiguous,
+                or does not match the mask shape (file errors go to BatchResult.error)
+            TypeError: If images is not a list of paths or 2D float64 arrays
+
         Example:
             >>> results = integrator.batch1d(files, n_points=1000, errors=True)
             >>> for r in results:
@@ -579,6 +616,14 @@ class Integrator:
             BatchIterator that yields BatchResult objects as they complete.
             The iterator has `total`, `completed`, and `progress` properties.
             When using a generator, `total` is 0 and `progress` returns None.
+
+        Raises:
+            ValueError: If n_points is 0, or an image is empty, not C-contiguous,
+                or does not match the mask shape
+            TypeError: If an item is neither a path nor a 2D float64 array.
+                Lists are checked up front; for a generator the error (or any
+                exception the generator raises) is raised by the iterator at
+                that item's position, after all earlier results
 
         Example:
             >>> # With a list
@@ -637,7 +682,7 @@ class Integrator:
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning
+                no azimuthal binning, or if n_radial or n_azimuthal is 0
 
         Example:
             >>> # Full 2D integration
@@ -694,7 +739,12 @@ class Integrator:
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning
+                no azimuthal binning; if n_radial or n_azimuthal is 0; or if an
+                image is empty, not C-contiguous, or does not match the mask shape
+            TypeError: If an item is neither a path nor a 2D float64 array.
+                Lists are checked up front; for a generator the error (or any
+                exception the generator raises) is raised by the iterator at
+                that item's position, after all earlier results
 
         Example:
             >>> # With a list
@@ -777,7 +827,9 @@ class MultiIntegrator:
             IntegrationResult with merged radial values, intensities, and optional errors
 
         Raises:
-            ValueError: If number of images doesn't match number of detectors
+            ValueError: If number of images doesn't match number of detectors,
+                n_points is 0, a TIFF cannot be loaded, or an image is empty or
+                does not match its detector's mask shape
 
         Example:
             >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
@@ -836,7 +888,9 @@ class MultiIntegrator:
             List of IntegrationResult, one per frame set
 
         Raises:
-            ValueError: If any image-list has wrong length
+            ValueError: If any image-list has wrong length, n_points is 0, a TIFF
+                cannot be loaded, or an image is empty or does not match its
+                detector's mask shape
 
         Example:
             >>> image_sets = [[img1_a, img2_a], [img1_b, img2_b]]
@@ -873,3 +927,495 @@ class Dynamic1dWorker:
         accumulators are independent between calls, including normalization.
         """
         ...
+
+
+# ---------------------------------------------------------------------------
+# Calibration API
+# ---------------------------------------------------------------------------
+
+
+class Calibrant:
+    """
+    Reference powder described by its list of d-spacings.
+
+    Cannot be constructed directly; use ``Calibrant.from_file`` or
+    ``Calibrant.from_d_spacings``.
+    """
+
+    @staticmethod
+    def from_file(path: str) -> Calibrant:
+        """
+        Load a calibrant from a pyFAI-style ``.D`` file.
+
+        Raises:
+            IOError: If the file cannot be read or parsed
+        """
+        ...
+
+    @staticmethod
+    def from_d_spacings(name: str, d_spacings: list[float]) -> Calibrant:
+        """Build from an explicit list of d-spacings (Å)."""
+        ...
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def d_spacings(self) -> list[float]: ...
+
+    def n_rings(self) -> int: ...
+
+    def two_theta_rad(self, wavelength_m: float) -> list[Optional[float]]:
+        """
+        2θ (radians) for each ring at the given wavelength (meters).
+
+        Rings outside the Bragg-physical range yield None.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class CalibrationPoints:
+    """Collection of control points (pixel coordinates plus optional ring index)."""
+
+    def __init__(self) -> None:
+        """Create an empty set of control points."""
+        ...
+
+    def add(self, d1: float, d2: float, ring: Optional[int] = None) -> None:
+        """
+        Append one control point.
+
+        Args:
+            d1: Pixel coordinate along rows; sub-pixel allowed
+            d2: Pixel coordinate along columns; sub-pixel allowed
+            ring: Calibrant ring index (None for auto-assignment)
+        """
+        ...
+
+    def extend(
+        self,
+        d1: list[float],
+        d2: list[float],
+        ring: list[Optional[int]],
+    ) -> None:
+        """
+        Append from parallel arrays.
+
+        Raises:
+            ValueError: If d1, d2 and ring do not have the same length
+        """
+        ...
+
+    def __len__(self) -> int: ...
+
+    def clear(self) -> None: ...
+
+
+class CalibrationResult:
+    """Result of ``refine``. Not constructible from Python."""
+
+    @property
+    def n_iter(self) -> int: ...
+
+    @property
+    def chi2(self) -> float: ...
+
+    @property
+    def rms_rad(self) -> float: ...
+
+    @property
+    def assignments(self) -> list[Optional[int]]: ...
+
+    @property
+    def inliers(self) -> list[bool]: ...
+
+    @property
+    def poni(self) -> dict[str, float]:
+        """
+        Refined PONI as a dict with keys pixel1, pixel2, distance, poni1,
+        poni2, rot1, rot2, rot3 and wavelength.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+def refine(
+    start: Union[Integrator, dict[str, float]],
+    points: CalibrationPoints,
+    calibrant: Calibrant,
+    fix: Optional[list[str]] = None,
+    loss: Optional[Union[str, dict[str, Union[str, float]]]] = None,
+    auto_assign: bool = False,
+    assign_tol: float = 0.05,
+    max_iter: int = 100,
+    tol: float = 1e-9,
+) -> CalibrationResult:
+    """
+    Refine detector geometry from picked control points and a known calibrant.
+
+    Args:
+        start: Starting guess: either an Integrator (its PONI is used) or a PONI dict
+        points: A CalibrationPoints
+        calibrant: A Calibrant
+        fix: List of parameter names to lock (default: ["wavelength"]). Valid names:
+            "distance" (or "dist"), "poni1", "poni2", "rot1", "rot2", "rot3",
+            "wavelength" (or "wl"). Must be a list.
+        loss: "l2" (default), "huber" (c = 1e-3 rad), or a dict like
+            {"type": "huber", "c": <rad>}
+        auto_assign: Assign unassigned points to the nearest predicted ring each iteration
+        assign_tol: Auto-assignment tolerance in rad of 2θ (default 0.05)
+        max_iter: Levenberg-Marquardt iterations (default 100)
+        tol: Relative cost tolerance for convergence (default 1e-9)
+
+    Returns:
+        A CalibrationResult
+
+    Raises:
+        ValueError: If start, fix or loss is invalid, or the refinement fails
+    """
+    ...
+
+
+def find_peaks_massif(
+    image: np.ndarray,
+    seed: Tuple[int, int],
+    valley_size: Optional[float] = None,
+    max_peaks: int = 200,
+    dedup_dist: float = 1.0,
+) -> list[Tuple[float, float]]:
+    """
+    Massif-based peak picking from a seed.
+
+    Given a 2D image and an integer (d1, d2) seed, return a list of sub-pixel
+    (d1, d2) peaks that belong to the same connected "above-local-background"
+    region as the seed. This is the same algorithm Dioptas's
+    find_peaks_automatic uses via pyFAI's Massif.
+
+    Args:
+        image: 2D C-contiguous float64 NumPy array
+        seed: (d1, d2) pixel indices near a peak
+        valley_size: Gaussian sigma for the background filter, in pixels. None (default)
+            uses pyFAI's adaptive value max(5, max(dim1, dim2) / 50).
+        max_peaks: Cap on returned sub-peaks (default 200)
+        dedup_dist: Merge peaks closer than this in pixel space (default 1.0)
+
+    Raises:
+        ValueError: If the image is not C-contiguous
+    """
+    ...
+
+
+class EllipseFit:
+    """Ellipse fitted by ``ransac_ellipses``. Not constructible from Python."""
+
+    @property
+    def center(self) -> Tuple[float, float]: ...
+
+    @property
+    def semi_major(self) -> float: ...
+
+    @property
+    def semi_minor(self) -> float: ...
+
+    @property
+    def theta(self) -> float: ...
+
+    @property
+    def conic(self) -> list[float]:
+        """
+        Conic coefficients [A, B, C, D, E, F] with the convention
+        A x² + B xy + C y² + D x + E y + F = 0.
+        """
+        ...
+
+    def distance(self, point: Tuple[float, float]) -> float:
+        """Sampson distance from the point to the ellipse."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class RansacEllipseResult:
+    """Result of ``ransac_ellipses``. Not constructible from Python."""
+
+    @property
+    def ellipses(self) -> list[EllipseFit]:
+        """List of EllipseFit, sorted by semi-major axis (smallest first)."""
+        ...
+
+    @property
+    def assignments(self) -> list[Optional[int]]:
+        """
+        Per-input-point assignment: k = inlier of ellipses[k], None = outlier
+        rejected from every ellipse.
+        """
+        ...
+
+    def inlier_mask(self) -> list[bool]:
+        """True for inliers (any ellipse), False for outliers."""
+        ...
+
+    def n_ellipses(self) -> int: ...
+
+
+def ransac_ellipses(
+    points: list[Tuple[float, float]],
+    inlier_threshold: float = 1.5,
+    min_inliers: int = 10,
+    max_iterations: int = 2000,
+    max_ellipses: int = 12,
+    max_axis_ratio: Optional[float] = None,
+    dedupe_center_dist: float = 5.0,
+    dedupe_size_rel: float = 0.02,
+    rng_seed: int = 0xC0FFEEC0DE123456,
+) -> RansacEllipseResult:
+    """
+    RANSAC ellipse clustering of a list of 2-D peak coordinates.
+
+    Returns a RansacEllipseResult listing the detected ellipses (sorted by
+    semi-major axis; for a powder diffraction pattern this matches ring index
+    k = 0, 1, 2 ...) and a per-point assignment vector.
+
+    Args:
+        points: List of (d1, d2) peak coordinates
+        inlier_threshold: Sampson distance (pixels) for inlier acceptance
+        min_inliers: Minimum points required to accept an ellipse
+        max_iterations: Random samples per ellipse search
+        max_ellipses: Cap on detected ellipses
+        max_axis_ratio: Optional axis-ratio limit (default None)
+        dedupe_center_dist: Ellipse de-duplication center distance (default 5.0)
+        dedupe_size_rel: Ellipse de-duplication relative size (default 0.02)
+        rng_seed: Seed for reproducibility (unsigned 64-bit)
+    """
+    ...
+
+
+class RingIdResult:
+    """Result of ``identify_rings``. Not constructible from Python."""
+
+    @property
+    def ring_index(self) -> list[Optional[int]]:
+        """
+        Per-ellipse calibrant ring assignment. None = ellipse couldn't be
+        matched to any calibrant ring within tolerance.
+        """
+        ...
+
+    @property
+    def anchor_ring(self) -> Optional[int]:
+        """Calibrant ring of the smallest ellipse, or None if that ellipse is unmatched."""
+        ...
+
+    @property
+    def n_matched(self) -> int:
+        """Number of ellipses confidently matched to calibrant rings."""
+        ...
+
+    @property
+    def confident(self) -> bool:
+        """True iff n_matched >= min_matches."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+def identify_rings(
+    ellipses: list[EllipseFit],
+    calibrant: Calibrant,
+    wavelength: float,
+    ratio_tolerance: float = 0.02,
+    max_anchor_ring: int = 8,
+    min_matches: int = 3,
+) -> RingIdResult:
+    """
+    Identify which calibrant ring each detected ellipse corresponds to,
+    using the size-ratio invariant r_k / r_0 = tan(2θ_k) / tan(2θ_0).
+
+    Iterates over every (anchor_ellipse, anchor_ring) hypothesis and picks the
+    assignment that maximises matched ellipses subject to a distance-consistency
+    check. Handles missing calibrant rings, spurious detected ellipses, and the
+    case where the smallest detected ellipse is not the calibrant's ring 0.
+
+    Args:
+        ellipses: List of EllipseFit from ransac_ellipses. Must be sorted by
+            semi-major axis (ascending).
+        calibrant: A Calibrant
+        wavelength: Beam wavelength in metres
+        ratio_tolerance: Relative tolerance on size-ratio matching (default 0.02 = 2 %)
+        max_anchor_ring: Highest calibrant ring index to try as the anchor (default 8)
+        min_matches: Minimum matched ellipses for confident=True (default 3)
+    """
+    ...
+
+
+def find_peaks_image(
+    image: np.ndarray,
+    valley_size: Optional[float] = None,
+    threshold_factor: float = 3.0,
+    max_peaks: int = 5000,
+) -> list[Tuple[float, float]]:
+    """
+    Image-wide peak extraction without a seed.
+
+    Returns sub-pixel (d1, d2) peak centers for every above-background blob.
+
+    Args:
+        image: 2D C-contiguous float64 NumPy array
+        valley_size: Gaussian sigma for the background filter (pyFAI-adaptive default if None)
+        threshold_factor: Pixels are flagged as foreground when the value exceeds
+            mean + threshold_factor * std of the residual (default 3.0)
+        max_peaks: Cap on returned peaks (default 5000)
+
+    Raises:
+        ValueError: If the image is not C-contiguous
+    """
+    ...
+
+
+class AutoCalibrateResult:
+    """Result of ``auto_calibrate``. Not constructible from Python."""
+
+    @property
+    def n_iter(self) -> int: ...
+
+    @property
+    def chi2(self) -> float: ...
+
+    @property
+    def rms_rad(self) -> float: ...
+
+    @property
+    def n_detected_ellipses(self) -> int: ...
+
+    @property
+    def n_identified_ellipses(self) -> int: ...
+
+    @property
+    def bootstrap_distance(self) -> float: ...
+
+    @property
+    def bootstrap_ring_center_d1(self) -> float:
+        """
+        Mean ring-center (d1, meters) used to initialise the bootstrap PONI.
+
+        Caveat: equals PONI only for near-perpendicular detectors. For tilted
+        detectors PONI and ring-center are distinct (see estimate_ring_center).
+        """
+        ...
+
+    @property
+    def bootstrap_ring_center_d2(self) -> float: ...
+
+    @property
+    def poni(self) -> dict[str, float]:
+        """
+        Refined PONI as a dict with keys pixel1, pixel2, distance, poni1,
+        poni2, rot1, rot2, rot3 and wavelength.
+        """
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+def auto_calibrate(
+    peaks: list[Tuple[float, float]],
+    calibrant: Calibrant,
+    wavelength: float,
+    pixel1: float,
+    pixel2: float,
+    method: str = "radial",
+    ransac_inlier_threshold: float = 1.5,
+    ransac_min_inliers: int = 10,
+    ransac_max_iterations: int = 2000,
+    ransac_max_ellipses: int = 12,
+    ransac_max_axis_ratio: float = 1.2,
+    ransac_dedupe_center_dist: float = 5.0,
+    ransac_dedupe_size_rel: float = 0.02,
+    ratio_tolerance: float = 0.03,
+    min_matches: int = 3,
+    center_consistency_px: float = 30.0,
+    grid_distance_min: float = 0.05,
+    grid_distance_max: float = 0.6,
+    grid_distance_steps: int = 18,
+    grid_rot_max_deg: float = 45.0,
+    grid_rot_steps: int = 15,
+    grid_poni_search_radius_px: float = 400.0,
+    grid_poni_steps: int = 13,
+    grid_tolerance_rad: float = 8.0e-3,
+    grid_max_peaks: int = 400,
+    grid_max_ring_index: int = 12,
+    grid_top_k: int = 50,
+    fix: Optional[list[str]] = None,
+    huber_c: float = 2.0e-3,
+    max_iter: int = 200,
+    tol: float = 1e-9,
+    rng_seed: int = 0xC0FFEEC0DE123456,
+) -> AutoCalibrateResult:
+    """
+    End-to-end automatic calibration: peaks -> ellipses -> ring identity ->
+    bootstrap PONI -> L-M refine. No manual seeds, no geometry hint.
+
+    Args:
+        peaks: List of (d1, d2) peak coordinates (e.g. from find_peaks_image)
+        calibrant: Reference powder
+        wavelength: Beam wavelength in metres
+        pixel1: Detector pixel pitch along d1 in metres
+        pixel2: Detector pixel pitch along d2 in metres
+        method: "radial" (default), "ransac", "grid", or experimental "auto"
+            (case-insensitive)
+        fix: List of parameter names to lock during the final refine
+            (default: ["wavelength"]); same names as for refine
+        huber_c: Huber loss scale (rad) used for the refine (default 2e-3)
+        max_iter: Refine iterations (default 200)
+        tol: Relative cost tolerance for convergence (default 1e-9)
+        rng_seed: Seed for reproducibility (unsigned 64-bit)
+
+    The ransac_*, ratio_tolerance, min_matches, center_consistency_px and
+    grid_* keyword arguments tune the RANSAC, ring-identification and
+    grid-search sub-steps; defaults are sensible for typical lab/synchrotron
+    data (near-perpendicular detector, Huber loss for the bootstrap).
+
+    Raises:
+        ValueError: If method or fix is invalid, or the calibration fails
+    """
+    ...
+
+
+def estimate_ring_center(
+    peaks: list[Tuple[float, float]],
+    max_trials: int = 500,
+    radial_bin_width: float = 4.0,
+    top_k_bins: int = 10,
+    max_radius_px: float = 5000.0,
+    rng_seed: int = 0xBEAC0CEFF00DF00D,
+) -> Optional[Tuple[float, float]]:
+    """
+    Estimate the ring center from a list of peak coordinates via 3-point
+    circle RANSAC + radial-band consistency scoring.
+
+    IMPORTANT: "ring center" is not the same as PONI (point of normal
+    incidence) or beam center on a tilted detector. The three coincide only
+    for a perpendicular detector. For tilted detectors each ring's projected
+    ellipse has its own geometric center (depending on the ring's 2θ); this
+    function returns a consensus from circle fits that is a useful starting
+    guess only when rings are approximately circular (rot1, rot2 at most a
+    few degrees).
+
+    Robust to partial arcs and off-detector beams as long as the
+    near-circular assumption holds.
+
+    Args:
+        peaks: List of (d1, d2) peak coordinates
+        max_trials: Number of 3-point RANSAC samples (default 500)
+        radial_bin_width: Width (px) of radial histogram bins for scoring
+        top_k_bins: Score = sum of the top-K bin counts
+        max_radius_px: Radii beyond this are ignored
+        rng_seed: Seed for reproducibility (unsigned 64-bit)
+
+    Returns:
+        (d1, d2), or None if too few peaks / no consensus
+    """
+    ...

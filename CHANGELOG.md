@@ -95,9 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
   `ValueError`; batches check before starting.
   Non-finite pixels behave as without a range: they make only the bins they
-  contribute to NaN or infinite. With counting, the pixel at the largest radial
-  value lands in the last bin as on the default path, also for units whose
-  maximum is large (2θ in degrees, q in nm⁻¹), and a pixel or subpixel inside
+  contribute to NaN or infinite. With counting and supersampling, the pixel or
+  subpixel at the largest radial value lands in the last bin as on the default
+  path, also for units whose maximum is large (2θ in degrees, q in nm⁻¹), and a
+  pixel or subpixel inside
   the range whose bin index rounds to `n` lands in the last bin instead of
   being dropped. A full circle may start anywhere: `(0, 2π)` and `(-2π, 0)`
   give the `(-π, π)` cake rotated by half a turn (identical for counting and
@@ -109,13 +110,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bins (up to 2θ ≈ 27°, by up to 1.44 relative), because pyFAI's full
   splitting unwraps pixels with a heuristic that depends on where the azimuth
   seam lies (pyFAI itself behaves the same). `pixel_split`
-  differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
+  differs in 2 bins by at most 2.3e-9 there and is the method to use for sectors.
   The same applies to where a `pyfai_full` full circle starts: `(0, 2π)`
   differs from the rotated `(-π, π)` cake in 896 of 21,600 bins there (median
   0.1%, 83 bins by more than 1%). pyFAI 2026.9.0's own full splitting shows the
   same: all 83 bins are among the 85 that change by more than 1% between
   `setChiDiscAtPi` and `setChiDiscAtZero`. See
   `docs/validation/pyfai-full-seam.md`.
+- 1D `pixel_split` and `pyfai_full` without an explicit `radial_range` lost
+  part or all of the pixel containing the point of normal incidence: the
+  automatic range starts at the smallest pixel-corner value, and the part of
+  that pixel closer to the beam was dropped (the whole pixel when the beam sits
+  at its centre). That part now goes into the first bin, so the pixel keeps its
+  full weight, as with counting and supersampling. The automatic bin edges are
+  unchanged. With an explicit `radial_range` (and so in `MultiIntegrator`) the
+  pixel still contributes only its in-range fraction.
+- `integrate2d_with_azimuthal_range*` (first-bin centre and step) with
+  `pyfai_full` panicked with "valid pyFAI cake grid" when the first bin edge
+  lay outside `[-2π, 2π]` or the bins spanned more than a full turn. The start
+  is now shifted by whole turns into that window. A span above 2π still
+  panics, with a message that says so: `pyfai_full` treats the bins as the
+  sector `[start - step/2, start + (n - 0.5)·step)` and, unlike the other
+  methods, does not fold angles outside it into the bins. This was
+  undocumented and is now stated in the function docs.
+- The seam test of 1D `pyfai_full` used the signed diagonal area
+  `0.5·(X − Y)` where pyFAI (and the 2D port) use `0.5·X − Y`. It now matches
+  pyFAI. The two differ in sign only for folded quadrilaterals; none occurred
+  among 19 million pixels of flat and tilted Pilatus geometries, so patterns
+  are not expected to change.
+- Python: invalid input now raises `ValueError` or `TypeError` instead of a
+  Rust panic (`PanicException`) or being ignored:
+  - `batch1d_iter` and `batch2d_iter` stopped silently at an item they could
+    not read (a list of non-float64 arrays yielded nothing; a bad item from a
+    generator truncated the stream; an exception raised by the generator
+    produced a bogus extra result). Lists are now checked before work starts,
+    and for generators the error, or the generator's own exception, is raised
+    from the iterator at that item after the earlier results. A worker that
+    fails mid-stream raises `RuntimeError` instead of ending the iteration.
+  - An image whose shape differs from the mask raises `ValueError` for array
+    inputs on every `Integrator` and `MultiIntegrator` call. TIFF path batches
+    still report it per item as a worker failure.
+  - `MultiIntegrator.integrate1d` and `batch1d` accept lists that mix TIFF
+    paths and arrays, as `integrate2d` already did.
+  - Zero bin counts (`n_points`, `n_radial`, `n_azimuthal`), `n_ss=0`, an empty
+    image, a `radial_range` that is not finite with min < max, a
+    `polarization_factor` outside [-1, 1], and q units without a wavelength in
+    the calibration are rejected. The last four are checked when the
+    integrator is built or reconfigured, not at integration time.
+- `dioptrin.pyi` now covers the calibration API (`Calibrant`,
+  `CalibrationPoints`, `refine`, `auto_calibrate`, `find_peaks_image` and the
+  related functions and result classes), which was missing from the stubs.
 
 ### Compatibility and validation
 

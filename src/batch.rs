@@ -187,7 +187,7 @@ impl IntegrationTask for Integration2DWithErrors {
     }
 }
 
-/// 2D integration with azimuthal range restriction.
+/// 2D integration on an azimuthal grid given by first-bin centre and step (wrapping periodically).
 ///
 /// Returns a flat vector of intensities `[n_radial * n_azimuthal]`.
 #[derive(Clone, Copy, Debug)]
