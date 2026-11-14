@@ -47,15 +47,17 @@ module list 2> "$result_dir/modules.txt"
 git rev-parse HEAD > "$result_dir/source-commit.txt"
 git status --short > "$result_dir/source-status.txt"
 
-# Node-local tools/build files avoid the shared HOME quota. All comparisons use
-# the same setup.py and compare.py as a laptop/workstation run.
-export CARGO_HOME="$build_dir/cargo-home" RUSTUP_HOME="$build_dir/rustup-home"
-export CARGO_TARGET_DIR="$build_dir/target" CARGO_BUILD_JOBS="${BUILD_JOBS:-8}"
-curl --fail --location --retry 3 https://sh.rustup.rs -o "$build_dir/rustup-init.sh"
-sh "$build_dir/rustup-init.sh" -y --profile minimal \
-    --default-toolchain "${RUST_TOOLCHAIN:-stable}" --no-modify-path
-export PATH="$CARGO_HOME/bin:$PATH"
-"${PYTHON_BIN:-python3}" benchmarks/comparison/setup.py \
-    --venv "$build_dir/venv" --artifacts "$result_dir/build"
-"$build_dir/venv/bin/python" -u benchmarks/comparison/compare.py \
+# Keep Python environments on shared storage; native code is reused only for
+# matching CPU/OS/Python/compiler/source/recipe fingerprints. Rust tools and
+# Cargo output remain node-local and are installed only on a cache miss.
+cache_args=(--cache-root "${ENV_CACHE_ROOT:-$repo_dir/.benchmark-environments}"
+    --build-root "$build_dir" --artifacts "$result_dir/build"
+    --receipt "$result_dir/environment.json" --rust-toolchain "${RUST_TOOLCHAIN:-stable}")
+if [[ ${REBUILD_ENV:-0} == 1 ]]; then
+    cache_args+=(--rebuild)
+fi
+"${PYTHON_BIN:-python3}" benchmarks/comparison/environment.py "${cache_args[@]}"
+environment_python=$("${PYTHON_BIN:-python3}" -E -s -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["python"])' "$result_dir/environment.json")
+"$environment_python" -u benchmarks/comparison/compare.py \
     --output "$result_dir/comparison" --suite "${SUITE:-standard}" "$@"
