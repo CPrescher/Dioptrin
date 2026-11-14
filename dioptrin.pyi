@@ -246,17 +246,24 @@ class Integrator:
         Args:
             poni_path: Path to the PONI calibration file (v1 or v2 format)
             method: Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
-            polarization_factor: Optional polarization correction factor (0.0 to 1.0)
+            polarization_factor: Optional polarization factor P in [-1, 1]: +1 fully
+                polarised along the horizontal axis (chi = 0, detector dim2; the
+                usual synchrotron case, typically 0.95-0.99), -1 vertical,
+                0 unpolarised. None (default) applies no polarization correction.
             n_ss: Number of subpixels per pixel for supersampled method (default: 5)
             unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
             radial_range: Optional (min, max) tuple for explicit radial bin range.
                 Required when using MultiIntegrator to ensure all detectors
                 share the same bin grid. Units must match the selected unit.
+                Not supported with method="histogram", which always uses the
+                automatic radial range ("counting", "pixel_split", "pyfai_full"
+                and "supersampled" honour it).
 
         Raises:
             ValueError: If an option is invalid: unknown method/unit, n_ss = 0,
                 polarization_factor outside [-1, 1], radial_range not finite with
-                min < max, or a q unit without a positive PONI wavelength
+                min < max, radial_range combined with method="histogram", or a
+                q unit without a positive PONI wavelength
 
         Example:
             >>> import dioptrin
@@ -292,17 +299,22 @@ class Integrator:
         Args:
             poni_dict: Dictionary containing PONI calibration parameters
             method: Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
-            polarization_factor: Optional polarization correction factor (0.0 to 1.0)
+            polarization_factor: Optional polarization factor P in [-1, 1], as for
+                Integrator(): +1 horizontal (chi = 0, detector dim2; typical
+                synchrotron values 0.95-0.99), -1 vertical, 0 unpolarised
             n_ss: Number of subpixels per pixel for supersampled method (default: 5)
             unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
-            radial_range: Optional (min, max) tuple for explicit radial bin range
+            radial_range: Optional (min, max) tuple for explicit radial bin range.
+                Not supported with method="histogram", which always uses the
+                automatic radial range.
 
         Returns:
             New Integrator instance
 
         Raises:
-            ValueError: If an option is invalid, as for Integrator(); a q unit
-                needs a positive "wavelength" in the dictionary
+            ValueError: If an option is invalid, as for Integrator() (including
+                radial_range with method="histogram"); a q unit needs a positive
+                "wavelength" in the dictionary
 
         Example:
             >>> import dioptrin
@@ -444,7 +456,9 @@ class Integrator:
             n_ss: Number of subpixels per pixel for supersampled method (required if method is "supersampled")
 
         Raises:
-            ValueError: If the method name is invalid or n_ss is 0
+            ValueError: If the method name is invalid or n_ss is 0, or if the
+                method is "histogram" while the Integrator has a radial_range
+                (Histogram always uses the automatic radial range)
 
         Example:
             >>> integrator.set_method("supersampled", n_ss=7)
@@ -455,11 +469,13 @@ class Integrator:
         """
         Set the polarization correction factor.
 
-        Applies polarization correction to the integration. The factor should
-        be between 0.0 and 1.0. Set to None to disable polarization correction.
+        Applies the correction 0.5 * (1 + cos²2θ - P·cos2χ·sin²2θ). P must be
+        in [-1, 1]: +1 fully polarised along the horizontal axis (χ = 0,
+        detector dim2; the usual synchrotron case, typically 0.95-0.99),
+        -1 vertical, 0 unpolarised. Set to None to disable polarization correction.
 
         Args:
-            polarization_factor: Polarization factor (0.0 to 1.0) or None to disable
+            polarization_factor: Polarization factor P in [-1, 1], or None to disable
 
         Raises:
             ValueError: If the factor is not finite or outside [-1, 1]
@@ -560,6 +576,8 @@ class Integrator:
         pixels for this synchronous call. Keep inputs unchanged until it returns;
         they must not be mutated concurrently. Native workers finish before the
         input borrow guards are released. Streaming APIs retain owned frames.
+        The GIL is released while the workers run, so other Python threads
+        (including a generator feeding a batch*_iter stream) keep running.
 
         Args:
             images: List of TIFF file paths or 2D float64 NumPy arrays

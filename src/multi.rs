@@ -223,7 +223,11 @@ impl MultiIntegrator {
             self.integrators[0].radial_range().unwrap(),
             options.azimuthal_range,
         )?
-        .with_pixel_split_mode(self.pixel_split_mode);
+        .with_pixel_split_mode(self.pixel_split_mode)
+        // Bins stay half-open; this only keeps values inside the edges whose
+        // index rounds to `n` (or, in a full circle, whose wrapped azimuth
+        // rounds to the upper edge) instead of dropping them.
+        .with_clamped_index_rounding();
         if self
             .integrators
             .iter()

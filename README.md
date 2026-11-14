@@ -363,6 +363,9 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
+An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the 1D bin grid and drops values outside it; in ordinary single-detector 2D integration only `pyfai_full` uses it, while the other methods keep a detector-local radial grid.
+The legacy `histogram` method always uses the automatic radial range and does not honour `radial_range`; Python raises `ValueError` if both are given.
+
 ### Fast accumulation (default)
 
 ```python

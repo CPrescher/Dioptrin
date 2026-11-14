@@ -95,10 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ranges (non-finite, `max <= min`, span above 2π, `min` outside ±2π) raise
   `ValueError`; batches check before starting.
   Non-finite pixels behave as without a range: they make only the bins they
-  contribute to NaN or infinite. With counting and supersampling, the pixel or
-  subpixel at the largest radial value lands in the last bin as on the default
-  path, also for units whose maximum is large (2θ in degrees, q in nm⁻¹), and a
-  pixel or subpixel inside
+  contribute to NaN or infinite. Radially nothing the default path keeps is
+  lost: with counting, the pixel at the largest radial value lands in the last
+  bin, also for units whose maximum is large (2θ in degrees, q in nm⁻¹); with
+  supersampling, subpixels below or above the default radial edges (next to
+  the beam centre, or a few ulp past the outermost one) go into the first or
+  last radial bin, as in the default table. A pixel or subpixel inside
   the range whose bin index rounds to `n` lands in the last bin instead of
   being dropped. A full circle may start anywhere: `(0, 2π)` and `(-2π, 0)`
   give the `(-π, π)` cake rotated by half a turn (identical for counting and
@@ -127,17 +129,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pixel still contributes only its in-range fraction.
 - `integrate2d_with_azimuthal_range*` (first-bin centre and step) with
   `pyfai_full` panicked with "valid pyFAI cake grid" when the first bin edge
-  lay outside `[-2π, 2π]` or the bins spanned more than a full turn. The start
-  is now shifted by whole turns into that window. A span above 2π still
+  lay outside `[-2π, 2π]` or the bins spanned more than a full turn. A start
+  outside that window is now reduced modulo 2π (a start too large to reduce
+  exactly panics with a message that says so). A span above 2π still
   panics, with a message that says so: `pyfai_full` treats the bins as the
   sector `[start - step/2, start + (n - 0.5)·step)` and, unlike the other
   methods, does not fold angles outside it into the bins. This was
   undocumented and is now stated in the function docs.
 - The seam test of 1D `pyfai_full` used the signed diagonal area
   `0.5·(X − Y)` where pyFAI (and the 2D port) use `0.5·X − Y`. It now matches
-  pyFAI. The two differ in sign only for folded quadrilaterals; none occurred
-  among 19 million pixels of flat and tilted Pilatus geometries, so patterns
-  are not expected to change.
+  pyFAI. The two differ in sign only when the pixel's diagonals do not cross
+  in (radial, azimuth) space, i.e. for folded quadrilaterals, so patterns are
+  not expected to change.
+- `MultiIntegrator` 2D and `integrate2d_raw_on_grid*` dropped a value inside
+  the grid whose bin index rounded to `n` (for example the value one ulp below
+  the upper limit of `(0.5, 25)` with 1500 bins, or an azimuth a few 1e-16
+  below 0 on a `(0, 2π)` grid). It now lands in the last bin. The limits stay
+  half-open: values at or above the upper limit, and outside a sector, are
+  still dropped.
 - Python: invalid input now raises `ValueError` or `TypeError` instead of a
   Rust panic (`PanicException`) or being ignored:
   - `batch1d_iter` and `batch2d_iter` stopped silently at an item they could
@@ -157,12 +166,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `polarization_factor` outside [-1, 1], and q units without a wavelength in
     the calibration are rejected. The last four are checked when the
     integrator is built or reconfigured, not at integration time.
+  - `method="histogram"` together with a `radial_range` raises `ValueError`
+    (at construction and in `set_method`). The Histogram method always uses
+    the automatic radial range, so the range was silently ignored and the
+    full pattern returned. The Rust API still ignores it; this is now
+    documented on `Integrator::with_radial_range`.
+- Synchronous batches (`batch1d`, `batch2d`, `MultiIntegrator.integrate1d`
+  and `batch1d`) release the GIL while they wait, and `batch1d_iter` /
+  `batch2d_iter` fed by a Python iterator run on their own worker pool, so an
+  open or abandoned stream no longer blocks a later batch on the same
+  integrator.
+- The documented range of `polarization_factor` was 0 to 1; it is −1 to 1
+  (+1 horizontal, −1 vertical, 0 unpolarised), which is what the code accepts.
 - `dioptrin.pyi` now covers the calibration API (`Calibrant`,
   `CalibrationPoints`, `refine`, `auto_calibrate`, `find_peaks_image` and the
   related functions and result classes), which was missing from the stubs.
 
 ### Compatibility and validation
 
+- **Known limitation:** `pyfai_full` (1D and 2D) does not account for a
+  `Detector` with orientation 2 or 4 attached through
+  `Geometry::with_detector`; results for such detectors are wrong (present
+  since 0.12.0). Flip the image and use the default orientation instead. This
+  cannot be reached from Python or the detector catalogue.
 - **Behaviour change:** 2D integration with the Histogram method now fails
   instead of returning a 1D profile; use `counting`, `pixel_split`,
   `pyfai_full` or `supersampled` for 2D. `IntegrationTask` has a new provided
@@ -178,9 +204,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image (500×360 bins, 2θ in degrees) the median relative difference per bin is
   2e-5 for counting, 1.8e-3 for `pixel_split`, 1.0e-3 for `supersampled` and
   0 for `pyfai_full`, with larger differences in sparsely filled bins at module
-  gaps. On the default path's own edges, counting and supersampling give
-  identical values except next to the beam centre, and `pixel_split` differs
-  slightly (fractional polygon areas vs the legacy 2D table). Calls without
+  gaps. On the default path's own edges, counting gives identical values and
+  supersampling values equal to rounding, except in the first and last
+  azimuthal rows when a subpixel lies just outside those edges (the default
+  table clamps it into the end row; a true range does not: up to 0.7% in one
+  bin of the CeO2 image at `n_ss = 3`). `pixel_split` differs
+  slightly (fractional polygon areas vs the legacy 2D table; pixels touching
+  the beam centre are sampled densely). Calls without
   `azimuthal_range` are unchanged.
 - **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
   patterns change wherever detectors share a bin with unequal coverage.

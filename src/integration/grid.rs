@@ -18,7 +18,9 @@ pub enum PixelSplitMode {
 }
 
 /// Explicit shared 2D bin edges. Radial values use the integrator's unit;
-/// azimuthal values are radians. Bins are half-open, with no edge clamping.
+/// azimuthal values are radians. Bins are half-open, with no edge clamping:
+/// values below the lower or at or above the upper edges are dropped (a value
+/// inside the edges whose bin index rounds up to `n` stays in the last bin).
 /// Angles are periodic over 2π; sectors exclude angles outside their edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntegrationGrid2d {
@@ -33,6 +35,11 @@ pub struct IntegrationGrid2d {
     /// Put a value that lies inside the edges but whose bin index rounds to
     /// `n` into the last bin, on both axes, like the default 2D tables.
     clamp_index_rounding: bool,
+    /// Put every finite radial value into a bin: below the lower edge into
+    /// bin 0, above the upper edge into the last bin, like the default 2D
+    /// supersampled table. Only valid when the edges are derived from the
+    /// data itself, so nothing lies more than rounding outside them.
+    clamp_radial_outside: bool,
 }
 
 impl IntegrationGrid2d {
@@ -86,6 +93,7 @@ impl IntegrationGrid2d {
             azimuthal: [azimuthal_range.0.to_bits(), azimuthal_range.1.to_bits()],
             clamp_radial_end: false,
             clamp_index_rounding: false,
+            clamp_radial_outside: false,
         })
     }
 
@@ -108,6 +116,14 @@ impl IntegrationGrid2d {
     /// of dropping them.
     pub(crate) fn with_clamped_index_rounding(mut self) -> Self {
         self.clamp_index_rounding = true;
+        self
+    }
+    /// Put finite radial values below the lower edge into bin 0 and values at
+    /// or above the upper edge into the last bin instead of dropping them, as
+    /// the default 2D supersampled table does. Only for data-derived default
+    /// edges; a user-chosen radial range must keep dropping values outside it.
+    pub(crate) fn with_clamped_radial_outside(mut self) -> Self {
+        self.clamp_radial_outside = true;
         self
     }
     pub fn radial_range(&self) -> (f64, f64) {
@@ -139,11 +155,11 @@ impl IntegrationGrid2d {
     pub(crate) fn bin(&self, radial: f64, azimuthal: f64) -> Option<usize> {
         let (r0, r1) = self.radial_range();
         let (a0, a1) = self.azimuthal_range();
-        if !radial.is_finite()
-            || !azimuthal.is_finite()
-            || radial < r0
-            || radial > r1
-            || (radial == r1 && !self.clamp_radial_end)
+        if !radial.is_finite() || !azimuthal.is_finite() {
+            return None;
+        }
+        if !self.clamp_radial_outside
+            && (radial < r0 || radial > r1 || (radial == r1 && !self.clamp_radial_end))
         {
             return None;
         }
@@ -168,9 +184,11 @@ impl IntegrationGrid2d {
             }
             azimuthal - a0
         };
+        // A value below `r0` (only reachable with `clamp_radial_outside`)
+        // gives a negative quotient, which the cast saturates to bin 0.
         let mut r = ((radial - r0) / self.radial_step()) as usize;
         let mut a = (offset / self.azimuthal_step()) as usize;
-        if self.clamp_radial_end || self.clamp_index_rounding {
+        if self.clamp_radial_end || self.clamp_index_rounding || self.clamp_radial_outside {
             r = r.min(self.n_radial - 1);
         }
         if self.clamp_index_rounding {
@@ -250,10 +268,14 @@ impl Integrator {
         grid: &IntegrationGrid2d,
         errors: bool,
     ) -> Result<IntermediateResult2d, String> {
+        // Bins stay half-open (values at or above the upper edges and outside
+        // a sector are dropped); values inside the edges whose index rounds to
+        // `n` are kept in the last bin.
+        let grid = grid.with_clamped_index_rounding();
         let grid = if matches!(self.method, IntegrationMethod::PyfaiFull) {
             grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram)
         } else {
-            *grid
+            grid
         };
         self.validate_2d_input(data, dim1, dim2)?;
         if let Some(v) = variance {
@@ -337,12 +359,32 @@ impl Integrator {
     /// same method, unit and `n_radial`, so the radial axis matches the default
     /// cake. Binning uses the shared-grid tables (as `MultiIntegrator` does);
     /// mask, mask mode, solid-angle and polarization corrections and fast math
-    /// apply exactly as on the default path. On the default path's own edges,
-    /// counting gives identical values and supersampling identical values
-    /// except next to the beam centre (the pixel holding it is sampled densely);
-    /// pixel splitting uses exact fractional polygon areas and differs slightly
-    /// from the legacy 2D pixel-split table (median 5e-5 relative per bin on the
-    /// CeO2 Pilatus 1M test image).
+    /// apply exactly as on the default path. Radially nothing the default path
+    /// keeps is lost: as in the default tables, counting puts a pixel exactly
+    /// at the upper edge in the last bin, and supersampling puts subpixels
+    /// below or above the data-derived edges (next to the beam centre, or a
+    /// few ulp past the outermost hull point) into the first or last radial
+    /// bin. Azimuthal edges are true edges: a (sub)pixel outside them is never
+    /// clamped into an end row.
+    ///
+    /// Passed the default path's own azimuthal edges, the result compares with
+    /// [`Integrator::integrate2d`] as follows:
+    /// - counting: bit-identical;
+    /// - supersampling: equal to rounding (1e-12 relative) in every bin,
+    ///   including those next to the beam centre, except in the first and last
+    ///   azimuthal rows when a subpixel lies just outside the default
+    ///   azimuthal edges (which come from pixel centres and a hull grid): the
+    ///   default table clamps it into the end row, this path drops it or, when
+    ///   the edges span almost a full turn, wraps it into the opposite end row
+    ///   (up to 0.7% in one bin of the CeO2 Pilatus 1M test image at
+    ///   `n_ss = 3`, 1000 x 360 bins);
+    /// - pixel splitting: exact fractional polygon areas, slightly different
+    ///   from the legacy 2D pixel-split table (median 5e-5 relative per bin on
+    ///   the CeO2 Pilatus 1M test image); pixels touching the beam centre are
+    ///   sampled densely instead of split, which changes the innermost bins;
+    /// - pyfai_full: its default cake is the full circle `(-π, π)`, on which
+    ///   it is bit-identical.
+    ///
     /// Non-finite pixels behave as on the default path: they are not rejected
     /// and make only the bins they contribute to NaN or infinite.
     /// `IntegrationMethod::Histogram` is rejected.
@@ -381,13 +423,19 @@ impl Integrator {
             IntegrationMethod::PyfaiFull => {
                 grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
             }
-            // The default counting and supersampled edges end at the largest
-            // (sub)pixel value: the few-ulp margin of `min_max_step` and
-            // `ss_tth_min_max_step` does not lift the edge for values above
-            // ~32 and ~8 respectively.
-            IntegrationMethod::Counting | IntegrationMethod::Supersampled { .. } => {
-                grid = grid.with_clamped_radial_end()
-            }
+            // The default counting edges are the min and max of the pixel
+            // centres, the very values binned here, so only a value equal to
+            // the upper edge needs help: the 10-ulp margin of `min_max_step`
+            // does not lift the edge for values above ~32.
+            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
+            // The default supersampled edges come from pixel centres and a
+            // hull grid computed with slightly different floating-point
+            // coordinates than the real subpixels, so the outermost subpixel
+            // can lie a few ulp above the upper edge, and subpixels of pixels
+            // next to the beam lie below the lower edge. The default table
+            // clamps both into the end bins; so does this one. Safe only
+            // because these edges are the data-derived default ones.
+            IntegrationMethod::Supersampled { .. } => grid = grid.with_clamped_radial_outside(),
             _ => (),
         }
         let normalization = self.get_normalization();

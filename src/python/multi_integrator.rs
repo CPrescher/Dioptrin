@@ -156,6 +156,7 @@ impl PyMultiIntegrator {
     #[pyo3(signature = (images, n_points, errors=false))]
     fn integrate1d(
         &self,
+        py: Python<'_>,
         images: Vec<ImageInput>,
         n_points: usize,
         errors: bool,
@@ -170,7 +171,7 @@ impl PyMultiIntegrator {
             )));
         }
         let buffers = self.load_images(images, "")?;
-        Ok(self.merge1d(&buffers, n_points, errors))
+        Ok(self.merge1d(py, &buffers, n_points, errors))
     }
 
     /// Batch integrate multiple sets of detector images.
@@ -187,6 +188,7 @@ impl PyMultiIntegrator {
     #[pyo3(signature = (images, n_points, errors=false))]
     fn batch1d(
         &self,
+        py: Python<'_>,
         images: Vec<Vec<ImageInput>>,
         n_points: usize,
         errors: bool,
@@ -204,7 +206,7 @@ impl PyMultiIntegrator {
                 )));
             }
             let buffers = self.load_images(image_set, &format!("frame set {frame_idx}, "))?;
-            results.push(self.merge1d(&buffers, n_points, errors));
+            results.push(self.merge1d(py, &buffers, n_points, errors));
         }
         Ok(results)
     }
@@ -251,8 +253,10 @@ impl PyMultiIntegrator {
             .collect()
     }
 
+    /// Merge one owned buffer per detector, releasing the GIL meanwhile.
     fn merge1d(
         &self,
+        py: Python<'_>,
         buffers: &[ImageBuffer],
         n_points: usize,
         errors: bool,
@@ -261,14 +265,16 @@ impl PyMultiIntegrator {
             .iter()
             .map(|(data, dim1, dim2)| (data.as_slice(), *dim1, *dim2))
             .collect();
-        if errors {
-            let (radial, intensity, errs) = self
-                .multi
-                .integrate1d_with_errors_from_slices(&slices, n_points);
-            PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
-        } else {
-            let (radial, intensity) = self.multi.integrate1d_from_slices(&slices, n_points);
-            PyIntegrationResult::from_1d(radial, intensity)
-        }
+        py.detach(|| {
+            if errors {
+                let (radial, intensity, errs) = self
+                    .multi
+                    .integrate1d_with_errors_from_slices(&slices, n_points);
+                PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+            } else {
+                let (radial, intensity) = self.multi.integrate1d_from_slices(&slices, n_points);
+                PyIntegrationResult::from_1d(radial, intensity)
+            }
+        })
     }
 }

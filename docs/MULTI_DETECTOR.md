@@ -400,7 +400,7 @@ let (bins, intensity) = multi.integrate1d_from_slices(
 
 ## Choosing the Radial Range
 
-Choose `radial_range` to cover the desired combined angular range. It may intentionally clip detector coverage, in 1D and 2D: whatever lies outside the range is left out. Include pixel corners/subsamples when full split-pixel coverage is required; bin centers are not exact detector limits. Every 1D method drops pixels outside an explicit `radial_range`, so a range taken from the first and last bin centres would lose the outer half bin on each side; derive it from the outer bin edges instead (and do not round it inwards). A quick 1D estimate is:
+Choose `radial_range` to cover the desired combined angular range. It may intentionally clip detector coverage, in 1D and 2D: whatever lies outside the range is left out. Include pixel corners/subsamples when full split-pixel coverage is required; bin centers are not exact detector limits. Every 1D method drops pixels outside an explicit `radial_range`, so a range taken from the first and last bin centres would lose the outer half bin on each side; derive it from the outer bin edges instead (and do not round it inwards). The outer edges reconstructed from bin centres can round to just inside the outermost pixel, so the recipe below widens each side by a further 1% of a bin: physically negligible, but many orders of magnitude above floating-point rounding. If the direct beam falls on a detector, use 0 as the lower limit: `supersampled` and `pixel_split` sample points nearer the beam than any pixel centre lie below the first automatic bin. Probe with the method and unit you will integrate with, and with `n_points >= 2`. A quick 1D estimate is:
 
 ```python
 import dioptrin
@@ -414,14 +414,18 @@ int2 = dioptrin.Integrator("det2.poni", unit="q_A^-1")
 r1 = int1.integrate1d(img1, n_points=1000)
 r2 = int2.integrate1d(img2, n_points=1000)
 
-# radial holds bin centres; extend each end by half a bin width to reach
-# the outer bin edges
+# radial holds bin centres; extend each end by half a bin width to reach the
+# outer bin edges, plus 1% of a bin so that rounding cannot cut off a pixel
 def edges(r):
-    half = 0.5 * (r.radial[1] - r.radial[0])
-    return r.radial[0] - half, r.radial[-1] + half
+    c = r.radial
+    if len(c) < 2:
+        raise ValueError("integrate with n_points >= 2 to estimate the range")
+    width = (c[-1] - c[0]) / (len(c) - 1)
+    pad = 0.51 * width
+    return max(0.0, c[0] - pad), c[-1] + pad  # 2D shared grids need edges >= 0
 
 (lo1, hi1), (lo2, hi2) = edges(r1), edges(r2)
-q_min = max(0.0, min(lo1, lo2))  # the 2D shared grid requires nonnegative edges
+q_min = min(lo1, lo2)  # use 0.0 if the direct beam falls on either detector
 q_max = max(hi1, hi2)
 print(f"Suggested radial_range: ({q_min}, {q_max})")
 

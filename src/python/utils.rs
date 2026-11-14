@@ -156,6 +156,22 @@ pub fn validate_integrator_options(
     Ok(())
 }
 
+/// Histogram always bins over the automatic radial range of the image, so a
+/// `radial_range` would be silently ignored; reject the combination instead.
+pub fn check_method_radial_range(
+    method: &IntegrationMethod,
+    radial_range: Option<(f64, f64)>,
+) -> PyResult<()> {
+    if matches!(method, IntegrationMethod::Histogram) && radial_range.is_some() {
+        return Err(PyValueError::new_err(
+            "radial_range is not supported by the 'histogram' method, which always \
+             uses the automatic radial range; use 'counting', 'pixel_split', \
+             'pyfai_full' or 'supersampled' for an explicit radial_range",
+        ));
+    }
+    Ok(())
+}
+
 /// q units convert with the PONI wavelength, which must be positive.
 pub fn check_unit_wavelength(unit: RadialUnit, wavelength: f64) -> PyResult<()> {
     if unit.requires_wavelength() && !(wavelength.is_finite() && wavelength > 0.0) {
