@@ -144,6 +144,11 @@ fn spawn_iterator_producer(
 /// Integrate owned frames on a detached thread, streaming results as they
 /// complete. A panic while integrating a frame is recorded in `stream_error`
 /// and raised by the iterator at that position instead of ending it silently.
+///
+/// The consumer treats the closed channel as the end of the stream and lets
+/// the caller change the integrator, so `integrate` (which holds it) is
+/// dropped before the last sender. `for_each_with` drops its sender clones
+/// when the Rayon loop returns, before this thread's captures would be.
 fn spawn_array_stream<T: Send + 'static>(
     frames: Vec<Frame>,
     stream_error: StreamError,
@@ -152,23 +157,25 @@ fn spawn_array_stream<T: Send + 'static>(
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         use rayon::prelude::*;
-        frames
-            .par_iter()
-            .enumerate()
-            .for_each_with(tx, |tx, (i, frame)| {
-                match catch_unwind(AssertUnwindSafe(|| integrate(frame))) {
-                    Ok(result) => {
-                        let _ = tx.send((i, format!("array[{i}]"), Ok(result)));
-                    }
-                    Err(payload) => stream_error.set(
-                        i,
-                        PyRuntimeError::new_err(format!(
-                            "integration of images[{i}] failed: {}",
-                            panic_message(&*payload)
-                        )),
-                    ),
+        frames.par_iter().enumerate().for_each_with(
+            tx.clone(),
+            |tx, (i, frame)| match catch_unwind(AssertUnwindSafe(|| integrate(frame))) {
+                Ok(result) => {
+                    let _ = tx.send((i, format!("array[{i}]"), Ok(result)));
                 }
-            });
+                Err(payload) => stream_error.set(
+                    i,
+                    PyRuntimeError::new_err(format!(
+                        "integration of images[{i}] failed: {}",
+                        panic_message(&*payload)
+                    )),
+                ),
+            },
+        );
+        drop(integrate);
+        drop(frames);
+        drop(stream_error);
+        drop(tx); // Closes the stream
     });
     rx
 }

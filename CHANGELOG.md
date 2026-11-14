@@ -165,8 +165,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     generator truncated the stream; an exception raised by the generator
     produced a bogus extra result). Lists are now checked before work starts,
     and for generators the error, or the generator's own exception, is raised
-    from the iterator at that item after the earlier results. A worker that
-    fails mid-stream raises `RuntimeError` instead of ending the iteration.
+    from the iterator at that item after the earlier results. A panic while
+    integrating a frame of `batch1d_iter` over a list of arrays ended that
+    iteration silently; it now raises `RuntimeError` at that item, after the
+    earlier results, once the frames still being integrated are done. All
+    other streams (TIFF paths, generator input, `batch2d_iter` over arrays)
+    already turned such a panic into an error `BatchResult` ("integration
+    worker panicked") at its position and went on; they still do.
   - An image whose shape differs from the mask raises `ValueError` for array
     inputs on every `Integrator` and `MultiIntegrator` call. TIFF path batches
     still report it per item as a worker failure.
@@ -212,6 +217,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     generator were exhausted. It now raises `RuntimeError` at that item,
     after the earlier results, and so does any other loss of the reading
     thread: a generator stream only ends cleanly when the generator does.
+- Python `batch1d_iter` / `batch2d_iter` over a list of arrays or TIFF paths
+  release the integrator before they report the end of the stream, so its
+  `set_*` methods work right after the loop. This depended on the unspecified
+  order in which a finished worker dropped its captures; 1D over arrays could
+  still raise "Integrator is in use by a batch operation" for a moment after
+  `StopIteration`.
 - The documented range of `polarization_factor` was 0 to 1; it is −1 to 1
   (+1 horizontal, −1 vertical, 0 unpolarised), which is what the code accepts.
 - `dioptrin.pyi` now covers the calibration API (`Calibrant`,
@@ -298,6 +309,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyfai_full` or any 2D output.
   The legacy single-detector 2D polygon builder (`build_lut2d_ps_csr*`) is
   unchanged and still uses row-normalized polar areas.
+- **Behaviour change:** Python calls that used to run now raise `ValueError`
+  (see "Python: invalid input" under Fixed): `method="histogram"` together
+  with `radial_range`, at construction and in `set_method` (the range was
+  ignored); a `polarization_factor` outside [-1, 1] or non-finite, at
+  construction and in `set_polarization_factor` (it was applied as given); a q
+  unit without a positive wavelength in the calibration, at construction and
+  in `set_unit` (it panicked at the first integration instead). A
+  `batch1d_iter` / `batch2d_iter` list that mixes valid items with one that is
+  neither a path nor a 2D float64 array (an `int`, an `int32` array) raises
+  `TypeError` at the call, before anything is integrated; before, the items
+  ahead of it were integrated and yielded and the stream stopped there
+  without an error.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
 

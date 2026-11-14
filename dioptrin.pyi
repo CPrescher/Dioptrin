@@ -183,12 +183,23 @@ class BatchIterator(Iterator[BatchResult]):
     Fed by a generator or other iterator, the stream reads at most
     4 * num_workers items ahead of the results it has handed out, so an
     endless generator that is not being consumed is not drained into memory.
-    The integrator counts as in use (its set_* methods raise ValueError) until
-    the stream ends, raises, or the iterator is deleted; deleting it stops the
-    stream's workers before returning. If the generator is blocked inside
-    its own ``__next__`` at that point (e.g. waiting for a detector frame),
-    the one thread reading it stays there until that call returns, but no
-    longer holds the integrator.
+    The integrator counts as in use (its set_* methods raise ValueError) while
+    the stream runs. Once the iterator has raised StopIteration or an error,
+    it is free. Deleting the iterator mid-way:
+
+    - fed by a generator or other iterator: stops the workers and waits for
+      them, so the integrator is free when ``del`` returns. If the generator
+      is blocked inside its own ``__next__`` (e.g. waiting for a detector
+      frame), the one thread reading it stays there until that call returns,
+      but no longer holds the integrator.
+    - ``batch2d_iter`` over a list of arrays: stops the workers without
+      waiting; each finishes the item it is integrating, then releases the
+      integrator.
+    - over a list of TIFF paths: not waited for; each worker finishes the
+      file it is on, then stops.
+    - ``batch1d_iter`` over a list of arrays: cannot be stopped; the
+      remaining frames are integrated (and discarded) before the integrator
+      is released.
 
     Attributes:
         total: Total number of files being processed

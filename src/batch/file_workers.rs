@@ -324,6 +324,11 @@ where
                     break;
                 }
             }
+            // Release the integrator before this job's sender: once the last
+            // sender is gone the consumer may change the integrator.
+            drop(integrator);
+            drop(task);
+            drop(tx);
         });
     }
     drop(tx);
