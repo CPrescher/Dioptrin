@@ -28,10 +28,14 @@ use crate::integration::IntegrationGrid2d;
 use std::f64::consts::{PI, TAU};
 
 /// Input order matches pyFAI: top-left, bottom-left, bottom-right, top-right.
+/// `sign` is pyFAI's corner sign (`pyfai_1d::corner_sign`): -1 when the corners
+/// trace the quadrilateral in mirrored order, which negates both the seam test
+/// and every rasterized area.
 /// Returning None requests the caller's nonnegative fractional-area fallback.
 pub(super) fn split(
     mut poly: [(f64, f64); 4],
     grid: &IntegrationGrid2d,
+    sign: f64,
 ) -> Option<Vec<(usize, f64)>> {
     // Recenter at the canonical discontinuity, independently of sector width.
     // pyFAI's reference test is a signed diagonal-area heuristic, rather than a
@@ -52,7 +56,8 @@ pub(super) fn split(
         p.1 = (p.1 - offset + PI).rem_euclid(TAU) - PI;
     }
     let [a, b, c, d] = poly;
-    let area = 0.5 * (c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0);
+    // pyFAI's `_recenter`: `sign * area4p`, operator precedence included.
+    let area = sign * (0.5 * (c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0));
     if area > 0.0 {
         for p in &mut poly {
             if p.1 < 0.0 {
@@ -107,9 +112,12 @@ pub(super) fn split(
     }
     let mut entries = Vec::new();
     let mut total = 0.0;
+    // pyFAI divides every cell by the signed total, so a mirrored contour
+    // (all areas negative) yields the same weights; apply the sign before
+    // discarding numerically negative cells.
     for r in 0..nr {
         for a in 0..na {
-            let value = buffer[r * (na + 1) + a] as f64;
+            let value = sign * buffer[r * (na + 1) + a] as f64;
             if !value.is_finite() {
                 return None;
             }
