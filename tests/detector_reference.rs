@@ -597,40 +597,185 @@ fn transformed_circular_masks_match_the_base_detector_at_every_binning() {
         failures.join("\n")
     );
 }
-/// MAR 345 at odd binned shapes against pyFAI 2026.2.1 (`detector_factory(
-/// "Mar345", {"binning": [b, b]}).mask`), untransformed and transformed.
+/// Circular catalogue masks at odd and unequal binnings against pyFAI
+/// (`detector_factory(name, {"binning": [b1, b2]}).mask`; identical in pyFAI
+/// 2026.2.1 and 2026.9.0), and MAR 345 at 575 × 575 under every transform.
 #[test]
-fn binned_mar345_circular_mask_matches_pyfai_under_every_transform() {
+fn binned_circular_masks_match_pyfai_under_every_transform() {
     use sha2::{Digest, Sha256};
-    let base = detector::named("MAR 345").unwrap();
-    for (bin, masked, sha) in [
+    for (name, bin, masked, sha) in [
         (
-            2,
+            "MAR 345",
+            [2, 2],
             641321,
             "a189254e2d64ccd441691e0091ae8e7fbcf5258fefe486bee9fe8addde2d6116",
         ),
         (
-            6,
+            "MAR 345",
+            [6, 6],
             71829,
             "1439421f16c21e841eba24a941f8d017b1b591048cac9b2f658bf9cd50a9e4c5",
         ),
+        (
+            "MAR 345",
+            [1, 3],
+            74740,
+            "9749ede1470a94a83e7e483ba639c9d8a6f0251bad09a69a7079a415054e98ff",
+        ),
+        (
+            "Rayonix133",
+            [1, 2],
+            363984,
+            "f19a27f876a50736eacf60fe60a1517639a92da91e4003fbe58e219571f276e6",
+        ),
     ] {
-        let shape = [3450 / bin, 3450 / bin];
-        let mask = base.builtin_mask(shape).unwrap();
-        assert_eq!(mask.iter().filter(|v| **v != 0).count(), masked);
-        assert_eq!(format!("{:x}", Sha256::digest(&mask)), sha);
-        for op in OPS {
-            let t = base.transformed(op).unwrap();
-            assert_eq!(
-                mask_mismatches(&base, &t, op, [bin, bin]),
-                0,
-                "{op:?} bin {bin}"
-            );
+        let base = detector::named(name).unwrap();
+        let full = base.max_shape.unwrap();
+        let mask = base
+            .builtin_mask([full[0] / bin[0], full[1] / bin[1]])
+            .unwrap();
+        let case = format!("{name} bin {bin:?}");
+        assert_eq!(mask.iter().filter(|v| **v != 0).count(), masked, "{case}");
+        assert_eq!(format!("{:x}", Sha256::digest(&mask)), sha, "{case}");
+        // Every transform at one odd shape (the exhaustive invariant runs on
+        // small detectors above; full catalogue sizes are slow in debug).
+        if bin == [6, 6] {
+            for op in OPS {
+                let t = base.transformed(op).unwrap();
+                assert_eq!(mask_mismatches(&base, &t, op, bin), 0, "{case} {op:?}");
+            }
         }
     }
     // Untransformed detectors serialize exactly as before.
+    let base = detector::named("MAR 345").unwrap();
     let json = serde_json::to_value(&base).unwrap();
     assert!(json.get("circular_mask_transform").is_none());
     let json = serde_json::to_value(base.transformed(detector::DetectorTransform::Left).unwrap());
     assert_eq!(json.unwrap()["circular_mask_transform"], "Left");
+}
+/// Dioptrin's circle follows the detector orientation like its mask
+/// intervals: orientation 1, 2 or 4 masks the orientation-3 circle flipped
+/// on both axes, the rows or the columns. (pyFAI's `calc_mask` ignores the
+/// orientation, so for a user-set orientation at odd shapes the two differ;
+/// catalogue detectors have orientation 3.)
+#[test]
+fn circular_mask_follows_the_detector_orientation() {
+    for (mut d, shape) in [
+        (detector::named("MAR 345").unwrap(), [575, 575]),
+        (
+            {
+                let mut d = detector::Detector::custom(1e-4, 1e-4);
+                d.max_shape = Some([15, 21]);
+                d.circular_mask = true;
+                d
+            },
+            [15, 21],
+        ),
+    ] {
+        let [h, w] = shape;
+        let reference = d.builtin_mask(shape).unwrap();
+        for (orientation, flip_rows, flip_cols) in [
+            (0, false, false),
+            (1, true, true),
+            (2, true, false),
+            (4, false, true),
+        ] {
+            d.orientation = orientation;
+            let mask = d.builtin_mask(shape).unwrap();
+            for r in 0..h {
+                for c in 0..w {
+                    let rr = if flip_rows { h - 1 - r } else { r };
+                    let cc = if flip_cols { w - 1 - c } else { c };
+                    assert_eq!(
+                        mask[r * w + c],
+                        reference[rr * w + cc],
+                        "{} orientation {orientation} ({r}, {c})",
+                        d.name
+                    );
+                }
+            }
+        }
+    }
+}
+/// `clear_spline` on a transformed detector whose base becomes uniform gives
+/// the geometry and circle of "clear on the base, then transform", and keeps
+/// what the user set on the transformed detector, including mask intervals
+/// added in its own frame.
+#[test]
+fn clear_spline_after_transform_keeps_user_fields() {
+    let full = [15, 21];
+    let mut base = detector::Detector::custom(1e-4, 1.3e-4);
+    base.max_shape = Some(full);
+    base.circular_mask = true;
+    base.mask = vec![[3, 5], [full[1] + 7, full[1] + 8]];
+    base.spline = Some(Arc::new(
+        Spline::parse(include_str!("../test_data/detector_reference.spline")).unwrap(),
+    ));
+    for orientation in 0..=4 {
+        base.orientation = orientation;
+        let mut expected = base.clone();
+        expected.clear_spline();
+        for op in OPS {
+            let expected = expected.transformed(op).unwrap();
+            let mut t = base.transformed(op).unwrap();
+            t.name = "edited".into();
+            t.config = serde_json::json!({"edited": true});
+            t.mask.push([0, 2]);
+            let mut before = t.clone();
+            before.circular_mask = false;
+            t.clear_spline();
+            let case = format!("orientation {orientation} {op:?}");
+            assert!(!t.has_spline(), "{case}");
+            assert_eq!(t.name, "edited", "{case}");
+            assert_eq!(t.config["edited"], true, "{case}");
+            assert_eq!(t.orientation, expected.orientation, "{case}");
+            let tfull = t.max_shape.unwrap();
+            for bin in [[1, 1], [3, 7], [5, 3], [1, 3]] {
+                let shape = [tfull[0] / bin[0], tfull[1] / bin[1]];
+                if shape[0] * bin[0] != tfull[0] || shape[1] * bin[1] != tfull[1] {
+                    continue;
+                }
+                let case = format!("{case} bin {bin:?}");
+                assert_eq!(
+                    t.builtin_mask(shape).unwrap(),
+                    expected.builtin_mask(shape).unwrap(),
+                    "{case}: circle"
+                );
+                let (mut plain, mut plain_expected) = (t.clone(), expected.clone());
+                plain.circular_mask = false;
+                plain_expected.circular_mask = false;
+                let mut with_edit = plain_expected.builtin_mask(shape).unwrap();
+                for (k, v) in before.builtin_mask(shape).unwrap().into_iter().enumerate() {
+                    with_edit[k] |= v;
+                }
+                assert_eq!(
+                    plain.builtin_mask(shape).unwrap(),
+                    with_edit,
+                    "{case}: intervals"
+                );
+                assert_eq!(
+                    plain.builtin_mask(shape).unwrap(),
+                    before.builtin_mask(shape).unwrap(),
+                    "{case}: intervals before clearing"
+                );
+                for r in 0..=shape[0] {
+                    for c in 0..=shape[1] {
+                        let (y, x) = (r as f64, c as f64);
+                        assert_eq!(
+                            t.position(shape, y, x),
+                            expected.position(shape, y, x),
+                            "{case}: node ({r}, {c})"
+                        );
+                        if r < shape[0] && c < shape[1] {
+                            assert_eq!(
+                                t.corners(shape, r, c),
+                                expected.corners(shape, r, c),
+                                "{case}: corners ({r}, {c})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

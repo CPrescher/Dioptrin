@@ -340,21 +340,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Integrator/plan tables retain constant-time array-length checks.
 - The built-in circular mask of a detector with `circular_mask` under
   `Detector::transformed` differed from the base detector's mask, mapped
-  through the same flip or rotation, on binned images of odd or non-square
-  shape since detectors were added in 0.12.0 (catalogue: MAR 345 at odd binned
-  shapes; Rayonix binnings stay even and were not affected): the circle was drawn at full resolution and reduced block-wise, or
-  redrawn on the transformed image, whereas pyFAI draws it on each binned
-  image with an integer-division centre that is not symmetric under flips.
-  MAR 345 at binning 2 (1725 × 1725) flipped by `Half` had 4878 wrong pixels.
-  The transformed detector now evaluates the base's circle on the base image
-  of the same binning, so it masks exactly the base's pixels at every binning;
+  through the same flip or rotation, on binned images since detectors were
+  added in 0.12.0. Affected were MAR 345 at odd binned shapes, and MAR 345 and
+  Rayonix 133 / SX165 at unequal binnings under `Transpose`, `Transverse`,
+  `Left` or `Right` (and custom circular detectors of odd or non-square shape
+  at any binning other than 1): the circle was drawn at full resolution and reduced
+  block-wise, or redrawn on the transformed image with the radius of the
+  wrong axis, whereas pyFAI draws it on each binned image with an
+  integer-division centre that is not symmetric under flips. Examples of
+  wrong pixels: MAR 345 at binning 2 (1725 × 1725) under `Half`: 4,878;
+  MAR 345 at binning [1, 3] (3450 × 1150) under `Left`: 2,854,004;
+  Rayonix 133 at binning [1, 2] (4096 × 2048) under `Left`: 4,730,336. The
+  transformed detector now evaluates the base's circle on the base image of
+  the same binning, so it masks exactly the base's pixels at every binning;
   uniform maps record the operation in a new serialized field,
-  `circular_mask_transform`, omitted when it is the identity. Masks of
-  untransformed detectors are unchanged; transformed detectors serialized by
-  earlier versions load as before and keep their old mask (transform the base
-  again to get the corrected one). `clear_spline` on a transformed detector
-  whose base becomes uniform now gives the base's uniform transform, keeping
-  the base orientation, instead of a uniform map with orientation 3.
+  `circular_mask_transform`, written only for transformed circular detectors.
+  Masks of untransformed detectors are unchanged; like the mask intervals,
+  the circle follows the detector orientation, whereas pyFAI's does not
+  (catalogue detectors, with orientation 3, are unaffected). Transformed
+  detectors serialized by earlier versions: uniform ones (catalogue MAR 345
+  and Rayonix) and those of odd or non-square shape load with their old mask
+  (transform the base again for the corrected one); non-uniform ones of even
+  square shape (separable, corner or spline maps, e.g. a MAR 345 with a Fit2D
+  spline) now load with the corrected mask on binned images, unchanged
+  unbinned.
+- `Detector::clear_spline` on a transformed detector whose base becomes
+  uniform now gives the geometry of clearing the spline on the base and then
+  transforming: a uniform map in the base orientation. It previously used
+  orientation 3, which also changed positions and corners of non-circular
+  detectors with base orientation 0, 1, 2 or 4. Fields set on the
+  transformed detector (name, aliases, config, pixel sizes, binning pitches,
+  `max_shape`, `circular_mask`, mask intervals) are kept; the intervals are
+  re-encoded for the new orientation so they mask the same pixels. Nothing
+  in the crate calls `clear_spline`.
 
 ### Compatibility and validation
 
