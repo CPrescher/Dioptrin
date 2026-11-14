@@ -152,6 +152,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pyFAI. The two differ in sign only when the pixel's diagonals do not cross
   in (radial, azimuth) space, i.e. for folded quadrilaterals, so patterns are
   not expected to change.
+- `pyfai_full` (1D and 2D) was wrong for a `Detector` with orientation 2 or 4
+  attached through `Geometry::with_detector` (Rust only; not reachable from
+  Python or the detector catalogue), since 0.12.0. These orientations mirror
+  one detector axis, so every pixel's corners run round it the other way in
+  (radial, azimuth) space. pyFAI multiplies its seam test by a corner sign for
+  this (`_corner_sign` in `regrid_common.pxi`); the port did not. Pixels
+  crossing the ±π seam were therefore not unwrapped: in 1D their weights were
+  misplaced by up to 100% between neighbouring radial bins, which moved
+  patterns by about 1e-5 relative (up to about 1e-3 on small images)
+  whenever the seam crosses the detector. In 2D, in addition, every raster
+  area came out negative and was discarded, so almost every pixel fell back
+  to exact polygon clipping instead of pyFAI's raster rule, and seam pixels
+  were smeared around the whole circle: nearly every cake bin was wrong. With
+  the seam on the detector this reached 200% with the beam on it; with the
+  beam off the detector but the seam on it, cakes differed from pyFAI by
+  5.6e-2 to 0.18 on the bins both fill, and two thirds of the bins (1024 of
+  1536 in a test) were filled in one and empty in the other. With the seam
+  off the detector they differed by about 2e-2.
+  This affected every `pyfai_full` path: 1D (with or without `radial_range`,
+  and `build_lut1d_pyfai_csr` sectors), cakes, `integrate2d_with_azimuthal_range*`,
+  `integrate2d_on_azimuthal_range*`, brackets, `integrate2d_raw_on_grid*` and
+  `MultiIntegrator`, plus `PixelSplitMode::PyfaiHistogram` shared grids. The
+  sign is now measured on the pixel corners the kernels receive, which equals
+  pyFAI's orientation rule for uniform and separable detectors and also covers
+  transformed maps, whose `orientation` does not describe their corner order.
+  Orientations 1–4 now agree with the default orientation on the flipped image
+  to f32 rounding (about 1e-7), and with pyFAI 2026.9.0
+  (`("full", "csr", "cython")` and its histogram engines) to about 1e-6 when
+  no pixel contains the point of normal incidence. With the beam on the
+  detector every orientation, the default included, differs from pyFAI by
+  1e-3 to 4e-3 in 1D and 4e-3 to 5e-3 in 2D, because such singular pixels
+  are sampled on the detector plane (unchanged).
+  Results for the default orientation are unchanged, bit for bit.
+- `Detector::position` on a transformed map (`Detector::transformed` of a
+  non-uniform or spline detector, i.e. Dioptas image flips and rotations)
+  shifted an offset inside a pixel instead of flipping or rotating it with the
+  pixel, so positions on pixel edges were one pixel off (and the last edge
+  folded back) and points inside a pixel were misplaced by up to a pixel. On
+  binned images (`max_shape` an integer multiple of the image shape) the
+  binned pixel's corners were taken in the base detector's order but
+  interpolated in the image's, with the same effect. Binned spline detectors
+  under a transform were wrong for every method, since the binned branch
+  interpolated spline-mapped corners and so displaced pixel centres too
+  (in tests, counting 1D raw sums by up to 1e-1, normalized 1D patterns with
+  an explicit range by 1.7e-2, supersampled shared-grid tables by 1e-2 and
+  solid angles by 9e-6). Otherwise pixel centres and per-pixel corners were
+  right, so 1D tables (except
+  supersampled automatic ranges, below), the legacy 2D counting and
+  `pixel_split` cakes and the counting and supersampled
+  shared-grid tables (`integrate2d_raw_on_grid*`, ranges, brackets,
+  `MultiIntegrator` 2D) were not affected. Wrong by order one were the shared
+  corner grid, which only `pixel_split` and `pyfai_full` use (every
+  `pyfai_full` cake and, for both methods, `integrate2d_raw_on_grid*`,
+  `integrate2d_on_azimuthal_range*`, brackets and `MultiIntegrator` 2D), and
+  the legacy supersampled cake (`integrate2d` with `Supersampled`, wrong by
+  0.77–0.98 of the largest bin for some transforms in tests), whose
+  automatic radial and azimuthal ranges are taken from the outermost
+  subpixels. The same radial range moved 1D supersampled patterns (by up to
+  a few 1e-2 in tests). Calibration refinement evaluates 2θ at sub-pixel peak
+  positions, so it fitted transformed maps against peaks misplaced by up to a
+  pixel along a flipped axis. Rust only, since 0.12.0. A transformed map now
+  evaluates its base detector at the inverse-mapped point of the base image
+  with the same binning, so a binned pixel spanning a module gap or several
+  unequal or curved base pixels has the base's binned quadrilateral, matching
+  its corners and mask. One exception remains: pyFAI's seam test, used by
+  `pyfai_full` 2D and `PixelSplitMode::PyfaiHistogram`, is invariant under
+  mirrors and 180° rotations of the corner order but not under a quarter
+  turn, so with a net quarter-turn transform (for example Left on an
+  orientation-3 base or Transverse on orientation 2) a pixel next to the beam
+  can be split differently than on the base detector (one pixel in a test,
+  moving raw sums by about 1e-1 in the bins it touches). That is pyFAI's
+  rule, not a position error, and not new.
+- Solid angles of a transformed non-flat detector (curved separable or NeXus
+  corner maps) whose base has orientation 1, 2 or 4 did not match the base
+  detector. The base detector, like pyFAI's `cos_incidence` (which takes the
+  normal from `get_pixel_corners()` without re-ordering it for the
+  orientation), takes the normal of the pixel at the same image index, which
+  for these orientations is not the physical pixel's normal; the transformed
+  map took the physical one. It now follows the base's (pyFAI's) convention,
+  so a transformed image integrates exactly like the original one. This is a
+  consistency fix: the solid angles it reproduces are pyFAI's convention, not
+  the physical normal. The change grows with curvature (8e-2 relative in one
+  test, 0.4 to 7.5 in strongly curved ones). Rust only, since 0.12.0.
 - `MultiIntegrator` 2D and `integrate2d_raw_on_grid*` dropped a value inside
   the grid whose bin index rounded to `n` (for example the value one ulp below
   the upper limit of `(0.5, 25)` with 1500 bins, or an azimuth a few 1e-16
@@ -258,11 +341,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility and validation
 
-- **Known limitation:** `pyfai_full` (1D and 2D) does not account for a
-  `Detector` with orientation 2 or 4 attached through
-  `Geometry::with_detector`; results for such detectors are wrong (present
-  since 0.12.0). Flip the image and use the default orientation instead. This
-  cannot be reached from Python or the detector catalogue.
 - **Behaviour change:** 2D integration with the Histogram method now fails
   instead of returning a 1D profile; use `counting`, `pixel_split`,
   `pyfai_full` or `supersampled` for 2D. `IntegrationTask` has a new provided

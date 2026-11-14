@@ -454,6 +454,11 @@ impl Geometry {
             } else {
                 let mut model = d.as_ref().clone();
                 model.orientation = 3;
+                // A transformed map takes the normal its base takes for the
+                // base pixel, so the base's orientation is dropped as well.
+                if let crate::detector::PixelMap::Transformed { base, .. } = &mut model.map {
+                    Arc::make_mut(base).orientation = 3;
+                }
                 Some(model)
             };
             return (0..self.size())

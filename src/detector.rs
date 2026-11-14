@@ -209,6 +209,19 @@ impl Detector {
     pub fn position(&self, shape: [usize; 2], row: f64, col: f64) -> [f64; 3] {
         let logical = [row, col];
         let (mut row, mut col) = self.oriented(shape, row, col);
+        if let PixelMap::Transformed { base, operation } = &self.map {
+            // Map the point into the base image of the same binning, mirroring
+            // or rotating the offset inside the pixel with it (so pixel edges
+            // and corner-grid nodes land on the right edges), and let the base
+            // apply its own binning: a binned pixel that spans base pixels, a
+            // module gap or a curved surface then has the base's binned
+            // quadrilateral, consistent with `corners` and `builtin_mask`.
+            let r = (row.floor().max(0.) as usize).min(shape[0] - 1);
+            let c = (col.floor().max(0.) as usize).min(shape[1] - 1);
+            let (original, rr, cc) = inverse_pixel(*operation, shape, r, c);
+            let (fr, fc) = inverse_offset(*operation, row - r as f64, col - c as f64);
+            return base.position(original, rr as f64 + fr, cc as f64 + fc);
+        }
         let bin = self
             .max_shape
             .map(|s| [s[0] / shape[0], s[1] / shape[1]])
@@ -245,17 +258,7 @@ impl Detector {
                 let c = (col.floor().max(0.) as usize).min(shape[1] - 1);
                 interpolate(&values[r * shape[1] + c], row - r as f64, col - c as f64)
             }
-            PixelMap::Transformed { base, operation } => {
-                let full = self.max_shape.unwrap_or(shape);
-                let r = (row.floor().max(0.) as usize).min(full[0] - 1);
-                let c = (col.floor().max(0.) as usize).min(full[1] - 1);
-                let (original, rr, cc) = inverse_pixel(*operation, full, r, c);
-                base.position(
-                    original,
-                    rr as f64 + row - r as f64,
-                    cc as f64 + col - c as f64,
-                )
-            }
+            PixelMap::Transformed { .. } => unreachable!("handled above"),
         }
     }
     /// Physical quadrilateral of one logical pixel, retaining both sides of gaps.
@@ -363,13 +366,13 @@ impl Detector {
     }
     pub fn spline_area(&self, shape: [usize; 2], row: f64, col: f64) -> f64 {
         if let PixelMap::Transformed { base, operation } = &self.map {
-            let (original, r, c) = inverse_pixel(
-                *operation,
-                shape,
-                row.floor() as usize,
-                col.floor() as usize,
-            );
-            return base.spline_area(original, r as f64 + row.fract(), c as f64 + col.fract());
+            let (fr, fc) = (row.floor(), col.floor());
+            let (original, r, c) = inverse_pixel(*operation, shape, fr as usize, fc as usize);
+            // Mirror the offset with the pixel, as in `position`. The only
+            // caller (`Geometry::calc_solid_angle`) passes pixel centres, where
+            // this mapping is the identity.
+            let (dr, dc) = inverse_offset(*operation, row - fr, col - fc);
+            return base.spline_area(original, r as f64 + dr, c as f64 + dc);
         }
         let Some(s) = &self.spline else { return 1. };
         // pyFAI evaluates the spline-area finite differences in image-index
@@ -469,6 +472,20 @@ fn inverse_pixel(
         DetectorTransform::Right => ([w, h], w - 1 - c, r),
         DetectorTransform::Horizontal => (shape, r, w - 1 - c),
         DetectorTransform::Vertical => (shape, h - 1 - r, c),
+    }
+}
+/// Offset inside the base pixel of an offset (fr, fc) inside the logical pixel
+/// that `inverse_pixel` maps onto it.
+fn inverse_offset(op: DetectorTransform, fr: f64, fc: f64) -> (f64, f64) {
+    match op {
+        DetectorTransform::Identity => (fr, fc),
+        DetectorTransform::Half => (1. - fr, 1. - fc),
+        DetectorTransform::Transpose => (fc, fr),
+        DetectorTransform::Transverse => (1. - fc, 1. - fr),
+        DetectorTransform::Left => (fc, 1. - fr),
+        DetectorTransform::Right => (1. - fc, fr),
+        DetectorTransform::Horizontal => (fr, 1. - fc),
+        DetectorTransform::Vertical => (1. - fr, fc),
     }
 }
 fn swaps_axes(op: DetectorTransform) -> bool {

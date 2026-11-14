@@ -30,6 +30,7 @@ use crate::{
     integration::{IntegrationGrid2d, RadialUnit},
     lut::Lut1d,
 };
+use rayon::prelude::*;
 use std::f64::consts::{PI, TAU};
 
 pub fn pyfai_radial_range(g: &Geometry, unit: RadialUnit) -> [f64; 2] {
@@ -66,15 +67,19 @@ pub fn build_lut1d_pyfai_csr(
     let grid = IntegrationGrid2d::new(bins, 1, (radial[0], radial[1]), (angles[0], angles[1]))?;
     let (tth, azi) = g.angular_corners();
     let r = unit.convert_from_tth(&tth, g.poni.wavelength);
+    let polygon = |pixel: usize| {
+        let [a, b, c, d] = g.corner_indices(pixel);
+        [a, d, c, b].map(|i| (r[i], azi[i]))
+    };
+    let sign = corner_sign(g, (0..g.size()).into_par_iter().map(polygon));
     let mut buckets = vec![Vec::<(usize, f64)>::new(); bins];
     let mut entries = 0usize;
     for pixel in 0..g.size() {
-        let [a, b, c, d] = g.corner_indices(pixel);
-        let poly = [a, d, c, b].map(|i| (r[i], azi[i]));
+        let poly = polygon(pixel);
         let contributions = if singular(&poly) {
             sample(g, pixel, unit, &grid, clamp_low)
         } else {
-            split1d(poly, &grid, azimuth.is_some())
+            split1d(poly, &grid, azimuth.is_some(), sign)
         };
         entries += contributions.len();
         if entries > 64 * 1024 * 1024 {
@@ -101,6 +106,68 @@ pub fn build_lut1d_pyfai_csr(
         hist_min: radial[0],
         hist_step: (radial[1] - radial[0]) / bins as f64,
     })
+}
+
+/// pyFAI's `_corner_sign` (regrid_common.pxi): +1 when the pixel corners, in
+/// pyFAI order A, B, C, D, trace the (radial, azimuth) quadrilateral the way an
+/// unmirrored detector does, -1 when they trace it the other way round.
+///
+/// pyFAI multiplies `area4p` by this sign in its seam test and derives it from
+/// the detector orientation alone (-1 for 2 and 4, which mirror one axis).
+/// Here it is measured on the corners the kernels actually receive, which for
+/// uniform and separable detectors gives exactly pyFAI's rule. Transformed
+/// maps (`Detector::transformed`) report orientation 3 whatever they do: their
+/// per-pixel corners (1D) keep the base detector's order, while the shared
+/// corner grid (2D) follows the transformed image. The 1D winding therefore
+/// follows the base orientation, the 2D winding the base orientation combined
+/// with the transform (a Horizontal flip of an orientation-3 base is mirrored
+/// in 2D only). The orientation cannot express that; the corners can.
+///
+/// Each non-singular pixel votes with the sign of its true signed area
+/// (azimuth unwrapped along the contour, so seam pixels vote correctly);
+/// unmirrored pixels have negative area. A geometry without a detector is
+/// pyFAI's default orientation and keeps +1 without a pass over the pixels.
+/// The votes are integers, so the parallel count is exact in any order.
+pub(super) fn corner_sign(
+    g: &Geometry,
+    polys: impl ParallelIterator<Item = [(f64, f64); 4]>,
+) -> f64 {
+    if g.detector().is_none() {
+        return 1.0;
+    }
+    let votes: i64 = polys
+        .map(|poly| {
+            if singular(&poly) {
+                return 0;
+            }
+            let area = unwrapped_area(&poly);
+            if area < 0.0 {
+                1
+            } else if area > 0.0 {
+                -1
+            } else {
+                0
+            }
+        })
+        .sum();
+    if votes < 0 { -1.0 } else { 1.0 }
+}
+
+/// Shoelace area of a quadrilateral whose azimuths are unwrapped along the
+/// contour (consecutive differences taken in (-π, π]).
+fn unwrapped_area(poly: &[(f64, f64); 4]) -> f64 {
+    let mut chi = poly[0].1;
+    let mut pts = [(poly[0].0, chi); 4];
+    for i in 1..4 {
+        chi += (poly[i].1 - poly[i - 1].1 + PI).rem_euclid(TAU) - PI;
+        pts[i] = (poly[i].0, chi);
+    }
+    0.5 * (0..4)
+        .map(|i| {
+            let (p, q) = (pts[i], pts[(i + 1) % 4]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
 }
 
 pub(super) fn singular(poly: &[(f64, f64); 4]) -> bool {
@@ -172,7 +239,14 @@ pub(super) fn sample(
 // fullSplit1D_engine integrates signed line areas along the radial axis, then
 // renormalizes each included pixel. Its sector selection includes a pixel if
 // its azimuthal extent intersects the sector (no partial-azimuth attenuation).
-fn split1d(mut poly: [(f64, f64); 4], grid: &IntegrationGrid2d, sector: bool) -> Vec<(usize, f64)> {
+// `sign` is `corner_sign`; the weights themselves are winding-independent
+// because each pixel is normalized by its own signed sum, as in pyFAI.
+fn split1d(
+    mut poly: [(f64, f64); 4],
+    grid: &IntegrationGrid2d,
+    sector: bool,
+    sign: f64,
+) -> Vec<(usize, f64)> {
     let (a0, a1) = grid.azimuthal_range();
     let offset = if a0 >= -PI && a1 <= PI {
         0.0
@@ -188,7 +262,8 @@ fn split1d(mut poly: [(f64, f64); 4], grid: &IntegrationGrid2d, sector: bool) ->
     // Deliberately pyFAI's `area4p` (regrid_common.pxi), operator precedence
     // included: `0.5 * X - Y`, not the signed diagonal area `0.5 * (X - Y)`.
     // Only the sign is used; the 2D port in `pyfai_split.rs` uses the same form.
-    let area = 0.5 * (c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0);
+    // pyFAI's `_recenter` multiplies it by the orientation's corner sign.
+    let area = sign * (0.5 * (c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0));
     if area > 0.0 {
         for p in &mut poly {
             if p.1 < 0.0 {
@@ -276,6 +351,7 @@ mod tests {
             [(0.1, 0.2), (1.2, 0.3), (1.8, 1.5), (0.4, 1.7)],
             &grid,
             false,
+            1.0,
         );
         let expected = [
             0.21462747684427036,
@@ -294,11 +370,11 @@ mod tests {
     fn partial_radial_pixels_renormalize_and_disjoint_sectors_exclude() {
         let grid = IntegrationGrid2d::new(4, 1, (0., 2.), (0.2, 0.4)).unwrap();
         let poly = [(-0.5, 0.1), (-0.5, 0.8), (0.75, 0.8), (0.75, 0.1)];
-        let weights = split1d(poly, &grid, true);
+        let weights = split1d(poly, &grid, true, 1.0);
         assert!((weights.iter().map(|(_, w)| w).sum::<f64>() - 1.).abs() < 1e-12);
         assert!(weights.iter().all(|(_, w)| w.is_finite() && *w > 0.));
         let outside = IntegrationGrid2d::new(4, 1, (0., 2.), (1., 2.)).unwrap();
-        assert!(split1d(poly, &outside, true).is_empty());
+        assert!(split1d(poly, &outside, true, 1.0).is_empty());
     }
     /// pyFAI's seam test is `0.5 * X - Y`. For this folded quadrilateral it is
     /// negative (no unwrapping) while the true signed area `0.5 * (X - Y)` is
@@ -308,7 +384,7 @@ mod tests {
     fn seam_test_uses_pyfai_operator_precedence() {
         let poly = [(1.0, -0.5), (1.2, -0.4), (2.0, 0.25), (2.2, 0.6)];
         let grid = IntegrationGrid2d::new(10, 1, (0.0, 3.0), (1.0, 2.0)).unwrap();
-        assert!(split1d(poly, &grid, true).is_empty());
+        assert!(split1d(poly, &grid, true, 1.0).is_empty());
     }
 }
 
@@ -464,6 +540,80 @@ mod integration_tests {
             .unwrap();
         let total = pixel_total(&lut, BEAM_PIXEL);
         assert!((total - 0.25).abs() < 2e-3, "{total}");
+    }
+
+    /// The corner sign is pyFAI's orientation rule for uniform detectors:
+    /// every pixel, the seam pixels included, has the expected winding.
+    #[test]
+    fn corner_sign_follows_the_mirrored_orientations() {
+        use crate::detector::Detector;
+        use std::sync::Arc;
+        let sign = |g: &Geometry, unanimous: bool| {
+            let (tth, azi) = g.angular_corners();
+            let polygons: Vec<_> = (0..g.size())
+                .map(|pixel| {
+                    let [a, b, c, d] = g.corner_indices(pixel);
+                    [a, d, c, b].map(|i| (tth[i], azi[i]))
+                })
+                .collect();
+            if unanimous {
+                let regular: Vec<_> = polygons.iter().filter(|p| !singular(p)).collect();
+                let n = regular.iter().filter(|p| unwrapped_area(p) < 0.0).count();
+                assert!(regular.len() > 90);
+                assert!(
+                    n == 0 || n == regular.len(),
+                    "{n} of {} pixels unmirrored",
+                    regular.len()
+                );
+            }
+            corner_sign(g, polygons.into_par_iter())
+        };
+        let g = beam_geometry(4.5e-4, 5.5e-4);
+        assert_eq!(sign(&g, true), 1.0);
+        for (orientation, expected) in [(0, 1.0), (1, 1.0), (2, -1.0), (3, 1.0), (4, -1.0)] {
+            let mut d = Detector::custom(1e-4, 1e-4);
+            d.orientation = orientation;
+            let g = g.clone().with_detector(Arc::new(d)).unwrap();
+            assert_eq!(sign(&g, true), expected, "orientation {orientation}");
+        }
+    }
+
+    /// A tie keeps +1, no votes at all included. Every pixel of a 2 × 2 image
+    /// with the beam on its centre node is singular (and sampled, so the sign
+    /// is unused); the mirrored orientation 2 would give -1 by pyFAI's rule.
+    #[test]
+    fn corner_sign_tie_keeps_plus_one() {
+        use crate::detector::Detector;
+        use std::sync::Arc;
+        let polygons = |g: &Geometry| {
+            let (tth, azi) = g.angular_corners();
+            (0..g.size())
+                .map(|pixel| {
+                    let [a, b, c, d] = g.corner_indices(pixel);
+                    [a, d, c, b].map(|i| (tth[i], azi[i]))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut d = Detector::custom(1e-4, 1e-4);
+        d.orientation = 2;
+        let poni = beam_geometry(1e-4, 1e-4).poni;
+        let g = Geometry::new(2, 2, poni)
+            .with_detector(Arc::new(d))
+            .unwrap();
+        let all_singular = polygons(&g);
+        assert!(all_singular.iter().all(singular));
+        assert_eq!(corner_sign(&g, all_singular.into_par_iter()), 1.0);
+        assert_eq!(corner_sign(&g, rayon::iter::empty()), 1.0);
+        // One mirrored pixel against one unmirrored pixel.
+        let regular = polygons(&beam_geometry(-3e-4, -2e-4))[0];
+        let mut mirrored = regular;
+        mirrored.reverse();
+        assert!(unwrapped_area(&regular) < 0.0 && unwrapped_area(&mirrored) > 0.0);
+        assert_eq!(corner_sign(&g, vec![mirrored].into_par_iter()), -1.0);
+        assert_eq!(
+            corner_sign(&g, vec![regular, mirrored].into_par_iter()),
+            1.0
+        );
     }
 
     #[test]

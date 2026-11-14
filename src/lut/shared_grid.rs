@@ -28,6 +28,19 @@ pub(crate) fn build(
     } else {
         None
     };
+    let corner_sign = match &corners {
+        Some((r, a)) if grid.pixel_split_mode == PixelSplitMode::PyfaiHistogram => {
+            let width = geometry.dim2 + 1;
+            super::pyfai_1d::corner_sign(
+                geometry,
+                (0..radial.len()).into_par_iter().map(|pixel| {
+                    let base = pixel / geometry.dim2 * width + pixel % geometry.dim2;
+                    [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]))
+                }),
+            )
+        }
+        _ => 1.0,
+    };
     let transform = geometry.subpixel_transform();
     let convert = |tth: f64| match unit {
         RadialUnit::TthRad => tth,
@@ -97,7 +110,7 @@ pub(crate) fn build(
                         // Reverse to pyFAI's corner order, preserving raw angles.
                         let poly =
                             [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]));
-                        if let Some(entries) = super::pyfai_split::split(poly, grid) {
+                        if let Some(entries) = super::pyfai_split::split(poly, grid, corner_sign) {
                             return entries;
                         }
                     }

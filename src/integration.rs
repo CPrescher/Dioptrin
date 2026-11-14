@@ -12,9 +12,13 @@ pub use dynamic::{Dynamic1dPlan, Dynamic1dResult, Dynamic1dWorker};
 pub use fixed::{Fixed1dPlan, Fixed1dResult, Fixed1dWorker, InputOrder};
 pub use fixed_csr::{FixedCsr1dInputPlan, FixedCsr1dPlan, FixedGrid2dPlan};
 pub use layout::{LayoutPrediction, predict_1d_layout};
+#[cfg(test)]
+mod binned_transform_tests;
 mod methods;
 #[cfg(test)]
 mod mixed_shape_tests;
+#[cfg(test)]
+mod pyfai_orientation_tests;
 #[cfg(test)]
 mod tests;
 mod tiff_input;
