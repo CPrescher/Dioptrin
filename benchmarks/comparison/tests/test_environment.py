@@ -7,10 +7,18 @@ import sys
 import tempfile
 import time
 import unittest
+import subprocess
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from environment import cache_key, cpu_identity, ensure_cached, fingerprint
+from environment import (
+    cache_key,
+    cpu_identity,
+    ensure_cached,
+    fingerprint,
+    probe_environment,
+    sanitized_build_environment,
+)
 
 
 def concurrent_request(root, barrier, queue):
@@ -30,6 +38,17 @@ def concurrent_request(root, barrier, queue):
         lambda generation: (generation / "complete").is_file(),
     )
     queue.put(result)
+
+
+def concurrent_warm_request(root, barrier, queue):
+    def validate(generation):
+        barrier.wait(timeout=10)
+        return (generation / "complete").is_file()
+
+    def build(generation):
+        raise AssertionError("warm request unexpectedly rebuilt")
+
+    queue.put(ensure_cached(Path(root), {"cpu": "warm"}, build, validate))
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -97,6 +116,7 @@ class EnvironmentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "failed setup"):
                 ensure_cached(root, {"cpu": "a"}, fail, lambda generation: False)
             self.assertEqual(list(root.glob("*/ready.json")), [])
+            self.assertEqual(list(root.glob("*/env-*")), [])
             with self.assertRaisesRegex(RuntimeError, "failed validation"):
                 ensure_cached(
                     root,
@@ -105,6 +125,106 @@ class EnvironmentTests(unittest.TestCase):
                     lambda generation: False,
                 )
             self.assertEqual(list(root.glob("*/ready.json")), [])
+            self.assertEqual(list(root.glob("*/env-*")), [])
+
+    def test_failed_forced_build_keeps_previous_ready_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def valid(generation):
+                return (generation / "complete").is_file()
+
+            first = ensure_cached(
+                root,
+                {"cpu": "same"},
+                lambda generation: (generation / "complete").write_text("ok"),
+                valid,
+            )
+
+            def fail(generation):
+                (generation / "partial").write_text("incomplete build")
+                raise RuntimeError("failed partway")
+
+            with self.assertRaisesRegex(RuntimeError, "failed partway"):
+                ensure_cached(root, {"cpu": "same"}, fail, valid, rebuild=True)
+            again = ensure_cached(root, {"cpu": "same"}, fail, valid)
+            self.assertTrue(again["reused"])
+            self.assertEqual(again["python"], first["python"])
+            self.assertEqual(len(list(root.glob("*/env-*"))), 1)
+            self.assertTrue((Path(first["generation"]) / "published.json").is_file())
+
+    def test_warm_validation_is_concurrent_without_build_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ensure_cached(
+                root,
+                {"cpu": "warm"},
+                lambda generation: (generation / "complete").write_text("ok"),
+                lambda generation: (generation / "complete").is_file(),
+            )
+            context = multiprocessing.get_context("spawn")
+            barrier, queue = context.Barrier(2), context.Queue()
+            processes = [
+                context.Process(
+                    target=concurrent_warm_request, args=(temporary, barrier, queue)
+                )
+                for _ in range(2)
+            ]
+            for process in processes:
+                process.start()
+            results = [queue.get(timeout=20) for _ in processes]
+            for process in processes:
+                process.join(timeout=20)
+                self.assertEqual(process.exitcode, 0)
+            self.assertTrue(all(r["reused"] for r in results))
+
+    def test_unkeyed_build_overrides_are_removed(self):
+        unexpected = {
+            "CARGO_ENCODED_RUSTFLAGS": "bad",
+            "CARGO_PROFILE_RELEASE_LTO": "false",
+            "CARGO_BUILD_RUSTFLAGS": "bad",
+            "RUSTUP_TOOLCHAIN": "nightly",
+            "MATURIN_PYTHON": "wrong",
+            "PYO3_CONFIG_FILE": "wrong",
+            "PIP_INDEX_URL": "wrong",
+            "PYTHONPATH": "wrong",
+        }
+        with patch.dict(
+            os.environ,
+            unexpected | {"CC": "gcc", "CFLAGS": "-O2", "HTTPS_PROXY": "proxy"},
+        ):
+            env = sanitized_build_environment()
+            self.assertTrue(set(unexpected).isdisjoint(env))
+            self.assertEqual(env["PIP_CONFIG_FILE"], os.devnull)
+            self.assertEqual(env["CC"], "gcc")
+            self.assertEqual(env["CFLAGS"], "-O2")
+            self.assertEqual(env["HTTPS_PROXY"], "proxy")
+
+    def test_probe_timeout_and_failure_report_reasons(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in (
+                "venv/bin/python",
+                "venv/benchmark-build.json",
+                "build/python-packages.txt",
+            ):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+            with patch(
+                "environment.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("probe", 0.01),
+            ):
+                result = probe_environment(root, root, timeout=0.01)
+                self.assertFalse(result)
+                self.assertIn("timed out", result.reason)
+            with patch(
+                "environment.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 1, "stale binary", ""),
+            ):
+                result = probe_environment(root, root)
+                self.assertFalse(result)
+                self.assertIn("stale binary", result.reason)
 
     def test_parallel_jobs_build_once(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -131,8 +251,8 @@ class EnvironmentTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as temporary,
             patch.dict(os.environ, {"CC": "gcc", "CXX": "g++"}),
         ):
-            root = Path(temporary)
-            (root / "src").mkdir()
+            root = Path(temporary) / "repo"
+            (root / "src").mkdir(parents=True)
             (root / "src/lib.rs").write_text("library")
             (root / "Cargo.toml").write_text("cargo")
             (root / "pyproject.toml").write_text("python")
@@ -156,6 +276,7 @@ class EnvironmentTests(unittest.TestCase):
                 patch(
                     "environment.sysconfig.get_config_var", return_value="abi-a"
                 ) as abi,
+                patch("environment.platform.libc_ver", return_value=("libc", "1")),
             ):
                 original = cache_key(fingerprint(root, "stable"))
                 cpu.return_value = {"model": "b", "flags": ["avx2"]}
@@ -167,6 +288,27 @@ class EnvironmentTests(unittest.TestCase):
                 abi.return_value = "abi-b"
                 self.assertNotEqual(original, cache_key(fingerprint(root, "stable")))
                 abi.return_value = "abi-a"
+                self.assertNotEqual(original, cache_key(fingerprint(root, "nightly")))
+                with patch("environment.sys.executable", str(root / "another-python")):
+                    self.assertNotEqual(
+                        original, cache_key(fingerprint(root, "stable"))
+                    )
+                with patch("environment.sys.base_prefix", str(root / "another-prefix")):
+                    self.assertNotEqual(
+                        original, cache_key(fingerprint(root, "stable"))
+                    )
+                with patch.dict(os.environ, {"LDFLAGS": "-Wl,new"}):
+                    self.assertNotEqual(
+                        original, cache_key(fingerprint(root, "stable"))
+                    )
+                config = root.parent / ".cargo/config.toml"
+                config.parent.mkdir()
+                config.write_text('[build]\nrustflags=["-Copt-level=2"]\n')
+                self.assertNotEqual(original, cache_key(fingerprint(root, "stable")))
+                config.unlink()
+                (root / "build.rs").write_text("fn main() {}")
+                self.assertNotEqual(original, cache_key(fingerprint(root, "stable")))
+                (root / "build.rs").unlink()
                 (root / "src/lib.rs").write_text("changed library")
                 self.assertNotEqual(original, cache_key(fingerprint(root, "stable")))
                 (root / "src/lib.rs").write_text("library")

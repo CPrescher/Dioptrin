@@ -2,6 +2,7 @@
 """Persist native benchmark environments without reusing incompatible binaries."""
 
 import argparse
+from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
@@ -20,7 +21,68 @@ from setup import compiler_environment
 
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+PROBE_TIMEOUT = 60
+BUILD_FLAGS = (
+    "CFLAGS",
+    "CXXFLAGS",
+    "RUSTFLAGS",
+    "CPPFLAGS",
+    "LDFLAGS",
+    "LIBRARY_PATH",
+    "CPATH",
+    "CPLUS_INCLUDE_PATH",
+    "C_INCLUDE_PATH",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+)
+
+
+def sanitized_build_environment():
+    # Do not let sbatch's inherited CARGO_*, PIP_*, MATURIN_* or PYO3_*
+    # overrides change a build without changing its cache identity.
+    allowed = {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "CC",
+        "CXX",
+        *BUILD_FLAGS,
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in allowed or key.startswith("LC_")
+    }
+    env.update(PIP_CONFIG_FILE=os.devnull, PIP_NO_INPUT="1", PYTHONNOUSERSITE="1")
+    return env
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    ok: bool
+    reason: str = ""
+
+    def __bool__(self):
+        return self.ok
 
 
 def cpu_identity():
@@ -94,8 +156,12 @@ def cpu_identity():
 def fingerprint(root, rust_toolchain):
     env = compiler_environment()
     compilers = {}
-    for name in ("CC", "CXX"):
-        command = shlex.split(env[name])
+    for name, value in {
+        "CC": env["CC"],
+        "CXX": env["CXX"],
+        "default_rust_linker": "cc",
+    }.items():
+        command = shlex.split(value)
         compilers[name] = dict(
             command=command,
             executable=str(Path(shutil.which(command[0]) or command[0]).resolve()),
@@ -119,16 +185,7 @@ def fingerprint(root, rust_toolchain):
         ),
         compilers=compilers,
         rust_toolchain=rust_toolchain,
-        flags={
-            name: env.get(name, "")
-            for name in (
-                "CFLAGS",
-                "CXXFLAGS",
-                "RUSTFLAGS",
-                "LD_LIBRARY_PATH",
-                "DYLD_LIBRARY_PATH",
-            )
-        },
+        flags={name: env.get(name, "") for name in BUILD_FLAGS},
         source=source_hashes(root),
         extra_build_inputs={
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
@@ -140,6 +197,12 @@ def fingerprint(root, rust_toolchain):
                 ".cargo/config.toml",
             )
             if (root / name).is_file()
+        },
+        cargo_configs={
+            str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
+            for directory in (root, *root.parents)
+            for path in (directory / ".cargo/config", directory / ".cargo/config.toml")
+            if path.is_file()
         },
         recipes={
             name: hashlib.sha256(
@@ -165,64 +228,104 @@ def atomic_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def read_generation(entry, key):
+    try:
+        index = json.loads((entry / "ready.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(index, dict) or index.get("key") != key:
+        return None
+    name = index.get("generation")
+    if (
+        not isinstance(name, str)
+        or not name.startswith("env-")
+        or Path(name).name != name
+    ):
+        return None
+    candidate = entry / name
+    return candidate if candidate.resolve().parent == entry else None
+
+
 def ensure_cached(cache_root, identity, build, validate, rebuild=False):
-    """Publish complete immutable generations; lock construction, not benchmark use."""
+    """Validate immutable warm entries without a lock; serialize construction only."""
     key = cache_key(identity)
     entry = cache_root.resolve() / key
     entry.mkdir(parents=True, exist_ok=True)
+
+    def usable(generation):
+        if generation is None:
+            return False
+        result = validate(generation)
+        if not result:
+            reason = getattr(result, "reason", "validation returned false")
+            print(f"Cached environment invalid ({generation}): {reason}", flush=True)
+        return bool(result)
+
+    def receipt(generation, reused):
+        return dict(
+            key=key,
+            generation=str(generation),
+            python=str(generation / "venv/bin/python"),
+            reused=reused,
+            fingerprint=identity,
+        )
+
+    observed = read_generation(entry, key)
+    if not rebuild and usable(observed):
+        return receipt(observed, True)
     with (entry / "build.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        index_path = entry / "ready.json"
         try:
-            index = json.loads(index_path.read_text())
-        except (OSError, ValueError):
-            index = {}
-        if not isinstance(index, dict):
-            index = {}
-        name = index.get("generation", "")
-        if not isinstance(name, str):
-            name = ""
-        generation = entry / name
-        if (
-            not rebuild
-            and index.get("key") == key
-            and isinstance(name, str)
-            and name.startswith("env-")
-            and Path(name).name == name
-            and generation.resolve().parent == entry
-            and validate(generation)
-        ):
-            reused = True
-        else:
-            # Never relocate a venv, and never replace a generation another job
-            # might still be using. A failed/forced rebuild leaves old generations.
-            generation = entry / ("env-" + uuid.uuid4().hex)
-            generation.mkdir()
-            build(generation)
-            if not validate(generation):
-                raise RuntimeError(
-                    "New environment failed validation; cache was not published"
+            fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"Waiting for environment build lock: {entry}", flush=True)
+            fcntl.lockf(lock, fcntl.LOCK_EX)
+        lock.seek(0)
+        lock.truncate()
+        lock.write(
+            json.dumps(
+                dict(
+                    pid=os.getpid(),
+                    host=platform.node(),
+                    job=os.environ.get("SLURM_JOB_ID"),
                 )
-            atomic_json(
-                index_path,
-                dict(key=key, generation=generation.name, fingerprint=identity),
             )
-            reused = False
-    return dict(
-        key=key,
-        generation=str(generation),
-        python=str(generation / "venv/bin/python"),
-        reused=reused,
-        fingerprint=identity,
-    )
+        )
+        lock.flush()
+        latest = read_generation(entry, key)
+        # Simultaneous force requests share the rebuild that completed while
+        # they waited, instead of each doing another complete installation.
+        if (not rebuild or latest != observed) and usable(latest):
+            return receipt(latest, True)
+        generation = entry / ("env-" + uuid.uuid4().hex)
+        generation.mkdir()
+        try:
+            build(generation)
+            result = validate(generation)
+            if not result:
+                raise RuntimeError(
+                    "New environment failed validation: "
+                    + getattr(result, "reason", "validation returned false")
+                )
+        except BaseException:
+            # This generation has never been visible to a benchmark job.
+            shutil.rmtree(generation)
+            raise
+        # Mark before publication: a marked generation might be in use, even
+        # if a kill arrives between marker creation and pointer replacement.
+        atomic_json(generation / "published.json", dict(key=key))
+        atomic_json(
+            entry / "ready.json",
+            dict(key=key, generation=generation.name, fingerprint=identity),
+        )
+        return receipt(generation, False)
 
 
-def probe_environment(generation, root):
+def probe_environment(generation, root, timeout=PROBE_TIMEOUT):
     python = generation / "venv/bin/python"
     record = generation / "venv/benchmark-build.json"
     frozen = generation / "build/python-packages.txt"
     if not python.is_file() or not record.is_file() or not frozen.is_file():
-        return False
+        return ProbeResult(False, "missing interpreter or build records")
     check = (
         "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
         "from provenance import verify_build;import numpy,pyFAI,azint;"
@@ -244,35 +347,54 @@ def probe_environment(generation, root):
             ],
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
         if result.returncode:
-            return False
-        actual = subprocess.check_output(
-            [str(python), "-E", "-s", "-m", "pip", "freeze", "--all"], text=True
+            return ProbeResult(
+                False,
+                "imports/provenance: "
+                + (result.stdout + result.stderr).strip()[-2000:],
+            )
+        result = subprocess.run(
+            [str(python), "-E", "-s", "-m", "pip", "freeze", "--all"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
-        if sorted(actual.splitlines()) != sorted(frozen.read_text().splitlines()):
-            return False
-        return (
-            subprocess.run(
-                [str(python), "-E", "-s", "-m", "pip", "check"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode
-            == 0
+        if result.returncode:
+            return ProbeResult(
+                False, "pip freeze failed: " + result.stderr.strip()[-2000:]
+            )
+        if sorted(result.stdout.splitlines()) != sorted(
+            frozen.read_text().splitlines()
+        ):
+            return ProbeResult(
+                False, "installed package versions differ from the build record"
+            )
+        result = subprocess.run(
+            [str(python), "-E", "-s", "-m", "pip", "check"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
-    except (OSError, subprocess.CalledProcessError):
-        return False
+        if result.returncode:
+            return ProbeResult(
+                False,
+                "dependency check: " + (result.stdout + result.stderr).strip()[-2000:],
+            )
+        return ProbeResult(True)
+    except subprocess.TimeoutExpired:
+        return ProbeResult(False, f"validation subprocess timed out after {timeout}s")
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        return ProbeResult(False, str(error))
 
 
 def build_environment(generation, build_root, rust_toolchain):
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("RUSTUP_TOOLCHAIN", None)
-    env["PYTHONNOUSERSITE"] = "1"
+    env = sanitized_build_environment()
     env["CARGO_HOME"] = str(build_root / "cargo-home")
     env["RUSTUP_HOME"] = str(build_root / "rustup-home")
     env["CARGO_TARGET_DIR"] = str(build_root / "target")
-    env["CARGO_BUILD_JOBS"] = env.get("BUILD_JOBS", "8")
+    env["CARGO_BUILD_JOBS"] = os.environ.get("BUILD_JOBS", "8")
     script = build_root / "rustup-init.sh"
     subprocess.run(
         [
@@ -285,6 +407,7 @@ def build_environment(generation, build_root, rust_toolchain):
             "-o",
             str(script),
         ],
+        env=env,
         check=True,
     )
     subprocess.run(

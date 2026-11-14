@@ -188,12 +188,20 @@ do not rebuild the environment. The cache checks imports, installed package
 versions/dependency consistency, and the recorded Dioptrin source/binary before
 reuse. A broken environment is replaced by a fresh generation.
 
-Concurrent jobs serialize construction of the same cache entry, then share its
-completed environment without serializing benchmarks. Completed generations
+Concurrent jobs validate warm environments independently. Only construction of
+the same cache entry is serialized, using a POSIX file lock on shared storage;
+waiting jobs log the lock location. Validation commands have 60-second timeouts
+and report why an environment needs rebuilding. Completed generations
 are never moved or modified by the cache manager. Forced/failed rebuilds leave
 previous generations available to jobs already using them; failed builds are
-never published as ready. Don't run `pip install` into a managed cached env;
+never published as ready and are removed after a caught setup failure. Don't run `pip install` into a managed cached env;
 change the dependency recipe or request a rebuild instead.
+
+Builds inherit an allowlist of compiler flags, library paths, locale, and network
+settings. Ambient Cargo, maturin, PyO3, Python, and pip overrides are excluded;
+pip configuration files are disabled. Compiler flags/library paths and ancestor
+Cargo configuration files are included in the cache key. Each job's interpreter
+ignores Python environment overrides and user site-packages.
 
 Each run writes `environment.json` alongside its job log, including the exact
 interpreter, fingerprint, and whether it was reused. Build metadata is copied
@@ -217,8 +225,19 @@ REBUILD_ENV=1 sbatch benchmarks/comparison/maxwell.sbatch
 The default `stable` Rust selector and floating transitive dependencies do not
 trigger daily rebuilds: existing validated environments keep their recorded
 versions until build inputs change or `REBUILD_ENV=1` is requested. Multiple CPU
-classes/source revisions/forced generations use additional storage. Old cache
-generations can be removed manually after all jobs using them have finished.
+classes/source revisions/forced generations use additional storage. Simultaneous
+forced requests share a rebuild completed while they waited; a later forced
+request builds again. The generated Cargo.lock is deliberately excluded from
+the key: after supplying a saved lock for an exact replay, use `REBUILD_ENV=1`.
+README-only commits can reuse a build recorded under an earlier commit because
+the build content hashes are unchanged.
+
+Old cache generations can be removed manually after all jobs using them have
+finished. `ready.json` identifies the current generation; `published.json` marks
+generations that may have been used by jobs. A killed build can leave an
+unpublished directory, which can be removed once no build is active. Do not
+delete published generations while their jobs are running. Shared-filesystem
+locking and cross-node reuse still need qualification on Maxwell itself.
 
 Slurm requests one exclusive CPU node, its memory, two hours, and `allcpu` by
 default. Override the partition with one your account can use, and pass runner
