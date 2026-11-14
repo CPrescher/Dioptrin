@@ -180,6 +180,16 @@ class BatchIterator(Iterator[BatchResult]):
     Yields BatchResult objects as each file completes processing.
     Use this for memory-efficient processing of large batches.
 
+    Fed by a generator or other iterator, the stream reads at most
+    4 * num_workers items ahead of the results it has handed out, so an
+    endless generator that is not being consumed is not drained into memory.
+    The integrator counts as in use (its set_* methods raise ValueError) until
+    the stream ends, raises, or the iterator is deleted; deleting it stops the
+    stream's workers before returning. If the generator is blocked inside
+    its own ``__next__`` at that point (e.g. waiting for a detector frame),
+    the one thread reading it stays there until that call returns, but no
+    longer holds the integrator.
+
     Attributes:
         total: Total number of files being processed
         completed: Number of files processed so far

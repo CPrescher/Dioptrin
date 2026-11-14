@@ -187,6 +187,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `batch2d_iter` fed by a Python iterator run on their own worker pool, so an
   open or abandoned stream no longer blocks a later batch on the same
   integrator.
+- Python `batch1d_iter` / `batch2d_iter` fed by a generator or other iterator:
+  - Deleting the `BatchIterator` (or reaching its end, including by an
+    exception) now stops the stream's workers: they release the integrator
+    before it returns, so its `set_*` methods work again at once, and then
+    shut down their threads.
+    Previously the workers waited for the generator's next item, which a
+    generator blocked on a live feed never yields: each abandoned stream kept
+    its threads (13 with `num_workers=4, num_threads=2`) and left the
+    integrator "in use by a batch operation" for the rest of the process. The
+    one thread reading the generator cannot be interrupted while it is inside
+    the generator's own `__next__`; it stays there until that call returns,
+    then exits without pulling more, and holds neither the integrator nor the
+    workers meanwhile.
+  - A stream now reads at most `4 * num_workers` items ahead of the results
+    handed out. An endless generator that nobody consumed was pulled as fast
+    as the workers ran, its results accumulating in memory without bound
+    (tens of thousands of frames within seconds). The workers themselves
+    never wait on the consumer, so an open stream still does not block other
+    batches.
+  - A Rust panic while reading the next item (for example a pyo3
+    `PanicException` raised in the generator, as when it calls the
+    `Integrator` from the stream's thread) ended the stream as if the
+    generator were exhausted. It now raises `RuntimeError` at that item,
+    after the earlier results, and so does any other loss of the reading
+    thread: a generator stream only ends cleanly when the generator does.
 - The documented range of `polarization_factor` was 0 to 1; it is −1 to 1
   (+1 horizontal, −1 vertical, 0 unpolarised), which is what the code accepts.
 - `dioptrin.pyi` now covers the calibration API (`Calibrant`,

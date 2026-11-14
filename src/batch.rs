@@ -45,7 +45,7 @@ use crate::integration::{IntegrationMethod, Integrator};
 mod file_workers;
 #[cfg(feature = "python")]
 pub(crate) use file_workers::{
-    FileWorkers, process_files_streaming_with_pool, process_files_with_pool,
+    FileWorkers, StreamControl, process_files_streaming_with_pool, process_files_with_pool,
     process_queue_with_pool,
 };
 

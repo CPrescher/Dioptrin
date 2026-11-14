@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
+use crate::batch::StreamControl;
+
 /// Result of an integration operation.
 ///
 /// Contains the integrated intensity data along with optional radial/azimuthal
@@ -258,6 +260,13 @@ pub(crate) type AzimuthalRange2dOutput = Result<crate::integration::AzimuthalRan
 /// Yields BatchResult objects as each file completes processing.
 /// Use this for memory-efficient processing of large batches.
 ///
+/// Fed by a Python iterator, the stream reads at most `4 * num_workers` items
+/// ahead of the results it has handed out. The integrator counts as in use
+/// until the stream ends, raises, or the iterator is dropped; dropping it
+/// stops the stream's workers before returning. A producer thread blocked in
+/// the caller's `__next__` stays there until that call returns, holding
+/// neither the integrator nor the workers.
+///
 /// # Example
 ///
 /// ```python
@@ -269,13 +278,17 @@ pub(crate) type AzimuthalRange2dOutput = Result<crate::integration::AzimuthalRan
 /// ```
 #[pyclass(name = "BatchIterator")]
 pub struct PyBatchIterator {
-    receiver: BatchReceiver,
+    /// None once the stream is closed (finished or dropped).
+    receiver: Option<BatchReceiver>,
     total: usize,
     completed: usize,
     buffer: BTreeMap<usize, PyBatchResult>,
     next_index: usize,
     stream_error: StreamError,
     finished: bool,
+    /// Present for queue-fed streams (array input to `batch2d_iter` and
+    /// Python iterator input): lets the iterator stop its workers.
+    control: Option<Arc<StreamControl>>,
 }
 
 /// Failure that ends a stream at a given input position: an invalid input
@@ -358,30 +371,109 @@ impl PyBatchIterator {
         stream_error: StreamError,
     ) -> Self {
         Self {
-            receiver,
+            receiver: Some(receiver),
             total,
             completed: 0,
             buffer: BTreeMap::new(),
             next_index: 0,
             stream_error,
             finished: false,
+            control: None,
+        }
+    }
+
+    /// Iterator over a queue-fed stream run by `control`'s workers.
+    pub(crate) fn with_control(
+        receiver: BatchReceiver,
+        total: usize,
+        stream_error: StreamError,
+        control: Arc<StreamControl>,
+    ) -> Self {
+        let mut iterator = Self::with_stream_error(receiver, total, stream_error);
+        iterator.control = Some(control);
+        iterator
+    }
+
+    /// Hand out the result for `next_index` and grant the producer credit
+    /// for one more item.
+    fn deliver(&mut self, result: PyBatchResult) -> PyBatchResult {
+        self.next_index += 1;
+        self.completed += 1;
+        if let Some(control) = &self.control {
+            control.deliver(self.next_index);
+        }
+        result
+    }
+
+    /// Stop the stream: no more items are pulled from the input, results
+    /// still in flight are discarded, and for an iterator-fed stream wait
+    /// (without the GIL, when `py` is given) until its workers have released
+    /// the integrator, so its setters work as soon as the stream is closed.
+    ///
+    /// Workers never wait for Python or for this consumer, so the wait lasts
+    /// at most one poll interval or the integration of one item. The
+    /// producer thread is not waited for: it may be inside the caller's
+    /// `__next__` (a generator waiting for a detector frame), which cannot be
+    /// interrupted. It holds neither the integrator nor the workers and exits
+    /// when that call returns.
+    fn close(&mut self, py: Option<Python<'_>>) {
+        self.finished = true;
+        self.receiver = None;
+        self.buffer.clear();
+        let Some(control) = &self.control else {
+            return;
+        };
+        control.cancel();
+        // Streams on the shared pool are not waited for: their jobs may be
+        // queued behind other work on that pool.
+        if control.iterator_input() {
+            match py {
+                Some(py) => py.detach(|| control.wait_workers_idle()),
+                None => control.wait_workers_idle(),
+            }
         }
     }
 
     /// The result channel closed: raise a recorded failure, or report results
     /// that never arrived instead of silently ending the iteration.
-    fn end_of_stream(&mut self) -> PyErr {
-        self.finished = true;
+    fn end_of_stream(&mut self, py: Python<'_>) -> PyErr {
+        let missing = !self.buffer.is_empty() || self.next_index < self.total;
+        self.close(Some(py));
         if let Some(err) = self.stream_error.take() {
             return err;
         }
-        if !self.buffer.is_empty() || self.next_index < self.total {
+        if missing {
             return PyRuntimeError::new_err(format!(
                 "batch ended without a result for item {}: a worker stopped unexpectedly",
                 self.next_index
             ));
         }
+        // With iterator input the total is unknown; only a producer that saw
+        // the iterator end makes this a clean end of the stream.
+        if let Some(control) = &self.control
+            && control.iterator_input()
+            && !control.input_exhausted()
+        {
+            return PyRuntimeError::new_err(format!(
+                "batch ended without a result for item {}: \
+                 the thread reading the input iterator stopped unexpectedly",
+                self.next_index
+            ));
+        }
         PyStopIteration::new_err(())
+    }
+}
+
+impl Drop for PyBatchIterator {
+    fn drop(&mut self) {
+        // Dropped from Python's deallocator, normally with the thread
+        // attached; during interpreter shutdown wait without detaching.
+        if self.finished && self.receiver.is_none() {
+            return;
+        }
+        if Python::try_attach(|py| self.close(Some(py))).is_none() {
+            self.close(None);
+        }
     }
 }
 
@@ -398,19 +490,20 @@ impl PyBatchIterator {
         loop {
             // Check if the next expected result is already buffered
             if let Some(result) = self.buffer.remove(&self.next_index) {
-                self.next_index += 1;
-                self.completed += 1;
-                return Ok(result);
+                return Ok(self.deliver(result));
             }
             // All earlier results were delivered: raise a failure recorded for
             // this position (bad input item, generator error, worker panic).
             if let Some(err) = self.stream_error.take_at(self.next_index) {
-                self.finished = true;
+                self.close(Some(py));
                 return Err(err);
             }
 
             // Receive the next result from the channel
-            let received = match &self.receiver {
+            let Some(receiver) = &self.receiver else {
+                return Err(PyStopIteration::new_err(()));
+            };
+            let received = match receiver {
                 BatchReceiver::Integration1DWithAzimuthalStd(rx) => {
                     recv(py, rx).map(|(index, filename, result)| {
                         let result = result.map(PyIntegrationResult::from_azimuthal);
@@ -475,14 +568,12 @@ impl PyBatchIterator {
                 }),
             };
             let Some((index, batch_result)) = received else {
-                return Err(self.end_of_stream());
+                return Err(self.end_of_stream(py));
             };
 
             // If this is the one we're waiting for, yield it directly
             if index == self.next_index {
-                self.next_index += 1;
-                self.completed += 1;
-                return Ok(batch_result);
+                return Ok(self.deliver(batch_result));
             }
 
             // Otherwise buffer it and keep receiving
