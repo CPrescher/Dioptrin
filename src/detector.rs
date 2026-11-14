@@ -25,8 +25,9 @@ pub enum PixelMap {
         operation: DetectorTransform,
     },
 }
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum DetectorTransform {
+    #[default]
     Identity,
     Half,
     Transpose,
@@ -54,8 +55,15 @@ pub struct Detector {
     pub map: PixelMap,
     /// Half-open flattened intervals in the unbinned detector grid.
     pub mask: Vec<[usize; 2]>,
+    /// pyFAI's circular mask (MAR 345, Rayonix), evaluated on each binned
+    /// image; replaces `mask` when set.
     #[serde(default)]
     pub circular_mask: bool,
+    /// Image operation applied since the circle was defined, recorded by
+    /// `transformed` for a uniform map with `circular_mask` (a `Transformed`
+    /// map evaluates the circle through its base, and this stays Identity).
+    #[serde(default, skip_serializing_if = "is_identity")]
+    pub circular_mask_transform: DetectorTransform,
     pub spline: Option<Arc<spline::Spline>>,
     /// Unsupported catalog models are never approximated as uniform pixels.
     pub unsupported: Option<String>,
@@ -84,6 +92,7 @@ impl Detector {
             map: PixelMap::Uniform,
             mask: vec![],
             circular_mask: false,
+            circular_mask_transform: DetectorTransform::Identity,
             spline: None,
             unsupported: None,
         }
@@ -136,7 +145,14 @@ impl Detector {
                     return Err("Invalid detector pixel corners.".into());
                 }
             }
-            PixelMap::Transformed { base, .. } => base.validate()?,
+            PixelMap::Transformed { base, .. } => {
+                if self.circular_mask_transform != DetectorTransform::Identity {
+                    return Err(
+                        "A transformed detector map takes its circular mask from its base.".into(),
+                    );
+                }
+                base.validate()?
+            }
             _ => {}
         }
         if let Some(s) = &self.spline {
@@ -310,21 +326,40 @@ impl Detector {
     pub fn builtin_mask(&self, shape: [usize; 2]) -> Result<Vec<u8>, String> {
         self.validate()?;
         let bin = self.binning(shape)?;
-        let mut mask = vec![0; shape[0] * shape[1]];
         if self.circular_mask {
-            let cy = (shape[0] / 2) as f64;
-            let cx = (shape[1] / 2) as f64;
+            let mut mask = vec![0; shape[0] * shape[1]];
             for r in 0..shape[0] {
                 for c in 0..shape[1] {
-                    let (y, x) = self.oriented(shape, r as f64 + 0.5, c as f64 + 0.5);
-                    mask[r * shape[1] + c] =
-                        u8::from((y - cy).powi(2) + (x - cx).powi(2) > cy.powi(2));
+                    mask[r * shape[1] + c] = u8::from(self.outside_circle(shape, r, c));
                 }
             }
             return Ok(mask);
         }
+        Ok(self.interval_mask(shape, bin))
+    }
+    /// pyFAI `calc_mask` of the circular detectors on the image the base
+    /// detector is evaluated on: integer-division centre and radius at the
+    /// binned shape. That circle is not symmetric under flips of odd shapes,
+    /// so a transformed detector maps the pixel back to the base image of the
+    /// same binning instead of drawing a circle of its own.
+    fn outside_circle(&self, shape: [usize; 2], r: usize, c: usize) -> bool {
+        if let PixelMap::Transformed { base, operation } = &self.map {
+            let (y, x) = self.oriented(shape, r as f64 + 0.5, c as f64 + 0.5);
+            let (original, r, c) =
+                inverse_pixel(*operation, shape, y.floor() as usize, x.floor() as usize);
+            return base.outside_circle(original, r, c);
+        }
+        let (shape, r, c) = inverse_pixel(self.circular_mask_transform, shape, r, c);
+        let (cy, cx) = ((shape[0] / 2) as f64, (shape[1] / 2) as f64);
+        let (y, x) = self.oriented(shape, r as f64 + 0.5, c as f64 + 0.5);
+        (y - cy).powi(2) + (x - cx).powi(2) > cy.powi(2)
+    }
+    /// Explicit full-resolution intervals reduced to the binned image (a
+    /// binned pixel is masked if any of its pixels is).
+    fn interval_mask(&self, shape: [usize; 2], bin: [usize; 2]) -> Vec<u8> {
+        let mut mask = vec![0; shape[0] * shape[1]];
         let Some(max) = self.max_shape else {
-            return Ok(mask);
+            return mask;
         };
         for [start, end] in &self.mask {
             for i in *start..*end {
@@ -339,7 +374,7 @@ impl Detector {
                 mask[r * shape[1] + c] = 1;
             }
         }
-        Ok(mask)
+        mask
     }
     pub fn has_spline(&self) -> bool {
         self.spline.is_some()
@@ -347,10 +382,16 @@ impl Detector {
     }
     pub fn clear_spline(&mut self) {
         self.spline = None;
-        if let PixelMap::Transformed { base, .. } = &mut self.map {
+        if let PixelMap::Transformed { base, operation } = &mut self.map {
             Arc::make_mut(base).clear_spline();
             if matches!(base.map, PixelMap::Uniform) {
-                self.map = PixelMap::Uniform;
+                // A uniform base transforms as a uniform detector: it keeps
+                // its own orientation (which its circle needs) and pitch.
+                if let Ok(uniform) = base.transformed(*operation) {
+                    *self = uniform;
+                } else {
+                    self.map = PixelMap::Uniform;
+                }
             }
         }
     }
@@ -395,6 +436,11 @@ impl Detector {
             return Ok(self.clone());
         }
         let mut result = self.clone();
+        // A uniform map keeps its own pixels, so it records the operation
+        // for the circle; a transformed map reaches the circle through `base`.
+        if self.circular_mask {
+            result.circular_mask_transform = compose(self.circular_mask_transform, operation);
+        }
         if !matches!(self.map, PixelMap::Uniform) || self.spline.is_some() {
             let (base, combined) = match &self.map {
                 PixelMap::Transformed {
@@ -407,6 +453,7 @@ impl Detector {
                 result.map = base.map.clone();
                 result.spline = base.spline.clone();
                 result.orientation = base.orientation;
+                result.circular_mask_transform = base.circular_mask_transform;
             } else {
                 result.map = PixelMap::Transformed {
                     base,
@@ -414,10 +461,13 @@ impl Detector {
                 };
                 result.spline = None;
                 result.orientation = 3;
+                result.circular_mask_transform = DetectorTransform::Identity;
             }
         }
         if let Some(mut shape) = self.max_shape {
-            let old = self.builtin_mask(shape)?;
+            // Only the explicit intervals are baked; the circle stays a rule
+            // evaluated at each binning (see `outside_circle`).
+            let old = self.interval_mask(shape, [1, 1]);
             if swaps_axes(operation) {
                 shape.swap(0, 1);
             }
@@ -443,11 +493,6 @@ impl Detector {
                 }
             }
             result.mask = intervals;
-            result.circular_mask =
-                self.circular_mask && shape[0] == shape[1] && shape[0].is_multiple_of(2);
-            if result.circular_mask {
-                result.mask.clear();
-            }
             result.max_shape = Some(shape);
         }
         if swaps_axes(operation) {
@@ -487,6 +532,9 @@ fn inverse_offset(op: DetectorTransform, fr: f64, fc: f64) -> (f64, f64) {
         DetectorTransform::Horizontal => (fr, 1. - fc),
         DetectorTransform::Vertical => (1. - fr, fc),
     }
+}
+fn is_identity(op: &DetectorTransform) -> bool {
+    *op == DetectorTransform::Identity
 }
 fn swaps_axes(op: DetectorTransform) -> bool {
     matches!(

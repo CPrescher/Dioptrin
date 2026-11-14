@@ -455,3 +455,182 @@ fn refinement_uses_nonuniform_physical_positions_in_every_residual_and_jacobian(
     assert!((fitted.poni.poni2 - p.poni2).abs() < 1e-8);
     assert!(fitted.rms_rad < 1e-9);
 }
+/// Pixels of `t` (an `op` transform of `base`) whose built-in mask differs
+/// from the base mask mapped through the same operation, at binning `bin`.
+fn mask_mismatches(
+    base: &detector::Detector,
+    t: &detector::Detector,
+    op: detector::DetectorTransform,
+    bin: [usize; 2],
+) -> usize {
+    use detector::DetectorTransform::*;
+    let full = base.max_shape.unwrap();
+    let bshape = [full[0] / bin[0], full[1] / bin[1]];
+    let shape = if matches!(op, Transpose | Transverse | Left | Right) {
+        [bshape[1], bshape[0]]
+    } else {
+        bshape
+    };
+    let (tmask, bmask) = (
+        t.builtin_mask(shape).unwrap(),
+        base.builtin_mask(bshape).unwrap(),
+    );
+    let mut differ = 0;
+    for r in 0..shape[0] {
+        for c in 0..shape[1] {
+            let [br, bc] = untransform(op, shape, r as f64 + 0.5, c as f64 + 0.5);
+            let (br, bc) = (br.floor() as usize, bc.floor() as usize);
+            differ += usize::from(tmask[r * shape[1] + c] != bmask[br * bshape[1] + bc]);
+        }
+    }
+    differ
+}
+const OPS: [detector::DetectorTransform; 8] = {
+    use detector::DetectorTransform::*;
+    [
+        Identity, Half, Transpose, Transverse, Left, Right, Horizontal, Vertical,
+    ]
+};
+/// The circular mask of MAR 345 / Rayonix detectors is pyFAI's `calc_mask`
+/// on the image it is evaluated on (integer-division centre at the binned
+/// shape), which is not symmetric under flips for odd shapes. A transformed
+/// detector must still mask exactly the base's pixels mapped through the
+/// operation, at every binning, orientation and shape, for uniform,
+/// non-uniform and spline maps, nested transforms and with explicit mask
+/// intervals, and keep doing so after a serialization round trip.
+#[test]
+fn transformed_circular_masks_match_the_base_detector_at_every_binning() {
+    let mut failures = vec![];
+    for full in [
+        [30usize, 30],
+        [24, 24],
+        [30, 20],
+        [15, 15],
+        [21, 14],
+        [12, 18],
+    ] {
+        let bins: Vec<_> = (1..=full[0])
+            .filter(|b| full[0].is_multiple_of(*b))
+            .flat_map(|b0| {
+                (1..=full[1])
+                    .filter(|b| full[1].is_multiple_of(*b))
+                    .map(move |b1| [b0, b1])
+            })
+            .collect();
+        let mut uniform = detector::Detector::custom(1e-4, 1.3e-4);
+        uniform.max_shape = Some(full);
+        uniform.circular_mask = true;
+        let mut separable = uniform.clone();
+        separable.map = detector::PixelMap::Separable {
+            slow: (0..full[0])
+                .map(|i| [i, i + 1].map(|i| [0., i as f64 * 1e-4, 0.]))
+                .collect(),
+            fast: (0..full[1])
+                .map(|j| [j, j + 1].map(|j| [0., 0., j as f64 * 1.3e-4]))
+                .collect(),
+        };
+        let mut spline = uniform.clone();
+        spline.spline = Some(Arc::new(
+            Spline::parse(include_str!("../test_data/detector_reference.spline")).unwrap(),
+        ));
+        let mut intervals = uniform.clone();
+        intervals.mask = vec![
+            [3, 5],
+            [full[1] + 7, full[1] + 8],
+            [2 * full[1] - 5, 2 * full[1] + 3],
+        ];
+        for (kind, mut base) in [
+            ("uniform", uniform),
+            ("separable", separable),
+            ("spline", spline),
+            ("intervals", intervals),
+        ] {
+            for orientation in 0..=4 {
+                base.orientation = orientation;
+                for op in OPS {
+                    // Through a serialization round trip (floats need not
+                    // round-trip exactly; the mask rule must).
+                    let json = serde_json::to_string(&base.transformed(op).unwrap()).unwrap();
+                    let t: detector::Detector = serde_json::from_str(&json).unwrap();
+                    // Explicit intervals (the circle replaces them while set)
+                    // and clearing a spline must keep the same correspondence.
+                    let (mut plain_base, mut plain) = (base.clone(), t.clone());
+                    plain_base.circular_mask = false;
+                    plain.circular_mask = false;
+                    let mut cleared_base = base.clone();
+                    cleared_base.clear_spline();
+                    let mut cleared = t.clone();
+                    cleared.clear_spline();
+                    for &bin in &bins {
+                        let n = mask_mismatches(&base, &t, op, bin)
+                            + mask_mismatches(&plain_base, &plain, op, bin)
+                            + mask_mismatches(&cleared_base, &cleared, op, bin);
+                        if n != 0 {
+                            failures.push(format!(
+                                "{kind} {full:?} orientation {orientation} {op:?} bin {bin:?}: {n}"
+                            ));
+                        }
+                    }
+                    // Nested: a second operation on the transformed detector.
+                    for second in OPS {
+                        let tt = t.transformed(second).unwrap();
+                        let tfull = t.max_shape.unwrap();
+                        for bin in [[1, 1], [3, 1], [1, 2], [3, 2]] {
+                            if tfull[0].is_multiple_of(bin[0]) && tfull[1].is_multiple_of(bin[1]) {
+                                let n = mask_mismatches(&t, &tt, second, bin);
+                                if n != 0 {
+                                    failures.push(format!(
+                                        "{kind} {full:?} orientation {orientation} {op:?} then {second:?} bin {bin:?}: {n}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} cases:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+/// MAR 345 at odd binned shapes against pyFAI 2026.2.1 (`detector_factory(
+/// "Mar345", {"binning": [b, b]}).mask`), untransformed and transformed.
+#[test]
+fn binned_mar345_circular_mask_matches_pyfai_under_every_transform() {
+    use sha2::{Digest, Sha256};
+    let base = detector::named("MAR 345").unwrap();
+    for (bin, masked, sha) in [
+        (
+            2,
+            641321,
+            "a189254e2d64ccd441691e0091ae8e7fbcf5258fefe486bee9fe8addde2d6116",
+        ),
+        (
+            6,
+            71829,
+            "1439421f16c21e841eba24a941f8d017b1b591048cac9b2f658bf9cd50a9e4c5",
+        ),
+    ] {
+        let shape = [3450 / bin, 3450 / bin];
+        let mask = base.builtin_mask(shape).unwrap();
+        assert_eq!(mask.iter().filter(|v| **v != 0).count(), masked);
+        assert_eq!(format!("{:x}", Sha256::digest(&mask)), sha);
+        for op in OPS {
+            let t = base.transformed(op).unwrap();
+            assert_eq!(
+                mask_mismatches(&base, &t, op, [bin, bin]),
+                0,
+                "{op:?} bin {bin}"
+            );
+        }
+    }
+    // Untransformed detectors serialize exactly as before.
+    let json = serde_json::to_value(&base).unwrap();
+    assert!(json.get("circular_mask_transform").is_none());
+    let json = serde_json::to_value(base.transformed(detector::DetectorTransform::Left).unwrap());
+    assert_eq!(json.unwrap()["circular_mask_transform"], "Left");
+}
