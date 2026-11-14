@@ -45,7 +45,7 @@ use crate::integration::{IntegrationMethod, Integrator};
 mod file_workers;
 #[cfg(feature = "python")]
 pub(crate) use file_workers::{
-    FileWorkers, process_files_streaming_with_pool, process_files_with_pool,
+    FileWorkers, StreamControl, process_files_streaming_with_pool, process_files_with_pool,
     process_queue_with_pool,
 };
 
@@ -187,7 +187,7 @@ impl IntegrationTask for Integration2DWithErrors {
     }
 }
 
-/// 2D integration with azimuthal range restriction.
+/// 2D integration on an azimuthal grid given by first-bin centre and step (wrapping periodically).
 ///
 /// Returns a flat vector of intensities `[n_radial * n_azimuthal]`.
 #[derive(Clone, Copy, Debug)]

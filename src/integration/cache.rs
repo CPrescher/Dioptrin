@@ -107,6 +107,67 @@ impl AzimuthalRangeKey {
     }
 }
 
+/// Lower and upper sector edge of a PyfaiFull cake whose first bin is
+/// centred on `start` with width `step`.
+fn pyfai_sector_edges(start: f64, step: f64, n_azimuthal: usize) -> (f64, f64) {
+    (
+        start - 0.5 * step,
+        start + (n_azimuthal as f64 - 0.5) * step,
+    )
+}
+
+/// Validate a legacy (start, step) pair for PyfaiFull, which bins into the
+/// sector `[start - step/2, start + (n - 0.5)*step)` and does not fold angles
+/// periodically. When the lower edge lies outside `[-2π, 2π]`, `start` is
+/// replaced by `start.rem_euclid(2π)` (a whole number of turns away, computed
+/// exactly), which puts the lower edge in `[-step/2, 2π)`; pairs already
+/// inside the window are returned unchanged, so their tables stay
+/// bit-identical.
+///
+/// # Panics
+///
+/// Panics with a descriptive message if `start` is not finite, `step` is not
+/// finite and positive, the sector spans more than 2π, or `start` is so large
+/// that its spacing between representable values exceeds a millionth of
+/// `step` (|start| above about 8e7 for a one-degree step), where subtracting
+/// whole turns could no longer place the bin edges accurately.
+fn pyfai_sector_key(key: AzimuthalRangeKey, n_azimuthal: usize) -> AzimuthalRangeKey {
+    use std::f64::consts::TAU;
+    let start = f64::from_bits(key.start_bits);
+    let step = f64::from_bits(key.step_bits);
+    assert!(
+        step.is_finite() && step > 0.0,
+        "integrate2d_with_azimuthal_range: PyfaiFull needs a finite, positive azimuthal_step (got {step})"
+    );
+    assert!(
+        start.is_finite(),
+        "integrate2d_with_azimuthal_range: PyfaiFull needs a finite azimuthal_start (got {start})"
+    );
+    // The span is `n * step` whatever the start; differencing the edges would
+    // lose precision for large starts.
+    let span = n_azimuthal as f64 * step;
+    assert!(
+        span <= TAU + 1e-12,
+        "integrate2d_with_azimuthal_range: PyfaiFull needs n_azimuthal * azimuthal_step <= 2π \
+         (got {n_azimuthal} * {step} = {span} rad > {TAU} rad); it does not fold a longer range periodically"
+    );
+    let (lo, _) = pyfai_sector_edges(start, step, n_azimuthal);
+    if (-TAU..=TAU).contains(&lo) {
+        return key;
+    }
+    let ulp = f64::from_bits(start.abs().to_bits() + 1) - start.abs();
+    assert!(
+        ulp <= 1e-6 * step,
+        "integrate2d_with_azimuthal_range: PyfaiFull azimuthal_start {start} is too large to reduce \
+         to [-2π, 2π] accurately (representable starts are {ulp} rad apart, azimuthal_step is \
+         {step} rad); pass the start modulo 2π"
+    );
+    // `rem_euclid` is exact, so the result is a whole number of turns of the
+    // f64 `TAU` away from `start`, in `[0, TAU]`. With `step <= TAU` the lower
+    // edge `start - step/2` is then in `[-π, TAU)`, inside the window.
+    AzimuthalRangeKey::new(start.rem_euclid(TAU), step)
+}
+
 /// One memoized lookup table, tagged with everything it was built from: the
 /// image shape and the binning key. A request for another shape or key
 /// replaces it; callers that still hold the old table keep it alive through
@@ -261,7 +322,7 @@ impl Integrator {
             TwoDKey::PyfaiFull {
                 n_radial,
                 n_azimuthal,
-                azimuthal,
+                azimuthal: azimuthal.map(|a| pyfai_sector_key(a, n_azimuthal)),
                 unit: self.radial_unit,
                 radial_range: self.radial_range_key(),
             }
@@ -463,12 +524,9 @@ impl ShapeView<'_> {
                         n_radial,
                         n_azimuthal,
                         (lo, hi),
-                        (
-                            start - 0.5 * step,
-                            start + (n_azimuthal as f64 - 0.5) * step,
-                        ),
+                        pyfai_sector_edges(start, step, n_azimuthal),
                     )
-                    .expect("valid pyFAI cake grid")
+                    .unwrap_or_else(|e| panic!("PyfaiFull 2D cake: {e}"))
                     .with_pixel_split_mode(super::PixelSplitMode::PyfaiHistogram);
                     lut::shared_grid::build(
                         &geom,

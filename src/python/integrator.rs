@@ -1,15 +1,16 @@
 use numpy::PyReadonlyArray2;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
-use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::batch::{
     FileWorkers, Integration1D, Integration1DWithAzimuthalStd, Integration1DWithErrors,
     Integration2D, Integration2DOnAzimuthalRange, Integration2DWithErrors, IntegrationTask,
-    StreamingBatch, WorkItem, process_files_streaming_with_pool, process_files_with_pool,
-    process_queue_with_pool,
+    StreamControl, StreamingBatch, WorkItem, process_files_streaming_with_pool,
+    process_files_with_pool, process_queue_with_pool,
 };
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
@@ -19,11 +20,15 @@ use crate::integration::{
 use crate::mask::Mask;
 use crate::poni::Poni;
 
-use super::results::{BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult};
+use super::results::{
+    BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult, StreamError, panic_message,
+};
 use super::utils::{
-    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, classify_batch_input,
-    extract_array_dims, extract_frame_from_pyany, parse_method, parse_unit, poni_from_dict,
-    resolve_workers_threads,
+    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, check_mask_shape,
+    check_method_radial_range, check_polarization_factor, check_positive, check_unit_wavelength,
+    classify_batch_input, extract_array_dims, extract_frame_from_pyany, extract_item_dims,
+    mask_shape, parse_method, parse_unit, poni_from_dict, resolve_workers_threads,
+    validate_integrator_options,
 };
 
 /// Raise ValueError for an invalid `azimuthal_range=(min, max)` before a batch
@@ -36,6 +41,143 @@ fn validate_azimuthal_range(
         IntegrationGrid2d::new(1, n_azimuthal, (0.0, 1.0), range).map_err(PyValueError::new_err)?;
     }
     Ok(())
+}
+
+/// Items a Python iterator stream may have pulled but not yet handed to the
+/// caller: queued, being integrated, or waiting in the result channel or the
+/// reorder buffer. Bounds the memory of a stream nobody consumes (an endless
+/// generator would otherwise be drained as fast as the workers run) while
+/// keeping every worker busy: a full work queue (`2 * workers`), one item per
+/// worker, and one finished result per worker.
+fn iterator_window(num_workers: usize) -> usize {
+    num_workers.max(1) * 4
+}
+
+/// Next work item from a Python iterator: `Ok(None)` at its end, `Err` for an
+/// exception from the iterator, an invalid item or a mask-shape mismatch.
+fn pull_work_item(
+    iter: &Bound<'_, PyAny>,
+    index: usize,
+    mask: Option<(usize, usize)>,
+) -> PyResult<Option<WorkItem>> {
+    let item = match iter.call_method0("__next__") {
+        Ok(item) => item,
+        Err(err) if err.is_instance_of::<PyStopIteration>(iter.py()) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    Ok(Some(match extract_frame_from_pyany(&item, index)? {
+        FrameOrPath::Path(path) => WorkItem::Path { index, path },
+        FrameOrPath::Frame(frame) => {
+            check_mask_shape(mask, (frame.dim1, frame.dim2), &format!("images[{index}]"))?;
+            WorkItem::Frame {
+                index,
+                name: frame.name.clone(),
+                frame,
+            }
+        }
+    }))
+}
+
+/// Pull items from a Python iterator on a producer thread and queue them for
+/// the workers. An invalid item, a mask-shape mismatch, an exception raised
+/// by the iterator itself, or a Rust panic while pulling (pyo3 resumes a
+/// `PanicException` from the caller's code as one) is recorded in
+/// `stream_error` at its position, so the consumer raises it after all
+/// earlier results, and ends production. Only reaching the end of the
+/// iterator marks the input exhausted; the consumer treats any other end of
+/// the stream without a recorded error as a failure.
+///
+/// Before each pull the producer waits for credit (see [`iterator_window`])
+/// and stops once the stream is closed. It cannot be interrupted while inside
+/// the caller's `__next__`: if the iterator blocks there (a live feed waiting
+/// for its next frame) after the stream was closed, this thread stays until
+/// that call returns. It holds neither the integrator nor the workers, which
+/// shut down independently.
+fn spawn_iterator_producer(
+    iter: Py<PyAny>,
+    work_tx: SyncSender<WorkItem>,
+    mask: Option<(usize, usize)>,
+    stream_error: StreamError,
+    control: Arc<StreamControl>,
+    window: usize,
+) {
+    std::thread::spawn(move || {
+        Python::attach(move |py| {
+            let iter = iter.bind(py);
+            for index in 0.. {
+                // Wait for credit (and below, for queue space) without
+                // holding the GIL.
+                if !py.detach(|| control.wait_for_credit(index, window)) {
+                    break; // Stream closed
+                }
+                let work_item =
+                    match catch_unwind(AssertUnwindSafe(|| pull_work_item(iter, index, mask))) {
+                        Ok(Ok(Some(item))) => item,
+                        Ok(Ok(None)) => {
+                            control.mark_input_exhausted();
+                            break;
+                        }
+                        Ok(Err(err)) => {
+                            stream_error.set(index, err);
+                            break;
+                        }
+                        Err(payload) => {
+                            stream_error.set(
+                                index,
+                                PyRuntimeError::new_err(format!(
+                                    "reading images[{index}] from the input iterator panicked: {}",
+                                    panic_message(&*payload)
+                                )),
+                            );
+                            break;
+                        }
+                    };
+                if py.detach(|| work_tx.send(work_item)).is_err() {
+                    break; // Workers gone
+                }
+            }
+        });
+        // work_tx dropped here → channel closes → workers drain and stop
+    });
+}
+
+/// Integrate owned frames on a detached thread, streaming results as they
+/// complete. A panic while integrating a frame is recorded in `stream_error`
+/// and raised by the iterator at that position instead of ending it silently.
+///
+/// The consumer treats the closed channel as the end of the stream and lets
+/// the caller change the integrator, so `integrate` (which holds it) is
+/// dropped before the last sender. `for_each_with` drops its sender clones
+/// when the Rayon loop returns, before this thread's captures would be.
+fn spawn_array_stream<T: Send + 'static>(
+    frames: Vec<Frame>,
+    stream_error: StreamError,
+    integrate: impl Fn(&Frame) -> T + Send + Sync + 'static,
+) -> Receiver<(usize, String, Result<T, String>)> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use rayon::prelude::*;
+        frames.par_iter().enumerate().for_each_with(
+            tx.clone(),
+            |tx, (i, frame)| match catch_unwind(AssertUnwindSafe(|| integrate(frame))) {
+                Ok(result) => {
+                    let _ = tx.send((i, format!("array[{i}]"), Ok(result)));
+                }
+                Err(payload) => stream_error.set(
+                    i,
+                    PyRuntimeError::new_err(format!(
+                        "integration of images[{i}] failed: {}",
+                        panic_message(&*payload)
+                    )),
+                ),
+            },
+        );
+        drop(integrate);
+        drop(frames);
+        drop(stream_error);
+        drop(tx); // Closes the stream
+    });
+    rx
 }
 
 /// Resolve the azimuthal rows of a 2D call: either `n_azimuthal` (with
@@ -114,6 +256,48 @@ impl PyIntegrator {
         Ok(())
     }
 
+    /// Shared constructor body: validates options core would accept unchecked.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        poni: Poni,
+        method: Option<&str>,
+        polarization_factor: Option<f64>,
+        n_ss: Option<usize>,
+        unit: Option<&str>,
+        radial_range: Option<(f64, f64)>,
+        fast_math: bool,
+        mask_mode: &str,
+        sparse_layout: &str,
+    ) -> PyResult<Self> {
+        let unit = parse_unit(unit)?;
+        validate_integrator_options(&poni, unit, polarization_factor, radial_range)?;
+        let method = parse_method(method, n_ss)?;
+        check_method_radial_range(&method, radial_range)?;
+        let geometry = Geometry::new(0, 0, poni);
+        let mut integrator = Integrator::new(geometry)
+            .with_method(method)
+            .with_radial_unit(unit)
+            .with_fast_math(fast_math)
+            .with_mask_mode(parse_mask_mode(mask_mode)?)
+            .with_sparse_layout(parse_sparse_layout(sparse_layout)?);
+        if let Some(polarization_factor) = polarization_factor {
+            integrator = integrator.with_polarization_factor(polarization_factor);
+        }
+        if let Some((min, max)) = radial_range {
+            integrator = integrator.with_radial_range(min, max);
+        }
+
+        Ok(Self {
+            integrator: Arc::new(integrator),
+            file_workers: Mutex::new(None),
+        })
+    }
+
+    /// Raise ValueError when an image does not match the stored mask.
+    fn check_mask(&self, image: (usize, usize), label: &str) -> PyResult<()> {
+        check_mask_shape(mask_shape(&self.integrator), image, label)
+    }
+
     fn file_pool(&self, workers: usize, threads: usize) -> PyResult<Arc<FileWorkers>> {
         let mut cache = self
             .file_workers
@@ -130,8 +314,23 @@ impl PyIntegrator {
         Ok(pool)
     }
 
+    /// Workers for a stream fed by a Python iterator. Such a stream holds every
+    /// worker of its pool until the iterator is exhausted (or the stream is
+    /// dropped), so it gets a pool of its own: on the shared cached pool a
+    /// later synchronous batch, or a second stream, would queue behind it for
+    /// as long as the caller's generator keeps producing.
+    fn iterator_pool(workers: usize, threads: usize) -> PyResult<Arc<FileWorkers>> {
+        FileWorkers::new(workers, threads).map_err(PyValueError::new_err)
+    }
+
+    /// Integrate `paths` on the cached file workers and wait for all results.
+    ///
+    /// The wait releases the GIL: a stream fed by a Python iterator needs it to
+    /// pull its next item, and its jobs may be ahead of this batch in a worker
+    /// queue. Nothing inside the detached region touches Python objects.
     fn process_files<T: IntegrationTask + Clone + 'static>(
         &self,
+        py: Python<'_>,
         paths: &[String],
         integrator: Arc<Integrator>,
         task: T,
@@ -147,7 +346,7 @@ impl PyIntegrator {
             return Vec::new();
         }
         match self.file_pool(workers, threads) {
-            Ok(pool) => process_files_with_pool(paths, integrator, task, pool),
+            Ok(pool) => py.detach(|| process_files_with_pool(paths, integrator, task, pool)),
             Err(e) => paths
                 .iter()
                 .map(|p| (p.clone(), Err(e.to_string())))
@@ -213,9 +412,18 @@ impl PyIntegrator {
     ///
     /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
     /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
-    /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+    /// * `polarization_factor` - Optional polarization factor P in [-1, 1]: +1 fully
+    ///   polarised along the horizontal axis (chi = 0, detector dim2; the usual
+    ///   synchrotron case, typically 0.95-0.99), -1 vertical, 0 unpolarised
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
     /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+    /// * `radial_range` - Optional explicit (min, max) radial bin range in `unit`.
+    ///   Not supported with "histogram", which always uses the automatic range.
+    ///
+    /// # Raises
+    ///
+    /// ValueError for invalid options, including `radial_range` combined with
+    /// the "histogram" method.
     ///
     /// # Returns
     ///
@@ -247,24 +455,17 @@ impl PyIntegrator {
     ) -> PyResult<Self> {
         let poni = Poni::load(poni_path)
             .map_err(|err| PyValueError::new_err(format!("Failed to load PONI: {}", err)))?;
-        let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry)
-            .with_method(parse_method(method, n_ss)?)
-            .with_radial_unit(parse_unit(unit)?)
-            .with_fast_math(fast_math)
-            .with_mask_mode(parse_mask_mode(mask_mode)?)
-            .with_sparse_layout(parse_sparse_layout(sparse_layout)?);
-        if let Some(polarization_factor) = polarization_factor {
-            integrator = integrator.with_polarization_factor(polarization_factor);
-        }
-        if let Some((min, max)) = radial_range {
-            integrator = integrator.with_radial_range(min, max);
-        }
-
-        Ok(Self {
-            integrator: Arc::new(integrator),
-            file_workers: Mutex::new(None),
-        })
+        Self::build(
+            poni,
+            method,
+            polarization_factor,
+            n_ss,
+            unit,
+            radial_range,
+            fast_math,
+            mask_mode,
+            sparse_layout,
+        )
     }
 
     /// Create an Integrator from a PONI dictionary.
@@ -276,9 +477,18 @@ impl PyIntegrator {
     ///
     /// * `poni_dict` - Dictionary containing PONI calibration parameters
     /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
-    /// * `polarization_factor` - Optional polarization correction factor (0.0 to 1.0)
+    /// * `polarization_factor` - Optional polarization factor P in [-1, 1]: +1 fully
+    ///   polarised along the horizontal axis (chi = 0, detector dim2; the usual
+    ///   synchrotron case, typically 0.95-0.99), -1 vertical, 0 unpolarised
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
     /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
+    /// * `radial_range` - Optional explicit (min, max) radial bin range in `unit`.
+    ///   Not supported with "histogram", which always uses the automatic range.
+    ///
+    /// # Raises
+    ///
+    /// ValueError for invalid options, including `radial_range` combined with
+    /// the "histogram" method.
     ///
     /// # Returns
     ///
@@ -313,25 +523,17 @@ impl PyIntegrator {
         mask_mode: &str,
         sparse_layout: &str,
     ) -> PyResult<Self> {
-        let poni = poni_from_dict(poni_dict)?;
-        let geometry = Geometry::new(0, 0, poni);
-        let mut integrator = Integrator::new(geometry)
-            .with_method(parse_method(method, n_ss)?)
-            .with_radial_unit(parse_unit(unit)?)
-            .with_fast_math(fast_math)
-            .with_mask_mode(parse_mask_mode(mask_mode)?)
-            .with_sparse_layout(parse_sparse_layout(sparse_layout)?);
-        if let Some(polarization_factor) = polarization_factor {
-            integrator = integrator.with_polarization_factor(polarization_factor);
-        }
-        if let Some((min, max)) = radial_range {
-            integrator = integrator.with_radial_range(min, max);
-        }
-
-        Ok(Self {
-            integrator: Arc::new(integrator),
-            file_workers: Mutex::new(None),
-        })
+        Self::build(
+            poni_from_dict(poni_dict)?,
+            method,
+            polarization_factor,
+            n_ss,
+            unit,
+            radial_range,
+            fast_math,
+            mask_mode,
+            sparse_layout,
+        )
     }
 
     /// Perform 1D radial integration.
@@ -362,15 +564,14 @@ impl PyIntegrator {
         errors: bool,
         azimuthal_std: bool,
     ) -> PyResult<PyIntegrationResult> {
-        if n_points == 0 {
-            return Err(PyValueError::new_err("n_points must be positive"));
-        }
+        check_positive("n_points", n_points)?;
         match image {
             ImageInput::Path(tiff_path) => {
                 let mut frame = TiffFrame::default();
                 frame.reload(&tiff_path).map_err(|err| {
                     PyValueError::new_err(format!("Failed to load TIFF: {}", err))
                 })?;
+                self.check_mask((frame.dim1, frame.dim2), "image")?;
                 if azimuthal_std {
                     return Ok(PyIntegrationResult::from_azimuthal(
                         Integration1DWithAzimuthalStd {
@@ -397,6 +598,7 @@ impl PyIntegrator {
                 let slice = array.as_slice().map_err(|err| {
                     PyValueError::new_err(format!("Array must be contiguous: {}", err))
                 })?;
+                self.check_mask((dim1, dim2), "image")?;
                 if azimuthal_std {
                     return Ok(PyIntegrationResult::from_azimuthal(
                         self.integrator.integrate1d_with_azimuthal_std_from_slice(
@@ -484,13 +686,16 @@ impl PyIntegrator {
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyIntegrationResult> {
         self.reject_histogram_2d("integrate2d")?;
+        check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        check_positive("n_azimuthal", n_azimuthal)?;
         match image {
             ImageInput::Path(tiff_path) => {
                 let frame = Frame::from_tiff(tiff_path).map_err(|err| {
                     PyValueError::new_err(format!("Failed to load TIFF: {}", err))
                 })?;
+                self.check_mask((frame.dim1, frame.dim2), "image")?;
 
                 let result = match (errors, azimuthal_range) {
                     (false, None) => {
@@ -529,6 +734,7 @@ impl PyIntegrator {
                 let slice = array.as_slice().map_err(|err| {
                     PyValueError::new_err(format!("Array must be contiguous: {}", err))
                 })?;
+                self.check_mask((dim1, dim2), "image")?;
                 let result = match (errors, azimuthal_range) {
                     (false, None) => {
                         let intensity = self.integrator.integrate2d_from_slice(
@@ -639,7 +845,8 @@ impl PyIntegrator {
     ///
     /// # Raises
     ///
-    /// ValueError if the method name is invalid
+    /// ValueError if the method name is invalid, or if the method is "histogram"
+    /// while a `radial_range` is set (Histogram always uses the automatic range)
     ///
     /// # Example
     ///
@@ -648,20 +855,24 @@ impl PyIntegrator {
     /// ```
     #[pyo3(signature = (method, n_ss=None))]
     fn set_method(&mut self, method: &str, n_ss: Option<usize>) -> PyResult<()> {
+        let method = parse_method(Some(method), n_ss)?;
+        check_method_radial_range(&method, self.integrator.radial_range())?;
         let integrator = Arc::get_mut(&mut self.integrator)
             .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
-        integrator.set_method(parse_method(Some(method), n_ss)?);
+        integrator.set_method(method);
         Ok(())
     }
 
     /// Set the polarization correction factor.
     ///
-    /// Applies polarization correction to the integration. The factor should
-    /// be between 0.0 and 1.0. Set to None to disable polarization correction.
+    /// Applies the correction 0.5*(1 + cos^2(2th) - P*cos(2chi)*sin^2(2th)). P must be
+    /// in [-1, 1]: +1 fully polarised along the horizontal axis (chi = 0, detector
+    /// dim2; the usual synchrotron case, typically 0.95-0.99), -1 vertical,
+    /// 0 unpolarised. Set to None to disable polarization correction.
     ///
     /// # Arguments
     ///
-    /// * `polarization_factor` - Polarization factor (0.0 to 1.0) or None to disable
+    /// * `polarization_factor` - Polarization factor P in [-1, 1], or None to disable
     ///
     /// # Example
     ///
@@ -670,6 +881,7 @@ impl PyIntegrator {
     /// integrator.set_polarization_factor(None)  # Disable correction
     /// ```
     fn set_polarization_factor(&mut self, polarization_factor: Option<f64>) -> PyResult<()> {
+        check_polarization_factor(polarization_factor)?;
         let integrator = Arc::get_mut(&mut self.integrator)
             .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
         integrator.set_polarization_factor(polarization_factor);
@@ -696,7 +908,9 @@ impl PyIntegrator {
     fn set_unit(&mut self, unit: &str) -> PyResult<()> {
         let integrator = Arc::get_mut(&mut self.integrator)
             .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
-        integrator.set_radial_unit(parse_unit(Some(unit))?);
+        let unit = parse_unit(Some(unit))?;
+        check_unit_wavelength(unit, integrator.geometry().poni.wavelength)?;
+        integrator.set_radial_unit(unit);
         Ok(())
     }
 
@@ -820,8 +1034,9 @@ impl PyIntegrator {
     ///
     /// List of BatchResult objects, each containing filename/index and IntegrationResult.
     /// NumPy inputs are borrowed for this synchronous call without copying image
-    /// pixels. Their read-only borrow guards and the GIL remain held until all
-    /// native workers finish; input arrays must not be mutated concurrently.
+    /// pixels. Their read-only borrow guards remain held until all native workers
+    /// finish; input arrays must not be mutated concurrently. The GIL is released
+    /// while the workers run.
     ///
     /// # Example
     ///
@@ -839,9 +1054,11 @@ impl PyIntegrator {
     ///     if r.is_ok():
     ///         print(r.result.intensity)
     /// ```
+    #[allow(clippy::too_many_arguments)] // Python keyword options plus the GIL token.
     #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None, *, azimuthal_std=false))]
     fn batch1d(
         &self,
+        py: Python<'_>,
         images: BatchImageInput,
         n_points: usize,
         errors: bool,
@@ -849,9 +1066,7 @@ impl PyIntegrator {
         num_threads: Option<usize>,
         azimuthal_std: bool,
     ) -> PyResult<Vec<PyBatchResult>> {
-        if n_points == 0 {
-            return Err(PyValueError::new_err("n_points must be positive"));
-        }
+        check_positive("n_points", n_points)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match images {
@@ -863,6 +1078,7 @@ impl PyIntegrator {
                     };
                     return Ok(self
                         .process_files(
+                            py,
                             &tiff_paths,
                             Arc::clone(&self.integrator),
                             task,
@@ -888,6 +1104,7 @@ impl PyIntegrator {
                 if errors {
                     let task = Integration1DWithErrors { n_bins: n_points };
                     let results = self.process_files(
+                        py,
                         &tiff_paths,
                         Arc::clone(&self.integrator),
                         task,
@@ -914,6 +1131,7 @@ impl PyIntegrator {
                 } else {
                     let task = Integration1D { n_bins: n_points };
                     let results = self.process_files(
+                        py,
                         &tiff_paths,
                         Arc::clone(&self.integrator),
                         task,
@@ -945,13 +1163,14 @@ impl PyIntegrator {
                     .iter()
                     .enumerate()
                     .map(|(i, array)| {
-                        let (dim1, dim2) = extract_array_dims(array, "float64")?;
+                        let (dim1, dim2) = extract_item_dims(array, i)?;
                         let slice = array.as_slice().map_err(|err| {
                             PyValueError::new_err(format!(
                                 "Array {} must be contiguous: {}",
                                 i, err
                             ))
                         })?;
+                        self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
                         Ok((slice, dim1, dim2))
                     })
                     .collect();
@@ -985,12 +1204,17 @@ impl PyIntegrator {
                         error: None,
                     }
                 };
-                if let Some(&(_, dim1, dim2)) = frames.first()
-                    && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
-                {
-                    self.integrator.prepare1d(dim1, dim2, n_points);
-                }
-                let results = frames.par_iter().enumerate().map(integrate).collect();
+                // Release the GIL while the workers run (see `process_files`).
+                // `frames` holds only plain slices whose borrow guards live in
+                // `arrays`, which outlives this region.
+                let results = py.detach(|| {
+                    if let Some(&(_, dim1, dim2)) = frames.first()
+                        && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                    {
+                        self.integrator.prepare1d(dim1, dim2, n_points);
+                    }
+                    frames.par_iter().enumerate().map(integrate).collect()
+                });
 
                 Ok(results)
             }
@@ -1043,9 +1267,7 @@ impl PyIntegrator {
         num_threads: Option<usize>,
         azimuthal_std: bool,
     ) -> PyResult<PyBatchIterator> {
-        if n_points == 0 {
-            return Err(PyValueError::new_err("n_points must be positive"));
-        }
+        check_positive("n_points", n_points)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match classify_batch_input(images)? {
@@ -1065,15 +1287,12 @@ impl PyIntegrator {
                         num_workers,
                         num_threads,
                     )?;
-                    return Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
+                    return Ok(PyBatchIterator::new(
+                        BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
                             batch.into_receiver(),
                         )),
                         total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    });
+                    ));
                 }
                 if errors {
                     let task = Integration1DWithErrors { n_bins: n_points };
@@ -1084,15 +1303,10 @@ impl PyIntegrator {
                         num_workers,
                         num_threads,
                     )?;
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(
-                            batch.into_receiver(),
-                        )),
+                    Ok(PyBatchIterator::new(
+                        BatchReceiver::Integration1DWithErrors(Mutex::new(batch.into_receiver())),
                         total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    ))
                 } else {
                     let task = Integration1D { n_bins: n_points };
                     let batch = self.process_files_streaming(
@@ -1102,13 +1316,10 @@ impl PyIntegrator {
                         num_workers,
                         num_threads,
                     )?;
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
+                    Ok(PyBatchIterator::new(
+                        BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
                         total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    ))
                 }
             }
             ClassifiedInput::Arrays(arrays) => {
@@ -1119,13 +1330,14 @@ impl PyIntegrator {
                     .iter()
                     .enumerate()
                     .map(|(i, array)| {
-                        let (dim1, dim2) = extract_array_dims(array, "float64")?;
+                        let (dim1, dim2) = extract_item_dims(array, i)?;
                         let slice = array.as_slice().map_err(|err| {
                             PyValueError::new_err(format!(
                                 "Array {} must be contiguous: {}",
                                 i, err
                             ))
                         })?;
+                        self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
                         Ok(Frame {
                             name: format!("array[{}]", i),
                             data: slice.to_vec(),
@@ -1137,134 +1349,48 @@ impl PyIntegrator {
 
                 let frames = frames?;
 
-                use std::sync::mpsc;
                 let integrator = Arc::clone(&self.integrator);
-
-                if azimuthal_std {
-                    let (tx, rx) = mpsc::channel();
-                    std::thread::spawn(move || {
-                        use rayon::prelude::*;
-                        frames.par_iter().enumerate().for_each(|(i, frame)| {
-                            let result =
-                                integrator.integrate1d_with_azimuthal_std(frame, n_points, errors);
-                            let _ = tx.send((i, format!("array[{}]", i), Ok(result)));
-                        });
-                    });
-                    return Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(rx)),
-                        total: num_arrays,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    });
-                }
-                if errors {
-                    let (tx, rx) = mpsc::channel();
-
-                    std::thread::spawn(move || {
-                        use rayon::prelude::*;
-                        (0..num_arrays)
-                            .into_par_iter()
-                            .map(|i| {
-                                let frame = &frames[i];
-                                let result = integrator.integrate1d_with_errors(frame, n_points);
-                                (i, format!("array[{}]", i), Ok(result))
-                            })
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .for_each(|result| {
-                                let _ = tx.send(result);
-                            });
-                    });
-
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(rx)),
-                        total: num_arrays,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
-                } else {
-                    let (tx, rx) = mpsc::channel();
-
-                    std::thread::spawn(move || {
-                        use rayon::prelude::*;
-                        (0..num_arrays)
-                            .into_par_iter()
-                            .map(|i| {
-                                let frame = &frames[i];
-                                let result = integrator.integrate1d(frame, n_points);
-                                (i, format!("array[{}]", i), Ok(result))
-                            })
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .for_each(|result| {
-                                let _ = tx.send(result);
-                            });
-                    });
-
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1D(Mutex::new(rx)),
-                        total: num_arrays,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
-                }
+                let stream_error = StreamError::default();
+                let receiver =
+                    if azimuthal_std {
+                        BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
+                            spawn_array_stream(frames, stream_error.clone(), move |frame| {
+                                integrator.integrate1d_with_azimuthal_std(frame, n_points, errors)
+                            }),
+                        ))
+                    } else if errors {
+                        BatchReceiver::Integration1DWithErrors(Mutex::new(spawn_array_stream(
+                            frames,
+                            stream_error.clone(),
+                            move |frame| integrator.integrate1d_with_errors(frame, n_points),
+                        )))
+                    } else {
+                        BatchReceiver::Integration1D(Mutex::new(spawn_array_stream(
+                            frames,
+                            stream_error.clone(),
+                            move |frame| integrator.integrate1d(frame, n_points),
+                        )))
+                    };
+                Ok(PyBatchIterator::with_stream_error(
+                    receiver,
+                    num_arrays,
+                    stream_error,
+                ))
             }
             ClassifiedInput::Iterator(iter) => {
-                // Generator/iterator path: spawn producer thread with GIL
-                let iter = iter.unbind();
+                // Generator/iterator path: a producer thread pulls items lazily.
+                let pool = Self::iterator_pool(num_workers, num_threads)?;
                 let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
-
-                // Producer thread: pull items from the Python iterator
-                std::thread::spawn(move || {
-                    let mut index = 0usize;
-                    Python::attach(|py| {
-                        let iter = iter.bind(py);
-                        loop {
-                            match iter.call_method0("__next__") {
-                                Ok(item) => {
-                                    let work_item = match extract_frame_from_pyany(&item, index) {
-                                        Ok(FrameOrPath::Path(path)) => {
-                                            WorkItem::Path { index, path }
-                                        }
-                                        Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
-                                            index,
-                                            name: frame.name.clone(),
-                                            frame,
-                                        },
-                                        Err(_) => break, // Extraction error, stop
-                                    };
-                                    if work_tx.send(work_item).is_err() {
-                                        break; // Workers gone
-                                    }
-                                    index += 1;
-                                }
-                                Err(err) => {
-                                    // StopIteration means end of iterator; any other error, stop
-                                    if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py)
-                                    {
-                                        // Log non-StopIteration errors as the first error result
-                                        // by sending a poison path that will fail in the worker
-                                        let _ = work_tx.send(WorkItem::Frame {
-                                            index,
-                                            name: format!("iter[{}]", index),
-                                            frame: Frame {
-                                                name: format!("error: {}", err),
-                                                data: vec![],
-                                                dim1: 0,
-                                                dim2: 0,
-                                            },
-                                        });
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                    // work_tx dropped here → channel closes → workers drain and stop
-                });
+                let stream_error = StreamError::default();
+                let control = StreamControl::for_iterator();
+                spawn_iterator_producer(
+                    iter.unbind(),
+                    work_tx,
+                    mask_shape(&self.integrator),
+                    stream_error.clone(),
+                    Arc::clone(&control),
+                    iterator_window(num_workers),
+                );
 
                 let integrator = Arc::clone(&self.integrator);
                 if azimuthal_std {
@@ -1276,17 +1402,17 @@ impl PyIntegrator {
                         work_rx,
                         integrator,
                         task,
-                        self.file_pool(num_workers, num_threads)?,
+                        pool,
+                        Arc::clone(&control),
                     );
-                    return Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
+                    return Ok(PyBatchIterator::with_control(
+                        BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
                             batch.into_receiver(),
                         )),
-                        total: 0,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    });
+                        0,
+                        stream_error.clone(),
+                        Arc::clone(&control),
+                    ));
                 }
                 if errors {
                     let task = Integration1DWithErrors { n_bins: n_points };
@@ -1294,32 +1420,30 @@ impl PyIntegrator {
                         work_rx,
                         integrator,
                         task,
-                        self.file_pool(num_workers, num_threads)?,
+                        pool,
+                        Arc::clone(&control),
                     );
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1DWithErrors(Mutex::new(
-                            batch.into_receiver(),
-                        )),
-                        total: 0,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    Ok(PyBatchIterator::with_control(
+                        BatchReceiver::Integration1DWithErrors(Mutex::new(batch.into_receiver())),
+                        0,
+                        stream_error.clone(),
+                        Arc::clone(&control),
+                    ))
                 } else {
                     let task = Integration1D { n_bins: n_points };
                     let batch = process_queue_with_pool(
                         work_rx,
                         integrator,
                         task,
-                        self.file_pool(num_workers, num_threads)?,
+                        pool,
+                        Arc::clone(&control),
                     );
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
-                        total: 0,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    Ok(PyBatchIterator::with_control(
+                        BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
+                        0,
+                        stream_error.clone(),
+                        Arc::clone(&control),
+                    ))
                 }
             }
         }
@@ -1386,6 +1510,7 @@ impl PyIntegrator {
     #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, num_workers=None, num_threads=None, *, azimuthal_bracket=None))]
     fn batch2d(
         &self,
+        py: Python<'_>,
         tiff_paths: Vec<String>,
         n_radial: usize,
         n_azimuthal: Option<usize>,
@@ -1396,8 +1521,10 @@ impl PyIntegrator {
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<Vec<PyBatchResult>> {
         self.reject_histogram_2d("batch2d")?;
+        check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        check_positive("n_azimuthal", n_azimuthal)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
@@ -1408,6 +1535,7 @@ impl PyIntegrator {
                     n_azimuthal,
                 };
                 let results = self.process_files(
+                    py,
                     &tiff_paths,
                     Arc::clone(&self.integrator),
                     task,
@@ -1440,6 +1568,7 @@ impl PyIntegrator {
                     n_azimuthal,
                 };
                 let results = self.process_files(
+                    py,
                     &tiff_paths,
                     Arc::clone(&self.integrator),
                     task,
@@ -1476,6 +1605,7 @@ impl PyIntegrator {
                     errors,
                 };
                 let results = self.process_files(
+                    py,
                     &tiff_paths,
                     Arc::clone(&self.integrator),
                     task,
@@ -1570,8 +1700,10 @@ impl PyIntegrator {
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyBatchIterator> {
         self.reject_histogram_2d("batch2d_iter")?;
+        check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        check_positive("n_azimuthal", n_azimuthal)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
@@ -1594,17 +1726,14 @@ impl PyIntegrator {
                         num_workers,
                         num_threads,
                     )?;
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration2D {
+                    Ok(PyBatchIterator::new(
+                        BatchReceiver::Integration2D {
                             receiver: Mutex::new(batch.into_receiver()),
                             n_radial,
                             n_azimuthal,
                         },
                         total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    ))
                 }
                 (true, None) => {
                     let task = Integration2DWithErrors {
@@ -1618,17 +1747,14 @@ impl PyIntegrator {
                         num_workers,
                         num_threads,
                     )?;
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration2DWithErrors {
+                    Ok(PyBatchIterator::new(
+                        BatchReceiver::Integration2DWithErrors {
                             receiver: Mutex::new(batch.into_receiver()),
                             n_radial,
                             n_azimuthal,
                         },
                         total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    ))
                 }
                 (errors, Some((azimuthal_min, azimuthal_max))) => {
                     let task = Integration2DOnAzimuthalRange {
@@ -1645,23 +1771,34 @@ impl PyIntegrator {
                         num_workers,
                         num_threads,
                     )?;
-                    Ok(PyBatchIterator {
-                        receiver: BatchReceiver::Integration2DOnAzimuthalRange {
+                    Ok(PyBatchIterator::new(
+                        BatchReceiver::Integration2DOnAzimuthalRange {
                             receiver: Mutex::new(batch.into_receiver()),
                             n_radial,
                             n_azimuthal,
                         },
                         total,
-                        completed: 0,
-                        buffer: BTreeMap::new(),
-                        next_index: 0,
-                    })
+                    ))
                 }
             };
         }
 
-        // For arrays or iterators, use the queue-based streaming approach
+        // For arrays or iterators, use the queue-based streaming approach.
+        // Array streams are finite and need no Python, so they share the
+        // cached workers; a Python iterator gets its own (see `iterator_pool`).
+        let (pool, control) = if matches!(classified, ClassifiedInput::Iterator(_)) {
+            (
+                Self::iterator_pool(num_workers, num_threads)?,
+                StreamControl::for_iterator(),
+            )
+        } else {
+            (
+                self.file_pool(num_workers, num_threads)?,
+                StreamControl::for_shared_pool(),
+            )
+        };
         let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
+        let stream_error = StreamError::default();
 
         let total = match classified {
             ClassifiedInput::Arrays(arrays) => {
@@ -1669,10 +1806,11 @@ impl PyIntegrator {
                 // Convert all arrays to work items and send them
                 let mut items = Vec::with_capacity(num_arrays);
                 for (i, array) in arrays.iter().enumerate() {
-                    let (dim1, dim2) = extract_array_dims(array, "float64")?;
+                    let (dim1, dim2) = extract_item_dims(array, i)?;
                     let slice = array.as_slice().map_err(|err| {
                         PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
                     })?;
+                    self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
                     let frame = Frame {
                         name: format!("array[{}]", i),
                         data: slice.to_vec(),
@@ -1697,50 +1835,14 @@ impl PyIntegrator {
                 num_arrays
             }
             ClassifiedInput::Iterator(iter) => {
-                let iter = iter.unbind();
-                std::thread::spawn(move || {
-                    let mut index = 0usize;
-                    Python::attach(|py| {
-                        let iter = iter.bind(py);
-                        loop {
-                            match iter.call_method0("__next__") {
-                                Ok(item) => {
-                                    let work_item = match extract_frame_from_pyany(&item, index) {
-                                        Ok(FrameOrPath::Path(path)) => {
-                                            WorkItem::Path { index, path }
-                                        }
-                                        Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
-                                            index,
-                                            name: frame.name.clone(),
-                                            frame,
-                                        },
-                                        Err(_) => break,
-                                    };
-                                    if work_tx.send(work_item).is_err() {
-                                        break;
-                                    }
-                                    index += 1;
-                                }
-                                Err(err) => {
-                                    if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py)
-                                    {
-                                        let _ = work_tx.send(WorkItem::Frame {
-                                            index,
-                                            name: format!("iter[{}]", index),
-                                            frame: Frame {
-                                                name: format!("error: {}", err),
-                                                data: vec![],
-                                                dim1: 0,
-                                                dim2: 0,
-                                            },
-                                        });
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                });
+                spawn_iterator_producer(
+                    iter.unbind(),
+                    work_tx,
+                    mask_shape(&self.integrator),
+                    stream_error.clone(),
+                    Arc::clone(&control),
+                    iterator_window(num_workers),
+                );
                 0 // Unknown total for iterators
             }
             ClassifiedInput::Paths(_) => unreachable!(), // Handled above
@@ -1754,46 +1856,36 @@ impl PyIntegrator {
                     n_radial,
                     n_azimuthal,
                 };
-                let batch = process_queue_with_pool(
-                    work_rx,
-                    integrator,
-                    task,
-                    self.file_pool(num_workers, num_threads)?,
-                );
-                Ok(PyBatchIterator {
-                    receiver: BatchReceiver::Integration2D {
+                let batch =
+                    process_queue_with_pool(work_rx, integrator, task, pool, Arc::clone(&control));
+                Ok(PyBatchIterator::with_control(
+                    BatchReceiver::Integration2D {
                         receiver: Mutex::new(batch.into_receiver()),
                         n_radial,
                         n_azimuthal,
                     },
                     total,
-                    completed: 0,
-                    buffer: BTreeMap::new(),
-                    next_index: 0,
-                })
+                    stream_error.clone(),
+                    Arc::clone(&control),
+                ))
             }
             (true, None) => {
                 let task = Integration2DWithErrors {
                     n_radial,
                     n_azimuthal,
                 };
-                let batch = process_queue_with_pool(
-                    work_rx,
-                    integrator,
-                    task,
-                    self.file_pool(num_workers, num_threads)?,
-                );
-                Ok(PyBatchIterator {
-                    receiver: BatchReceiver::Integration2DWithErrors {
+                let batch =
+                    process_queue_with_pool(work_rx, integrator, task, pool, Arc::clone(&control));
+                Ok(PyBatchIterator::with_control(
+                    BatchReceiver::Integration2DWithErrors {
                         receiver: Mutex::new(batch.into_receiver()),
                         n_radial,
                         n_azimuthal,
                     },
                     total,
-                    completed: 0,
-                    buffer: BTreeMap::new(),
-                    next_index: 0,
-                })
+                    stream_error.clone(),
+                    Arc::clone(&control),
+                ))
             }
             (errors, Some((azimuthal_min, azimuthal_max))) => {
                 let task = Integration2DOnAzimuthalRange {
@@ -1803,23 +1895,18 @@ impl PyIntegrator {
                     azimuthal_max,
                     errors,
                 };
-                let batch = process_queue_with_pool(
-                    work_rx,
-                    integrator,
-                    task,
-                    self.file_pool(num_workers, num_threads)?,
-                );
-                Ok(PyBatchIterator {
-                    receiver: BatchReceiver::Integration2DOnAzimuthalRange {
+                let batch =
+                    process_queue_with_pool(work_rx, integrator, task, pool, Arc::clone(&control));
+                Ok(PyBatchIterator::with_control(
+                    BatchReceiver::Integration2DOnAzimuthalRange {
                         receiver: Mutex::new(batch.into_receiver()),
                         n_radial,
                         n_azimuthal,
                     },
                     total,
-                    completed: 0,
-                    buffer: BTreeMap::new(),
-                    next_index: 0,
-                })
+                    stream_error.clone(),
+                    Arc::clone(&control),
+                ))
             }
         }
     }

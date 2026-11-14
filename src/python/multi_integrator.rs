@@ -7,7 +7,7 @@ use crate::multi::{Multi2dOptions, MultiIntegrator, MultiNormalization};
 
 use super::integrator::{PyIntegrator, resolve_azimuthal_bins};
 use super::results::PyIntegrationResult;
-use super::utils::{ImageInput, extract_array_dims};
+use super::utils::{ImageInput, check_mask_shape, check_positive, extract_array_dims, mask_shape};
 
 #[pyclass(name = "MultiIntegrator", unsendable)]
 pub struct PyMultiIntegrator {
@@ -46,8 +46,10 @@ impl PyMultiIntegrator {
         normalization_factors: Option<Vec<f64>>,
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyIntegrationResult> {
+        check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        check_positive("n_azimuthal", n_azimuthal)?;
         if images.len() != self.multi.integrators().len() {
             return Err(PyValueError::new_err(format!(
                 "Expected {} images (one per detector), got {}",
@@ -72,20 +74,7 @@ impl PyMultiIntegrator {
                 ));
             }
         };
-        let mut buffers = Vec::with_capacity(images.len());
-        for (i, image) in images.into_iter().enumerate() {
-            buffers.push(match image {
-                ImageInput::Path(path) => {
-                    let frame = Frame::from_tiff(path)
-                        .map_err(|e| PyValueError::new_err(format!("detector {i}: {e}")))?;
-                    (frame.data, frame.dim1, frame.dim2)
-                }
-                ImageInput::Array(array) => {
-                    let (d1, d2) = extract_array_dims(&array, "float64")?;
-                    (array.as_slice()?.to_vec(), d1, d2)
-                }
-            });
-        }
+        let buffers = self.load_images(images, "")?;
         let slices: Vec<_> = buffers
             .iter()
             .map(|(data, d1, d2)| (data.as_slice(), *d1, *d2))
@@ -175,10 +164,12 @@ impl PyMultiIntegrator {
     #[pyo3(signature = (images, n_points, errors=false))]
     fn integrate1d(
         &self,
+        py: Python<'_>,
         images: Vec<ImageInput>,
         n_points: usize,
         errors: bool,
     ) -> PyResult<PyIntegrationResult> {
+        check_positive("n_points", n_points)?;
         let n_det = self.multi.integrators().len();
         if images.len() != n_det {
             return Err(PyValueError::new_err(format!(
@@ -187,66 +178,8 @@ impl PyMultiIntegrator {
                 images.len()
             )));
         }
-
-        // Determine if all inputs are file paths or all are arrays
-        let mut frames: Vec<Frame> = Vec::new();
-        let mut slices_data: Vec<(Vec<f64>, usize, usize)> = Vec::new();
-        let mut use_frames = true;
-
-        for (i, image) in images.into_iter().enumerate() {
-            match image {
-                ImageInput::Path(tiff_path) => {
-                    let frame = Frame::from_tiff(tiff_path).map_err(|err| {
-                        PyValueError::new_err(format!(
-                            "Failed to load TIFF for detector {}: {}",
-                            i, err
-                        ))
-                    })?;
-                    frames.push(frame);
-                }
-                ImageInput::Array(array) => {
-                    use_frames = false;
-                    let (dim1, dim2) = extract_array_dims(&array, "float64")?;
-                    let data = array
-                        .as_slice()
-                        .map_err(|err| {
-                            PyValueError::new_err(format!("Array must be contiguous: {}", err))
-                        })?
-                        .to_vec();
-                    slices_data.push((data, dim1, dim2));
-                }
-            }
-        }
-
-        if use_frames && !frames.is_empty() {
-            let frame_refs: Vec<&Frame> = frames.iter().collect();
-            if errors {
-                let (radial, intensity, errs) =
-                    self.multi.integrate1d_with_errors(&frame_refs, n_points);
-                Ok(PyIntegrationResult::from_1d_with_errors(
-                    radial, intensity, errs,
-                ))
-            } else {
-                let (radial, intensity) = self.multi.integrate1d(&frame_refs, n_points);
-                Ok(PyIntegrationResult::from_1d(radial, intensity))
-            }
-        } else {
-            let slice_refs: Vec<(&[f64], usize, usize)> = slices_data
-                .iter()
-                .map(|(data, dim1, dim2)| (data.as_slice(), *dim1, *dim2))
-                .collect();
-            if errors {
-                let (radial, intensity, errs) = self
-                    .multi
-                    .integrate1d_with_errors_from_slices(&slice_refs, n_points);
-                Ok(PyIntegrationResult::from_1d_with_errors(
-                    radial, intensity, errs,
-                ))
-            } else {
-                let (radial, intensity) = self.multi.integrate1d_from_slices(&slice_refs, n_points);
-                Ok(PyIntegrationResult::from_1d(radial, intensity))
-            }
-        }
+        let buffers = self.load_images(images, "")?;
+        Ok(self.merge1d(py, &buffers, n_points, errors))
     }
 
     /// Batch integrate multiple sets of detector images.
@@ -263,13 +196,15 @@ impl PyMultiIntegrator {
     #[pyo3(signature = (images, n_points, errors=false))]
     fn batch1d(
         &self,
+        py: Python<'_>,
         images: Vec<Vec<ImageInput>>,
         n_points: usize,
         errors: bool,
     ) -> PyResult<Vec<PyIntegrationResult>> {
+        check_positive("n_points", n_points)?;
+        let n_det = self.multi.integrators().len();
         let mut results = Vec::with_capacity(images.len());
         for (frame_idx, image_set) in images.into_iter().enumerate() {
-            let n_det = self.multi.integrators().len();
             if image_set.len() != n_det {
                 return Err(PyValueError::new_err(format!(
                     "Frame set {} has {} images, expected {} (one per detector)",
@@ -278,67 +213,76 @@ impl PyMultiIntegrator {
                     n_det
                 )));
             }
-
-            let mut frames: Vec<Frame> = Vec::new();
-            let mut slices_data: Vec<(Vec<f64>, usize, usize)> = Vec::new();
-            let mut use_frames = true;
-
-            for (i, image) in image_set.into_iter().enumerate() {
-                match image {
-                    ImageInput::Path(tiff_path) => {
-                        let frame = Frame::from_tiff(tiff_path).map_err(|err| {
-                            PyValueError::new_err(format!(
-                                "Failed to load TIFF for detector {} frame {}: {}",
-                                i, frame_idx, err
-                            ))
-                        })?;
-                        frames.push(frame);
-                    }
-                    ImageInput::Array(array) => {
-                        use_frames = false;
-                        let (dim1, dim2) = extract_array_dims(&array, "float64")?;
-                        let data = array
-                            .as_slice()
-                            .map_err(|err| {
-                                PyValueError::new_err(format!("Array must be contiguous: {}", err))
-                            })?
-                            .to_vec();
-                        slices_data.push((data, dim1, dim2));
-                    }
-                }
-            }
-
-            if use_frames && !frames.is_empty() {
-                let frame_refs: Vec<&Frame> = frames.iter().collect();
-                if errors {
-                    let (radial, intensity, errs) =
-                        self.multi.integrate1d_with_errors(&frame_refs, n_points);
-                    results.push(PyIntegrationResult::from_1d_with_errors(
-                        radial, intensity, errs,
-                    ));
-                } else {
-                    let (radial, intensity) = self.multi.integrate1d(&frame_refs, n_points);
-                    results.push(PyIntegrationResult::from_1d(radial, intensity));
-                }
-            } else {
-                let slice_refs: Vec<(&[f64], usize, usize)> = slices_data
-                    .iter()
-                    .map(|(data, dim1, dim2)| (data.as_slice(), *dim1, *dim2))
-                    .collect();
-                if errors {
-                    let (radial, intensity, errs) = self
-                        .multi
-                        .integrate1d_with_errors_from_slices(&slice_refs, n_points);
-                    results.push(PyIntegrationResult::from_1d_with_errors(
-                        radial, intensity, errs,
-                    ));
-                } else {
-                    let (radial, intensity) =
-                        self.multi.integrate1d_from_slices(&slice_refs, n_points);
-                    results.push(PyIntegrationResult::from_1d(radial, intensity));
-                }
-            }
+            let buffers = self.load_images(image_set, &format!("frame set {frame_idx}, "))?;
+            results.push(self.merge1d(py, &buffers, n_points, errors));
         }
         Ok(results)
+    }
+}
+
+/// One detector image as owned pixels and (dim1, dim2).
+type ImageBuffer = (Vec<f64>, usize, usize);
+
+impl PyMultiIntegrator {
+    /// Load one image per detector (TIFF paths and arrays may be mixed) and
+    /// check each against its detector's mask. `context` prefixes messages.
+    fn load_images(&self, images: Vec<ImageInput>, context: &str) -> PyResult<Vec<ImageBuffer>> {
+        images
+            .into_iter()
+            .zip(self.multi.integrators())
+            .enumerate()
+            .map(|(i, (image, integrator))| {
+                let (data, dim1, dim2) = match image {
+                    ImageInput::Path(path) => {
+                        let frame = Frame::from_tiff(path).map_err(|err| {
+                            PyValueError::new_err(format!(
+                                "{context}detector {i}: failed to load TIFF: {err}"
+                            ))
+                        })?;
+                        (frame.data, frame.dim1, frame.dim2)
+                    }
+                    ImageInput::Array(array) => {
+                        let (dim1, dim2) = extract_array_dims(&array, "float64")?;
+                        let data = array.as_slice().map_err(|err| {
+                            PyValueError::new_err(format!(
+                                "{context}detector {i}: array must be contiguous: {err}"
+                            ))
+                        })?;
+                        (data.to_vec(), dim1, dim2)
+                    }
+                };
+                check_mask_shape(
+                    mask_shape(integrator),
+                    (dim1, dim2),
+                    &format!("{context}detector {i} image"),
+                )?;
+                Ok((data, dim1, dim2))
+            })
+            .collect()
+    }
+
+    /// Merge one owned buffer per detector, releasing the GIL meanwhile.
+    fn merge1d(
+        &self,
+        py: Python<'_>,
+        buffers: &[ImageBuffer],
+        n_points: usize,
+        errors: bool,
+    ) -> PyIntegrationResult {
+        let slices: Vec<(&[f64], usize, usize)> = buffers
+            .iter()
+            .map(|(data, dim1, dim2)| (data.as_slice(), *dim1, *dim2))
+            .collect();
+        py.detach(|| {
+            if errors {
+                let (radial, intensity, errs) = self
+                    .multi
+                    .integrate1d_with_errors_from_slices(&slices, n_points);
+                PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+            } else {
+                let (radial, intensity) = self.multi.integrate1d_from_slices(&slices, n_points);
+                PyIntegrationResult::from_1d(radial, intensity)
+            }
+        })
     }
 }

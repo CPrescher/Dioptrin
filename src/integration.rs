@@ -150,7 +150,11 @@ impl RadialUnit {
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub enum IntegrationMethod {
-    /// Histogram (unweighted) integration.
+    /// Histogram (unweighted) integration, 1D only.
+    ///
+    /// Always bins over the automatic range of the pixel centres: an explicit
+    /// radial range ([`Integrator::with_radial_range`]) is ignored. The raw
+    /// (`integrate1d_raw*`) and 2D methods do not support it.
     Histogram,
     /// Average of contributing pixels per bin (unweighted).
     Counting,
@@ -346,7 +350,26 @@ impl Integrator {
         self.invalidate_mask();
     }
 
-    // builder pattern for radial range
+    /// Use the explicit radial edges `[min, max]`, in the integrator's radial
+    /// unit, instead of the range derived from the data.
+    ///
+    /// Not every method and dimension honours it:
+    /// - 1D (`integrate1d*`, `integrate1d_raw*`, `integrate1d_with_azimuthal_std`
+    ///   and batch integration): `Counting`, `PixelSplit`, `PyfaiFull` and
+    ///   `Supersampled` bin onto `n_points` equal bins between `min` and `max`
+    ///   and leave out pixels, subpixels or pixel fractions outside the range.
+    ///   [`IntegrationMethod::Histogram`] ignores it and always uses the
+    ///   automatic range of the pixel centres.
+    /// - 2D (`integrate2d*`, `integrate2d_with_azimuthal_range*` and
+    ///   `integrate2d_on_azimuthal_range*`): only `PyfaiFull` uses it as its
+    ///   radial edges. `Counting`, `PixelSplit` and `Supersampled` ignore it and
+    ///   keep their automatic, data-derived edges; `Histogram` has no 2D
+    ///   integration.
+    /// - `integrate2d_raw_on_grid*` takes its edges from the grid argument, not
+    ///   from this range.
+    /// - [`crate::multi::MultiIntegrator`] requires it: every detector must have
+    ///   the same finite range, which becomes the shared radial grid in 1D and
+    ///   2D.
     pub fn with_radial_range(mut self, min: f64, max: f64) -> Self {
         self.radial_range = Some((min, max));
         self.invalidate_caches();
@@ -358,7 +381,8 @@ impl Integrator {
         self.radial_range
     }
 
-    // setter for radial range
+    /// Set or clear the explicit radial range; see
+    /// [`Integrator::with_radial_range`] for which methods honour it.
     pub fn set_radial_range(&mut self, range: Option<(f64, f64)>) {
         if self.radial_range != range {
             self.radial_range = range;

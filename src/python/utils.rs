@@ -1,12 +1,12 @@
 use numpy::PyReadonlyArray2;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList, PyTuple};
 use rayon::ThreadPoolBuilder;
 use std::thread;
 
 use crate::frame::Frame;
-use crate::integration::{IntegrationMethod, RadialUnit};
+use crate::integration::{IntegrationMethod, Integrator, RadialUnit};
 use crate::poni::Poni;
 
 #[derive(FromPyObject)]
@@ -29,6 +29,9 @@ pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<Integra
         "histogram" | "hist" => Ok(IntegrationMethod::Histogram),
         "supersampled" | "supersample" | "ss" => {
             let n_ss = n_ss.unwrap_or(5);
+            if n_ss == 0 {
+                return Err(PyValueError::new_err("n_ss must be positive"));
+            }
             Ok(IntegrationMethod::Supersampled { n_ss })
         }
         other => Err(PyValueError::new_err(format!(
@@ -97,7 +100,104 @@ where
     let shape = view.shape();
     let dim1 = shape[0];
     let dim2 = shape[1];
+    if dim1 == 0 || dim2 == 0 {
+        return Err(PyValueError::new_err(format!(
+            "Array must be non-empty, got shape ({dim1}, {dim2})"
+        )));
+    }
     Ok((dim1, dim2))
+}
+
+/// Raise ValueError unless a bin count is positive (e.g. "n_points must be positive").
+pub fn check_positive(name: &str, value: usize) -> PyResult<()> {
+    if value == 0 {
+        return Err(PyValueError::new_err(format!("{name} must be positive")));
+    }
+    Ok(())
+}
+
+/// Shape of the integrator's mask, if one is set.
+pub fn mask_shape(integrator: &Integrator) -> Option<(usize, usize)> {
+    integrator.mask().map(|mask| (mask.dim1, mask.dim2))
+}
+
+/// Raise ValueError when an image does not match the mask shape; core
+/// integration asserts on it. `label` names the image, e.g. "images[2]".
+pub fn check_mask_shape(
+    mask: Option<(usize, usize)>,
+    image: (usize, usize),
+    label: &str,
+) -> PyResult<()> {
+    match mask {
+        Some(mask) if mask != image => Err(PyValueError::new_err(format!(
+            "{label} shape {image:?} does not match mask shape {mask:?}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Validate Integrator options that core accepts unchecked (and would later
+/// panic on or silently misuse).
+pub fn validate_integrator_options(
+    poni: &Poni,
+    unit: RadialUnit,
+    polarization_factor: Option<f64>,
+    radial_range: Option<(f64, f64)>,
+) -> PyResult<()> {
+    check_unit_wavelength(unit, poni.wavelength)?;
+    check_polarization_factor(polarization_factor)?;
+    if let Some((min, max)) = radial_range
+        && !(min.is_finite() && max.is_finite() && min < max)
+    {
+        return Err(PyValueError::new_err(format!(
+            "radial_range must be finite with min < max, got ({min}, {max})"
+        )));
+    }
+    Ok(())
+}
+
+/// Histogram always bins over the automatic radial range of the image, so a
+/// `radial_range` would be silently ignored; reject the combination instead.
+pub fn check_method_radial_range(
+    method: &IntegrationMethod,
+    radial_range: Option<(f64, f64)>,
+) -> PyResult<()> {
+    if matches!(method, IntegrationMethod::Histogram) && radial_range.is_some() {
+        return Err(PyValueError::new_err(
+            "radial_range is not supported by the 'histogram' method, which always \
+             uses the automatic radial range; use 'counting', 'pixel_split', \
+             'pyfai_full' or 'supersampled' for an explicit radial_range",
+        ));
+    }
+    Ok(())
+}
+
+/// q units convert with the PONI wavelength, which must be positive.
+pub fn check_unit_wavelength(unit: RadialUnit, wavelength: f64) -> PyResult<()> {
+    if unit.requires_wavelength() && !(wavelength.is_finite() && wavelength > 0.0) {
+        return Err(PyValueError::new_err(format!(
+            "q units require a positive wavelength in the PONI calibration, got {wavelength}"
+        )));
+    }
+    Ok(())
+}
+
+/// The polarization factor must be finite and within [-1, 1].
+pub fn check_polarization_factor(factor: Option<f64>) -> PyResult<()> {
+    if let Some(factor) = factor
+        && !(factor.is_finite() && (-1.0..=1.0).contains(&factor))
+    {
+        return Err(PyValueError::new_err(format!(
+            "polarization_factor must be finite and in [-1, 1], got {factor}"
+        )));
+    }
+    Ok(())
+}
+
+/// [`extract_array_dims`] for float64 batch item `index`, naming it in errors.
+pub fn extract_item_dims(array: &PyReadonlyArray2<f64>, index: usize) -> PyResult<(usize, usize)> {
+    extract_array_dims(array, "float64")
+        .map_err(|err| PyValueError::new_err(format!("images[{index}]: {}", err.value(array.py()))))
 }
 
 pub fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
@@ -146,8 +246,11 @@ pub enum ClassifiedInput<'py> {
 
 /// Classify a Python object as paths, arrays, or an iterator.
 ///
-/// Preserves backward compatibility: lists of strings or arrays match first,
-/// only generators/iterators fall through to the Iterator variant.
+/// Preserves backward compatibility: lists of strings or arrays match first.
+/// Other lists/tuples (e.g. mixing paths and arrays) are checked item by item
+/// here, so an invalid item raises before any work starts instead of ending
+/// the stream; generators/iterators fall through to the Iterator variant and
+/// are checked as they are consumed.
 pub fn classify_batch_input<'py>(obj: &Bound<'py, PyAny>) -> PyResult<ClassifiedInput<'py>> {
     // Try Vec<String> first
     if let Ok(paths) = obj.extract::<Vec<String>>() {
@@ -156,6 +259,11 @@ pub fn classify_batch_input<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Classified
     // Try Vec<PyReadonlyArray2<f64>>
     if let Ok(arrays) = obj.extract::<Vec<PyReadonlyArray2<'py, f64>>>() {
         return Ok(ClassifiedInput::Arrays(arrays));
+    }
+    if obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>() {
+        for (index, item) in obj.try_iter()?.enumerate() {
+            check_batch_item(&item?, index)?;
+        }
     }
     // Fall back to iterator protocol
     let iter = obj.call_method0("__iter__").map_err(|_| {
@@ -166,6 +274,51 @@ pub fn classify_batch_input<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Classified
     Ok(ClassifiedInput::Iterator(iter))
 }
 
+/// Describe a rejected batch item, e.g. "numpy array with dtype int32 and shape (4, 4)".
+fn describe_item(obj: &Bound<'_, PyAny>) -> String {
+    let type_name = obj
+        .get_type()
+        .name()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|_| "object".to_owned());
+    match (obj.getattr("dtype"), obj.getattr("shape")) {
+        (Ok(dtype), Ok(shape)) => format!("{type_name} with dtype {dtype} and shape {shape}"),
+        _ => type_name,
+    }
+}
+
+fn item_type_error(obj: &Bound<'_, PyAny>, index: usize) -> PyErr {
+    PyTypeError::new_err(format!(
+        "images[{}] must be a file path (str) or a 2D float64 numpy array, got {}",
+        index,
+        describe_item(obj)
+    ))
+}
+
+/// Check that a batch item is a path or a 2D C-contiguous float64 array.
+fn check_batch_item(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<()> {
+    if obj.extract::<String>().is_ok() {
+        return Ok(());
+    }
+    let array: PyReadonlyArray2<'_, f64> =
+        obj.extract().map_err(|_| item_type_error(obj, index))?;
+    let view = array.as_array();
+    if !view.is_standard_layout() {
+        return Err(PyValueError::new_err(format!(
+            "images[{}] must be C-contiguous (row-major)",
+            index
+        )));
+    }
+    if view.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "images[{}] must be non-empty, got shape {:?}",
+            index,
+            view.shape()
+        )));
+    }
+    Ok(())
+}
+
 /// Extract a Frame from a Python object (str path or numpy array).
 pub fn extract_frame_from_pyany(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<FrameOrPath> {
     // Try string first (file path)
@@ -173,18 +326,11 @@ pub fn extract_frame_from_pyany(obj: &Bound<'_, PyAny>, index: usize) -> PyResul
         return Ok(FrameOrPath::Path(path));
     }
     // Try numpy array
-    let array: PyReadonlyArray2<'_, f64> = obj.extract().map_err(|_| {
-        PyValueError::new_err(format!(
-            "Iterator item {} must be a file path (str) or a 2D float64 numpy array",
-            index
-        ))
-    })?;
-    let (dim1, dim2) = extract_array_dims(&array, "float64")?;
+    let array: PyReadonlyArray2<'_, f64> =
+        obj.extract().map_err(|_| item_type_error(obj, index))?;
+    let (dim1, dim2) = extract_item_dims(&array, index)?;
     let slice = array.as_slice().map_err(|err| {
-        PyValueError::new_err(format!(
-            "Iterator item {} array must be contiguous: {}",
-            index, err
-        ))
+        PyValueError::new_err(format!("images[{}] must be contiguous: {}", index, err))
     })?;
     Ok(FrameOrPath::Frame(Frame {
         name: format!("iter[{}]", index),

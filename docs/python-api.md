@@ -20,7 +20,8 @@ azimuthal_range=None, *, normalization="relative", normalization_factors=None,
 azimuthal_bracket=None)`
 combines raw fractional contributions on common radial and azimuthal edges.
 Both coordinate arrays are populated in its `IntegrationResult`; flat outputs
-reshape to `(n_azimuthal, n_radial)`. For the pyFAI MultiGeometry absolute
+reshape to `(n_azimuthal, n_radial)`. Its `azimuthal_range` is a pair of edges
+in radians, as for `Integrator.integrate2d`. For the pyFAI MultiGeometry absolute
 solid-angle scale, set `normalization="absolute"`. See the
 [multi-detector guide](MULTI_DETECTOR.md) for units, masks, uncertainties and
 important splitting/legacy normalization differences.

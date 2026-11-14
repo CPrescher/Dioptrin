@@ -49,6 +49,8 @@ pub fn pyfai_radial_range(g: &Geometry, unit: RadialUnit) -> [f64; 2] {
 /// of at most one full turn. None selects automatic corner bounds/full azimuth.
 /// Range-clipped pixels are renormalized. Singular beam pixels use detector-plane
 /// fractions; negative numerical fractions are rejected (approximate compatibility).
+/// On the automatic radial range (`radial` is None) the beam pixel's samples below
+/// the first edge (the smallest pixel corner) go to bin 0, so it is conserved.
 pub fn build_lut1d_pyfai_csr(
     g: &Geometry,
     unit: RadialUnit,
@@ -56,6 +58,9 @@ pub fn build_lut1d_pyfai_csr(
     azimuth: Option<[f64; 2]>,
     radial: Option<[f64; 2]>,
 ) -> Result<Lut1d, String> {
+    // The automatic range starts at the smallest pixel corner, but the beam pixel
+    // reaches r = 0 below it; its samples there belong to the first bin.
+    let clamp_low = radial.is_none();
     let radial = radial.unwrap_or_else(|| pyfai_radial_range(g, unit));
     let angles = azimuth.unwrap_or([-PI, PI]);
     let grid = IntegrationGrid2d::new(bins, 1, (radial[0], radial[1]), (angles[0], angles[1]))?;
@@ -67,7 +72,7 @@ pub fn build_lut1d_pyfai_csr(
         let [a, b, c, d] = g.corner_indices(pixel);
         let poly = [a, d, c, b].map(|i| (r[i], azi[i]));
         let contributions = if singular(&poly) {
-            sample(g, pixel, unit, &grid)
+            sample(g, pixel, unit, &grid, clamp_low)
         } else {
             split1d(poly, &grid, azimuth.is_some())
         };
@@ -115,11 +120,15 @@ pub(super) fn singular(poly: &[(f64, f64); 4]) -> bool {
 
 // Match the upstream safety convention: singular beam pixels use nonnegative
 // detector-plane fractions. These exceptional weights are not bitwise pyFAI.
+// With `clamp_low` (automatic radial range, whose lower edge is the smallest
+// pixel corner), samples below the first radial edge are counted in bin 0
+// instead of being dropped; the azimuthal and upper radial limits still apply.
 pub(super) fn sample(
     g: &Geometry,
     pixel: usize,
     unit: RadialUnit,
     grid: &IntegrationGrid2d,
+    clamp_low: bool,
 ) -> Vec<(usize, f64)> {
     const N: usize = 128;
     let offsets = [(0.25, 0.5), (0.5, 0.25), (0.75, 0.5), (0.5, 0.75)];
@@ -142,10 +151,14 @@ pub(super) fn sample(
     let mut hits = std::collections::BTreeMap::<usize, usize>::new();
     for (r, a) in radial.into_iter().zip(azimuth) {
         let a = a0 + (a - a0).rem_euclid(TAU);
-        if r < r0 || r >= r1 || a >= a1 {
+        if (r < r0 && !clamp_low) || r >= r1 || a >= a1 {
             continue;
         }
-        let ir = ((r - r0) / (r1 - r0) * nr as f64) as usize;
+        let ir = if r < r0 {
+            0
+        } else {
+            ((r - r0) / (r1 - r0) * nr as f64) as usize
+        };
         let ia = ((a - a0) / (a1 - a0) * na as f64) as usize;
         if ir < nr && ia < na {
             *hits.entry(ia * nr + ir).or_default() += 1;
@@ -172,7 +185,10 @@ fn split1d(mut poly: [(f64, f64); 4], grid: &IntegrationGrid2d, sector: bool) ->
         p.1 = (p.1 - offset + PI).rem_euclid(TAU) - PI;
     }
     let [a, b, c, d] = poly;
-    let area = 0.5 * ((c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0));
+    // Deliberately pyFAI's `area4p` (regrid_common.pxi), operator precedence
+    // included: `0.5 * X - Y`, not the signed diagonal area `0.5 * (X - Y)`.
+    // Only the sign is used; the 2D port in `pyfai_split.rs` uses the same form.
+    let area = 0.5 * (c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0);
     if area > 0.0 {
         for p in &mut poly {
             if p.1 < 0.0 {
@@ -284,6 +300,16 @@ mod tests {
         let outside = IntegrationGrid2d::new(4, 1, (0., 2.), (1., 2.)).unwrap();
         assert!(split1d(poly, &outside, true).is_empty());
     }
+    /// pyFAI's seam test is `0.5 * X - Y`. For this folded quadrilateral it is
+    /// negative (no unwrapping) while the true signed area `0.5 * (X - Y)` is
+    /// positive, which would unwrap two corners to above 2π - 1 and pull the
+    /// pixel into the sector.
+    #[test]
+    fn seam_test_uses_pyfai_operator_precedence() {
+        let poly = [(1.0, -0.5), (1.2, -0.4), (2.0, 0.25), (2.2, 0.6)];
+        let grid = IntegrationGrid2d::new(10, 1, (0.0, 3.0), (1.0, 2.0)).unwrap();
+        assert!(split1d(poly, &grid, true).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +405,65 @@ mod integration_tests {
                 assert!((e - 10.).abs() < 1e-12);
             }
         }
+    }
+
+    /// 9x11 detector, 100 µm pixels, 5 cm distance, beam in pixel (4, 5).
+    fn beam_geometry(poni1: f64, poni2: f64) -> Geometry {
+        let mut p = Poni::new();
+        p.pixel1 = 1e-4;
+        p.pixel2 = 1e-4;
+        p.distance = 0.05;
+        p.poni1 = poni1;
+        p.poni2 = poni2;
+        p.wavelength = 1e-10;
+        Geometry::new(9, 11, p)
+    }
+
+    fn pixel_total(lut: &Lut1d, pixel: usize) -> f64 {
+        lut.col_idx
+            .iter()
+            .zip(lut.values.as_ref().unwrap())
+            .filter(|(p, _)| **p == pixel)
+            .map(|(_, w)| w)
+            .sum()
+    }
+
+    const BEAM_PIXEL: usize = 4 * 11 + 5;
+
+    #[test]
+    fn automatic_range_conserves_the_beam_pixel() {
+        for (poni1, poni2) in [(4.5e-4, 5.5e-4), (4.3e-4, 5.6e-4)] {
+            let g = beam_geometry(poni1, poni2);
+            let lut = build_lut1d_pyfai_csr(&g, RadialUnit::TthDeg, 200, None, None).unwrap();
+            let total = pixel_total(&lut, BEAM_PIXEL);
+            assert!((total - 1.0).abs() < 1e-12, "({poni1}, {poni2}): {total}");
+            for pixel in 0..g.size() {
+                let total = pixel_total(&lut, pixel);
+                assert!((total - 1.0).abs() < 1e-9, "pixel {pixel}: {total}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_range_and_sector_still_clip_the_beam_pixel() {
+        let g = beam_geometry(4.5e-4, 5.5e-4);
+        let auto = pyfai_radial_range(&g, RadialUnit::TthDeg);
+        // Range starting at the inscribed circle: 1 - pi/4 of the pixel remains.
+        let min = (0.5e-4_f64 / 0.05).atan().to_degrees();
+        let lut =
+            build_lut1d_pyfai_csr(&g, RadialUnit::TthDeg, 200, None, Some([min, auto[1]])).unwrap();
+        let total = pixel_total(&lut, BEAM_PIXEL);
+        assert!((total - (1.0 - PI / 4.0)).abs() < 2e-3, "{total}");
+        // The automatic range passed explicitly is not clamped: the centred
+        // beam pixel lies entirely below its smallest corner.
+        let lut = build_lut1d_pyfai_csr(&g, RadialUnit::TthDeg, 200, None, Some(auto)).unwrap();
+        assert_eq!(pixel_total(&lut, BEAM_PIXEL), 0.0);
+        // Automatic radial range with an azimuthal quadrant: samples outside
+        // the sector are still dropped.
+        let lut = build_lut1d_pyfai_csr(&g, RadialUnit::TthDeg, 200, Some([0.0, PI / 2.0]), None)
+            .unwrap();
+        let total = pixel_total(&lut, BEAM_PIXEL);
+        assert!((total - 0.25).abs() < 2e-3, "{total}");
     }
 
     #[test]

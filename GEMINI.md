@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-This project, **Dioptrin**, is a high-performance Rust library designed for the fast 1D and 2D azimuthal integration of 2D X-ray diffraction data. It is optimized for speed through techniques like compressed sparse row (CSR) lookup tables and parallel processing using the Rayon library.
+This project, **Dioptrin**, is a high-performance Rust library designed for the fast 1D and 2D azimuthal integration of 2D X-ray diffraction data. It is optimized for speed through techniques like sparse (CSR/CSC) lookup tables and parallel processing using the Rayon library.
 
 The core functionality is written in Rust, but it provides comprehensive Python bindings via PyO3 and Maturin, making it easy to integrate into scientific Python workflows. Key features include:
 
--   Multiple integration methods: pixel-splitting, counting, histogramming, and supersampling.
+-   Multiple integration methods: pixel-splitting, pyFAI-compatible full splitting (`pyfai_full`), counting, supersampling, and legacy histogramming (1D only).
 -   Support for various radial units (`2th_rad`, `2th_deg`, `q_A^-1`, `q_nm^-1`).
 -   Corrections for polarization and solid angle.
 -   Batch processing capabilities to efficiently handle multiple files in parallel.
@@ -65,8 +65,8 @@ The Python bindings are built using `maturin`. It is recommended to use a virtua
 python -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies from uv.lock
-pip install -r requirements.txt
+# Install the build tool and the optional test dependencies (see pyproject.toml)
+pip install maturin numpy h5py fabio tifffile "pyfai>=2025.12.1" matplotlib
 ```
 
 **Building and installing the Python package:**
@@ -112,12 +112,15 @@ cargo test
 
 ### Python
 
-The `python_scripts/` directory contains various scripts for testing and comparing results against the `pyFAI` library. These can be run as standard Python scripts after the `dioptrin` package has been built and installed.
+The `python_examples/` directory contains various scripts for testing and comparing results against the `pyFAI` library. These can be run as standard Python scripts after the `dioptrin` package has been built and installed.
 
 For example, to compare 1D integration results:
 
 ```bash
-python python_scripts/integration_test_check_1d.py
+python python_examples/integration_test_check_1d.py
+
+# Run all Python examples
+python test_examples.py
 ```
 
 ## Development Conventions

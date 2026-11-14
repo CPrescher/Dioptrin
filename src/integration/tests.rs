@@ -1488,3 +1488,246 @@ fn histogram_method_is_rejected_by_every_2d_entry_point() {
     let (x, y, sigma) = integrator.integrate1d_with_errors_from_slice(&data, rows, cols, nr);
     assert_eq!((x.len(), y.len(), sigma.len()), (nr, nr, nr));
 }
+
+mod pyfai_full_legacy_azimuthal_range {
+    //! `integrate2d_with_azimuthal_range*` with `IntegrationMethod::PyfaiFull`.
+    use super::*;
+    use std::f64::consts::TAU;
+
+    const ROWS: usize = 60;
+    const COLS: usize = 80;
+    const NR: usize = 12;
+
+    fn integrator() -> Integrator {
+        let mut p = Poni::new();
+        p.pixel1 = 1e-4;
+        p.pixel2 = 1e-4;
+        p.distance = 0.05;
+        p.poni1 = 0.003;
+        p.poni2 = 0.004;
+        p.rot1 = 0.01;
+        p.rot2 = -0.02;
+        p.wavelength = 1e-10;
+        Integrator::new(Geometry::new(ROWS, COLS, p))
+            .with_method(IntegrationMethod::PyfaiFull)
+            .with_radial_unit(RadialUnit::TthDeg)
+    }
+
+    fn image() -> Vec<f64> {
+        (0..ROWS * COLS)
+            .map(|i| 10.0 + ((i * 37) % 101) as f64)
+            .collect()
+    }
+
+    fn assert_sane(cake: &[f64], na: usize) {
+        assert_eq!(cake.len(), NR * na);
+        assert!(cake.iter().all(|v| v.is_finite()));
+        assert!(cake.iter().any(|&v| v != 0.0));
+    }
+
+    #[test]
+    fn default_full_circle_start_stays_bit_identical() {
+        let data = image();
+        for na in [4, 18, 36] {
+            let ai = integrator();
+            let start = -PI + PI / na as f64;
+            let step = TAU / na as f64;
+            let reference = ai.integrate2d_from_slice(&data, ROWS, COLS, NR, na);
+            let explicit = ai.integrate2d_with_azimuthal_range_from_slice(
+                &data, ROWS, COLS, NR, na, start, step,
+            );
+            assert_eq!(
+                reference.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                explicit.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "n_azimuthal = {na}"
+            );
+        }
+    }
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// A start outside the window gives exactly the cake of `start mod 2π`
+    /// (both go through the same table key), and that cake is the one of the
+    /// hand-reduced start up to the rounding of the reduction.
+    #[test]
+    fn start_outside_the_window_is_shifted_by_whole_turns() {
+        let data = image();
+        let ai = integrator();
+        let frame = Frame {
+            name: String::new(),
+            data: data.clone(),
+            dim1: ROWS,
+            dim2: COLS,
+        };
+        // (start, step, n_azimuthal, the same start written inside the window)
+        let cases = [
+            (7.0, 0.1, 36, 7.0 - TAU),
+            (-7.0, 0.1, 36, -7.0 + 2.0 * TAU),
+            (7.0 + 3.0 * TAU, 0.1, 36, 7.0 - TAU),
+            (-20.0, 0.1, 36, -20.0 + 4.0 * TAU),
+            (7.0 + 2.0 * TAU, TAU / 36.0, 36, 7.0 - TAU),
+            // Large starts: here `n * step == 2π` exactly, but differencing
+            // the unreduced edges gave more than 2π and was rejected.
+            (1.0519e6, TAU, 1, 1.0519e6 - 167_415.0 * TAU),
+            (1.0519e6, TAU / 36.0, 36, 1.0519e6 - 167_415.0 * TAU),
+            (-1.0519e6, TAU / 36.0, 36, -1.0519e6 + 167_416.0 * TAU),
+        ];
+        for (start, step, na, by_hand) in cases {
+            let reduced = start.rem_euclid(TAU);
+            assert!(reduced - 0.5 * step >= -TAU && reduced - 0.5 * step <= TAU);
+            let cake = ai.integrate2d_with_azimuthal_range_from_slice(
+                &data, ROWS, COLS, NR, na, start, step,
+            );
+            assert_sane(&cake, na);
+            let want = ai.integrate2d_with_azimuthal_range_from_slice(
+                &data, ROWS, COLS, NR, na, reduced, step,
+            );
+            assert_eq!(bits(&cake), bits(&want), "start {start}, step {step}");
+            let (cake_e, sigma) = ai.integrate2d_with_azimuthal_range_and_errors_from_slice(
+                &data, ROWS, COLS, NR, na, start, step,
+            );
+            let (want_e, want_sigma) = ai.integrate2d_with_azimuthal_range_and_errors_from_slice(
+                &data, ROWS, COLS, NR, na, reduced, step,
+            );
+            assert_eq!(bits(&cake_e), bits(&want_e), "start {start}, step {step}");
+            assert_eq!(
+                bits(&sigma),
+                bits(&want_sigma),
+                "start {start}, step {step}"
+            );
+            assert_eq!(
+                bits(&ai.integrate2d_with_azimuthal_range(&frame, NR, na, start, step)),
+                bits(&want)
+            );
+            // An independent reduction: the right number of whole turns.
+            assert!(
+                (by_hand - reduced).abs() < 1e-9,
+                "{start}: {by_hand} vs {reduced}"
+            );
+            let by_hand = ai.integrate2d_with_azimuthal_range_from_slice(
+                &data, ROWS, COLS, NR, na, by_hand, step,
+            );
+            for (k, (a, b)) in cake.iter().zip(&by_hand).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-6 * b.abs().max(1.0),
+                    "start {start}, step {step}, bin {k}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "integrate2d_with_azimuthal_range: PyfaiFull azimuthal_start")]
+    fn start_too_large_to_reduce_panics() {
+        let data = image();
+        integrator().integrate2d_with_azimuthal_range_from_slice(
+            &data,
+            ROWS,
+            COLS,
+            NR,
+            36,
+            1e17,
+            TAU / 36.0,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "integrate2d_with_azimuthal_range: PyfaiFull needs n_azimuthal * azimuthal_step <= 2π"
+    )]
+    fn span_above_a_full_turn_panics() {
+        let data = image();
+        integrator()
+            .integrate2d_with_azimuthal_range_from_slice(&data, ROWS, COLS, NR, 100, 0.0, 0.1);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "integrate2d_with_azimuthal_range: PyfaiFull needs n_azimuthal * azimuthal_step <= 2π"
+    )]
+    fn span_above_a_full_turn_panics_with_errors() {
+        let data = image();
+        integrator().integrate2d_with_azimuthal_range_and_errors_from_slice(
+            &data,
+            ROWS,
+            COLS,
+            NR,
+            37,
+            0.0,
+            TAU / 36.0,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "integrate2d_with_azimuthal_range: PyfaiFull needs a finite, positive azimuthal_step"
+    )]
+    fn nonpositive_step_panics() {
+        let data = image();
+        integrator()
+            .integrate2d_with_azimuthal_range_from_slice(&data, ROWS, COLS, NR, 18, 0.0, -0.1);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "integrate2d_with_azimuthal_range: PyfaiFull needs a finite, positive azimuthal_step"
+    )]
+    fn nan_step_panics() {
+        let data = image();
+        integrator().integrate2d_with_azimuthal_range_from_slice(
+            &data,
+            ROWS,
+            COLS,
+            NR,
+            18,
+            0.0,
+            f64::NAN,
+        );
+    }
+}
+
+/// Automatic-range pixel splitting conserves the pixel that contains the point
+/// of normal incidence. Its area reaches below the smallest pixel corner (the
+/// first automatic edge); before the fix PixelSplit and PyfaiFull kept 0 of
+/// 1000 counts (beam at the pixel centre) or 367 of 1000 (off-centre).
+#[test]
+fn automatic_range_pixel_splitting_conserves_the_beam_pixel() {
+    let (rows, cols) = (60, 80);
+    for (poni1, poni2) in [(30.5e-4, 40.5e-4), (30.3e-4, 40.6e-4)] {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1e-4;
+        poni.pixel2 = 1e-4;
+        poni.distance = 0.05;
+        poni.poni1 = poni1;
+        poni.poni2 = poni2;
+        poni.wavelength = 1e-10;
+        let mut beam = vec![0.0; rows * cols];
+        beam[30 * cols + 40] = 1000.0;
+        let ones = vec![1.0; rows * cols];
+        for method in [IntegrationMethod::PixelSplit, IntegrationMethod::PyfaiFull] {
+            let ai = Integrator::new(Geometry::new(rows, cols, poni.clone()))
+                .with_method(method)
+                .with_radial_unit(RadialUnit::TthDeg);
+            let kept: f64 = ai
+                .integrate1d_raw_from_slice(&beam, rows, cols, 200)
+                .sum_signal
+                .iter()
+                .sum();
+            assert!(
+                (kept - 1000.0).abs() < 1e-9,
+                "{method:?} ({poni1}, {poni2}): {kept}"
+            );
+            let total: f64 = ai
+                .integrate1d_raw_from_slice(&ones, rows, cols, 200)
+                .sum_signal
+                .iter()
+                .sum();
+            assert!(
+                (total - (rows * cols) as f64).abs() < 1e-9,
+                "{method:?} ({poni1}, {poni2}): {total}"
+            );
+        }
+    }
+}

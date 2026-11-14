@@ -183,6 +183,9 @@ fn unwrap_angle(angle: f64, reference: f64) -> f64 {
 /// keeps only its in-range fraction. Pixels that contain or touch the point of
 /// normal incidence have no single polar quadrilateral; they use the same
 /// detector-plane sampling as the shared-grid 2D and pyFAI-compatible paths.
+/// `clamp_low` is set for the automatic range, whose first edge is the smallest
+/// pixel corner: the beam pixel reaches below it (down to r = 0), and those
+/// samples are counted in bin 0 so the pixel keeps its full weight.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lut1d_ps_fractions(
     geometry: &Geometry,
@@ -193,6 +196,7 @@ pub(crate) fn lut1d_ps_fractions(
     step: f64,
     radial_corners: &[f64],
     azimuthal_corners: &[f64],
+    clamp_low: bool,
 ) -> Vec<Vec<(usize, f64)>> {
     let azimuthal = geometry.calc_azimuth_all();
     // Only used for singular beam pixels; an unrepresentable grid (for example a
@@ -224,7 +228,9 @@ pub(crate) fn lut1d_ps_fractions(
                     let raw =
                         [i00, i01, i11, i10].map(|i| (radial_corners[i], azimuthal_corners[i]));
                     if pyfai_1d::singular(&raw) {
-                        for (bin, fraction) in pyfai_1d::sample(geometry, idx, unit, grid) {
+                        for (bin, fraction) in
+                            pyfai_1d::sample(geometry, idx, unit, grid, clamp_low)
+                        {
                             acc[bin].push((idx, fraction));
                         }
                         return (acc, buf1, buf2);
@@ -359,7 +365,8 @@ fn lut1d_from_fractions(buckets: Vec<Vec<(usize, f64)>>, min: f64, step: f64) ->
 /// quadrilateral that falls into a bin. Bins (rows) are not normalized, so the
 /// raw sums of several detectors can be added. Pixels containing or touching
 /// the point of normal incidence use detector-plane sampling instead of a
-/// polar quadrilateral.
+/// polar quadrilateral. The automatic range starts at the smallest pixel
+/// corner; the part of the beam pixel below it is counted in the first bin.
 ///
 /// Example (1D)
 /// ```
@@ -406,6 +413,7 @@ pub fn build_lut1d_ps_csr(
         step,
         &radial_corners,
         &azimuthal_corners,
+        true,
     );
     lut1d_from_fractions(buckets, min, step)
 }
@@ -441,6 +449,7 @@ pub fn build_lut1d_ps_csr_with_range(
         step,
         &radial_corners,
         &azimuthal_corners,
+        false,
     );
     lut1d_from_fractions(buckets, min, step)
 }
@@ -956,6 +965,7 @@ mod tests {
             step,
             &tth,
             &azimuth,
+            false,
         )
     }
 
@@ -1087,5 +1097,62 @@ mod tests {
             (weight / expected - 1.0).abs() < 0.05,
             "{weight} {expected}"
         );
+    }
+
+    /// 9x11 detector, 100 µm pixels, 5 cm distance, beam in pixel (4, 5).
+    fn beam_geometry(poni1: f64, poni2: f64) -> Geometry {
+        let mut poni = Poni::new();
+        poni.pixel1 = 1e-4;
+        poni.pixel2 = 1e-4;
+        poni.distance = 0.05;
+        poni.poni1 = poni1;
+        poni.poni2 = poni2;
+        poni.wavelength = 1e-10;
+        Geometry::new(9, 11, poni)
+    }
+
+    fn lut_pixel_total(lut: &Lut1d, pixel: usize) -> f64 {
+        lut.col_idx
+            .iter()
+            .zip(lut.values.as_ref().unwrap())
+            .filter(|(p, _)| **p == pixel)
+            .map(|(_, w)| w)
+            .sum()
+    }
+
+    #[test]
+    fn automatic_range_conserves_the_beam_pixel() {
+        // The automatic range starts at the smallest pixel corner; the beam
+        // pixel reaches r = 0 below it and must still have total weight one.
+        let beam_pixel = 4 * 11 + 5;
+        for (poni1, poni2) in [(4.5e-4, 5.5e-4), (4.3e-4, 5.6e-4)] {
+            let geometry = beam_geometry(poni1, poni2);
+            let unit = RadialUnit::TthDeg;
+            let radial = unit.convert_from_tth(&geometry.calc_tth_all(), 1e-10);
+            let lut = build_lut1d_ps_csr(&geometry, &radial, 200, unit);
+            let total = lut_pixel_total(&lut, beam_pixel);
+            assert!((total - 1.0).abs() < 1e-12, "({poni1}, {poni2}): {total}");
+            // All other pixels lie inside the automatic range and are conserved.
+            for pixel in 0..geometry.size() {
+                let total = lut_pixel_total(&lut, pixel);
+                assert!((total - 1.0).abs() < 1e-9, "pixel {pixel}: {total}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_range_keeps_only_the_in_range_part_of_the_beam_pixel() {
+        // Beam at the pixel centre; the range starts at the inscribed circle
+        // (half a pixel from the beam), so the pixel keeps 1 - pi/4 of itself.
+        let geometry = beam_geometry(4.5e-4, 5.5e-4);
+        let beam_pixel = 4 * 11 + 5;
+        let unit = RadialUnit::TthDeg;
+        let radial = unit.convert_from_tth(&geometry.calc_tth_all(), 1e-10);
+        let min = (0.5e-4_f64 / 0.05).atan().to_degrees();
+        let max = math::max(&radial) * 2.0;
+        let lut = build_lut1d_ps_csr_with_range(&geometry, &radial, 200, unit, min, max);
+        let total = lut_pixel_total(&lut, beam_pixel);
+        let expected = 1.0 - PI / 4.0;
+        assert!((total - expected).abs() < 2e-3, "{total} {expected}");
     }
 }

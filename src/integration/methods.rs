@@ -695,9 +695,17 @@ impl Integrator {
     /// Azimuthal bins wrap periodically, so angles outside the total range fold into
     /// `0..n_azimuthal`.
     ///
+    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
+    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
+    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
+    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
+    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
+    /// `azimuthal_start` is not finite.
     pub fn integrate2d_with_azimuthal_range(
         &self,
         frame: &Frame,
@@ -750,9 +758,17 @@ impl Integrator {
 
     /// Like [`Self::integrate2d_with_azimuthal_range`], for a row-major `dim1 x dim2` slice.
     ///
+    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
+    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
+    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
+    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
+    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
+    /// `azimuthal_start` is not finite.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_from_slice(
         &self,
@@ -908,9 +924,17 @@ impl Integrator {
     /// `azimuthal_start - azimuthal_step / 2`. Azimuthal bins wrap periodically, so angles outside
     /// the total range fold into `0..n_azimuthal`.
     ///
+    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
+    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
+    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
+    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
+    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
+    /// `azimuthal_start` is not finite.
     pub fn integrate2d_with_azimuthal_range_and_errors(
         &self,
         frame: &Frame,
@@ -966,9 +990,17 @@ impl Integrator {
     /// Like [`Self::integrate2d_with_azimuthal_range_and_errors`], for a row-major
     /// `dim1 x dim2` slice.
     ///
+    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
+    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
+    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
+    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
+    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
+    /// `azimuthal_start` is not finite.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_and_errors_from_slice(
         &self,

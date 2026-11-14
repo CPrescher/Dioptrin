@@ -106,9 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ranges (non-finite, `max <= min`, span above 2π) raise
   `ValueError`; batches check before starting.
   Non-finite pixels behave as without a range: they make only the bins they
-  contribute to NaN or infinite. With counting, the pixel at the largest radial
-  value lands in the last bin as on the default path, also for units whose
-  maximum is large (2θ in degrees, q in nm⁻¹), and a pixel or subpixel inside
+  contribute to NaN or infinite. Radially nothing the default path keeps is
+  lost: with counting, the pixel at the largest radial value lands in the last
+  bin, also for units whose maximum is large (2θ in degrees, q in nm⁻¹); with
+  supersampling, subpixels below or above the default radial edges (next to
+  the beam centre, or a few ulp past the outermost one) go into the first or
+  last radial bin, as in the default table. A pixel or subpixel inside
   the range whose bin index rounds to `n` lands in the last bin instead of
   being dropped. A full circle may start anywhere: `(0, 2π)` and `(-2π, 0)`
   give the `(-π, π)` cake rotated by half a turn (identical for counting and
@@ -120,13 +123,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bins (up to 2θ ≈ 27°, by up to 1.44 relative), because pyFAI's full
   splitting unwraps pixels with a heuristic that depends on where the azimuth
   seam lies (pyFAI itself behaves the same). `pixel_split`
-  differs in 3 bins by at most 3e-6 there and is the method to use for sectors.
+  differs in 2 bins by at most 2.3e-9 there and is the method to use for sectors.
   The same applies to where a `pyfai_full` full circle starts: `(0, 2π)`
   differs from the rotated `(-π, π)` cake in 896 of 21,600 bins there (median
   0.1%, 83 bins by more than 1%). pyFAI 2026.9.0's own full splitting shows the
   same: all 83 bins are among the 85 that change by more than 1% between
   `setChiDiscAtPi` and `setChiDiscAtZero`. See
   `docs/validation/pyfai-full-seam.md`.
+- 1D `pixel_split` and `pyfai_full` without an explicit `radial_range` lost
+  part or all of the pixel containing the point of normal incidence: the
+  automatic range starts at the smallest pixel-corner value, and the part of
+  that pixel closer to the beam was dropped (the whole pixel when the beam sits
+  at its centre). That part now goes into the first bin, so the pixel keeps its
+  full weight, as with counting and supersampling. The automatic bin edges are
+  unchanged. With an explicit `radial_range` (and so in `MultiIntegrator`) the
+  pixel still contributes only its in-range fraction.
+- `integrate2d_with_azimuthal_range*` (first-bin centre and step) with
+  `pyfai_full` panicked with "valid pyFAI cake grid" when the first bin edge
+  lay outside `[-2π, 2π]` or the bins spanned more than a full turn. A start
+  outside that window is now reduced modulo 2π (a start too large to reduce
+  exactly panics with a message that says so). A span above 2π still
+  panics, with a message that says so: `pyfai_full` treats the bins as the
+  sector `[start - step/2, start + (n - 0.5)·step)` and, unlike the other
+  methods, does not fold angles outside it into the bins. This was
+  undocumented and is now stated in the function docs.
+- The seam test of 1D `pyfai_full` used the signed diagonal area
+  `0.5·(X − Y)` where pyFAI (and the 2D port) use `0.5·X − Y`. It now matches
+  pyFAI. The two differ in sign only when the pixel's diagonals do not cross
+  in (radial, azimuth) space, i.e. for folded quadrilaterals, so patterns are
+  not expected to change.
+- `MultiIntegrator` 2D and `integrate2d_raw_on_grid*` dropped a value inside
+  the grid whose bin index rounded to `n` (for example the value one ulp below
+  the upper limit of `(0.5, 25)` with 1500 bins, or an azimuth a few 1e-16
+  below 0 on a `(0, 2π)` grid). It now lands in the last bin. The limits stay
+  half-open: values at or above the upper limit, and outside a sector, are
+  still dropped.
+- Python: invalid input now raises `ValueError` or `TypeError` instead of a
+  Rust panic (`PanicException`) or being ignored:
+  - `batch1d_iter` and `batch2d_iter` stopped silently at an item they could
+    not read (a list of non-float64 arrays yielded nothing; a bad item from a
+    generator truncated the stream; an exception raised by the generator
+    produced a bogus extra result). Lists are now checked before work starts,
+    and for generators the error, or the generator's own exception, is raised
+    from the iterator at that item after the earlier results. A panic while
+    integrating a frame of `batch1d_iter` over a list of arrays ended that
+    iteration silently; it now raises `RuntimeError` at that item, after the
+    earlier results, once the frames still being integrated are done. All
+    other streams (TIFF paths, generator input, `batch2d_iter` over arrays)
+    already turned such a panic into an error `BatchResult` ("integration
+    worker panicked") at its position and went on; they still do.
+  - An image whose shape differs from the mask raises `ValueError` for array
+    inputs on every `Integrator` and `MultiIntegrator` call. TIFF path batches
+    still report it per item as a worker failure.
+  - `MultiIntegrator.integrate1d` and `batch1d` accept lists that mix TIFF
+    paths and arrays, as `integrate2d` already did.
+  - Zero bin counts (`n_points`, `n_radial`, `n_azimuthal`), `n_ss=0`, an empty
+    image, a `radial_range` that is not finite with min < max, a
+    `polarization_factor` outside [-1, 1], and q units without a wavelength in
+    the calibration are rejected. The last four are checked when the
+    integrator is built or reconfigured, not at integration time.
+  - `method="histogram"` together with a `radial_range` raises `ValueError`
+    (at construction and in `set_method`). The Histogram method always uses
+    the automatic radial range, so the range was silently ignored and the
+    full pattern returned. The Rust API still ignores it; this is now
+    documented on `Integrator::with_radial_range`.
+- Synchronous batches (`batch1d`, `batch2d`, `MultiIntegrator.integrate1d`
+  and `batch1d`) release the GIL while they wait, and `batch1d_iter` /
+  `batch2d_iter` fed by a Python iterator run on their own worker pool, so an
+  open or abandoned stream no longer blocks a later batch on the same
+  integrator.
+- Python `batch1d_iter` / `batch2d_iter` fed by a generator or other iterator:
+  - Deleting the `BatchIterator` (or reaching its end, including by an
+    exception) now stops the stream's workers: they release the integrator
+    before it returns, so its `set_*` methods work again at once, and then
+    shut down their threads.
+    Previously the workers waited for the generator's next item, which a
+    generator blocked on a live feed never yields: each abandoned stream kept
+    its threads (13 with `num_workers=4, num_threads=2`) and left the
+    integrator "in use by a batch operation" for the rest of the process. The
+    one thread reading the generator cannot be interrupted while it is inside
+    the generator's own `__next__`; it stays there until that call returns,
+    then exits without pulling more, and holds neither the integrator nor the
+    workers meanwhile.
+  - A stream now reads at most `4 * num_workers` items ahead of the results
+    handed out. An endless generator that nobody consumed was pulled as fast
+    as the workers ran, its results accumulating in memory without bound
+    (tens of thousands of frames within seconds). The workers themselves
+    never wait on the consumer, so an open stream still does not block other
+    batches.
+  - A Rust panic while reading the next item (for example a pyo3
+    `PanicException` raised in the generator, as when it calls the
+    `Integrator` from the stream's thread) ended the stream as if the
+    generator were exhausted. It now raises `RuntimeError` at that item,
+    after the earlier results, and so does any other loss of the reading
+    thread: a generator stream only ends cleanly when the generator does.
+- Python `batch1d_iter` / `batch2d_iter` over a list of arrays or TIFF paths
+  release the integrator before they report the end of the stream, so its
+  `set_*` methods work right after the loop. This depended on the unspecified
+  order in which a finished worker dropped its captures; 1D over arrays could
+  still raise "Integrator is in use by a batch operation" for a moment after
+  `StopIteration`.
+- The documented range of `polarization_factor` was 0 to 1; it is −1 to 1
+  (+1 horizontal, −1 vertical, 0 unpolarised), which is what the code accepts.
+- `dioptrin.pyi` now covers the calibration API (`Calibrant`,
+  `CalibrationPoints`, `refine`, `auto_calibrate`, `find_peaks_image` and the
+  related functions and result classes), which was missing from the stubs.
 - One `Integrator` used from several threads with images of **different
   shapes** (Python file batches and list/generator `_iter` calls with workers,
   or Rust threads sharing an `Arc<Integrator>`) could crash with a segmentation fault, panic with
@@ -157,6 +258,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility and validation
 
+- **Known limitation:** `pyfai_full` (1D and 2D) does not account for a
+  `Detector` with orientation 2 or 4 attached through
+  `Geometry::with_detector`; results for such detectors are wrong (present
+  since 0.12.0). Flip the image and use the default orientation instead. This
+  cannot be reached from Python or the detector catalogue.
 - **Behaviour change:** 2D integration with the Histogram method now fails
   instead of returning a 1D profile; use `counting`, `pixel_split`,
   `pyfai_full` or `supersampled` for 2D. `IntegrationTask` has a new provided
@@ -172,9 +278,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image (500×360 bins, 2θ in degrees) the median relative difference per bin is
   2e-5 for counting, 1.8e-3 for `pixel_split`, 1.0e-3 for `supersampled` and
   0 for `pyfai_full`, with larger differences in sparsely filled bins at module
-  gaps. On the default path's own edges, counting and supersampling give
-  identical values except next to the beam centre, and `pixel_split` differs
-  slightly (fractional polygon areas vs the legacy 2D table). Calls without
+  gaps. On the default path's own edges, counting gives identical values and
+  supersampling values equal to rounding, except in the first and last
+  azimuthal rows when a subpixel lies just outside those edges (the default
+  table clamps it into the end row; a true range does not: up to 0.7% in one
+  bin of the CeO2 image at `n_ss = 3`). `pixel_split` differs
+  slightly (fractional polygon areas vs the legacy 2D table; pixels touching
+  the beam centre are sampled densely). Calls without
   `azimuthal_range` are unchanged.
 - **Behaviour change:** multi-detector 1D `pixel_split` and `supersampled`
   patterns change wherever detectors share a bin with unequal coverage.
@@ -199,6 +309,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyfai_full` or any 2D output.
   The legacy single-detector 2D polygon builder (`build_lut2d_ps_csr*`) is
   unchanged and still uses row-normalized polar areas.
+- **Behaviour change:** Python calls that used to run now raise `ValueError`
+  (see "Python: invalid input" under Fixed): `method="histogram"` together
+  with `radial_range`, at construction and in `set_method` (the range was
+  ignored); a `polarization_factor` outside [-1, 1] or non-finite, at
+  construction and in `set_polarization_factor` (it was applied as given); a q
+  unit without a positive wavelength in the calibration, at construction and
+  in `set_unit` (it panicked at the first integration instead). A
+  `batch1d_iter` / `batch2d_iter` list that mixes valid items with one that is
+  neither a path nor a 2D float64 array (an `int`, an `int32` array) raises
+  `TypeError` at the call, before anything is integrated; before, the items
+  ahead of it were integrated and yielded and the stream stopped there
+  without an error.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
 

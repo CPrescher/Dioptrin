@@ -7,7 +7,8 @@ splines and conversion. Attach a detector descriptor to use that physical
 mapping consistently for integration and refinement.
 
 Dioptrin provides fast 1D/2D diffraction integration using sparse lookup tables.
-It supports counting, pixel-splitting, and supersampled integration methods, and integrates in terms
+It supports counting, pixel-splitting, pyFAI-compatible full splitting (`pyfai_full`) and
+supersampled integration methods, and integrates in terms
 of two-theta (tth) and azimuthal coordinates. The `Integrator` handles geometry updates,
 polarization/solid-angle corrections, and optional masking for each frame.
 
@@ -132,7 +133,7 @@ azimuthal_std = sqrt(variance)
 
 This is a **population standard deviation**, not RMS or an error bar on the
 mean. It uses the same weighting as the integrated intensity. Counting,
-pixel-split and supersampled methods reuse the cached CSR lookup table.
+pixel-split, `pyfai_full` and supersampled methods reuse the cached CSR lookup table.
 The legacy Histogram method retains its equal weighting of pre-corrected pixels
 and automatic radial range. The spread uses a shifted two-pass calculation to
 avoid cancellation for large backgrounds with small variations. Poisson errors
@@ -189,6 +190,26 @@ fn main() {
 }
 ```
 
+The last two arguments of `integrate2d_with_azimuthal_range` are the **centre of
+the first azimuthal bin** and the **bin width**, in radians; bins wrap
+periodically. With `azimuthal_start = 0.0` and a step of `2π / n_azimuthal` as
+above, the bins cover `[-step/2, 2π - step/2)`.
+
+To integrate a true `(min, max)` azimuthal range, such as a sector, use
+`Integrator::integrate2d_on_azimuthal_range`. The range edges are in radians and
+split into `n_azimuthal` equal bins; pixels outside the range are left out, and
+the radial bins are those of the default 2D path:
+
+```rust
+// Same integrator and frame as above: a 90° sector in 90 one-degree bins.
+let result = integrator
+    .integrate2d_on_azimuthal_range(&frame, 1250, 90, (0.0, PI / 2.0), true)
+    .expect("valid azimuthal range");
+// AzimuthalRange2dResult: intensity is row-major (n_azimuthal, n_radial);
+// errors is Some(..) when requested; radial and azimuthal hold bin centres.
+println!("{} x {} bins", result.azimuthal.len(), result.radial.len());
+```
+
 ## Batch processing multiple files
 
 The `batch` module provides efficient parallel processing of multiple files with a shared integrator.
@@ -240,8 +261,10 @@ fn main() {
 - `Integration1DWithErrors { n_bins }` - 1D with errors → `(radial, intensity, errors)`
 - `Integration2D { n_radial, n_azimuthal }` - 2D integration → `intensity_flat`
 - `Integration2DWithErrors { n_radial, n_azimuthal }` - 2D with errors → `(intensity_flat, errors_flat)`
-- `Integration2DWithAzimuthalRange` - 2D with azimuthal restriction
-- `Integration2DWithAzimuthalRangeAndErrors` - 2D with range and errors
+- `Integration1DWithAzimuthalStd { n_bins, errors }` - 1D with azimuthal spread → `AzimuthalIntegrationResult`
+- `Integration2DWithAzimuthalRange { n_radial, n_azimuthal, azimuthal_min, azimuthal_max }` - 2D on a periodic azimuthal grid → `intensity_flat`; despite their names, `azimuthal_min` is the centre of the first bin and `azimuthal_max` the bin width (radians), as in `integrate2d_with_azimuthal_range`
+- `Integration2DWithAzimuthalRangeAndErrors { .. }` - the same with errors → `(intensity_flat, errors_flat)`
+- `Integration2DOnAzimuthalRange { n_radial, n_azimuthal, azimuthal_min, azimuthal_max, errors }` - 2D on a true `(min, max)` azimuthal range in radians, sectors included → `Result<AzimuthalRange2dResult, String>`
 
 For custom processing logic, implement the `IntegrationTask` trait on your own struct.
 
@@ -330,7 +353,7 @@ import dioptrin
 # Create an integrator from a PONI calibration file
 integrator = dioptrin.Integrator(
     "calibration.poni",
-    method="pixel_split",      # "counting", "pixel_split", "histogram" (1D only), or "supersampled"
+    method="pixel_split",      # "counting", "pixel_split", "pyfai_full", "histogram" (1D only), or "supersampled"
     polarization_factor=0.99,  # optional
     unit="2th_deg"             # "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
 )
@@ -355,6 +378,9 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 # 2D integration from NumPy array
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
+
+An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the 1D bin grid and drops values outside it; in ordinary single-detector 2D integration only `pyfai_full` uses it, while the other methods keep a detector-local radial grid.
+The legacy `histogram` method always uses the automatic radial range and does not honour `radial_range`; Python raises `ValueError` if both are given.
 
 ### Fast accumulation (default)
 
@@ -463,7 +489,7 @@ for r in results:
         # r.result.errors is now populated
         print(f"{r.filename}: {r.result.errors[:5]}")
 
-# Batch 2D integration
+# Batch 2D integration (TIFF paths only; for NumPy arrays use batch2d_iter below)
 results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
 for r in results:
     if r.is_ok():
@@ -533,9 +559,12 @@ for r in integrator.batch2d_iter(
 ### Result Types
 
 - **`IntegrationResult`**: Unified result with optional fields
-  - `radial`: Radial bin centers (1D only)
+  - `radial`: Radial bin centers (1D and `MultiIntegrator` 2D; otherwise `None`)
+  - `azimuthal`: Azimuthal bin centers in radians (`MultiIntegrator` 2D, and
+    `Integrator` 2D with `azimuthal_range`, where `radial` stays `None`)
   - `intensity`: Integrated intensities
   - `errors`: Error estimates (if `errors=True`)
+  - `azimuthal_std`: Weighted population spread (1D, if `azimuthal_std=True`)
   - `n_radial`, `n_azimuthal`: Dimensions for reshaping 2D results
 
 - **`BatchResult`**: Wrapper for batch results
