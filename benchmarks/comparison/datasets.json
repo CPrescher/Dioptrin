@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "generator_version": 1,
+  "suites": {
+    "quick": {
+      "datasets": [
+        "synthetic-small"
+      ],
+      "bins": 256,
+      "frames": 8,
+      "trials": 1,
+      "blocks": 1,
+      "seconds": 0.05,
+      "workers": [
+        1,
+        2
+      ]
+    },
+    "standard": {
+      "datasets": [
+        "pilatus",
+        "synthetic-4m",
+        "synthetic-9m"
+      ],
+      "bins": 2000,
+      "frames": 32,
+      "trials": 1,
+      "blocks": 3,
+      "seconds": 0.3,
+      "workers": [
+        1,
+        2,
+        4,
+        8
+      ]
+    },
+    "extended": {
+      "datasets": [
+        "pilatus",
+        "synthetic-4m",
+        "synthetic-9m",
+        "synthetic-16m"
+      ],
+      "bins": 2000,
+      "frames": 32,
+      "trials": 2,
+      "blocks": 3,
+      "seconds": 1.0,
+      "workers": [
+        1,
+        2,
+        4,
+        8
+      ]
+    }
+  },
+  "datasets": {
+    "pilatus": {
+      "kind": "bundled",
+      "image": "CeO2_Pilatus1M.tif",
+      "poni": "v1.poni",
+      "n_splitting": 15,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41",
+      "download": "https://media.githubusercontent.com/media/CPrescher/Dioptrin/242891b4fea708369d26cf50dc2778987c0adbf6/test_data/CeO2_Pilatus1M.tif"
+    },
+    "synthetic-small": {
+      "kind": "synthetic",
+      "shape": [
+        96,
+        128
+      ],
+      "pixel_size_m": 0.0001,
+      "distance_m": 0.02,
+      "n_splitting": 3,
+      "seed": 142026,
+      "distinct_frames": 4
+    },
+    "synthetic-4m": {
+      "kind": "synthetic",
+      "shape": [
+        2048,
+        2048
+      ],
+      "pixel_size_m": 7.5e-05,
+      "distance_m": 0.16,
+      "n_splitting": 5,
+      "seed": 142027,
+      "distinct_frames": 4
+    },
+    "synthetic-9m": {
+      "kind": "synthetic",
+      "shape": [
+        3072,
+        3072
+      ],
+      "pixel_size_m": 7.5e-05,
+      "distance_m": 0.23,
+      "n_splitting": 5,
+      "seed": 142028,
+      "distinct_frames": 4
+    },
+    "synthetic-16m": {
+      "kind": "synthetic",
+      "shape": [
+        4096,
+        4096
+      ],
+      "pixel_size_m": 7.5e-05,
+      "distance_m": 0.3,
+      "n_splitting": 5,
+      "seed": 142029,
+      "distinct_frames": 4
+    },
+    "eiger": {
+      "kind": "local",
+      "image": "eiger_0000.tiff",
+      "poni": "eiger_0000.poni",
+      "mask": "eiger_0000.mask",
+      "n_splitting": 5
+    }
+  }
+}

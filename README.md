@@ -19,6 +19,22 @@ See [integration performance](https://dioptrin.readthedocs.io/en/latest/PERFORMA
 for masks, float64 arithmetic and shared plans. File-reading comparisons and SIMD
 decoder measurements belong in the [dioptrin-io manual](https://dioptrin-io.readthedocs.io/en/latest/PERFORMANCE.html).
 
+## Reproducible integration benchmarks
+
+The [comparison suite](benchmarks/comparison/README.md) builds Dioptrin, azint,
+and pyFAI in an isolated environment and runs on bundled/generated inputs.
+No private data or manual dataset copying is required:
+
+```bash
+python3 benchmarks/comparison/setup.py
+.venv-benchmark/bin/python benchmarks/comparison/compare.py
+```
+
+Use `--suite quick` for a small verification run. The standard suite compares
+the bundled Pilatus1M image and generated 4M/9M series, with separate repeated
+and distinct-frame workloads. A [Maxwell Slurm wrapper](benchmarks/comparison/maxwell.sbatch)
+invokes the same setup and runner on an allocated compute node.
+
 <!-- manual-rust-start -->
 
 ## Supersampling setup
