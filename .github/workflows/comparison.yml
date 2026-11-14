@@ -1,0 +1,48 @@
+name: Comparison suite smoke test
+
+on:
+  pull_request:
+    paths:
+      - 'benchmarks/comparison/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'pyproject.toml'
+      - '.github/workflows/comparison.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'benchmarks/comparison/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'pyproject.toml'
+      - '.github/workflows/comparison.yml'
+
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: comparison-portable-v1
+      - name: Build comparison environment using the documented setup
+        # Generic targets make Cargo's shared cache safe across runner CPU models.
+        run: python3 benchmarks/comparison/setup.py --portable
+      - name: Verify fixture generation and download integrity
+        run: .venv-benchmark/bin/python -m unittest discover -s benchmarks/comparison/tests -v
+      - name: Exercise every backend and both workloads
+        run: .venv-benchmark/bin/python benchmarks/comparison/compare.py --suite quick --output benchmark-results/ci
+      - name: Exercise public real-image loading and the LFS fallback
+        run: .venv-benchmark/bin/python benchmarks/comparison/compare.py --suite quick --datasets pilatus --variants dioptrin-pixel_split pyfai-bbox --workers 1 --seconds 0.01 --frames 4 --output benchmark-results/ci-pilatus
+      - name: Reuse the real input fully offline
+        run: .venv-benchmark/bin/python benchmarks/comparison/compare.py --suite quick --datasets pilatus --variants dioptrin-pixel_split pyfai-bbox --workers 1 --seconds 0.01 --frames 4 --offline --output benchmark-results/ci-pilatus-offline
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-smoke-results
+          path: benchmark-results/

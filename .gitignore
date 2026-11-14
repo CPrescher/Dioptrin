@@ -25,6 +25,8 @@ license.key
 
 # Generated benchmark measurements and machine-specific run metadata
 /benchmark-results/
+/.venv-benchmark/
+/benchmarks/comparison/**/__pycache__/
 /docs/benchmarks/**/*.jsonl
 /docs/benchmarks/**/trial-*.json
 /docs/benchmarks/**/inputs.json

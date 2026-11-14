@@ -1,0 +1,12 @@
+# Core comparison versions are fixed; setup.py records the complete resolved environment.
+maturin==1.16.0
+numpy==2.4.2
+pyfai==2026.9.0
+fabio>=2024.9.0
+pillow
+h5py
+certifi
+setuptools>=80
+wheel
+pybind11>=2.11
+setuptools_scm>=8
