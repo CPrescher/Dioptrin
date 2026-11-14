@@ -151,14 +151,21 @@ fn panic_message(f: impl FnOnce()) -> Option<String> {
     )
 }
 
-/// The message names the image shape and the detector's shape.
+/// The message names the image shape and the detector's shape, and, for an
+/// image that is no integer binning (a crop, or a larger image), the remedy.
 fn assert_shape_message(message: &str, shape: [usize; 2], full: [usize; 2], what: &str) {
     let image = format!("[{}, {}]", shape[0], shape[1]);
     let detector = format!("[{}, {}]", full[0], full[1]);
+    let not_a_binning = !shape.contains(&0)
+        && !(full[0].is_multiple_of(shape[0]) && full[1].is_multiple_of(shape[1]));
     assert!(
         message.contains("does not fit detector")
             && message.contains(&image)
-            && message.contains(&detector),
+            && message.contains(&detector)
+            && (!not_a_binning
+                || message.contains(
+                    "for a cropped image, attach a custom detector without a fixed shape, or none"
+                )),
         "{what}: unexpected message {message:?}"
     );
 }
@@ -301,6 +308,52 @@ fn binnings_without_a_pitch_and_empty_images_are_rejected() {
     }
 }
 
+/// A hand-built transformed map must keep its base's fixed shape: without it,
+/// `with_detector` and every later shape check would accept any image. Every
+/// map `Detector::transformed` produces still validates.
+#[test]
+fn transformed_maps_keep_their_base_shape() {
+    use DetectorTransform::*;
+    let ops = [
+        Identity, Half, Transpose, Transverse, Left, Right, Horizontal, Vertical,
+    ];
+    let mut free_spline = spline();
+    free_spline.max_shape = None;
+    for base in [
+        separable(),
+        corner_map(),
+        spline(),
+        uniform_fixed(),
+        free_spline,
+    ] {
+        for first in ops {
+            let once = base.transformed(first).unwrap();
+            for second in ops {
+                let twice = once.transformed(second).unwrap();
+                assert_eq!(twice.validate(), Ok(()), "{first:?} then {second:?}");
+            }
+        }
+    }
+    let base = Arc::new(separable());
+    for (operation, max_shape) in [
+        (Transpose, None),
+        (Transpose, Some(FULL)),
+        (Half, Some([FULL[1], FULL[0]])),
+    ] {
+        let mut d = separable();
+        d.map = PixelMap::Transformed {
+            base: Arc::clone(&base),
+            operation,
+        };
+        d.max_shape = max_shape;
+        let attach = Geometry::new(7, 5, poni()).with_detector(Arc::new(d.clone()));
+        assert!(
+            d.validate().is_err() && attach.is_err(),
+            "{operation:?} {max_shape:?}"
+        );
+    }
+}
+
 #[test]
 fn multi_integrator_rejects_an_invalid_shape() {
     let detector = separable();
@@ -432,14 +485,60 @@ fn mixed_shape_batch_reports_the_invalid_item() {
             .map(|(_, name, result)| (name, result))
             .collect(),
     );
+    // Queues of the same files, as paths or as frames loaded beforehand.
+    let queue = |as_frames: bool| {
+        let (tx, rx) = mpsc::channel();
+        for (index, path) in files.iter().enumerate() {
+            let item = if as_frames {
+                let frame = Frame::from_tiff(path.clone()).unwrap();
+                let name = path.clone();
+                WorkItem::Frame { index, name, frame }
+            } else {
+                let path = path.clone();
+                WorkItem::Path { index, path }
+            };
+            tx.send(item).unwrap();
+        }
+        rx
+    };
+    let named = |results: Vec<(usize, String, Result<Pattern, String>)>| {
+        results.into_iter().map(|(_, n, r)| (n, r)).collect()
+    };
+    check(
+        "process_queue_streaming paths",
+        named(
+            process_queue_streaming(queue(false), ai(), task, 2, 1)
+                .into_iter()
+                .collect(),
+        ),
+    );
     #[cfg(feature = "python")]
     {
-        use crate::batch::{FileWorkers, process_files_with_pool};
-        let pool = FileWorkers::new(2, 1).unwrap();
+        use crate::batch::{
+            FileWorkers, StreamControl, process_files_streaming_with_pool, process_files_with_pool,
+            process_queue_with_pool,
+        };
+        let pool = || FileWorkers::new(2, 1).unwrap();
         check(
             "process_files_with_pool",
-            process_files_with_pool(&files, ai(), task, pool),
+            process_files_with_pool(&files, ai(), task, pool()),
         );
+        check(
+            "process_files_streaming_with_pool",
+            named(
+                process_files_streaming_with_pool(&files, ai(), task, pool())
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        for (as_frames, what) in [(false, "paths"), (true, "frames")] {
+            let control = StreamControl::for_shared_pool();
+            let batch = process_queue_with_pool(queue(as_frames), ai(), task, pool(), control);
+            check(
+                &format!("process_queue_with_pool {what}"),
+                named(batch.into_iter().collect()),
+            );
+        }
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

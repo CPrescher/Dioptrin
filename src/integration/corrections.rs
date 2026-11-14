@@ -22,7 +22,9 @@ impl Integrator {
         let reason = if dim1 == 0 || dim2 == 0 {
             "the image is empty".to_owned()
         } else if max1 % dim1 != 0 || max2 % dim2 != 0 {
-            "only that shape and integer binnings of it are defined".to_owned()
+            "only that shape and integer binnings of it are defined; for a cropped image, \
+             attach a custom detector without a fixed shape, or none"
+                .to_owned()
         } else {
             error
         };

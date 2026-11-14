@@ -196,15 +196,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gave degenerate results or unrelated errors for spline and uniform ones; a
   shape that is not an
   integer divisor, e.g. 7 rows of a 12-row detector, was integrated silently
-  with truncated binning. Every integration entry point now rejects such an
-  image with a message naming both shapes: methods that return a `Result`
+  with truncated binning. `Integrator`, `MultiIntegrator` and the batch
+  helpers now reject such an image with a message naming both shapes (and,
+  for a crop, the remedy; see "Compatibility and validation"): methods that
+  return a `Result`
   (shared-grid, azimuthal range and bracket, `MultiIntegrator` 2D,
   `prepare_fixed1d`, `prepare_dynamic1d`, `prepare_fixed2d_on_grid`) return
   it, the others panic with it, as they do for a mask of the wrong shape, and
   the batch helpers report it for that item (without running the task) and
   integrate the others.
   Detectors without `max_shape` still accept any shape, and results for valid
-  shapes are unchanged, bit for bit.
+  shapes are unchanged, bit for bit. Not checked: `Geometry` methods and the
+  public LUT builders on a `Geometry` whose public `dim1`/`dim2` are changed
+  after `with_detector`, and `Detector::corners`/`position` called directly
+  with another shape.
 - `Detector::position` on a transformed map (`Detector::transformed` of a
   non-uniform or spline detector, i.e. Dioptas image flips and rotations)
   shifted an offset inside a pixel instead of flipping or rotating it with the
@@ -419,6 +424,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TypeError` at the call, before anything is integrated; before, the items
   ahead of it were integrated and yielded and the stream stopped there
   without an error.
+- **Behaviour change:** cropped images on an attached `Detector` with a fixed
+  shape (`max_shape`, as every catalogue detector has) now fail with the
+  "does not fit detector" message (see "Fixed"). When each dimension of the
+  image was more than half the detector's, the image used to be integrated as
+  the detector's top-left corner; for a uniform detector with the default
+  orientation 3 (e.g. the catalogue Pilatus 1M) the result was identical to
+  that of an integrator without a detector, so such calls may have looked
+  correct. For a cropped image, attach a custom detector without a fixed
+  shape, or no detector. Rust only.
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
 
