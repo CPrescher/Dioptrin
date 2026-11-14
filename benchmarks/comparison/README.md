@@ -26,6 +26,16 @@ per machine/checkout, and rerun setup after changing the Dioptrin source. No
 Dioptrin runtime dependencies are changed. Setup records wheels, compiler flags,
 Rust versions, Cargo.lock, and resolved Python packages in the environment's
 `build-record/` directory. Don't reuse native wheels on a different CPU model.
+CI uses `setup.py --portable` to omit native CPU flags, making shared Cargo
+caches safe across runner CPU models. This mode checks functionality rather
+than native CPU performance.
+
+The runner rejects stale or missing Dioptrin build records by default. It checks
+Rust source, Cargo/Python build configuration, and the installed module's bytes,
+and records actual module paths. Rerun setup after changing source. For deliberate
+comparisons using a separately installed binary, `--allow-unverified-build`
+overrides the check and records a visible warning. Both parent and workers ignore
+`PYTHONPATH` and user site-packages to keep imports on the selected interpreter.
 
 Results go into a new, ignored `benchmark-results/<timestamp>/` directory:
 `summary.md`, `results.csv`, `numerical.json`, raw timing blocks, per-case logs
@@ -119,10 +129,18 @@ counts. pyFAI can slightly expand the upper bin bound; axis offsets are reported
 The CPU-budget column is the total global Rayon pool size for Dioptrin's native
 array batch API. For competitors it is the number of persistent Python frame
 threads, each with one OpenMP/BLAS thread. Azint shares its sparse matrix through
-shallow copies with separate mutable state; pyFAI owns an initialized CSR engine
+shallow copies: geometry, mask, and sparse arrays are shared without modification;
+the per-call `norm_1d`/`norm_2d` attributes are assigned on each copy, and scratch
+arrays are newly allocated per call. Its pinned native SpMV releases the GIL.
+PyFAI owns an initialized CSR engine
 per worker. Native batch scheduling and result allocation are timed. Setup,
 first-result and all-workers-ready times, and process-lifetime peak RSS are
 separate columns. Setup includes backend import and lazy initialization.
+Frame workers receive contiguous slices of the logical input sequence, so the
+distinct-frame workload does not pin a worker to one image at 4/8 CPUs. Batch
+lengths are rounded up to a multiple of the CPU budget for balanced slices.
+The fixed pyFAI mask is installed on its detector once, using its cached mask
+checksum rather than recalculating the checksum from a mask argument each call.
 
 Every case runs in a fresh process. Method order alternates between trials.
 Every output frame, including its order, is checked against the same backend's
@@ -134,7 +152,12 @@ with self-references fail the case. Raw per-frame outputs remain available.
 
 Core comparison versions are in [requirements.txt](requirements.txt); azint's
 commit is pinned in `setup.py`. Resolved transitive dependencies and compiler
-versions are recorded. This suite measures CPU 1D integration; it does not assess
+versions are recorded. Rust dependencies resolve on the first setup of a fresh
+clone because the library does not track Cargo.lock; Python build/transitive
+dependencies also float within their constraints. For an exact environment
+replay, reuse the saved Cargo.lock and Python freeze alongside the same source
+and compiler. The default recipe fixes core versions and inputs, not every
+transitive dependency across future dates. This suite measures CPU 1D integration; it does not assess
 2D caking, GPU integration, decompression, or file-reading performance.
 
 ## Maxwell Slurm wrapper
@@ -169,7 +192,7 @@ tail -f dioptrin-JOBID.out
 `allcpu` can be preempted/requeued; every restart writes a new results directory.
 Higher worker counts can require substantial memory for pyFAI full CSR. Optional
 wrapper environment settings are `BUILD_MODULES`, `PYTHON_BIN`, `BUILD_JOBS`
-(default 8), `RUST_TOOLCHAIN` (stable), `RESULT_ROOT`, `CC`, `CXX`, and `KEEP_BUILD=1`.
+(default 8), `RUST_TOOLCHAIN` (stable), `RESULT_ROOT`, `SUITE` (standard), `CC`, `CXX`, and `KEEP_BUILD=1`.
 CPU-specific builds are made afresh for the allocated node.
 
 References: [Maxwell batch jobs](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/),

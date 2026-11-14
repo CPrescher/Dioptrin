@@ -6,6 +6,7 @@ import copy
 import datetime
 import csv
 import importlib.metadata
+import importlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fixtures import MANIFEST, manifest, prepare, sha256
+from provenance import verify_build
 
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -33,6 +35,12 @@ VARIANTS = (
 
 def dump(path, value):
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+
+
+def contiguous_chunks(frames, workers):
+    indexed = list(enumerate(frames))
+    size = (len(frames) + workers - 1) // workers
+    return [indexed[i * size : (i + 1) * size] for i in range(workers)]
 
 
 def worker(case_path):
@@ -133,6 +141,7 @@ def worker(case_path):
             from pyFAI.method_registry import IntegrationMethod
 
             ai = pyFAI.load(str(fixture / "geometry.poni"))
+            ai.detector.mask = mask
             method = (variant.removeprefix("pyfai-"), "csr", "cython")
             if not IntegrationMethod.select_method(
                 dim=1, split=method[0], algo="csr", impl="cython", degradable=False
@@ -147,7 +156,6 @@ def worker(case_path):
                     n,
                     unit="2th_deg",
                     method=method,
-                    mask=mask,
                     radial_range=tuple(bounds),
                     correctSolidAngle=True,
                     polarization_factor=0.965,
@@ -178,7 +186,7 @@ def worker(case_path):
             integrate(engine, image)
             engines.append(engine)
         pool = ThreadPoolExecutor(max_workers=workers)
-        chunks = [list(enumerate(frames))[i::workers] for i in range(workers)]
+        chunks = contiguous_chunks(frames, workers)
 
         def chunk(task):
             engine, images = task
@@ -343,8 +351,10 @@ def summarize(output):
         )
         if reference is None:
             continue
-        a = np.load(Path(row["result"]).with_suffix(".npz"))
-        b = np.load(Path(reference["result"]).with_suffix(".npz"))
+        with np.load(Path(row["result"]).with_suffix(".npz")) as saved:
+            a = {key: saved[key] for key in ("radial", "intensity", "sigma")}
+        with np.load(Path(reference["result"]).with_suffix(".npz")) as saved:
+            b = {key: saved[key] for key in ("radial", "intensity", "sigma")}
         metrics = dict(
             dataset=row["dataset"],
             workload=row["workload"],
@@ -423,6 +433,11 @@ def main():
         help="Retain generated frame stacks after success",
     )
     parser.add_argument(
+        "--allow-unverified-build",
+        action="store_true",
+        help="Explicitly allow an unrecorded/stale Dioptrin build, with a warning in the report",
+    )
+    parser.add_argument(
         "--workers",
         help="Comma-separated CPU budgets; default: suite budgets within CPU affinity",
     )
@@ -486,6 +501,22 @@ def main():
         parser.error(
             f"Missing benchmark dependency {error.name}; run python3 benchmarks/comparison/setup.py first"
         )
+    build_path = Path(sys.prefix) / "benchmark-build.json"
+    installed_build = (
+        json.loads(build_path.read_text()) if build_path.is_file() else None
+    )
+    build_problems = (
+        verify_build(ROOT, installed_build) if "dioptrin" in required else []
+    )
+    if build_problems:
+        message = "; ".join(build_problems)
+        if not args.allow_unverified_build:
+            parser.error(
+                message
+                + ". Rerun setup.py, or explicitly use --allow-unverified-build."
+            )
+        print("UNVERIFIED BUILD: " + message, file=sys.stderr, flush=True)
+    module_paths = {name: importlib.import_module(name).__file__ for name in required}
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     output = (args.output or ROOT / "benchmark-results" / stamp).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -515,13 +546,11 @@ def main():
             manifest_sha256=sha256(MANIFEST),
             runner_sha256={
                 name: sha256(Path(__file__).with_name(name))
-                for name in ("compare.py", "fixtures.py")
+                for name in ("compare.py", "fixtures.py", "provenance.py")
             },
-            installed_build=json.loads(
-                (Path(sys.prefix) / "benchmark-build.json").read_text()
-            )
-            if (Path(sys.prefix) / "benchmark-build.json").is_file()
-            else None,
+            installed_build=installed_build,
+            build_verification_problems=build_problems,
+            module_paths=module_paths,
         ),
     )
     (output / "datasets.json").write_bytes(MANIFEST.read_bytes())
@@ -554,7 +583,8 @@ def main():
                                 error_mode=mode,
                                 trial=trial,
                                 fixture=str(output / dataset),
-                                frames=max(args.frames, count),
+                                frames=((max(args.frames, count) + count - 1) // count)
+                                * count,
                                 bins=args.bins,
                                 blocks=args.blocks,
                                 seconds=args.seconds,
@@ -582,6 +612,8 @@ def main():
                                 result = subprocess.run(
                                     [
                                         sys.executable,
+                                        "-E",
+                                        "-s",
                                         __file__,
                                         "--case",
                                         str(case_path),
@@ -617,4 +649,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Keep the parent and case processes on the same interpreter paths even if
+    # a shell/module exports PYTHONPATH or enables user-installed packages.
+    if not sys.flags.ignore_environment or not sys.flags.no_user_site:
+        os.execv(sys.executable, [sys.executable, "-E", "-s", *sys.argv])
     main()

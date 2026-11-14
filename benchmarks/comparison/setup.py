@@ -3,7 +3,6 @@
 
 import argparse
 import glob
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +14,8 @@ import sys
 import tempfile
 import venv
 
+from provenance import source_hashes
+
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 AZINT_COMMIT = "4f78cc3b1d8cab67128c9679f55de6340c68f191"
@@ -25,7 +26,7 @@ def run(command, **kwargs):
     subprocess.run(list(map(str, command)), check=True, **kwargs)
 
 
-def compiler_environment():
+def compiler_environment(portable=False):
     env = os.environ.copy()
     if "CXX" not in env:
         if sys.platform == "darwin":
@@ -51,15 +52,26 @@ def compiler_environment():
         if platform.machine().lower() in ("arm64", "aarch64")
         else "-march=native"
     )
-    env["CFLAGS"] = f"{env.get('CFLAGS', '')} -O3 {native}"
-    env["CXXFLAGS"] = f"{env.get('CXXFLAGS', '')} -O3 {native}"
-    env["RUSTFLAGS"] = f"{env.get('RUSTFLAGS', '')} -C target-cpu=native"
+    env["CFLAGS"] = f"{env.get('CFLAGS', '')} -O3" + (
+        f" {native}" if not portable else ""
+    )
+    env["CXXFLAGS"] = f"{env.get('CXXFLAGS', '')} -O3" + (
+        f" {native}" if not portable else ""
+    )
+    env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + (
+        " -C target-cpu=native" if not portable else ""
+    )
     return env
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--venv", type=Path, default=ROOT / ".venv-benchmark")
+    parser.add_argument(
+        "--portable",
+        action="store_true",
+        help="Omit native CPU targeting (for shared CI caches)",
+    )
     parser.add_argument(
         "--artifacts",
         type=Path,
@@ -86,7 +98,7 @@ def main():
         parser.error(f"Refusing to replace a non-venv directory: {target}")
     artifacts = (args.artifacts or target / "build-record").resolve()
     try:
-        env = compiler_environment()
+        env = compiler_environment(args.portable)
         with tempfile.TemporaryDirectory(prefix="dioptrin-openmp-") as temporary:
             source = Path(temporary) / "check.cpp"
             executable = Path(temporary) / "check"
@@ -208,13 +220,21 @@ def main():
             }
         # A version string alone cannot distinguish builds from two revisions
         # of the same release. Record actual source bytes with the installed env.
-        source["sha256"] = {}
-        for path in sorted((ROOT / "src").rglob("*")):
-            if path.is_file():
-                with path.open("rb") as stream:
-                    source["sha256"][str(path.relative_to(ROOT))] = hashlib.file_digest(
-                        stream, "sha256"
-                    ).hexdigest()
+        source["sha256"] = source_hashes(ROOT)
+        installed = json.loads(
+            subprocess.check_output(
+                [
+                    str(python),
+                    "-E",
+                    "-s",
+                    "-c",
+                    "import sys,json;sys.path.insert(0,sys.argv[1]);from provenance import installed_signature;print(json.dumps(installed_signature()))",
+                    str(Path(__file__).parent),
+                ],
+                env=env,
+                text=True,
+            )
+        )
         record = (
             json.dumps(
                 dict(
@@ -222,6 +242,8 @@ def main():
                     python=str(python),
                     platform=platform.platform(),
                     source=source,
+                    installed_dioptrin=installed,
+                    portable=args.portable,
                     flags={
                         k: env[k]
                         for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "RUSTFLAGS")
