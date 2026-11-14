@@ -14,6 +14,8 @@ pub use fixed_csr::{FixedCsr1dInputPlan, FixedCsr1dPlan, FixedGrid2dPlan};
 pub use layout::{LayoutPrediction, predict_1d_layout};
 #[cfg(test)]
 mod binned_transform_tests;
+#[cfg(test)]
+mod detector_shape_tests;
 mod methods;
 #[cfg(test)]
 mod mixed_shape_tests;

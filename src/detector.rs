@@ -142,6 +142,20 @@ impl Detector {
         if let Some(s) = &self.spline {
             s.validate()?;
         }
+        // `transformed` keeps the base's fixed shape, with the axes swapped by a
+        // rotation or transposition; without it any image shape would pass.
+        if let PixelMap::Transformed { base, operation } = &self.map
+            && self.max_shape
+                != base.max_shape.map(|[h, w]| {
+                    if swaps_axes(*operation) {
+                        [w, h]
+                    } else {
+                        [h, w]
+                    }
+                })
+        {
+            return Err("A transformed detector map must keep its base's shape.".into());
+        }
         if self
             .mask
             .iter()
