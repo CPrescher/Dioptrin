@@ -703,6 +703,7 @@ impl Integrator {
         {
             return Err("mask dimensions must match its detector image".into());
         }
+        self.check_image_shape(dim1, dim2)?;
         let p = &self.geometry.poni;
         if [p.pixel1, p.pixel2, p.distance]
             .iter()

@@ -355,9 +355,15 @@ pub(super) struct ShapeView<'a> {
 }
 
 impl Integrator {
+    /// Panics if the mask does not match the image, or if the attached
+    /// detector does not accept the image shape (see
+    /// [`Integrator::check_image_shape`]).
     pub(super) fn for_shape(&self, dim1: usize, dim2: usize) -> ShapeView<'_> {
         if let Some(mask) = &self.mask {
             mask.assert_compatible(dim1, dim2);
+        }
+        if let Err(message) = self.check_image_shape(dim1, dim2) {
+            panic!("{message}");
         }
         ShapeView {
             integrator: self,

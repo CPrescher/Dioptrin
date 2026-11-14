@@ -185,6 +185,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1e-3 to 4e-3 in 1D and 4e-3 to 5e-3 in 2D, because such singular pixels
   are sampled on the detector plane (unchanged).
   Results for the default orientation are unchanged, bit for bit.
+- An `Integrator` with a `Detector` of fixed shape (`max_shape`) attached
+  through `Geometry::with_detector` accepted images of any shape, although
+  only the detector's shape and its integer binnings (with a defined pitch,
+  if the detector lists pitches) are defined; the
+  binning was checked once, for the shape given to `Geometry::new`. Rust only
+  (Python attaches no detector), since 0.12.0. A larger image panicked in
+  `Detector::corners` with an arithmetic overflow (debug) or indexed out of
+  bounds (release) for separable, corner-map and transformed detectors and
+  gave degenerate results or unrelated errors for spline and uniform ones; a
+  shape that is not an
+  integer divisor, e.g. 7 rows of a 12-row detector, was integrated silently
+  with truncated binning. Every integration entry point now rejects such an
+  image with a message naming both shapes: methods that return a `Result`
+  (shared-grid, azimuthal range and bracket, `MultiIntegrator` 2D,
+  `prepare_fixed1d`, `prepare_dynamic1d`, `prepare_fixed2d_on_grid`) return
+  it, the others panic with it, as they do for a mask of the wrong shape, and
+  the batch helpers report it for that item (without running the task) and
+  integrate the others.
+  Detectors without `max_shape` still accept any shape, and results for valid
+  shapes are unchanged, bit for bit.
 - `Detector::position` on a transformed map (`Detector::transformed` of a
   non-uniform or spline detector, i.e. Dioptas image flips and rotations)
   shifted an offset inside a pixel instead of flipping or rotating it with the

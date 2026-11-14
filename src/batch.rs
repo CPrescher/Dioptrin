@@ -53,6 +53,10 @@ pub(crate) use file_workers::{
 ///
 /// Implement this trait to specify which integration method to use
 /// and what output type to produce.
+///
+/// The batch helpers check every frame against the integrator's detector
+/// first: a shape the detector does not define (see `Geometry::with_detector`)
+/// is reported as that item's error and the task is not run for it.
 pub trait IntegrationTask: Send + Sync {
     /// The output type produced by this integration task.
     type Output: Send;
@@ -83,6 +87,18 @@ fn rejection<T: IntegrationTask>(integrator: &Integrator, task: &T) -> Option<St
     let method = task.integrate2d_method()?;
     matches!(integrator.method(), IntegrationMethod::Histogram)
         .then(|| format!("{method} is not supported for Histogram method"))
+}
+
+/// Runs `task` on `frame`, or returns the error for an image shape the
+/// integrator's detector does not accept (which the integration call would
+/// panic with), so that one item fails instead of a worker.
+pub(crate) fn run<T: IntegrationTask>(
+    task: &T,
+    integrator: &Integrator,
+    frame: &Frame,
+) -> Result<T::Output, String> {
+    integrator.check_image_shape(frame.dim1, frame.dim2)?;
+    Ok(task.execute(integrator, frame))
 }
 
 /// 1D integration task without error propagation.
@@ -400,7 +416,7 @@ where
 
             for filename in chunk {
                 let result = pool.install(|| match frame.reload_from_tiff(filename.clone()) {
-                    Ok(()) => Ok(task.execute(&integrator, &frame)),
+                    Ok(()) => run(&task, &integrator, &frame),
                     Err(e) => Err(e.to_string()),
                 });
 
@@ -484,7 +500,7 @@ where
     for filename in filenames {
         let result = Frame::from_tiff(filename.clone())
             .map_err(|e| e.to_string())
-            .map(|frame| task.execute(integrator, &frame));
+            .and_then(|frame| run(&task, integrator, &frame));
 
         results.push((filename.clone(), result));
     }
@@ -611,7 +627,7 @@ where
 
             for (index, filename) in chunk {
                 let result = pool.install(|| match frame.reload_from_tiff(filename.clone()) {
-                    Ok(()) => Ok(task.execute(&integrator, &frame)),
+                    Ok(()) => run(&task, &integrator, &frame),
                     Err(e) => Err(e.to_string()),
                 });
 
@@ -738,13 +754,13 @@ where
                     (WorkItem::Path { index, path }, None) => {
                         let name = path.clone();
                         let result = pool.install(|| match path_frame.reload_from_tiff(path) {
-                            Ok(()) => Ok(task.execute(&integrator, &path_frame)),
+                            Ok(()) => run(&task, &integrator, &path_frame),
                             Err(e) => Err(e.to_string()),
                         });
                         (index, name, result)
                     }
                     (WorkItem::Frame { index, name, frame }, None) => {
-                        let result = pool.install(|| Ok(task.execute(&integrator, &frame)));
+                        let result = pool.install(|| run(&task, &integrator, &frame));
                         (index, name, result)
                     }
                 };

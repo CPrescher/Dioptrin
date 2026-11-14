@@ -27,7 +27,12 @@ mapping in every residual and Jacobian evaluation.
 quadrilateral NeXus-style corner data, Dioptas permutations, pyFAI orientations
 0–4, integer binning, manufacturer pitch tables and built-in masks. Attach a
 validated immutable `Arc<Detector>` through `Geometry::with_detector`; use the
-constructor again to replace it. `Geometry::new` alone retains the existing
+constructor again to replace it. A detector with a fixed shape (`max_shape`)
+accepts only images of that shape or an integer binning of it (one with a
+manufacturer pitch, if it lists pitches), both when it is
+attached and in every later `Integrator` call; another shape is an error (a
+returned `Err`, or a panic on methods without a `Result`, as for a mask of the
+wrong shape). A detector without `max_shape` accepts any shape. `Geometry::new` alone retains the existing
 uniform-pixel/scalar-PONI contract: the legacy `Poni::spline_file` string is not
 a distortion evaluator. File-owning applications parse/load resources, construct
 `detector::spline::Spline`, and attach the resulting detector. Named/oriented PONI

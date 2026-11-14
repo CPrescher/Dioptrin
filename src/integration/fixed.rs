@@ -79,6 +79,7 @@ impl Integrator {
         ) {
             return Err("unsupported fixed block integration method".into());
         }
+        self.check_image_shape(shape.0, shape.1)?;
         let mut snapshot = Integrator::new(self.geometry.clone())
             .with_method(self.method)
             .with_radial_unit(self.radial_unit);

@@ -45,6 +45,7 @@ impl Integrator {
         if matches!(self.method, IntegrationMethod::Histogram) {
             return Err("dynamic plans require counting, pixel_split or supersampled".into());
         }
+        self.check_image_shape(shape.0, shape.1)?;
         // Complete lazy geometry/CSR/CSC initialization ONCE, before any frame
         // workers start. There are no cache writers on the resulting plan.
         integrator.prepare1d(shape.0, shape.1, n_points);

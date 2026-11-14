@@ -251,6 +251,7 @@ fn execute<T: IntegrationTask>(
 ) -> Result<T::Output, String> {
     catch_unwind(AssertUnwindSafe(|| {
         frame.reload(path).map_err(|e| e.to_string())?;
+        integrator.check_image_shape(frame.dim1, frame.dim2)?;
         Ok(task.execute_tiff(integrator, frame))
     }))
     .unwrap_or_else(|_| Err("integration worker panicked".to_owned()))
@@ -381,8 +382,8 @@ where
                     }
                     WorkItem::Frame { index, name, frame } => {
                         let result =
-                            catch_unwind(AssertUnwindSafe(|| task.execute(&integrator, &frame)))
-                                .map_err(|_| "integration worker panicked".to_owned());
+                            catch_unwind(AssertUnwindSafe(|| run(&task, &integrator, &frame)))
+                                .unwrap_or_else(|_| Err("integration worker panicked".to_owned()));
                         (index, name, result)
                     }
                 };
