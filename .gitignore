@@ -38,3 +38,6 @@ license.key
 /docs/benchmarks/**/*.log
 /docs/benchmarks/**/*.stderr
 /docs/benchmarks/**/*.npz
+
+# Stray rustc output (e.g. compiling one module standalone)
+*.rlib
