@@ -166,3 +166,31 @@ Behaviour changes to check when upgrading:
 
 See the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.13.0/CHANGELOG.md)
 for the full list.
+
+### Batch streams and input checks (0.14.0)
+
+`batch1d_iter` and `batch2d_iter` over a list of arrays now run on
+`num_workers` workers with `num_threads` threads each, like a generator-fed
+stream, and copy each frame only when the stream reaches it. With 8 workers
+on 1M frames this was 2.1–2.5 times faster on an Apple M4 Pro. Generator-fed
+streams reuse the workers of the previous finished stream on the same
+`Integrator` (`clear_file_workers()` releases them), and 2D `pixel_split`
+cakes are identical for every thread count.
+
+Behaviour changes to check when upgrading:
+
+- Do not change arrays in place while a list-fed stream is open. Lists of
+  small frames can be slower when `num_workers` leaves cores idle; raise it
+  or use `batch1d`.
+- A single path (`str`, `bytes`, `os.PathLike`) passed where a list is
+  expected raises `TypeError`; wrap it in a list.
+- Colour (RGB, RGBA, CMYK) TIFFs are rejected with `ValueError`, or the
+  file's `BatchResult.error` in batches, instead of being integrated with
+  meaningless values. Read one channel with `tifffile` and pass it as a
+  float64 array.
+- A TIFF in a batch whose shape does not match the mask fails as its own item
+  with both shapes in `BatchResult.error`.
+
+The Rust API has breaking changes (streaming batch functions, `Geometry`
+shape accessors, `histogram_parallel` removed); see the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.14.0/CHANGELOG.md)
+for these and the full list.

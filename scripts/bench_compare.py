@@ -42,7 +42,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # Every target. methods, detectors and multi (and the older build, integrate,
 # integrator) also compile against v0.12.0; azimuthal, plans and massif need
-# 0.13 APIs, and batch needs process_streaming (after 0.13).
+# 0.13 APIs, and batch needs process_streaming (0.14).
 DEFAULT_BENCHES = ["methods", "azimuthal", "detectors", "plans", "multi", "batch", "massif"]
 
 

@@ -6,7 +6,7 @@
 //!   or 500 x 360 (2D), tables built before timing. Each iteration starts the
 //!   workers, integrates the batch and collects every result in order; the
 //!   frames are copied before timing starts. Before `process_streaming`
-//!   replaced it (on main after 0.13.0), these names timed
+//!   replaced it in 0.14.0, these names timed
 //!   `process_queue_streaming`. `256` is 200 synthetic 256 x 256 frames, `1m`
 //!   16 copies of the CeO2 Pilatus 1M image.
 //! - `batch/files/1m/w<workers>`: `process_files` on 16 paths to the CeO2
