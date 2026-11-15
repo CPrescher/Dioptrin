@@ -53,7 +53,7 @@ pub(super) fn split(
     };
     let offset = canonical_start + PI;
     for p in &mut poly {
-        p.1 = (p.1 - offset + PI).rem_euclid(TAU) - PI;
+        p.1 = super::pyfai_1d::wrap_tau(p.1 - offset + PI) - PI;
     }
     let [a, b, c, d] = poly;
     // pyFAI's `_recenter`: `sign * area4p`, operator precedence included.

@@ -6,16 +6,18 @@ use crate::geometry::Geometry;
 use crate::{lut, math};
 
 /// Calculates a normalized histogram of weights at data values, optionally excluding masked pixels.
+///
+/// # Panics
+///
+/// If `weights` and `data` differ in length, or `mask` is shorter than them.
 pub fn histogram(
     data: &[f64],
     weights: &[f64],
     n_points: usize,
     mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
+    check_lengths(data, weights);
     let (min, _max, step) = min_max_step(data, n_points);
-
-    let mut sum = vec![0.0; n_points];
-    let mut count = vec![0.0; n_points];
 
     // calculate bin index for each data point
     let index: Vec<usize> = data
@@ -23,44 +25,39 @@ pub fn histogram(
         .map(|x| get_bin_clamped(*x, min, step, n_points))
         .collect();
 
-    // Calulate the histogram
-    match mask {
-        Some(mask) => {
-            for (i, y) in weights.iter().enumerate() {
-                if mask[i] != 0 {
-                    continue;
-                }
-                sum[index[i]] += y;
-                count[index[i]] += 1.0;
-            }
+    // Calculate the histogram, with (sum, count) of a bin next to each other
+    let mut acc = vec![[0.0f64; 2]; n_points];
+    for (i, (&idx, y)) in index.iter().zip(weights).enumerate() {
+        if mask.is_some_and(|m| m[i] != 0) {
+            continue;
         }
-        None => {
-            for (i, y) in weights.iter().enumerate() {
-                sum[index[i]] += y;
-                count[index[i]] += 1.0;
-            }
-        }
+        let bin = &mut acc[idx];
+        bin[0] += y;
+        bin[1] += 1.0;
     }
 
     // normalize to amount of points
-    let normed_sum = match mask {
-        Some(_) => sum
-            .iter()
-            .zip(count.iter())
-            .map(|(sum, count)| if *count == 0.0 { 0.0 } else { sum / count })
-            .collect::<Vec<f64>>(),
-        None => sum
-            .iter()
-            .zip(count.iter())
-            .map(|(sum, count)| sum / count)
-            .collect::<Vec<f64>>(),
-    };
+    let normed_sum = acc
+        .iter()
+        .map(|&[sum, count]| {
+            if mask.is_some() && count == 0.0 {
+                0.0
+            } else {
+                sum / count
+            }
+        })
+        .collect();
 
     let bins = bins(n_points, min, step);
     (bins, normed_sum)
 }
 
 /// Calculates a normalized histogram of weights with per-bin errors using provided variances.
+///
+/// # Panics
+///
+/// If `weights` and `data`, or `variances` and `weights`, differ in length,
+/// or `mask` is shorter than them.
 pub fn histogram_with_errors(
     data: &[f64],
     weights: &[f64],
@@ -68,54 +65,53 @@ pub fn histogram_with_errors(
     n_points: usize,
     mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    check_lengths(data, weights);
+    assert_eq!(
+        variances.len(),
+        weights.len(),
+        "histogram: variances must have one value per weight"
+    );
     let (min, _max, step) = min_max_step(data, n_points);
-
-    let mut sum = vec![0.0; n_points];
-    let mut sum_var = vec![0.0; n_points];
-    let mut count = vec![0usize; n_points];
 
     let index: Vec<usize> = data
         .par_iter()
         .map(|x| get_bin_clamped(*x, min, step, n_points))
         .collect();
 
-    match mask {
-        Some(mask) => {
-            for (i, y) in weights.iter().enumerate() {
-                if mask[i] != 0 {
-                    continue;
-                }
-                let idx = index[i];
-                sum[idx] += y;
-                sum_var[idx] += variances[i];
-                count[idx] += 1;
-            }
+    // (sum, variance sum, count) of a bin next to each other; counts stay
+    // exact in f64
+    let mut acc = vec![[0.0f64; 3]; n_points];
+    for (i, ((&idx, y), v)) in index.iter().zip(weights).zip(variances).enumerate() {
+        if mask.is_some_and(|m| m[i] != 0) {
+            continue;
         }
-        None => {
-            for (i, y) in weights.iter().enumerate() {
-                let idx = index[i];
-                sum[idx] += y;
-                sum_var[idx] += variances[i];
-                count[idx] += 1;
-            }
-        }
+        let bin = &mut acc[idx];
+        bin[0] += y;
+        bin[1] += v;
+        bin[2] += 1.0;
     }
 
     let mut normed_sum = vec![0.0; n_points];
     let mut sigma = vec![0.0; n_points];
-    for i in 0..n_points {
-        let c = count[i];
-        if c == 0 {
+    for (i, &[sum, sum_var, c_f]) in acc.iter().enumerate() {
+        if c_f == 0.0 {
             continue;
         }
-        let c_f = c as f64;
-        normed_sum[i] = sum[i] / c_f;
-        let var = sum_var[i] / (c_f * c_f);
+        normed_sum[i] = sum / c_f;
+        let var = sum_var / (c_f * c_f);
         sigma[i] = var.max(0.0).sqrt();
     }
 
     let bins = bins(n_points, min, step);
     (bins, normed_sum, sigma)
+}
+
+fn check_lengths(data: &[f64], weights: &[f64]) {
+    assert_eq!(
+        weights.len(),
+        data.len(),
+        "histogram: weights must have one value per data value"
+    );
 }
 
 /// Calculates a normalized histogram of weights at data values using a parallel implementation.
@@ -290,6 +286,41 @@ pub fn bins(n_points: usize, min: f64, step: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "weights must have one value per data value")]
+    fn histogram_rejects_weights_longer_than_data() {
+        histogram(&[0.0; 10], &[1.0; 12], 4, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "weights must have one value per data value")]
+    fn histogram_with_errors_rejects_weights_longer_than_data() {
+        histogram_with_errors(&[0.0; 10], &[1.0; 12], &[1.0; 12], 4, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "variances must have one value per weight")]
+    fn histogram_with_errors_rejects_short_variances() {
+        histogram_with_errors(&[0.0; 10], &[1.0; 10], &[1.0; 8], 4, None);
+    }
+
+    #[test]
+    fn histogram_with_errors_skips_masked_values() {
+        // Two bins: 0 and 1 fall in the first, 2 and 3 in the second.
+        let data = [0.0, 1.0, 2.0, 3.0];
+        let weights = [1.0, 2.0, 3.0, 4.0];
+        let variances = [1.0, 4.0, 9.0, 16.0];
+        let (_, y, sigma) =
+            histogram_with_errors(&data, &weights, &variances, 2, Some(&[0, 1, 0, 0]));
+        assert_eq!(y, [1.0, 3.5]);
+        assert_eq!(sigma, [1.0, 2.5]);
+        // A bin whose values are all masked reports zero, not NaN.
+        let (_, y, sigma) =
+            histogram_with_errors(&data, &weights, &variances, 2, Some(&[1, 1, 0, 0]));
+        assert_eq!(y, [0.0, 3.5]);
+        assert_eq!(sigma, [0.0, 2.5]);
+    }
 
     /// Evenly spaced values from 1 to `hi`; the last one is the maximum, which
     /// can round to bin index `n_points` once `hi` is too large for the
