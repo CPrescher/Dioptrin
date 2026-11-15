@@ -685,25 +685,58 @@ fn build_lut2d_ps_csr_with_azimuthal(
         },
     );
 
-    let col_idx: Vec<usize> = col_idx
-        .into_iter()
-        .map(|v| v.load(Ordering::Relaxed))
-        .collect();
+    // The atomics have the same layout as their values, so these collects
+    // typically reuse the buffers in place (a std optimization, not a guarantee).
+    let mut col_idx: Vec<usize> = col_idx.into_iter().map(AtomicUsize::into_inner).collect();
     let mut values: Vec<f64> = values
         .into_iter()
-        .map(|v| f64::from_bits(v.load(Ordering::Relaxed)))
+        .map(|v| f64::from_bits(v.into_inner()))
         .collect();
 
-    // Normalize per row
-    for r in 0..rows {
-        let (s, e) = (row_ptr[r], row_ptr[r + 1]);
-        let ssum: f64 = values[s..e].iter().sum();
-        if ssum > 0.0 {
-            for v in &mut values[s..e] {
-                *v /= ssum;
+    // The fill above claims row slots in thread-scheduling order. Restore pixel
+    // order within each row so the table, its row sums and the integration's
+    // addition order do not depend on the thread count or timing (issue 34).
+    // The sort is stable: a pixel's own entries in one row (azimuthal wrap) were
+    // written by one thread in loop order and keep it, which reproduces the
+    // single-threaded table exactly. Rows filled by one thread are already in
+    // order and are only checked.
+    const ROW_BLOCK: usize = 1024;
+    let mut blocks = Vec::with_capacity(rows.div_ceil(ROW_BLOCK));
+    let (mut cols_rest, mut vals_rest) = (col_idx.as_mut_slice(), values.as_mut_slice());
+    for start in (0..rows).step_by(ROW_BLOCK) {
+        let end = (start + ROW_BLOCK).min(rows);
+        let len = row_ptr[end] - row_ptr[start];
+        let (cols, cols_tail) = std::mem::take(&mut cols_rest).split_at_mut(len);
+        let (vals, vals_tail) = std::mem::take(&mut vals_rest).split_at_mut(len);
+        cols_rest = cols_tail;
+        vals_rest = vals_tail;
+        blocks.push((start..end, cols, vals));
+    }
+    blocks.into_par_iter().for_each(|(block, cols, vals)| {
+        let base = row_ptr[block.start];
+        let mut scratch: Vec<(usize, f64)> = Vec::new();
+        for r in block {
+            let (s, e) = (row_ptr[r] - base, row_ptr[r + 1] - base);
+            let (cols, vals) = (&mut cols[s..e], &mut vals[s..e]);
+            if !cols.is_sorted() {
+                scratch.clear();
+                scratch.extend(cols.iter().copied().zip(vals.iter().copied()));
+                scratch.sort_by_key(|&(pixel, _)| pixel);
+                for ((c, v), &(pixel, value)) in cols.iter_mut().zip(vals.iter_mut()).zip(&scratch)
+                {
+                    *c = pixel;
+                    *v = value;
+                }
+            }
+            // Normalize per row
+            let ssum: f64 = vals.iter().sum();
+            if ssum > 0.0 {
+                for v in vals.iter_mut() {
+                    *v /= ssum;
+                }
             }
         }
-    }
+    });
 
     Lut2d {
         row_ptr,
@@ -1154,5 +1187,94 @@ mod tests {
         let total = lut_pixel_total(&lut, beam_pixel);
         let expected = 1.0 - PI / 4.0;
         assert!((total - expected).abs() < 2e-3, "{total} {expected}");
+    }
+
+    /// Bits of a table: row pointers, column indices and weight bits.
+    fn table_bits(row_ptr: &[usize], col_idx: &[usize], values: &[f64]) -> Vec<u64> {
+        row_ptr
+            .iter()
+            .chain(col_idx)
+            .map(|&v| v as u64)
+            .chain(values.iter().map(|v| v.to_bits()))
+            .collect()
+    }
+
+    /// Issue 34: the 2D tables were filled in thread-scheduling order, so the
+    /// order of a row's entries, its normalization sum and the cake's addition
+    /// order depended on the thread count and timing. Every builder must give
+    /// bit-identical tables in any pool size, equal to the single-threaded one.
+    #[test]
+    fn pixel_split_tables_are_bit_identical_across_thread_counts() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 172e-6;
+        poni.pixel2 = 172e-6;
+        poni.distance = 0.05;
+        poni.poni1 = 60.0 * 172e-6;
+        poni.poni2 = 90.0 * 172e-6;
+        poni.wavelength = 1e-10;
+        let geometry = Geometry::new(160, 200, poni);
+        let tth = geometry.calc_tth_all();
+        let azimuthal = geometry.calc_azimuth_all();
+        let build = || {
+            let lut = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 64, 36, RadialUnit::TthRad);
+            // Bins centred on 0°, 10°, ...: the bins around ±180° wrap.
+            let wrapped = build_lut2d_ps_csr_with_azimuthal_range(
+                &geometry,
+                &tth,
+                &azimuthal,
+                64,
+                36,
+                0.0,
+                10f64.to_radians(),
+                RadialUnit::TthRad,
+            );
+            // A 36° span is narrower than the pixels near the beam, so those
+            // pixels fold onto the same row more than once (wrap duplicates).
+            let narrow = build_lut2d_ps_csr_with_azimuthal_range(
+                &geometry,
+                &tth,
+                &azimuthal,
+                64,
+                36,
+                0.0,
+                1f64.to_radians(),
+                RadialUnit::TthRad,
+            );
+            let lut1d = build_lut1d_ps_csr(&geometry, &tth, 64, RadialUnit::TthRad);
+            [
+                table_bits(
+                    &narrow.row_ptr,
+                    &narrow.col_idx,
+                    narrow.values.as_ref().unwrap(),
+                ),
+                table_bits(&lut.row_ptr, &lut.col_idx, lut.values.as_ref().unwrap()),
+                table_bits(
+                    &wrapped.row_ptr,
+                    &wrapped.col_idx,
+                    wrapped.values.as_ref().unwrap(),
+                ),
+                table_bits(
+                    &lut1d.row_ptr,
+                    &lut1d.col_idx,
+                    lut1d.values.as_ref().unwrap(),
+                ),
+            ]
+        };
+        let pool = |n| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap()
+        };
+        let reference = pool(1).install(build);
+        for threads in [2, 3, 4, 8, 2, 3, 4, 8] {
+            let tables = pool(threads).install(build);
+            for (name, (a, b)) in ["2d narrow", "2d", "2d wrapped", "1d"]
+                .iter()
+                .zip(reference.iter().zip(&tables))
+            {
+                assert!(a == b, "{name} table differs with {threads} threads");
+            }
+        }
     }
 }

@@ -1190,77 +1190,66 @@ fn prepared_denominators_follow_mask_correction_range_and_unit_changes() {
         .map(|j| 0.1 + (j as f64 * 0.7).sin() * 100.0)
         .collect();
     let mask: Vec<_> = (0..63).map(|j| u8::from(j % 7 == 0)).collect();
-    // PixelSplit's existing atomic scatter can change entry order between
-    // independent parallel builds. Fix construction order for this cache test;
-    // prepared-kernel tests compare a single table at arbitrary row lengths.
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .unwrap()
-        .install(|| {
-            for method in [
-                IntegrationMethod::Counting,
-                IntegrationMethod::PixelSplit,
-                IntegrationMethod::Supersampled { n_ss: 3 },
-            ] {
-                for (fast, mode) in [false, true]
-                    .into_iter()
-                    .flat_map(|fast| [MaskMode::Fixed, MaskMode::Dynamic].map(|mode| (fast, mode)))
+    for method in [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+    ] {
+        for (fast, mode) in [false, true]
+            .into_iter()
+            .flat_map(|fast| [MaskMode::Fixed, MaskMode::Dynamic].map(|mode| (fast, mode)))
+        {
+            let mut ai = Integrator::new(g.clone())
+                .with_method(method)
+                .with_fast_math(fast)
+                .with_mask_mode(mode);
+            ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+            ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+            for step in 0..6 {
+                match step {
+                    0 => ai.set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap()),
+                    1 => ai.set_polarization_factor(Some(0.965)),
+                    2 => ai.clear_mask(),
+                    3 => ai.set_radial_range(Some((0.0, 0.1))),
+                    4 => ai.set_radial_unit(RadialUnit::TthDeg),
+                    _ => ai.set_polarization_factor(None),
+                }
+                let mut fresh = Integrator::new(g.clone())
+                    .with_method(method)
+                    .with_fast_math(fast)
+                    .with_mask_mode(mode)
+                    .with_radial_unit(ai.radial_unit());
+                fresh.set_radial_range(ai.radial_range());
+                fresh.set_polarization_factor(ai.polarization_factor());
+                if ai.mask().is_some() {
+                    fresh.set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap());
+                }
+                let a = ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+                let b = fresh.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
+                for (a, b) in
+                    a.0.iter()
+                        .chain(&a.1)
+                        .chain(&a.2)
+                        .zip(b.0.iter().chain(&b.1).chain(&b.2))
                 {
-                    let mut ai = Integrator::new(g.clone())
-                        .with_method(method)
-                        .with_fast_math(fast)
-                        .with_mask_mode(mode);
-                    ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
-                    ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
-                    for step in 0..6 {
-                        match step {
-                            0 => ai
-                                .set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap()),
-                            1 => ai.set_polarization_factor(Some(0.965)),
-                            2 => ai.clear_mask(),
-                            3 => ai.set_radial_range(Some((0.0, 0.1))),
-                            4 => ai.set_radial_unit(RadialUnit::TthDeg),
-                            _ => ai.set_polarization_factor(None),
-                        }
-                        let mut fresh = Integrator::new(g.clone())
-                            .with_method(method)
-                            .with_fast_math(fast)
-                            .with_mask_mode(mode)
-                            .with_radial_unit(ai.radial_unit());
-                        fresh.set_radial_range(ai.radial_range());
-                        fresh.set_polarization_factor(ai.polarization_factor());
-                        if ai.mask().is_some() {
-                            fresh
-                                .set_mask(crate::mask::Mask::from_vec(mask.clone(), 7, 9).unwrap());
-                        }
-                        let a = ai.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
-                        let b = fresh.integrate1d_with_errors_from_slice(&data, 7, 9, 11);
-                        for (a, b) in
-                            a.0.iter()
-                                .chain(&a.1)
-                                .chain(&a.2)
-                                .zip(b.0.iter().chain(&b.1).chain(&b.2))
-                        {
-                            assert_eq!(
-                                a.to_bits(),
-                                b.to_bits(),
-                                "method={method:?}, fast={fast}, step={step}, a={a}, b={b}"
-                            );
-                        }
-                        let a = ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
-                        let b = fresh.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
-                        for (a, b) in a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1)) {
-                            assert_eq!(
-                                a.to_bits(),
-                                b.to_bits(),
-                                "method={method:?}, fast={fast}, step={step}, a={a}, b={b}"
-                            );
-                        }
-                    }
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "method={method:?}, fast={fast}, step={step}, a={a}, b={b}"
+                    );
+                }
+                let a = ai.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+                let b = fresh.integrate2d_with_errors_from_slice(&data, 7, 9, 11, 4);
+                for (a, b) in a.0.iter().chain(&a.1).zip(b.0.iter().chain(&b.1)) {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "method={method:?}, fast={fast}, step={step}, a={a}, b={b}"
+                    );
                 }
             }
-        });
+        }
+    }
 }
 
 #[test]
@@ -1729,5 +1718,65 @@ fn automatic_range_pixel_splitting_conserves_the_beam_pixel() {
                 "{method:?} ({poni1}, {poni2}): {total}"
             );
         }
+    }
+}
+
+#[test]
+fn pixel_split_cake_is_bit_identical_across_thread_counts() {
+    // Issue 34: the legacy pixel_split 2D table was filled in thread-scheduling
+    // order, so the cake's addition order depended on the thread count.
+    let mut poni = Poni::new();
+    poni.pixel1 = 172e-6;
+    poni.pixel2 = 172e-6;
+    poni.distance = 0.05;
+    poni.poni1 = 60.0 * 172e-6;
+    poni.poni2 = 90.0 * 172e-6;
+    poni.wavelength = 1e-10;
+    let (dim1, dim2) = (160, 200);
+    let data: Vec<f64> = (0..dim1 * dim2)
+        .map(|j| 10.0 + (j as f64 * 0.37).sin() * 7.0 + (j % 13) as f64)
+        .collect();
+    let cake = || {
+        let ai = Integrator::new(Geometry::new(dim1, dim2, poni.clone()))
+            .with_method(IntegrationMethod::PixelSplit);
+        let (i, e) = ai.integrate2d_with_errors_from_slice(&data, dim1, dim2, 64, 36);
+        let ranged = ai.integrate2d_with_azimuthal_range_from_slice(
+            &data,
+            dim1,
+            dim2,
+            64,
+            36,
+            0.0,
+            10f64.to_radians(),
+        );
+        // Narrower than the pixels near the beam: rows hold wrap duplicates.
+        let narrow = ai.integrate2d_with_azimuthal_range_from_slice(
+            &data,
+            dim1,
+            dim2,
+            64,
+            36,
+            0.0,
+            1f64.to_radians(),
+        );
+        i.iter()
+            .chain(&e)
+            .chain(&ranged)
+            .chain(&narrow)
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>()
+    };
+    let pool = |n| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .unwrap()
+    };
+    let reference = pool(1).install(cake);
+    for threads in [2, 3, 4, 8, 2, 3, 4, 8] {
+        assert!(
+            pool(threads).install(cake) == reference,
+            "pixel_split cake differs with {threads} threads"
+        );
     }
 }
