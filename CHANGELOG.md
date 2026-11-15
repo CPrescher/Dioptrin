@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyproject.toml` versions agree; the GitHub release and both uploads wait
   for it. A re-run skips a version that is already on crates.io.
 
+### Fixed
+
+- The legacy 2D `pixel_split` cake (`IntegrationMethod::PixelSplit`,
+  `build_lut2d_ps_csr`, `build_lut2d_ps_csr_with_azimuthal_range`) is now
+  bit-identical across runs and thread counts (#34). Its table was filled from
+  parallel threads in scheduling order, so the order of a row's entries, its
+  normalization sum and the cake's addition order depended on thread timing;
+  on the Pilatus 1M test frame with 14 threads 6–9% of the cake's bins
+  differed from the single-threaded result, by up to 3e-13 relative. Each row
+  now lists its entries in pixel order, which is the table a single-threaded
+  build already produced: single-threaded results are unchanged,
+  multi-threaded results now equal them. The 1D `pixel_split` table and the
+  other methods' tables were already deterministic.
+
 ## [0.13.0] - 2026-11-15
 
 ### Added
