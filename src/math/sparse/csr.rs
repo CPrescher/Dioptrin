@@ -2,8 +2,9 @@ use std::fmt::Display;
 
 /// A sparse matrix in the Compressed Sparse Row (CSR) format.
 /// The CSR format stores the column indices, row pointers and values in three separate vectors.
-/// The column indices are behaving the same as in the CooMatrix, but the row pointer are rather giving the start index of each row
-/// in respect to the column matrix. See https://en.wikipedia.org/wiki/Sparse_matrix#Compressed_sparse_row_(CSR,_CRS_or_Yale_format)
+/// The column indices behave the same as in the CooMatrix, but the row pointers give the start index of each row
+/// with respect to the column matrix. See
+/// <https://en.wikipedia.org/wiki/Sparse_matrix#Compressed_sparse_row_(CSR,_CRS_or_Yale_format)>
 /// for more information.
 pub struct CsrMatrix {
     pub col_indices: Vec<usize>,
