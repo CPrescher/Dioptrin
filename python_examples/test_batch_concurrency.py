@@ -119,6 +119,32 @@ class SyncBatchWithOpenStreamTests(unittest.TestCase):
             assert next(first).is_ok()
         """)
 
+    def test_open_array_list_streams_use_their_own_workers(self):
+        # A list-fed stream runs on num_workers workers of its own, like a
+        # generator-fed one: an open one does not hold up synchronous batches,
+        # and one worker with one thread keeps to about one core.
+        self.run_scenario("""
+            frames_list = [np.ones(SHAPE) for _ in range(200)]
+            its = [ai.batch1d_iter(frames_list, 10, num_workers=2, num_threads=1),
+                   ai.batch2d_iter(frames_list, 10, 8, num_workers=2, num_threads=1)]
+            for it in its:
+                assert it.total == 200
+                assert next(it).is_ok()
+            check_sync_batches()
+            for it in its:
+                assert sum(r.is_ok() for r in it) == 199
+            assert until(setter_works)
+            if (os.cpu_count() or 1) >= 4:
+                big = dioptrin.Integrator.from_poni_dict(poni, method="pixel_split")
+                frame = np.ones((512, 512))
+                big.integrate1d(frame, 500)
+                t0, c0 = time.perf_counter(), time.process_time()
+                for r in big.batch1d_iter([frame] * 300, 500, num_workers=1, num_threads=1):
+                    assert r.is_ok()
+                cores = (time.process_time() - c0) / (time.perf_counter() - t0)
+                assert cores < 2.5, f"one worker used {cores:.1f} cores"
+        """)
+
     def test_abandoned_iterator_then_sync_batches(self):
         # Slow endless generator, dropped mid-stream: the batch returns and
         # the producer stops pulling from the generator soon afterwards.

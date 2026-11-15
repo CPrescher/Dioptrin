@@ -5,8 +5,8 @@ Stream kinds: a list of TIFF paths, a list of arrays and a generator, for
 batch1d_iter (plain, errors, azimuthal_std) and batch2d_iter (plain, errors,
 azimuthal_range, azimuthal_bracket). A stream that ended (StopIteration or an
 exception) has released the integrator, so its setters work at once; a stream
-deleted mid-way releases it at once when fed by a generator and eventually
-otherwise. Hangs are covered by test_batch_concurrency (subprocesses with a
+deleted mid-way releases it at once when fed by arrays or a generator and
+eventually when fed by TIFF paths. Hangs are covered by test_batch_concurrency (subprocesses with a
 timeout); everything here is bounded by a deadline.
 
 Synthetic geometry and small images; TIFF inputs go to a temporary directory.
@@ -231,12 +231,24 @@ class AbandonedStreamTests(LifecycleTestCase):
                     self.assertTrue(setter_works(ai), "in use after del")
         self.assert_usable(ai)
 
-    def test_deleted_list_stream_releases_integrator_eventually(self):
-        # List streams are not waited for on del: 2D over arrays is cancelled,
-        # 1D over arrays and path streams finish their remaining items.
+    def test_deleted_array_list_stream_releases_integrator_at_once(self):
+        # Like a generator stream: deleting it stops its workers and waits.
         ai = integrator()
-        for label, make_input in (("arrays", lambda: ARRAYS * 4),
-                                  ("paths", lambda: self.paths * 4)):
+        for kind, make in STREAMS.items():
+            with self.subTest(stream=kind):
+                for _ in range(10):
+                    it = make(ai, ARRAYS * 20)
+                    self.assertTrue(next(it).is_ok())
+                    self.assertFalse(setter_works(ai), "stream should hold the integrator")
+                    del it
+                    self.assertTrue(setter_works(ai), "in use after del")
+        self.assert_usable(ai)
+
+    def test_deleted_path_stream_releases_integrator_eventually(self):
+        # Path streams are not waited for on del: they finish their remaining
+        # items.
+        ai = integrator()
+        for label, make_input in (("paths", lambda: self.paths * 4),):
             for kind, make in STREAMS.items():
                 with self.subTest(source=label, stream=kind):
                     it = make(ai, make_input())

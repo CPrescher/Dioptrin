@@ -532,7 +532,7 @@ fn mixed_shape_batch_reports_the_invalid_item() {
             ),
         );
         for (as_frames, what) in [(false, "paths"), (true, "frames")] {
-            let control = StreamControl::for_shared_pool();
+            let control = StreamControl::new();
             let batch = process_queue_with_pool(queue(as_frames), ai(), task, pool(), control);
             check(
                 &format!("process_queue_with_pool {what}"),

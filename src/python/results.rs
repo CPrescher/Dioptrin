@@ -260,21 +260,19 @@ pub(crate) type AzimuthalRange2dOutput = Result<crate::integration::AzimuthalRan
 /// Yields BatchResult objects as each file completes processing.
 /// Use this for memory-efficient processing of large batches.
 ///
-/// Fed by a Python iterator, the stream reads at most `4 * num_workers` items
-/// ahead of the results it has handed out. The integrator counts as in use
-/// while the stream runs. Once the iterator has raised `StopIteration` or an
-/// error, it is free. Dropping the iterator mid-way:
+/// Fed by a list of arrays or a Python iterator, the stream reads at most
+/// `4 * num_workers` items ahead of the results it has handed out; arrays from
+/// a list are checked when the stream is opened and copied when the stream
+/// reaches them. The integrator counts as in use while the stream runs. Once
+/// the iterator has raised `StopIteration` or an error, it is free. Dropping
+/// the iterator mid-way:
 ///
-/// - fed by a Python iterator: stops the workers and waits for them, so the
-///   integrator is free when the drop returns. A producer thread blocked in
-///   the caller's `__next__` stays there until that call returns, holding
-///   neither the integrator nor the workers.
-/// - `batch2d_iter` over a list of arrays: stops the workers without waiting;
-///   each finishes the item it is integrating, then releases the integrator.
+/// - fed by a list of arrays or a Python iterator: stops the workers and
+///   waits for them, so the integrator is free when the drop returns. A
+///   producer thread blocked in the caller's `__next__` stays there until
+///   that call returns, holding neither the integrator nor the workers.
 /// - over a list of TIFF paths: not waited for; each worker finishes the file
 ///   it is on, then stops.
-/// - `batch1d_iter` over a list of arrays: cannot be stopped; the remaining
-///   frames are integrated (and discarded) before the integrator is released.
 ///
 /// # Example
 ///
@@ -350,27 +348,6 @@ fn recv<T: Send>(py: Python<'_>, rx: &Mutex<Receiver<T>>) -> Option<T> {
     py.detach(|| rx.lock().ok().and_then(|guard| guard.recv().ok()))
 }
 
-/// Block until every sender of `rx` is gone, discarding what arrives.
-fn drain<T>(rx: &Mutex<Receiver<T>>) {
-    if let Ok(guard) = rx.lock() {
-        while guard.recv().is_ok() {}
-    }
-}
-
-impl BatchReceiver {
-    /// Block until the producing side has finished and closed the channel.
-    fn wait_closed(&self) {
-        match self {
-            Self::Integration1DWithAzimuthalStd(rx) => drain(rx),
-            Self::Integration1D(rx) => drain(rx),
-            Self::Integration1DWithErrors(rx) => drain(rx),
-            Self::Integration2D { receiver, .. } => drain(receiver),
-            Self::Integration2DWithErrors { receiver, .. } => drain(receiver),
-            Self::Integration2DOnAzimuthalRange { receiver, .. } => drain(receiver),
-        }
-    }
-}
-
 impl PyBatchResult {
     fn from_result(filename: String, result: Result<PyIntegrationResult, String>) -> Self {
         match result {
@@ -436,8 +413,8 @@ impl PyBatchIterator {
     }
 
     /// Stop the stream: no more items are pulled from the input, results
-    /// still in flight are discarded, and for an iterator-fed stream wait
-    /// (detached from the interpreter) until its workers have released the
+    /// still in flight are discarded, and for a queue-fed stream (a list of
+    /// arrays or an iterator) wait (detached from the interpreter) until its workers have released the
     /// integrator, so its setters work as soon as the stream is closed.
     ///
     /// Workers never wait for Python or for this consumer, so the wait lasts
@@ -454,11 +431,7 @@ impl PyBatchIterator {
             return;
         };
         control.cancel();
-        // Streams on the shared pool are not waited for: their jobs may be
-        // queued behind other work on that pool.
-        if control.iterator_input() {
-            py.detach(|| control.wait_workers_idle());
-        }
+        py.detach(|| control.wait_workers_idle());
     }
 
     /// The result channel closed: raise a recorded failure, or report results
@@ -475,15 +448,14 @@ impl PyBatchIterator {
                 self.next_index
             ));
         }
-        // With iterator input the total is unknown; only a producer that saw
-        // the iterator end makes this a clean end of the stream.
+        // Only a producer that saw the input end makes this a clean end of
+        // the stream (the total of iterator input is unknown).
         if let Some(control) = &self.control
-            && control.iterator_input()
             && !control.input_exhausted()
         {
             return PyRuntimeError::new_err(format!(
                 "batch ended without a result for item {}: \
-                 the thread reading the input iterator stopped unexpectedly",
+                 the thread reading the input stopped unexpectedly",
                 self.next_index
             ));
         }
@@ -522,14 +494,6 @@ impl PyBatchIterator {
             // All earlier results were delivered: raise a failure recorded for
             // this position (bad input item, generator error, worker panic).
             if let Some(err) = self.stream_error.take_at(self.next_index) {
-                // A stream without a control (1D over an array list) cannot
-                // be cancelled and may still be integrating later frames:
-                // wait for it, so the integrator is free when this raises.
-                if self.control.is_none()
-                    && let Some(receiver) = &self.receiver
-                {
-                    py.detach(|| receiver.wait_closed());
-                }
                 self.close(py);
                 return Err(err);
             }

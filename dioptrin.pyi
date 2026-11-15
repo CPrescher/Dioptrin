@@ -180,26 +180,23 @@ class BatchIterator(Iterator[BatchResult]):
     Yields BatchResult objects as each file completes processing.
     Use this for memory-efficient processing of large batches.
 
-    Fed by a generator or other iterator, the stream reads at most
-    4 * num_workers items ahead of the results it has handed out, so an
-    endless generator that is not being consumed is not drained into memory.
-    The integrator counts as in use (its set_* methods raise ValueError) while
-    the stream runs. Once the iterator has raised StopIteration or an error,
-    it is free. Deleting the iterator mid-way:
+    Fed by a list of arrays, a generator or another iterator, the stream
+    reads at most 4 * num_workers items ahead of the results it has handed
+    out, so an endless generator that is not being consumed is not drained
+    into memory. Arrays from a list are checked when the stream is opened but
+    copied only when the stream reaches them, so do not change them in place
+    while the stream is open. The integrator counts as in use (its set_*
+    methods raise ValueError) while the stream runs. Once the iterator has
+    raised StopIteration or an error, it is free. Deleting the iterator
+    mid-way:
 
-    - fed by a generator or other iterator: stops the workers and waits for
-      them, so the integrator is free when ``del`` returns. If the generator
-      is blocked inside its own ``__next__`` (e.g. waiting for a detector
-      frame), the one thread reading it stays there until that call returns,
-      but no longer holds the integrator.
-    - ``batch2d_iter`` over a list of arrays: stops the workers without
-      waiting; each finishes the item it is integrating, then releases the
-      integrator.
+    - fed by a list of arrays, a generator or other iterator: stops the
+      workers and waits for them, so the integrator is free when ``del``
+      returns. If a generator is blocked inside its own ``__next__`` (e.g.
+      waiting for a detector frame), the one thread reading it stays there
+      until that call returns, but no longer holds the integrator.
     - over a list of TIFF paths: not waited for; each worker finishes the
       file it is on, then stops.
-    - ``batch1d_iter`` over a list of arrays: cannot be stopped; the
-      remaining frames are integrated (and discarded) before the integrator
-      is released.
 
     Attributes:
         total: Total number of files being processed
