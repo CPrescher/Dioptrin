@@ -168,6 +168,72 @@ class MaskShapeTests(unittest.TestCase):
                         )
                         self.assertTrue(results[0].is_ok() and results[2].is_ok())
 
+    def test_colour_tiffs_are_checked_with_their_real_shape(self):
+        """TIFFs the typed reader leaves to the legacy f64 reader (colour,
+        extra samples) are checked against the mask with their real shape.
+        Before, the batch workers saw them as 0 x 0 and failed them whenever
+        a mask was set, and Integrator.integrate1d(path) raised for them."""
+        rng = np.random.default_rng(1)
+        shape = (32, 48)
+        colour = {
+            "rgb8": ((rng.random((*shape, 3)) * 255).astype(np.uint8), dict(photometric="rgb")),
+            "rgb16": ((rng.random((*shape, 3)) * 999).astype(np.uint16), dict(photometric="rgb")),
+            "rgba8": (
+                (rng.random((*shape, 4)) * 255).astype(np.uint8),
+                dict(photometric="rgb", extrasamples=["unassalpha"]),
+            ),
+        }
+        # Formats the decoder cannot read fail with its error, as before.
+        unreadable = {
+            "gray+alpha": (
+                np.ones((*shape, 2), np.uint16),
+                dict(photometric="minisblack", extrasamples=["unassalpha"]),
+                "2 samples per pixel is unsupported",
+            ),
+            "palette": (
+                np.ones(shape, np.uint8),
+                dict(photometric="palette", colormap=np.zeros((3, 256), np.uint16)),
+                "RGBPalette",
+            ),
+        }
+        mismatch = "image shape (32, 48) does not match mask shape (32, 32)"
+        with tempfile.TemporaryDirectory() as directory:
+            gray = write_tiff(directory, np.ones(shape))
+            files = {}
+            for name, (data, kw) in {**colour, **{k: v[:2] for k, v in unreadable.items()}}.items():
+                files[name] = str(Path(directory) / f"{name}.tif")
+                tifffile.imwrite(files[name], data, **kw)
+            for mode in ("fixed", "dynamic"):
+                for mask_shape, expected in ((shape, None), ((32, 32), mismatch)):
+                    ai = integrator(mask_mode=mode)
+                    ai.set_mask(np.zeros(mask_shape, np.uint8))
+                    gray_error = None if expected is None else mismatch
+                    calls = {
+                        "batch1d": lambda paths: ai.batch1d(paths, 10),
+                        "batch2d": lambda paths: ai.batch2d(paths, 10, 8),
+                        "batch1d_iter": lambda paths: list(ai.batch1d_iter(paths, 10)),
+                        "batch2d_iter": lambda paths: list(ai.batch2d_iter(iter(paths), 10, 8)),
+                    }
+                    for call_name, call in calls.items():
+                        for name in colour:
+                            with self.subTest(mode=mode, mask=mask_shape, call=call_name, tiff=name):
+                                results = call([files[name], gray])
+                                self.assertEqual(
+                                    [r.error for r in results], [expected, gray_error]
+                                )
+                        for name, (_, _, message) in unreadable.items():
+                            with self.subTest(mode=mode, mask=mask_shape, call=call_name, tiff=name):
+                                error = call([files[name]])[0].error
+                                self.assertIn(message, error)
+                    for name in colour:
+                        with self.subTest(mode=mode, mask=mask_shape, call="integrate1d", tiff=name):
+                            if expected is None:
+                                ai.integrate1d(files[name], 10)
+                                ai.integrate2d(files[name], 10, 8)
+                            else:
+                                with self.assertRaisesRegex(ValueError, r"\(32, 48\) does not match"):
+                                    ai.integrate1d(files[name], 10)
+
     def test_multi_integrator_per_detector(self):
         masked = integrator(radial_range=(0.0, 0.1))
         masked.set_mask(np.zeros((32, 32), np.uint8))
@@ -225,12 +291,25 @@ class SinglePathTests(unittest.TestCase):
 
             # Other bad arguments still name the argument in a note, as
             # PyO3 does for typed parameters (unchanged from main).
+            # The list arguments are still converted first, so a second bad
+            # argument does not change which error is raised.
             prefixed = {
                 "batch1d": (lambda: ai.batch1d(5, 10), "images"),
                 "batch2d": (lambda: ai.batch2d([Path(path)], 10, 8), "tiff_paths"),
                 "multi.batch1d": (lambda: multi.batch1d(5, 10), "images"),
+                "multi.batch1d frame set": (lambda: multi.batch1d([[5, 5]], 10), "images"),
                 "multi.integrate1d": (lambda: multi.integrate1d(5, 10), "images"),
                 "multi.integrate2d": (lambda: multi.integrate2d(5, 10, 8), "images"),
+                "batch1d, bad n_points": (lambda: ai.batch1d(5, -1), "images"),
+                "batch1d str, bad n_points": (lambda: ai.batch1d(path, -1), "images"),
+                "batch1d, bad num_workers": (
+                    lambda: ai.batch1d(5, 10, num_workers=-1),
+                    "images",
+                ),
+                "batch2d, bad n_radial": (lambda: ai.batch2d(5, -1, 8), "tiff_paths"),
+                "batch2d str, bad n_azimuthal": (lambda: ai.batch2d(path, 10, -1), "tiff_paths"),
+                "multi.integrate1d, bad n_points": (lambda: multi.integrate1d(5, -1), "images"),
+                "multi.batch1d, bad n_points": (lambda: multi.batch1d(5, -1), "images"),
             }
             for name, (call, argument) in prefixed.items():
                 with self.subTest(call=name):
@@ -240,6 +319,30 @@ class SinglePathTests(unittest.TestCase):
                         getattr(caught.exception, "__notes__", None),
                         [f"while processing '{argument}'"],
                     )
+
+            # A path is recognised by its type, as os.fspath does: an
+            # iterable whose instance __getattr__ raises, or answers any
+            # name, is still streamed item by item.
+            class Raising:
+                def __init__(self, items):
+                    self.items = items
+
+                def __iter__(self):
+                    return iter(self.items)
+
+                def __getattr__(self, name):
+                    raise KeyError(name)
+
+            class Proxy(Raising):
+                def __getattr__(self, name):
+                    return lambda *args: None
+
+            for wrapper in (Raising, Proxy):
+                with self.subTest(iterable=wrapper.__name__):
+                    results = list(ai.batch1d_iter(wrapper([path, path]), 10))
+                    self.assertEqual([r.error for r in results], [None, None])
+                    results = list(ai.batch2d_iter(wrapper([IMAGE]), 10, 8))
+                    self.assertEqual([r.error for r in results], [None])
 
             # A one-item list still works everywhere.
             self.assertTrue(ai.batch1d([path], 10)[0].is_ok())

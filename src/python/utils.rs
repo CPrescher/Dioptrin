@@ -234,34 +234,66 @@ pub fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     Ok(poni)
 }
 
-/// Extract argument `name` the way a typed `#[pyo3]` parameter would, for
-/// arguments taken as `&Bound<PyAny>` so they can be checked first with
-/// [`reject_single_path`]: an extraction error gets the note
-/// "while processing 'name'", as PyO3's own argument extraction adds it.
-pub fn extract_argument<'a, 'py, T>(obj: &'a Bound<'py, PyAny>, name: &str) -> PyResult<T>
-where
-    T: FromPyObject<'a, 'py>,
-    T::Error: Into<PyErr>,
-{
-    obj.extract::<T>().map_err(|err| {
-        let err: PyErr = err.into();
-        let py = obj.py();
-        let note = format!("while processing '{name}'");
-        let _ = err.value(py).call_method1("add_note", (note,));
-        err
-    })
+/// `#[pyo3(from_py_with)]` extractors for the batch arguments that must be
+/// lists. They run during argument extraction, in parameter order, so a bad
+/// value raises before the later arguments are converted, and PyO3 adds its
+/// "while processing 'name'" note as for a typed parameter.
+pub fn batch_images<'py>(obj: &Bound<'py, PyAny>) -> PyResult<BatchImageInput<'py>> {
+    reject_single_path(
+        obj,
+        "images",
+        "a list of file paths or a list of 2D float64 numpy arrays",
+    )?;
+    obj.extract()
+}
+
+/// See [`batch_images`]; for `Integrator.batch2d`'s `tiff_paths`.
+pub fn tiff_path_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    reject_single_path(obj, "tiff_paths", "a list of file paths")?;
+    obj.extract()
+}
+
+/// See [`batch_images`]; one image per detector (`MultiIntegrator`).
+pub fn detector_images<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<ImageInput<'py>>> {
+    reject_single_path(obj, "images", "a list with one image per detector")?;
+    obj.extract()
+}
+
+/// See [`batch_images`]; frame sets of one image per detector
+/// (`MultiIntegrator.batch1d`). Each frame set is checked for a single path too.
+pub fn detector_image_sets<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<Vec<ImageInput<'py>>>> {
+    reject_single_path(
+        obj,
+        "images",
+        "a list of frame sets, each a list with one image per detector",
+    )?;
+    let sets: Vec<Bound<'py, PyAny>> = obj.extract()?;
+    sets.iter()
+        .enumerate()
+        .map(|(i, set)| {
+            reject_single_path(
+                set,
+                &format!("images[{i}]"),
+                "a list with one image per detector",
+            )?;
+            set.extract()
+        })
+        .collect()
 }
 
 /// Raise TypeError when `obj` is a single path (`str`, `bytes`, `bytearray`
 /// or `os.PathLike`) where a list of images is expected. Python would iterate
 /// a `str` character by character and treat each one as a file path. Any
-/// object with `__fspath__` counts as a path, even a list subclass. `name`
+/// object whose type defines `__fspath__` counts as a path, even a list
+/// subclass. `name`
 /// is the argument, `expected` what it must be, e.g. "a list of file paths".
 pub fn reject_single_path(obj: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<()> {
     let single = obj.is_instance_of::<PyString>()
         || obj.is_instance_of::<PyBytes>()
         || obj.is_instance_of::<PyByteArray>()
-        || obj.hasattr("__fspath__")?;
+        // Looked up on the type, as os.fspath does: an instance __getattr__
+        // (a proxy, or one that raises) does not make an object a path.
+        || obj.get_type().hasattr("__fspath__")?;
     if !single {
         return Ok(());
     }

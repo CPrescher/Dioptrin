@@ -8,8 +8,8 @@ use crate::multi::{Multi2dOptions, MultiIntegrator, MultiNormalization};
 use super::integrator::{PyIntegrator, resolve_azimuthal_bins};
 use super::results::PyIntegrationResult;
 use super::utils::{
-    ImageInput, check_mask_shape, check_positive, extract_argument, extract_array_dims, mask_shape,
-    reject_single_path,
+    ImageInput, check_mask_shape, check_positive, detector_image_sets, detector_images,
+    extract_array_dims, mask_shape,
 };
 
 #[pyclass(name = "MultiIntegrator", unsendable)]
@@ -40,7 +40,7 @@ impl PyMultiIntegrator {
     fn integrate2d<'py>(
         &self,
         py: Python<'py>,
-        images: &Bound<'py, PyAny>,
+        #[pyo3(from_py_with = detector_images)] images: Vec<ImageInput<'py>>,
         n_radial: usize,
         n_azimuthal: Option<usize>,
         errors: bool,
@@ -49,7 +49,6 @@ impl PyMultiIntegrator {
         normalization_factors: Option<Vec<f64>>,
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyIntegrationResult> {
-        let images = extract_detector_images(images, "images")?;
         check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
@@ -169,11 +168,10 @@ impl PyMultiIntegrator {
     fn integrate1d<'py>(
         &self,
         py: Python<'py>,
-        images: &Bound<'py, PyAny>,
+        #[pyo3(from_py_with = detector_images)] images: Vec<ImageInput<'py>>,
         n_points: usize,
         errors: bool,
     ) -> PyResult<PyIntegrationResult> {
-        let images = extract_detector_images(images, "images")?;
         check_positive("n_points", n_points)?;
         let n_det = self.multi.integrators().len();
         if images.len() != n_det {
@@ -202,20 +200,10 @@ impl PyMultiIntegrator {
     fn batch1d<'py>(
         &self,
         py: Python<'py>,
-        images: &Bound<'py, PyAny>,
+        #[pyo3(from_py_with = detector_image_sets)] images: Vec<Vec<ImageInput<'py>>>,
         n_points: usize,
         errors: bool,
     ) -> PyResult<Vec<PyIntegrationResult>> {
-        reject_single_path(
-            images,
-            "images",
-            "a list of frame sets, each a list with one image per detector",
-        )?;
-        let images = extract_argument::<Vec<Bound<'py, PyAny>>>(images, "images")?
-            .iter()
-            .enumerate()
-            .map(|(i, set)| extract_detector_images(set, &format!("images[{i}]")))
-            .collect::<PyResult<Vec<_>>>()?;
         check_positive("n_points", n_points)?;
         let n_det = self.multi.integrators().len();
         let mut results = Vec::with_capacity(images.len());
@@ -233,16 +221,6 @@ impl PyMultiIntegrator {
         }
         Ok(results)
     }
-}
-
-/// One image per detector (TIFF paths or arrays), rejecting a single path
-/// with TypeError instead of iterating its characters. `name` is the argument.
-fn extract_detector_images<'py>(
-    images: &Bound<'py, PyAny>,
-    name: &str,
-) -> PyResult<Vec<ImageInput<'py>>> {
-    reject_single_path(images, name, "a list with one image per detector")?;
-    extract_argument(images, name)
 }
 
 /// One detector image as owned pixels and (dim1, dim2).

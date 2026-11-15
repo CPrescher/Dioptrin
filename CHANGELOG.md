@@ -112,15 +112,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work item that does not match the mask now also gets this error instead of a
   panic, and a custom `IntegrationTask` is no longer called for such a frame.
 - **Behaviour change:** a single `str`, `bytes`, `bytearray` or `os.PathLike`
-  path passed where a list is expected now raises `TypeError` saying what the
-  argument must be, in `Integrator.batch1d`, `batch2d`, `batch1d_iter` and
-  `batch2d_iter` and in `MultiIntegrator.batch1d` (the outer list and each
-  frame set), `integrate1d` and `integrate2d` (#40). `batch1d_iter` and
-  `batch2d_iter` used to iterate a `str` character by character and stream one
-  "file not found" result per character, and raised `ValueError` for a
+  path (an object whose type defines `__fspath__`) passed where a list is
+  expected now raises `TypeError` saying what the argument must be, in
+  `Integrator.batch1d`, `batch2d`, `batch1d_iter` and `batch2d_iter` and in
+  `MultiIntegrator.batch1d` (the outer list and each frame set), `integrate1d`
+  and `integrate2d` (#40). `batch1d_iter` and `batch2d_iter` used to iterate a
+  `str` character by character and stream one "file not found" result per
+  character, raised `TypeError` only at the first `next()` for `bytes` and
+  `bytearray` (whose items are integers), and raised `ValueError` for a
   `pathlib.Path`; the other methods already raised `TypeError`, with messages
   such as "Can't extract `str` to `Vec`". Wrap a single path in a list; paths
-  must be `str` (`os.fsdecode(path)` for a `Path` or `bytes`).
+  must be `str` (`os.fsdecode(path)` for a `Path` or `bytes`). The list
+  arguments are still converted before the later arguments, so other bad input
+  raises the same exception, with the same "while processing" note, as before.
+- Colour TIFFs (RGB, RGBA and other files the typed TIFF reader hands to the
+  f64 `Frame` reader) now report their real shape to the mask check.
+  `Integrator.integrate1d(path)` with a mask set raised `image shape (0, 0)
+  does not match mask shape ...` for them whether or not the mask matched, and
+  a mismatching mask in a batch reported `integration worker panicked`; both
+  now behave as for grayscale TIFFs. Batches with a matching mask already
+  integrated them. Gray+alpha and palette TIFFs are still rejected by the
+  decoder, as before.
 
 ## [0.13.0] - 2026-11-15
 
