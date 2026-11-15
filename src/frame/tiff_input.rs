@@ -1,7 +1,7 @@
 //! Worker-owned decoding storage; the public f64 `Frame` API is unchanged.
 use super::Frame;
 use std::{fs::File, io::BufReader};
-use tiff::decoder::{ChunkType, Decoder, DecodingResult, Limits};
+use tiff::decoder::{ChunkType, DecodingResult, Limits};
 use tiff::tags::Tag;
 
 /// Reusable native TIFF input used by file workers and integration tasks.
@@ -32,11 +32,13 @@ impl TiffFrame {
         self.dim1 = 0;
         self.dim2 = 0;
         self.fallback = None;
-        let mut decoder = Decoder::new(BufReader::new(File::open(path)?))?;
+        let mut decoder = super::open_tiff(BufReader::new(File::open(path)?))?;
+        // Colour and other multi-sample files fail here, before either path.
+        super::require_single_channel(&mut decoder)?;
         let (width, height) = decoder.dimensions()?;
         let tiff::ColorType::Gray(bits) = decoder.colortype()? else {
-            // Preserve the legacy handling of non-detector/multichannel files.
-            return self.load_fallback(path);
+            // require_single_channel accepts only ColorType::Gray.
+            return Err("unsupported TIFF: not a grayscale image".into());
         };
         let format = decoder
             .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)?
@@ -114,10 +116,12 @@ impl TiffFrame {
         Ok(())
     }
 
-    /// Load `path` through the f64 `Frame` reader, for TIFFs the typed path
-    /// does not decode (colour, palette, extra samples, unusual sample
-    /// formats). `dim1`/`dim2` are set to that frame's shape, so shape checks
-    /// see the real image and not 0 x 0.
+    /// Load `path` through the f64 `Frame` reader, for single-channel TIFFs
+    /// whose sample format and bit depth the typed path does not handle.
+    /// With tiff 0.8 every such file also fails in the `Frame` reader, so
+    /// this returns the decoder's error; colour files are rejected before
+    /// this. On success `dim1`/`dim2` are set to that frame's shape, so shape
+    /// checks see the real image and not 0 x 0.
     fn load_fallback(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let frame = Frame::from_tiff(path.to_owned())?;
         self.dim1 = frame.dim1;

@@ -24,9 +24,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests and tags, and on tags checks that the tag, `Cargo.toml` and
   `pyproject.toml` versions agree; the GitHub release and both uploads wait
   for it. A re-run skips a version that is already on crates.io.
+- Criterion benches for paths the existing ones did not time (#47):
+  `methods` (counting, `pixel_split`, supersampled and `pyfai_full`, cold and
+  warm, 1D and 2D), `azimuthal` (the three azimuthal-range APIs),
+  `detectors` (circular masks, `Detector::position`, integration with a
+  catalogue detector attached, binned and transformed), `plans` (fixed and
+  prepared plans, CSC versus CSR), `multi` (`MultiIntegrator`), `batch` (the
+  Rust batch helpers) and `massif` (with and without `PreparedMassif`).
+  `scripts/bench_compare.py` runs them on two revisions and prints a
+  comparison table, and `python_examples/bench_batch_streams.py` measures
+  the Python batch and stream methods in frames per second. See
+  `docs/benchmarks/README.md`. CI only compiles the new benches.
 
 ### Changed
 
+- **Breaking:** `math::histogram::histogram_parallel` is removed. Nothing in
+  the library, its Python bindings or Dioptas called it; the legacy
+  `Histogram` integration method uses `histogram` and `histogram_with_errors`,
+  which are unchanged. Code that called it can call
+  `math::histogram::histogram` with the same arguments: it returns the same
+  bins and counts, and per-bin means that can differ only by floating-point
+  rounding, because the terms are added in a different order.
+- **Breaking:** the Rust streaming batch API is now bounded and cancellable
+  (issue 41). `batch::process_streaming(input, integrator, task, options)`
+  replaces `process_files_streaming` and `process_queue_streaming`; the
+  `StreamingBatch` handle and the `WorkItem` input type are no longer public.
+  The input is any iterator of paths or in-memory frames (`BatchInput`), read
+  lazily and at most `StreamOptions::read_ahead` items ahead of the consumer
+  (by default 4 per worker, as the Python streams), so a slow consumer or an
+  endless input holds a bounded number of frames and results. The returned
+  `BatchStream` yields `(index, name, result)` in input order; dropping it or
+  calling `close` stops the workers, leaves queued items unintegrated and
+  returns once the integrator is released. A panic while integrating an
+  item, or in the input iterator, becomes that item's error. Before, both
+  old functions read their whole input regardless of the consumer, lost a
+  panicking worker's results silently and returned results out of order;
+  after the receiver was dropped `process_files_streaming` still integrated
+  every file, and `process_queue_streaming` workers kept the integrator for
+  as long as the caller's queue stayed open. The Python API is unchanged.
 - **Breaking:** `Geometry`'s `dim1` and `dim2` fields are private. Read the
   shape with `dim1()`, `dim2()` or `shape()` (a `(dim1, dim2)` tuple, like
   the plans' `shape()`), and change it with
@@ -137,10 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integration worker panicked` and printed a Rust panic to stderr. In Rust,
   `process_files` dropped the panicking worker's whole share of the files from
   its result, `process_files_streaming` the rest of that share,
-  `process_queue_streaming` lost the item and the worker, and
-  `process_files_sequential` panicked. The batch helpers now check the mask
-  shape before integrating, as they already did the detector shape, and the
-  other files of the batch still integrate. Python array inputs are unchanged:
+  `process_queue_streaming` lost the item and the worker (both since replaced
+  by `process_streaming`, see Changed), and `process_files_sequential`
+  panicked. The batch helpers now check the mask shape before integrating, as
+  they already did the detector shape, and the other files of the batch still
+  integrate. Python array inputs are unchanged:
   they still raise `ValueError` before any work starts. In Rust, a `Frame`
   work item that does not match the mask now also gets this error instead of a
   panic, and a custom `IntegrationTask` is no longer called for such a frame.
@@ -164,8 +200,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raised `image shape (0, 0) does not match mask shape ...` for them whether
   or not the mask matched, and a mismatching mask in a batch reported
   `integration worker panicked`; both now pass or fail the mask check by the
-  file's real shape. How colour data is integrated is unchanged. Gray+alpha
-  and palette TIFFs are still rejected by the decoder, as before.
+  file's real shape. Colour TIFFs, the files this mostly concerned, are now
+  rejected before the mask check; see the next entry.
+- **Behaviour change:** colour TIFFs are rejected instead of integrated (#58).
+  An RGB, RGBA or CMYK TIFF (also as the first page of a multi-page file, or a
+  file declaring 3 or 4 samples per pixel with photometric
+  BlackIsZero/WhiteIsZero and a single BitsPerSample value) loaded as the
+  first rows × columns samples of its interleaved buffer, which is neither one
+  channel nor their mean or sum, so the integrated values were meaningless;
+  `Integrator.set_mask(path)` raised `PanicException` for such a file. Every
+  loader (`integrate1d`, `integrate2d`, `set_mask`, all batch methods,
+  `MultiIntegrator` and the Rust `Frame::from_tiff`, `Mask::from_tiff` and
+  batch helpers) now fails with `unsupported TIFF: photometric interpretation
+  RGB, 3 samples per pixel (bits per sample [8, 8, 8]), image shape (h, w);
+  only single-channel (grayscale) TIFFs are supported` — a `ValueError` for
+  single images and masks, the file's `BatchResult.error` in batches, where
+  the other files still integrate. Palette TIFFs and files with extra samples
+  (gray+alpha, grayscale with 3 samples, RGB with 5), which the decoder
+  already refused, now get the same explanation (for 2 or 5+ samples without
+  the photometric interpretation and shape, which the decoder does not expose)
+  instead of the decoder's message; planar colour TIFFs still fail with the
+  decoder's "Inconsistent sizes encountered". Grayscale loading is unchanged,
+  bit for bit. To integrate one channel of a colour image, read it with
+  `tifffile` and pass the channel as a float64 array.
 
 ## [0.13.0] - 2026-11-15
 

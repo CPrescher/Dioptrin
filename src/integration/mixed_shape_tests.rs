@@ -3,14 +3,12 @@
 //! Geometry arrays and lookup tables are cached per integrator, not per
 //! shape. Every call must still integrate with tables for its own image, and
 //! give the result a fresh integrator gives, whatever the other threads do.
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
 use super::{IntegrationGrid2d, IntegrationMethod, Integrator, RadialUnit};
-use crate::batch::{
-    Integration1D, Integration2D, WorkItem, process_files_streaming, process_queue_streaming,
-};
+use crate::batch::{Integration1D, Integration2D, StreamOptions, process_streaming};
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
 use crate::mask::Mask;
@@ -377,29 +375,24 @@ fn queue_batch_with_workers_handles_mixed_shapes() {
     for method in [IntegrationMethod::Counting, IntegrationMethod::PixelSplit] {
         let references = references(method);
         let n_frames = 48;
-        let (work_tx, work_rx) = mpsc::channel();
-        for index in 0..n_frames {
-            let frame = &references[index % references.len()].0;
-            work_tx
-                .send(WorkItem::Frame {
-                    index,
+        let frames: Vec<Frame> = (0..n_frames)
+            .map(|index| {
+                let frame = &references[index % references.len()].0;
+                Frame {
                     name: frame.name.clone(),
-                    frame: Frame {
-                        name: frame.name.clone(),
-                        data: frame.data.clone(),
-                        dim1: frame.dim1,
-                        dim2: frame.dim2,
-                    },
-                })
-                .unwrap();
-        }
-        drop(work_tx);
+                    data: frame.data.clone(),
+                    dim1: frame.dim1,
+                    dim2: frame.dim2,
+                }
+            })
+            .collect();
         let task = Integration2D {
             n_radial: N_RADIAL,
             n_azimuthal: N_AZIMUTHAL,
         };
-        let batch = process_queue_streaming(work_rx, Arc::new(integrator(method)), task, 4, 2);
-        let results: Vec<_> = batch.into_iter().collect();
+        let options = StreamOptions::new(4, 2);
+        let stream = process_streaming(frames, Arc::new(integrator(method)), task, options);
+        let results: Vec<_> = stream.unwrap().collect();
         assert_eq!(results.len(), n_frames, "a worker died: {method:?}");
         for (index, _, result) in results {
             let expected = references[index % references.len()].1.1.as_ref();
@@ -438,17 +431,27 @@ fn file_batch_with_workers_handles_tiffs_of_different_sizes() {
     let expected: Vec<_> = files
         .iter()
         .map(|f| {
-            process_files_streaming(&[f.to_string()], Arc::new(new()), task, 1, 1)
-                .into_iter()
-                .next()
-                .unwrap()
-                .2
-                .unwrap()
+            process_streaming(
+                vec![f.to_string()],
+                Arc::new(new()),
+                task,
+                StreamOptions::new(1, 1),
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .2
+            .unwrap()
         })
         .collect();
-    let results: Vec<_> = process_files_streaming(&filenames, Arc::new(new()), task, 4, 1)
-        .into_iter()
-        .collect();
+    let results: Vec<_> = process_streaming(
+        filenames.clone(),
+        Arc::new(new()),
+        task,
+        StreamOptions::new(4, 1),
+    )
+    .unwrap()
+    .collect();
     assert_eq!(results.len(), filenames.len(), "a worker died");
     for (index, name, result) in results {
         assert_eq!(result.as_ref(), Ok(&expected[index % 2]), "{name} #{index}");
@@ -458,17 +461,27 @@ fn file_batch_with_workers_handles_tiffs_of_different_sizes() {
     let expected: Vec<_> = files
         .iter()
         .map(|f| {
-            process_files_streaming(&[f.to_string()], Arc::new(new()), task, 1, 1)
-                .into_iter()
-                .next()
-                .unwrap()
-                .2
-                .unwrap()
+            process_streaming(
+                vec![f.to_string()],
+                Arc::new(new()),
+                task,
+                StreamOptions::new(1, 1),
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .2
+            .unwrap()
         })
         .collect();
-    let results: Vec<_> = process_files_streaming(&filenames, Arc::new(new()), task, 4, 1)
-        .into_iter()
-        .collect();
+    let results: Vec<_> = process_streaming(
+        filenames.clone(),
+        Arc::new(new()),
+        task,
+        StreamOptions::new(4, 1),
+    )
+    .unwrap()
+    .collect();
     assert_eq!(results.len(), filenames.len(), "a worker died");
     for (index, name, result) in results {
         assert_eq!(result.as_ref(), Ok(&expected[index % 2]), "{name} #{index}");

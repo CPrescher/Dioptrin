@@ -268,6 +268,30 @@ fn main() {
 
 For custom processing logic, implement the `IntegrationTask` trait on your own struct.
 
+To handle results as they come, for example from a detector that keeps
+producing frames, stream them with `process_streaming`. It takes any iterator
+of paths or in-memory frames, reads it lazily, and runs at most a few items
+ahead of the consumer (by default 4 per worker; set with
+`StreamOptions::read_ahead`). Results come in input order; dropping the stream
+stops the workers and releases the integrator.
+
+```rust
+use dioptrin::batch::{process_streaming, Integration1D, StreamOptions};
+
+// `integrator` as above, before it is moved into `process_files`; `frames` is
+// any iterator of `Frame`s (or of path `String`s) and may be endless.
+let options = StreamOptions::new(4, 2).read_ahead(8);
+let task = Integration1D { n_bins: 3000 };
+let results = process_streaming(frames, Arc::clone(&integrator), task, options)
+    .expect("start worker threads");
+for (index, name, result) in results {
+    match result {
+        Ok((_radial, intensity)) => println!("{index} {name}: {} bins", intensity.len()),
+        Err(e) => eprintln!("{index} {name}: error - {e}"),
+    }
+}
+```
+
 ## Raw LUT integration example
 
 If you want direct control over LUT building and integration, you can use the LUT APIs directly.
@@ -378,6 +402,20 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 # 2D integration from NumPy array
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
+
+TIFF images and masks must be single-channel (grayscale), with 8- to 64-bit
+integer or float32/float64 samples; only the first page of a multi-page TIFF
+is read. Colour TIFFs (RGB, RGBA, CMYK, palette) and files with extra samples
+are rejected with an error that says only single-channel TIFFs are supported
+and, where the decoder can read the header, names the photometric
+interpretation, samples per pixel and image shape (`ValueError` in Python, a
+per-file error in batches; planar colour files fail with the decoder's
+"Inconsistent sizes encountered"):
+detectors do not write colour images, so such a file is most likely the wrong
+one. To integrate one channel of a colour image, read it with `tifffile` and
+pass it as an array, e.g. `np.ascontiguousarray(rgb[::-1, :, 0], dtype=np.float64)`
+(the `[::-1]` matches the up-down flip applied to TIFF paths; `tifffile`
+returns planar files as `(3, rows, cols)`, so use `rgb[0, ::-1]` there).
 
 An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the 1D bin grid and drops values outside it; in ordinary single-detector 2D integration only `pyfai_full` uses it, while the other methods keep a detector-local radial grid.
 The legacy `histogram` method always uses the automatic radial range and does not honour `radial_range`; Python raises `ValueError` if both are given.
@@ -670,6 +708,14 @@ Run LUT build benchmarks:
 ```
 cargo bench --bench build
 ```
+
+Further targets time the four methods side by side (`methods`), azimuthal
+ranges (`azimuthal`), physical detectors (`detectors`), prepared plans and
+sparse layouts (`plans`), `MultiIntegrator` (`multi`), the batch helpers
+(`batch`) and the Massif peak search (`massif`). Filter by benchmark ID, e.g.
+`cargo bench --bench methods -- 'methods/build1d/'`, and compare two revisions
+with `python3 scripts/bench_compare.py A B`; see
+[docs/benchmarks/README.md](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/README.md).
 
 ## pyFAI-compatible full pixel splitting
 

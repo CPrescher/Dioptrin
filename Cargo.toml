@@ -50,6 +50,37 @@ harness = false
 name = "integrator"
 harness = false
 
+# Coverage benches for the paths the three above do not time (issue #47).
+# Shared inputs live in benches/common/mod.rs; IDs are <target>/<case>/<variant>.
+# See docs/benchmarks/README.md for comparing two revisions.
+[[bench]]
+name = "methods"
+harness = false
+
+[[bench]]
+name = "detectors"
+harness = false
+
+[[bench]]
+name = "plans"
+harness = false
+
+[[bench]]
+name = "multi"
+harness = false
+
+[[bench]]
+name = "azimuthal"
+harness = false
+
+[[bench]]
+name = "batch"
+harness = false
+
+[[bench]]
+name = "massif"
+harness = false
+
 # Tests spend most of their time in loops over whole detector frames, which
 # run several times slower without optimisation (`cargo test` takes about a
 # sixth of the time with these settings). Dependencies are compiled once and
