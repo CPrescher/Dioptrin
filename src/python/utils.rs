@@ -234,9 +234,10 @@ pub fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     Ok(poni)
 }
 
-/// Extract argument `name` the way a typed `#[pyo3]` parameter would, keeping
-/// PyO3's "argument 'name': ..." prefix on a TypeError, for arguments taken as
-/// `&Bound<PyAny>` so they can be checked first with [`reject_single_path`].
+/// Extract argument `name` the way a typed `#[pyo3]` parameter would, for
+/// arguments taken as `&Bound<PyAny>` so they can be checked first with
+/// [`reject_single_path`]: an extraction error gets the note
+/// "while processing 'name'", as PyO3's own argument extraction adds it.
 pub fn extract_argument<'a, 'py, T>(obj: &'a Bound<'py, PyAny>, name: &str) -> PyResult<T>
 where
     T: FromPyObject<'a, 'py>,
@@ -245,12 +246,9 @@ where
     obj.extract::<T>().map_err(|err| {
         let err: PyErr = err.into();
         let py = obj.py();
-        if !err.is_instance_of::<PyTypeError>(py) {
-            return err;
-        }
-        let wrapped = PyTypeError::new_err(format!("argument '{name}': {}", err.value(py)));
-        wrapped.set_cause(py, Some(err));
-        wrapped
+        let note = format!("while processing '{name}'");
+        let _ = err.value(py).call_method1("add_note", (note,));
+        err
     })
 }
 

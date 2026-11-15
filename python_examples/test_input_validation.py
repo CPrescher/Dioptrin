@@ -223,8 +223,8 @@ class SinglePathTests(unittest.TestCase):
                         with self.assertRaisesRegex(TypeError, f"^{prefix}.*{suffix}"):
                             call()
 
-            # Other bad arguments still name the argument, as typed PyO3
-            # parameters do.
+            # Other bad arguments still name the argument in a note, as
+            # PyO3 does for typed parameters (unchanged from main).
             prefixed = {
                 "batch1d": (lambda: ai.batch1d(5, 10), "images"),
                 "batch2d": (lambda: ai.batch2d([Path(path)], 10, 8), "tiff_paths"),
@@ -234,8 +234,12 @@ class SinglePathTests(unittest.TestCase):
             }
             for name, (call, argument) in prefixed.items():
                 with self.subTest(call=name):
-                    with self.assertRaisesRegex(TypeError, f"^argument '{argument}': "):
+                    with self.assertRaises(TypeError) as caught:
                         call()
+                    self.assertEqual(
+                        getattr(caught.exception, "__notes__", None),
+                        [f"while processing '{argument}'"],
+                    )
 
             # A one-item list still works everywhere.
             self.assertTrue(ai.batch1d([path], 10)[0].is_ok())
