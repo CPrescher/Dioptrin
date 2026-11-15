@@ -139,3 +139,30 @@ The default `pixel_split` method retains its fractional polygon convention.
 `histogram` remains the separate unsplit legacy method. Singular beam pixels
 and negligible boundary coverage are handled safely rather than reproduced
 bit for bit. See the [validation notes](https://github.com/CPrescher/Dioptrin/blob/v0.12.0/docs/validation/pyfai-full.md).
+
+### Azimuthal brackets and corrected sector ranges (0.13.0)
+
+`integrate2d`, `batch2d`, `batch2d_iter` and `MultiIntegrator.integrate2d`
+accept the keyword `azimuthal_bracket` (radians) instead of `n_azimuthal`,
+giving rows as centre ± half-width:
+
+```python
+cake = ai.integrate2d(image, 2000, azimuthal_bracket=np.radians(2.5))
+# 72 rows centred on 0°, 5°, …, 355°
+```
+
+Behaviour changes to check when upgrading:
+
+- An explicit `azimuthal_range` in 2D calls is now the true `(min, max)` range
+  in radians, sectors included. It was previously read as (first-bin centre,
+  step); code that worked around this must pass `(min, max)`.
+- 1D `pixel_split` weights each pixel by the fraction of its own area in a bin,
+  so intensities change slightly (closer to pyFAI full splitting).
+  `MultiIntegrator` 1D `pixel_split` and `supersampled` patterns change where
+  detectors share a bin with unequal coverage.
+- Invalid input raises `ValueError` or `TypeError` instead of being ignored,
+  e.g. `method="histogram"` with `radial_range`, a `polarization_factor`
+  outside [-1, 1], or a q unit without a positive wavelength.
+
+See the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.13.0/CHANGELOG.md)
+for the full list.
