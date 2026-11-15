@@ -154,6 +154,10 @@ class StreamShutdownTests(unittest.TestCase):
                 release.wait()
             rounds = 4
             check_sync_batches()  # start the shared pools before counting
+            start = os_threads()
+            # A finished generator stream leaves its workers cached for the
+            # next one; start that cache before counting too.
+            assert len(list(ai.batch1d_iter(frames(2), 10, num_workers=4, num_threads=2))) == 2
             baseline = os_threads()
             for i in range(rounds):
                 if i % 2:
@@ -173,6 +177,36 @@ class StreamShutdownTests(unittest.TestCase):
             release.set()
             if baseline is not None:
                 assert until(lambda: os_threads() <= baseline + 4), (baseline, os_threads())
+                # Clearing the caches ends the cached workers too.
+                ai.clear_file_workers()
+                assert until(lambda: os_threads() <= start), (start, os_threads())
+        """)
+
+    def test_finished_streams_reuse_their_workers(self):
+        # Consecutive generator streams share one set of workers (4 worker
+        # threads plus 8 Rayon threads here) once the previous stream is done;
+        # a stream that is still open keeps its own.
+        self.run_scenario("""
+            def stream(n=None):
+                return ai.batch1d_iter(frames(n), 10, num_workers=4, num_threads=2)
+            assert len(list(stream(3))) == 3
+            if os_threads() is None:
+                raise SystemExit(0)
+            time.sleep(0.5)  # let the finished producer thread exit
+            settled = os_threads()
+            for _ in range(5):
+                assert len(list(stream(3))) == 3
+                it = stream()
+                assert next(it).is_ok()
+                # Only the new producer thread: the workers are the cached ones.
+                assert os_threads() <= settled + 2, (settled, os_threads())
+                del it  # closed mid-way
+            # An open stream does not lend its workers: a second stream runs
+            # alongside it on new ones.
+            open_stream = stream()
+            assert next(open_stream).is_ok()
+            assert len(list(stream(3))) == 3
+            del open_stream
         """)
 
     def test_producer_panic_raises_after_earlier_results(self):

@@ -138,6 +138,12 @@ impl StreamControl {
         WorkerGuard(Arc::clone(self))
     }
 
+    /// Every registered worker job has finished, so the workers are free for
+    /// another stream.
+    pub(crate) fn workers_idle(&self) -> bool {
+        self.state().active_workers == 0
+    }
+
     /// Block until every registered worker job has finished.
     pub(crate) fn wait_workers_idle(&self) {
         let mut state = self.state();
@@ -504,10 +510,12 @@ mod tests {
         assert_eq!(index, 0);
         assert!(result.is_ok());
         assert!(Arc::strong_count(&integrator) > 1);
+        assert!(!control.workers_idle());
 
         control.cancel();
         let waiter = Arc::clone(&control);
         within(10, move || waiter.wait_workers_idle());
+        assert!(control.workers_idle());
         assert_eq!(Arc::strong_count(&integrator), 1);
         // The jobs released the pool, which shuts its threads down, and the
         // work queue closed, so a blocked producer would see the error.
