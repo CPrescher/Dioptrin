@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare the criterion benches of two revisions and print a table.
 
-    python3 scripts/bench_compare.py v0.12.0 HEAD --benches methods detectors multi batch
+    python3 scripts/bench_compare.py v0.12.0 HEAD --benches methods detectors multi
     RAYON_NUM_THREADS=1 python3 scripts/bench_compare.py main HEAD \\
         --benches methods plans --filter 'methods/build1d/|plans/fixed1d/' --rounds 3
 
@@ -40,9 +40,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# Every target. methods, detectors, multi and batch (and the older build,
-# integrate, integrator) also compile against v0.12.0; azimuthal, plans and
-# massif need 0.13 APIs.
+# Every target. methods, detectors and multi (and the older build, integrate,
+# integrator) also compile against v0.12.0; azimuthal, plans and massif need
+# 0.13 APIs, and batch needs process_streaming (after 0.13).
 DEFAULT_BENCHES = ["methods", "azimuthal", "detectors", "plans", "multi", "batch", "massif"]
 
 

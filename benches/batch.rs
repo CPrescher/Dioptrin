@@ -1,12 +1,14 @@
 //! The Rust batch helpers on many frames, in frames per second.
 //!
 //! - `batch/queue1d/<size>/w<workers>`, `batch/queue2d/<size>/w<workers>`:
-//!   `process_queue_streaming` on in-memory frames (`WorkItem::Frame`), one
-//!   Rayon thread per worker, `pixel_split`, 1000 bins (1D) or 500 x 360
-//!   (2D), tables built before timing. Each iteration starts the workers,
-//!   integrates the batch and collects every result; the queue is filled
-//!   before timing starts. `256` is 200 synthetic 256 x 256 frames, `1m` 16
-//!   copies of the CeO2 Pilatus 1M image.
+//!   `process_streaming` on in-memory frames (`BatchInput::Frame`), default
+//!   read-ahead, one Rayon thread per worker, `pixel_split`, 1000 bins (1D)
+//!   or 500 x 360 (2D), tables built before timing. Each iteration starts the
+//!   workers, integrates the batch and collects every result in order; the
+//!   frames are copied before timing starts. Before `process_streaming`
+//!   replaced it (on main after 0.13.0), these names timed
+//!   `process_queue_streaming`. `256` is 200 synthetic 256 x 256 frames, `1m`
+//!   16 copies of the CeO2 Pilatus 1M image.
 //! - `batch/files/1m/w<workers>`: `process_files` on 16 paths to the CeO2
 //!   TIFF (decoding included; the file is in the OS cache after the first
 //!   read).
@@ -17,12 +19,11 @@ mod common;
 
 use std::hint::black_box;
 use std::sync::Arc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use dioptrin::batch::{
-    Integration1D, Integration2D, IntegrationTask, WorkItem, process_files, process_queue_streaming,
+    Integration1D, Integration2D, IntegrationTask, StreamOptions, process_files, process_streaming,
 };
 use dioptrin::frame::Frame;
 use dioptrin::integration::{IntegrationMethod, Integrator};
@@ -41,24 +42,13 @@ where
         for workers in WORKERS {
             group.bench_function(format!("{size}/w{workers}"), |b| {
                 b.iter_batched(
-                    || {
-                        let (tx, rx) = mpsc::channel();
-                        for (index, frame) in frames.iter().enumerate() {
-                            tx.send(WorkItem::Frame {
-                                index,
-                                name: frame.name.clone(),
-                                frame: common::copy_frame(frame),
-                            })
-                            .unwrap();
-                        }
-                        rx
-                    },
-                    |rx| {
-                        let done =
-                            process_queue_streaming(rx, ai.clone(), task.clone(), workers, 1)
-                                .into_iter()
-                                .filter(|(_, _, r)| r.is_ok())
-                                .count();
+                    || frames.iter().map(common::copy_frame).collect::<Vec<_>>(),
+                    |input| {
+                        let options = StreamOptions::new(workers, 1);
+                        let done = process_streaming(input, ai.clone(), task.clone(), options)
+                            .expect("start the stream")
+                            .filter(|(_, _, r)| r.is_ok())
+                            .count();
                         assert_eq!(done, frames.len());
                     },
                     BatchSize::PerIteration,

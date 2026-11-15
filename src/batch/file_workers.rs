@@ -7,9 +7,26 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
+/// Unordered results of a pooled batch helper, behind the Python
+/// `BatchIterator`, which reorders them and stops the stream.
+pub(crate) struct StreamingBatch<T> {
+    receiver: Receiver<QueueResult<T>>,
+}
+
+impl<T> StreamingBatch<T> {
+    pub(crate) fn into_receiver(self) -> Receiver<QueueResult<T>> {
+        self.receiver
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_iter(self) -> impl Iterator<Item = QueueResult<T>> {
+        self.receiver.into_iter()
+    }
+}
+
 /// How often a worker waiting for queue input checks whether its stream was
 /// cancelled. Bounds how long a closed stream keeps its workers.
-const CANCEL_POLL: Duration = Duration::from_millis(50);
+pub(super) const CANCEL_POLL: Duration = Duration::from_millis(50);
 
 /// Shared state of one queue-fed stream: its consumer (the Python
 /// `BatchIterator`), its workers (a pool of its own) and the producer thread
@@ -116,7 +133,7 @@ impl StreamControl {
     }
 
     /// Register a worker job; it counts as active until the guard is dropped.
-    fn worker_started(self: &Arc<Self>) -> WorkerGuard {
+    pub(super) fn worker_started(self: &Arc<Self>) -> WorkerGuard {
         self.state().active_workers += 1;
         WorkerGuard(Arc::clone(self))
     }
@@ -182,16 +199,19 @@ impl FileWorkers {
             let (tx, rx) = mpsc::channel::<Job>();
             // Building the Rayon context before spawning also makes failures
             // observable by the caller rather than silently losing file results.
-            let handle = thread::spawn(move || {
-                let mut frame = TiffFrame::default();
-                while let Ok(job) = rx.recv() {
-                    pool.install(|| (job.run)(&mut frame));
-                    // Release on the owning OS worker, after Rayon returns.
-                    // Releasing inside Rayon could join the OS thread that is
-                    // waiting for that very Rayon closure to finish.
-                    drop(job.keep_alive);
-                }
-            });
+            let handle = thread::Builder::new()
+                .name("dioptrin-file-worker".to_owned())
+                .spawn(move || {
+                    let mut frame = TiffFrame::default();
+                    while let Ok(job) = rx.recv() {
+                        pool.install(|| (job.run)(&mut frame));
+                        // Release on the owning OS worker, after Rayon returns.
+                        // Releasing inside Rayon could join the OS thread that is
+                        // waiting for that very Rayon closure to finish.
+                        drop(job.keep_alive);
+                    }
+                })
+                .map_err(|e| format!("failed to start a file worker: {e}"))?;
             senders.push(tx);
             handles.push(handle);
         }
@@ -206,7 +226,11 @@ impl FileWorkers {
         self.senders.len()
     }
 
-    fn submit(self: &Arc<Self>, worker: usize, job: impl FnOnce(&mut TiffFrame) + Send + 'static) {
+    pub(super) fn submit(
+        self: &Arc<Self>,
+        worker: usize,
+        job: impl FnOnce(&mut TiffFrame) + Send + 'static,
+    ) {
         // A streaming receiver can outlive its Python Integrator. Keep this
         // pool alive until its admitted work finishes, without retaining images
         // or the integrator after the job completes.
@@ -296,7 +320,6 @@ where
     T: IntegrationTask + Clone + 'static,
     T::Output: 'static,
 {
-    let completed = Arc::new(AtomicUsize::new(0));
     let (tx, rx) = mpsc::channel();
     let chunk_size = filenames.len().div_ceil(pool.workers()).max(1);
     for (worker, chunk) in filenames.chunks(chunk_size).enumerate() {
@@ -305,11 +328,9 @@ where
         let integrator = Arc::clone(&integrator);
         let task = task.clone();
         let tx = tx.clone();
-        let completed = Arc::clone(&completed);
         pool.submit(worker, move |frame| {
             for (offset, path) in paths.into_iter().enumerate() {
                 let result = execute(&task, &integrator, frame, &path);
-                completed.fetch_add(1, Ordering::Relaxed);
                 if tx.send((start + offset, path, result)).is_err() {
                     break;
                 }
@@ -322,12 +343,7 @@ where
         });
     }
     drop(tx);
-    StreamingBatch {
-        receiver: rx,
-        total_files: filenames.len(),
-        completed,
-        handles: Vec::new(),
-    }
+    StreamingBatch { receiver: rx }
 }
 
 /// Integrate queued items on every worker of `pool`, streaming results.
@@ -348,21 +364,48 @@ where
     T: IntegrationTask + Clone + 'static,
     T::Output: 'static,
 {
-    let work_rx = Arc::new(Mutex::new(work_rx));
-    let completed = Arc::new(AtomicUsize::new(0));
     let (tx, rx) = mpsc::channel();
+    submit_queue_jobs(work_rx, &integrator, &task, &pool, &control, &tx);
+    drop(tx);
+    StreamingBatch { receiver: rx }
+}
+
+/// Result of one queued item: its index, name and outcome.
+pub(super) type QueueResult<O> = (usize, String, Result<O, String>);
+
+/// Submit one job per worker of `pool` that integrates items from `work_rx`
+/// and sends each result to `tx`, until the queue is closed or `control` is
+/// cancelled. A panic while integrating an item becomes that item's error.
+/// Each job holds a clone of `tx`, released after the job has released the
+/// integrator and reported itself finished to `control`.
+pub(super) fn submit_queue_jobs<T>(
+    work_rx: Receiver<WorkItem>,
+    integrator: &Arc<Integrator>,
+    task: &T,
+    pool: &Arc<FileWorkers>,
+    control: &Arc<StreamControl>,
+    tx: &Sender<QueueResult<T::Output>>,
+) where
+    T: IntegrationTask + Clone + 'static,
+    T::Output: 'static,
+{
+    let work_rx = Arc::new(Mutex::new(work_rx));
     for worker in 0..pool.workers() {
         let work_rx = Arc::clone(&work_rx);
-        let completed = Arc::clone(&completed);
         let tx = tx.clone();
-        let integrator = Arc::clone(&integrator);
+        let integrator = Arc::clone(integrator);
         let task = task.clone();
-        let control = Arc::clone(&control);
+        let control = Arc::clone(control);
         // Registered before submission, so a consumer that closes the stream
         // at once still waits for this job.
         let active = control.worker_started();
         pool.submit(worker, move |buffer| {
             while let Some(item) = next_item(&work_rx, &control) {
+                // An item received just as the stream was cancelled is not
+                // integrated: the consumer has stopped waiting for it.
+                if control.is_cancelled() {
+                    break;
+                }
                 let (index, name, result) = match item {
                     WorkItem::Path { index, path } => {
                         let result = execute(&task, &integrator, buffer, &path);
@@ -375,7 +418,6 @@ where
                         (index, name, result)
                     }
                 };
-                completed.fetch_add(1, Ordering::Relaxed);
                 if control.is_cancelled() || tx.send((index, name, result)).is_err() {
                     break;
                 }
@@ -387,13 +429,6 @@ where
             drop(task);
             drop(active);
         });
-    }
-    drop(tx);
-    StreamingBatch {
-        receiver: rx,
-        total_files: 0,
-        completed,
-        handles: Vec::new(),
     }
 }
 
