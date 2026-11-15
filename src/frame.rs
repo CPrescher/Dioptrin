@@ -119,7 +119,7 @@ fn convert_and_flip_into<T: Copy + Into<f64>>(
     }
 }
 
-/// u64 doesn't impl Into<f64> due to precision loss — use `as f64`.
+/// u64 doesn't impl `Into<f64>` due to precision loss — use `as f64`.
 #[inline]
 fn convert_and_flip_into_u64(array: &[u64], row_len: usize, n_rows: usize, out: &mut Vec<f64>) {
     for row in (0..n_rows).rev() {
@@ -129,7 +129,7 @@ fn convert_and_flip_into_u64(array: &[u64], row_len: usize, n_rows: usize, out: 
     }
 }
 
-/// i64 doesn't impl Into<f64> due to precision loss — use `as f64`.
+/// i64 doesn't impl `Into<f64>` due to precision loss — use `as f64`.
 #[inline]
 fn convert_and_flip_into_i64(array: &[i64], row_len: usize, n_rows: usize, out: &mut Vec<f64>) {
     for row in (0..n_rows).rev() {
