@@ -47,14 +47,8 @@ fn validate_azimuthal_range(
 /// caller: queued, being integrated, or waiting in the result channel or the
 /// reorder buffer. Bounds the memory of a stream nobody consumes (an endless
 /// generator would otherwise be drained as fast as the workers run) while
-/// keeping every worker busy: queued items (`2 * workers`), one item per
+/// keeping every worker busy: a full work queue (`2 * workers`), one item per
 /// worker, and one finished result per worker.
-///
-/// The work queue holds a whole window, so the credit wait is the only place
-/// the producer blocks. Credit is granted by the consumer, which hands the
-/// GIL back as soon as it waits for its next result; waiting for queue space
-/// instead would wake the producer whenever a worker took an item and make it
-/// contend for the GIL with the consumer (measurably slower on small frames).
 fn iterator_window(num_workers: usize) -> usize {
     num_workers.max(1) * 4
 }
@@ -1423,8 +1417,7 @@ impl PyIntegrator {
                 // Generator/iterator path: a producer thread pulls items lazily.
                 let control = StreamControl::for_iterator();
                 let pool = self.iterator_pool(num_workers, num_threads, &control)?;
-                let (work_tx, work_rx) =
-                    std::sync::mpsc::sync_channel(iterator_window(num_workers));
+                let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
                 let stream_error = StreamError::default();
                 spawn_iterator_producer(
                     iter.unbind(),
@@ -1841,7 +1834,7 @@ impl PyIntegrator {
                 StreamControl::for_shared_pool(),
             )
         };
-        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(iterator_window(num_workers));
+        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
         let stream_error = StreamError::default();
 
         let total = match classified {
