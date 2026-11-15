@@ -12,8 +12,8 @@ use std::time::Duration;
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 
 /// Shared state of one queue-fed stream: its consumer (the Python
-/// `BatchIterator`), its workers and, for Python iterator input, the producer
-/// thread that pulls items from the caller's iterator.
+/// `BatchIterator`), its workers (a pool of its own) and the producer thread
+/// that pulls items from the caller's iterator or list of arrays.
 ///
 /// - `cancel` stops the stream: idle workers leave their queue wait within
 ///   [`CANCEL_POLL`], busy ones after their current item, and the producer
@@ -27,8 +27,6 @@ const CANCEL_POLL: Duration = Duration::from_millis(50);
 pub(crate) struct StreamControl {
     cancelled: AtomicBool,
     input_exhausted: AtomicBool,
-    /// Fed by a Python iterator, on a pool of its own.
-    iterator_input: bool,
     state: Mutex<ControlState>,
     changed: Condvar,
 }
@@ -52,21 +50,10 @@ impl Drop for WorkerGuard {
 }
 
 impl StreamControl {
-    /// Control for a stream fed by a Python iterator on its own worker pool.
-    pub(crate) fn for_iterator() -> Arc<Self> {
-        Self::new(true)
-    }
-
-    /// Control for a finite stream on the shared cached worker pool.
-    pub(crate) fn for_shared_pool() -> Arc<Self> {
-        Self::new(false)
-    }
-
-    fn new(iterator_input: bool) -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             cancelled: AtomicBool::new(false),
             input_exhausted: AtomicBool::new(false),
-            iterator_input,
             state: Mutex::new(ControlState::default()),
             changed: Condvar::new(),
         })
@@ -76,10 +63,6 @@ impl StreamControl {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    pub(crate) fn iterator_input(&self) -> bool {
-        self.iterator_input
     }
 
     pub(crate) fn cancel(&self) {
@@ -350,9 +333,8 @@ where
 /// Integrate queued items on every worker of `pool`, streaming results.
 ///
 /// The result channel is unbounded, so a worker never blocks on a consumer
-/// that stopped reading: the shared cached pool must stay free for
-/// synchronous batches. Memory is bounded upstream instead, by whatever feeds
-/// `work_rx` (the Python iterator producer waits for credit from `control`).
+/// that stopped reading. Memory is bounded upstream instead, by whatever feeds
+/// `work_rx` (the Python stream producer waits for credit from `control`).
 /// Cancelling `control` makes every worker return within [`CANCEL_POLL`] (or
 /// after the item it is integrating), releasing its share of `integrator`.
 pub(crate) fn process_queue_with_pool<T>(
@@ -481,7 +463,7 @@ mod tests {
         );
         let pool = FileWorkers::new(2, 1).unwrap();
         let weak_pool = Arc::downgrade(&pool);
-        let control = StreamControl::for_iterator();
+        let control = StreamControl::new();
         // The sender stays alive, like a producer stuck in a blocking
         // generator: without cancellation the workers would wait forever.
         let (work_tx, work_rx) = mpsc::sync_channel(4);
@@ -537,7 +519,7 @@ mod tests {
 
     #[test]
     fn credit_window_bounds_items_in_flight() {
-        let control = StreamControl::for_iterator();
+        let control = StreamControl::new();
         assert!(control.wait_for_credit(0, 2));
         assert!(control.wait_for_credit(1, 2));
         // Item 2 needs the first result delivered.

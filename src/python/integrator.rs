@@ -1,9 +1,9 @@
-use numpy::PyReadonlyArray2;
+use numpy::{PyArray2, PyArrayMethods, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::batch::{
@@ -78,13 +78,57 @@ fn pull_work_item(
     }))
 }
 
-/// Pull items from a Python iterator on a producer thread and queue them for
-/// the workers. An invalid item, a mask-shape mismatch, an exception raised
+/// Next work item from a list of arrays checked when the stream was opened,
+/// copied now: `Ok(None)` after the last one. Shape and mask are checked again,
+/// as the caller may have changed an array in place since.
+fn pull_array_item(
+    array: Option<Py<PyArray2<f64>>>,
+    py: Python<'_>,
+    index: usize,
+    mask: Option<(usize, usize)>,
+) -> PyResult<Option<WorkItem>> {
+    let Some(array) = array else {
+        return Ok(None);
+    };
+    let array = array
+        .bind(py)
+        .try_readonly()
+        .map_err(|err| PyRuntimeError::new_err(format!("images[{index}]: {err}")))?;
+    let (dim1, dim2) = extract_item_dims(&array, index)?;
+    let slice = array
+        .as_slice()
+        .map_err(|err| PyValueError::new_err(format!("Array {index} must be contiguous: {err}")))?;
+    check_mask_shape(mask, (dim1, dim2), &format!("images[{index}]"))?;
+    let name = format!("array[{index}]");
+    Ok(Some(WorkItem::Frame {
+        index,
+        name: name.clone(),
+        frame: Frame {
+            name,
+            data: slice.to_vec(),
+            dim1,
+            dim2,
+        },
+    }))
+}
+
+/// What the producer of a queue-fed stream reads.
+enum StreamInput {
+    /// The caller's iterator or generator.
+    Iterator(Py<PyAny>),
+    /// A list of arrays, checked when the stream was opened and copied one at
+    /// a time as the stream reaches them; each reference is dropped once its
+    /// frame is copied.
+    Arrays(std::vec::IntoIter<Py<PyArray2<f64>>>),
+}
+
+/// Pull items from a Python iterator or a list of arrays on a producer thread
+/// and queue them for the workers. An invalid item, a mask-shape mismatch, an exception raised
 /// by the iterator itself, or a Rust panic while pulling (pyo3 resumes a
 /// `PanicException` from the caller's code as one) is recorded in
 /// `stream_error` at its position, so the consumer raises it after all
 /// earlier results, and ends production. Only reaching the end of the
-/// iterator marks the input exhausted; the consumer treats any other end of
+/// input marks it exhausted; the consumer treats any other end of
 /// the stream without a recorded error as a failure.
 ///
 /// Before each pull the producer waits for credit (see [`iterator_window`])
@@ -93,8 +137,8 @@ fn pull_work_item(
 /// for its next frame) after the stream was closed, this thread stays until
 /// that call returns. It holds neither the integrator nor the workers, which
 /// shut down independently.
-fn spawn_iterator_producer(
-    iter: Py<PyAny>,
+fn spawn_producer(
+    input: StreamInput,
     work_tx: SyncSender<WorkItem>,
     mask: Option<(usize, usize)>,
     stream_error: StreamError,
@@ -103,35 +147,39 @@ fn spawn_iterator_producer(
 ) {
     std::thread::spawn(move || {
         Python::attach(move |py| {
-            let iter = iter.bind(py);
+            // Moved in, so the remaining references are dropped while attached.
+            let mut input = input;
             for index in 0.. {
                 // Wait for credit (and below, for queue space) without
                 // holding the GIL.
                 if !py.detach(|| control.wait_for_credit(index, window)) {
                     break; // Stream closed
                 }
-                let work_item =
-                    match catch_unwind(AssertUnwindSafe(|| pull_work_item(iter, index, mask))) {
-                        Ok(Ok(Some(item))) => item,
-                        Ok(Ok(None)) => {
-                            control.mark_input_exhausted();
-                            break;
-                        }
-                        Ok(Err(err)) => {
-                            stream_error.set(index, err);
-                            break;
-                        }
-                        Err(payload) => {
-                            stream_error.set(
-                                index,
-                                PyRuntimeError::new_err(format!(
-                                    "reading images[{index}] from the input iterator panicked: {}",
-                                    panic_message(&*payload)
-                                )),
-                            );
-                            break;
-                        }
-                    };
+                let pull = || match &mut input {
+                    StreamInput::Iterator(iter) => pull_work_item(iter.bind(py), index, mask),
+                    StreamInput::Arrays(arrays) => pull_array_item(arrays.next(), py, index, mask),
+                };
+                let work_item = match catch_unwind(AssertUnwindSafe(pull)) {
+                    Ok(Ok(Some(item))) => item,
+                    Ok(Ok(None)) => {
+                        control.mark_input_exhausted();
+                        break;
+                    }
+                    Ok(Err(err)) => {
+                        stream_error.set(index, err);
+                        break;
+                    }
+                    Err(payload) => {
+                        stream_error.set(
+                            index,
+                            PyRuntimeError::new_err(format!(
+                                "reading images[{index}] from the input panicked: {}",
+                                panic_message(&*payload)
+                            )),
+                        );
+                        break;
+                    }
+                };
                 if py.detach(|| work_tx.send(work_item)).is_err() {
                     break; // Workers gone
                 }
@@ -139,45 +187,6 @@ fn spawn_iterator_producer(
         });
         // work_tx dropped here → channel closes → workers drain and stop
     });
-}
-
-/// Integrate owned frames on a detached thread, streaming results as they
-/// complete. A panic while integrating a frame is recorded in `stream_error`
-/// and raised by the iterator at that position instead of ending it silently.
-///
-/// The consumer treats the closed channel as the end of the stream and lets
-/// the caller change the integrator, so `integrate` (which holds it) is
-/// dropped before the last sender. `for_each_with` drops its sender clones
-/// when the Rayon loop returns, before this thread's captures would be.
-fn spawn_array_stream<T: Send + 'static>(
-    frames: Vec<Frame>,
-    stream_error: StreamError,
-    integrate: impl Fn(&Frame) -> T + Send + Sync + 'static,
-) -> Receiver<(usize, String, Result<T, String>)> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        use rayon::prelude::*;
-        frames.par_iter().enumerate().for_each_with(
-            tx.clone(),
-            |tx, (i, frame)| match catch_unwind(AssertUnwindSafe(|| integrate(frame))) {
-                Ok(result) => {
-                    let _ = tx.send((i, format!("array[{i}]"), Ok(result)));
-                }
-                Err(payload) => stream_error.set(
-                    i,
-                    PyRuntimeError::new_err(format!(
-                        "integration of images[{i}] failed: {}",
-                        panic_message(&*payload)
-                    )),
-                ),
-            },
-        );
-        drop(integrate);
-        drop(frames);
-        drop(stream_error);
-        drop(tx); // Closes the stream
-    });
-    rx
 }
 
 /// Resolve the azimuthal rows of a 2D call: either `n_azimuthal` (with
@@ -231,6 +240,14 @@ pub enum MaskInput<'p> {
     Path(String),
     ArrayU8(PyReadonlyArray2<'p, u8>),
     ArrayBool(PyReadonlyArray2<'p, bool>),
+}
+
+/// A started queue-fed stream, before its workers get their task.
+struct QueueStream {
+    work_rx: Receiver<WorkItem>,
+    pool: Arc<FileWorkers>,
+    stream_error: StreamError,
+    control: Arc<StreamControl>,
 }
 
 #[pyclass(name = "Integrator", unsendable)]
@@ -351,6 +368,58 @@ impl PyIntegrator {
         };
         *cache = Some((Arc::clone(&pool), Arc::clone(control)));
         Ok(pool)
+    }
+
+    /// Producer input for a stream over a list of arrays or an iterator, and
+    /// its length (0 when unknown). A list is checked here, before the stream
+    /// starts (shape, contiguity, mask), but not copied.
+    fn stream_input(&self, input: ClassifiedInput<'_>) -> PyResult<(StreamInput, usize)> {
+        match input {
+            ClassifiedInput::Arrays(arrays) => {
+                let mut checked = Vec::with_capacity(arrays.len());
+                for (i, array) in arrays.iter().enumerate() {
+                    let (dim1, dim2) = extract_item_dims(array, i)?;
+                    array.as_slice().map_err(|err| {
+                        PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                    })?;
+                    self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
+                    checked.push(array.as_unbound().clone_ref(array.py()));
+                }
+                let total = checked.len();
+                Ok((StreamInput::Arrays(checked.into_iter()), total))
+            }
+            ClassifiedInput::Iterator(iter) => Ok((StreamInput::Iterator(iter.unbind()), 0)),
+            ClassifiedInput::Paths(_) => unreachable!("path lists use the file streams"),
+        }
+    }
+
+    /// Start a queue-fed stream: its own workers (see [`Self::iterator_pool`])
+    /// and a producer thread that reads `input` within the credit window.
+    fn open_queue_stream(
+        &self,
+        input: StreamInput,
+        num_workers: usize,
+        num_threads: usize,
+    ) -> PyResult<QueueStream> {
+        let control = StreamControl::new();
+        let pool = self.iterator_pool(num_workers, num_threads, &control)?;
+        let window = iterator_window(num_workers);
+        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
+        let stream_error = StreamError::default();
+        spawn_producer(
+            input,
+            work_tx,
+            mask_shape(&self.integrator),
+            stream_error.clone(),
+            Arc::clone(&control),
+            window,
+        );
+        Ok(QueueStream {
+            work_rx,
+            pool,
+            stream_error,
+            control,
+        })
     }
 
     /// Integrate `paths` on the cached file workers and wait for all results.
@@ -1358,75 +1427,15 @@ impl PyIntegrator {
                     ))
                 }
             }
-            ClassifiedInput::Arrays(arrays) => {
-                let num_arrays = arrays.len();
-
-                // Convert all arrays to owned Frame objects
-                let frames: Result<Vec<Frame>, PyErr> = arrays
-                    .iter()
-                    .enumerate()
-                    .map(|(i, array)| {
-                        let (dim1, dim2) = extract_item_dims(array, i)?;
-                        let slice = array.as_slice().map_err(|err| {
-                            PyValueError::new_err(format!(
-                                "Array {} must be contiguous: {}",
-                                i, err
-                            ))
-                        })?;
-                        self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
-                        Ok(Frame {
-                            name: format!("array[{}]", i),
-                            data: slice.to_vec(),
-                            dim1,
-                            dim2,
-                        })
-                    })
-                    .collect();
-
-                let frames = frames?;
-
-                let integrator = Arc::clone(&self.integrator);
-                let stream_error = StreamError::default();
-                let receiver =
-                    if azimuthal_std {
-                        BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
-                            spawn_array_stream(frames, stream_error.clone(), move |frame| {
-                                integrator.integrate1d_with_azimuthal_std(frame, n_points, errors)
-                            }),
-                        ))
-                    } else if errors {
-                        BatchReceiver::Integration1DWithErrors(Mutex::new(spawn_array_stream(
-                            frames,
-                            stream_error.clone(),
-                            move |frame| integrator.integrate1d_with_errors(frame, n_points),
-                        )))
-                    } else {
-                        BatchReceiver::Integration1D(Mutex::new(spawn_array_stream(
-                            frames,
-                            stream_error.clone(),
-                            move |frame| integrator.integrate1d(frame, n_points),
-                        )))
-                    };
-                Ok(PyBatchIterator::with_stream_error(
-                    receiver,
-                    num_arrays,
+            classified => {
+                // Arrays or an iterator: a producer thread pulls items lazily.
+                let (input, total) = self.stream_input(classified)?;
+                let QueueStream {
+                    work_rx,
+                    pool,
                     stream_error,
-                ))
-            }
-            ClassifiedInput::Iterator(iter) => {
-                // Generator/iterator path: a producer thread pulls items lazily.
-                let control = StreamControl::for_iterator();
-                let pool = self.iterator_pool(num_workers, num_threads, &control)?;
-                let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
-                let stream_error = StreamError::default();
-                spawn_iterator_producer(
-                    iter.unbind(),
-                    work_tx,
-                    mask_shape(&self.integrator),
-                    stream_error.clone(),
-                    Arc::clone(&control),
-                    iterator_window(num_workers),
-                );
+                    control,
+                } = self.open_queue_stream(input, num_workers, num_threads)?;
 
                 let integrator = Arc::clone(&self.integrator);
                 if azimuthal_std {
@@ -1445,7 +1454,7 @@ impl PyIntegrator {
                         BatchReceiver::Integration1DWithAzimuthalStd(Mutex::new(
                             batch.into_receiver(),
                         )),
-                        0,
+                        total,
                         stream_error.clone(),
                         Arc::clone(&control),
                     ));
@@ -1461,7 +1470,7 @@ impl PyIntegrator {
                     );
                     Ok(PyBatchIterator::with_control(
                         BatchReceiver::Integration1DWithErrors(Mutex::new(batch.into_receiver())),
-                        0,
+                        total,
                         stream_error.clone(),
                         Arc::clone(&control),
                     ))
@@ -1476,7 +1485,7 @@ impl PyIntegrator {
                     );
                     Ok(PyBatchIterator::with_control(
                         BatchReceiver::Integration1D(Mutex::new(batch.into_receiver())),
-                        0,
+                        total,
                         stream_error.clone(),
                         Arc::clone(&control),
                     ))
@@ -1819,71 +1828,14 @@ impl PyIntegrator {
             };
         }
 
-        // For arrays or iterators, use the queue-based streaming approach.
-        // Array streams are finite and need no Python, so they share the
-        // cached workers; a Python iterator gets its own (see `iterator_pool`).
-        let (pool, control) = if matches!(classified, ClassifiedInput::Iterator(_)) {
-            let control = StreamControl::for_iterator();
-            (
-                self.iterator_pool(num_workers, num_threads, &control)?,
-                control,
-            )
-        } else {
-            (
-                self.file_pool(num_workers, num_threads)?,
-                StreamControl::for_shared_pool(),
-            )
-        };
-        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
-        let stream_error = StreamError::default();
-
-        let total = match classified {
-            ClassifiedInput::Arrays(arrays) => {
-                let num_arrays = arrays.len();
-                // Convert all arrays to work items and send them
-                let mut items = Vec::with_capacity(num_arrays);
-                for (i, array) in arrays.iter().enumerate() {
-                    let (dim1, dim2) = extract_item_dims(array, i)?;
-                    let slice = array.as_slice().map_err(|err| {
-                        PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
-                    })?;
-                    self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
-                    let frame = Frame {
-                        name: format!("array[{}]", i),
-                        data: slice.to_vec(),
-                        dim1,
-                        dim2,
-                    };
-                    items.push(WorkItem::Frame {
-                        index: i,
-                        name: frame.name.clone(),
-                        frame,
-                    });
-                }
-                // Start sending after returning to the consumer setup below;
-                // filling a bounded queue here deadlocks before workers exist.
-                std::thread::spawn(move || {
-                    for item in items {
-                        if work_tx.send(item).is_err() {
-                            break;
-                        }
-                    }
-                });
-                num_arrays
-            }
-            ClassifiedInput::Iterator(iter) => {
-                spawn_iterator_producer(
-                    iter.unbind(),
-                    work_tx,
-                    mask_shape(&self.integrator),
-                    stream_error.clone(),
-                    Arc::clone(&control),
-                    iterator_window(num_workers),
-                );
-                0 // Unknown total for iterators
-            }
-            ClassifiedInput::Paths(_) => unreachable!(), // Handled above
-        };
+        // Arrays or an iterator: a producer thread pulls items lazily.
+        let (input, total) = self.stream_input(classified)?;
+        let QueueStream {
+            work_rx,
+            pool,
+            stream_error,
+            control,
+        } = self.open_queue_stream(input, num_workers, num_threads)?;
 
         let integrator = Arc::clone(&self.integrator);
 

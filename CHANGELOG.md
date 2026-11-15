@@ -39,6 +39,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cost of releasing the GIL while the producer thread waits, which 0.13.0
   introduced so other Python threads keep running; keeping the GIL there (as
   0.12.0 did) costs 10–12% on 4M frames instead.
+- `batch1d_iter` and `batch2d_iter` over a list of arrays now run like a
+  generator-fed stream (#33): on `num_workers` workers of their own with
+  `num_threads` threads each (both were ignored before; 1D used every core of
+  the global Rayon pool), reading at most `4 * num_workers` frames ahead.
+  Arrays are still checked when the stream is opened, with the same errors,
+  but are copied only when the stream reaches them instead of all at once
+  under the GIL, so do not change them in place while the stream is open (a
+  changed shape raises at that item). Deleting a list-fed stream now stops
+  its workers and frees the integrator before `del` returns; 1D used to
+  integrate all remaining frames first. A panic while integrating a frame of
+  a 1D list stream now gives an error result at that item, as in every other
+  stream, instead of ending the stream with `RuntimeError`. Results are
+  bit-identical. On an Apple M4 Pro (`pixel_split`) list-fed streams now run
+  as fast as generator-fed ones: with 8 workers 1M frames go from 1430 to
+  3570 frames/s in 1D and from 1450 to 3080 in 2D, 4M frames from 560 to
+  860. Lists of small frames get slower where an explicit or default
+  `num_workers` leaves cores idle that the old 1D path used: 256×256 frames
+  with the default workers go from 39 500 to 29 300 frames/s, with
+  `num_workers=2` from 38 300 to 10 500; raise `num_workers` (or use
+  `batch1d`) for those.
 - The legacy 2D `pixel_split` cake (`IntegrationMethod::PixelSplit`,
   `build_lut2d_ps_csr`, `build_lut2d_ps_csr_with_azimuthal_range`) is now
   bit-identical across runs and thread counts (#34). Its table was filled from
