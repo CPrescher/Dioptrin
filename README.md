@@ -268,6 +268,30 @@ fn main() {
 
 For custom processing logic, implement the `IntegrationTask` trait on your own struct.
 
+To handle results as they come, for example from a detector that keeps
+producing frames, stream them with `process_streaming`. It takes any iterator
+of paths or in-memory frames, reads it lazily, and runs at most a few items
+ahead of the consumer (by default 4 per worker; set with
+`StreamOptions::read_ahead`). Results come in input order; dropping the stream
+stops the workers and releases the integrator.
+
+```rust
+use dioptrin::batch::{process_streaming, Integration1D, StreamOptions};
+
+// `integrator` as above, before it is moved into `process_files`; `frames` is
+// any iterator of `Frame`s (or of path `String`s) and may be endless.
+let options = StreamOptions::new(4, 2).read_ahead(8);
+let task = Integration1D { n_bins: 3000 };
+let results = process_streaming(frames, Arc::clone(&integrator), task, options)
+    .expect("start worker threads");
+for (index, name, result) in results {
+    match result {
+        Ok((_radial, intensity)) => println!("{index} {name}: {} bins", intensity.len()),
+        Err(e) => eprintln!("{index} {name}: error - {e}"),
+    }
+}
+```
+
 ## Raw LUT integration example
 
 If you want direct control over LUT building and integration, you can use the LUT APIs directly.

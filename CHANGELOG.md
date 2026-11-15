@@ -25,6 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyproject.toml` versions agree; the GitHub release and both uploads wait
   for it. A re-run skips a version that is already on crates.io.
 
+### Changed
+
+- **Breaking:** the Rust streaming batch API is now bounded and cancellable
+  (issue 41). `batch::process_streaming(input, integrator, task, options)`
+  replaces `process_files_streaming` and `process_queue_streaming`; the
+  `StreamingBatch` handle and the `WorkItem` input type are no longer public.
+  The input is any iterator of paths or in-memory frames (`BatchInput`), read
+  lazily and at most `StreamOptions::read_ahead` items ahead of the consumer
+  (by default 4 per worker, as the Python streams), so a slow consumer or an
+  endless input holds a bounded number of frames and results. The returned
+  `BatchStream` yields `(index, name, result)` in input order; dropping it or
+  calling `close` stops the workers, leaves queued items unintegrated and
+  returns once the integrator is released. A panic while integrating an
+  item, or in the input iterator, becomes that item's error. Before, both
+  old functions read their whole input regardless of the consumer, lost a
+  panicking worker's results silently and returned results out of order;
+  after the receiver was dropped `process_files_streaming` still integrated
+  every file, and `process_queue_streaming` workers kept the integrator for
+  as long as the caller's queue stayed open. The Python API is unchanged.
+
 ### Fixed
 
 - Generator-fed `batch1d_iter` and `batch2d_iter` streams no longer build a
@@ -117,10 +137,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integration worker panicked` and printed a Rust panic to stderr. In Rust,
   `process_files` dropped the panicking worker's whole share of the files from
   its result, `process_files_streaming` the rest of that share,
-  `process_queue_streaming` lost the item and the worker, and
-  `process_files_sequential` panicked. The batch helpers now check the mask
-  shape before integrating, as they already did the detector shape, and the
-  other files of the batch still integrate. Python array inputs are unchanged:
+  `process_queue_streaming` lost the item and the worker (both since replaced
+  by `process_streaming`, see Changed), and `process_files_sequential`
+  panicked. The batch helpers now check the mask shape before integrating, as
+  they already did the detector shape, and the other files of the batch still
+  integrate. Python array inputs are unchanged:
   they still raise `ValueError` before any work starts. In Rust, a `Frame`
   work item that does not match the mask now also gets this error instead of a
   panic, and a custom `IntegrationTask` is no longer called for such a frame.

@@ -5,12 +5,12 @@
 //! truncated binning, overflowing in `Detector::corners` or returning no
 //! finite bins. A detector without a fixed shape keeps accepting any image.
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use super::{IntegrationGrid2d, IntegrationMethod, Integrator, MaskMode, SparseLayout};
 use crate::batch::{
-    Integration1D, Integration2D, WorkItem, process_files, process_files_sequential,
-    process_files_streaming, process_queue_streaming,
+    Integration1D, Integration2D, StreamOptions, process_files, process_files_sequential,
+    process_streaming,
 };
 use crate::detector::{Detector, DetectorTransform, PixelMap, spline::Spline};
 use crate::frame::Frame;
@@ -534,20 +534,10 @@ fn mixed_shape_batch_reports_the_invalid_item() {
         n_radial: 8,
         n_azimuthal: 4,
     };
-    let (tx, rx) = mpsc::channel();
-    for (index, &shape) in shapes.iter().enumerate() {
-        let f = frame(shape);
-        tx.send(WorkItem::Frame {
-            index,
-            name: f.name.clone(),
-            frame: f,
-        })
-        .unwrap();
-    }
-    drop(tx);
+    let frames: Vec<_> = shapes.iter().map(|&shape| frame(shape)).collect();
     let ai = Arc::new(integrator(&detector, IntegrationMethod::Counting));
-    let results: Vec<_> = process_queue_streaming(rx, ai, task, 2, 1)
-        .into_iter()
+    let results: Vec<_> = process_streaming(frames, ai, task, StreamOptions::new(2, 1))
+        .unwrap()
         .collect();
     assert_eq!(results.len(), shapes.len(), "a worker died");
     for (index, name, result) in results {
@@ -602,44 +592,54 @@ fn mixed_shape_batch_reports_the_invalid_item() {
         process_files_sequential(&files, &ai(), task),
     );
     check(
-        "process_files_streaming",
-        process_files_streaming(&files, ai(), task, 2, 1)
-            .into_iter()
+        "process_streaming",
+        process_streaming(files.clone(), ai(), task, StreamOptions::new(2, 1))
+            .unwrap()
             .map(|(_, name, result)| (name, result))
             .collect(),
     );
-    // Queues of the same files, as paths or as frames loaded beforehand.
-    let queue = |as_frames: bool| {
-        let (tx, rx) = mpsc::channel();
-        for (index, path) in files.iter().enumerate() {
-            let item = if as_frames {
-                let frame = Frame::from_tiff(path.clone()).unwrap();
-                let name = path.clone();
-                WorkItem::Frame { index, name, frame }
-            } else {
-                let path = path.clone();
-                WorkItem::Path { index, path }
-            };
-            tx.send(item).unwrap();
-        }
-        rx
-    };
     let named = |results: Vec<(usize, String, Result<Pattern, String>)>| {
         results.into_iter().map(|(_, n, r)| (n, r)).collect()
     };
+    // The same files as frames loaded beforehand, named after their paths.
+    let frames: Vec<_> = files
+        .iter()
+        .map(|path| {
+            let mut frame = Frame::from_tiff(path.clone()).unwrap();
+            frame.name = path.clone();
+            frame
+        })
+        .collect();
     check(
-        "process_queue_streaming paths",
+        "process_streaming frames",
         named(
-            process_queue_streaming(queue(false), ai(), task, 2, 1)
-                .into_iter()
+            process_streaming(frames, ai(), task, StreamOptions::new(2, 1))
+                .unwrap()
                 .collect(),
         ),
     );
     #[cfg(feature = "python")]
     {
         use crate::batch::{
-            FileWorkers, StreamControl, process_files_streaming_with_pool, process_files_with_pool,
-            process_queue_with_pool,
+            FileWorkers, StreamControl, WorkItem, process_files_streaming_with_pool,
+            process_files_with_pool, process_queue_with_pool,
+        };
+        use std::sync::mpsc;
+        // Queues of the same files, as paths or as frames loaded beforehand.
+        let queue = |as_frames: bool| {
+            let (tx, rx) = mpsc::channel();
+            for (index, path) in files.iter().enumerate() {
+                let item = if as_frames {
+                    let frame = Frame::from_tiff(path.clone()).unwrap();
+                    let name = path.clone();
+                    WorkItem::Frame { index, name, frame }
+                } else {
+                    let path = path.clone();
+                    WorkItem::Path { index, path }
+                };
+                tx.send(item).unwrap();
+            }
+            rx
         };
         let pool = || FileWorkers::new(2, 1).unwrap();
         check(
