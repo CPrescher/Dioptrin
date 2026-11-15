@@ -48,10 +48,16 @@ jobs:
           lfs: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Builds the benches, which cargo test skips, in the test profile so
-      # that cargo test reuses the library instead of compiling it again.
-      - run: cargo test --no-run --benches
+      # The crate is compiled unoptimised here, overriding the test profile's
+      # opt-level 1: without incremental builds on these runners, compiling
+      # it optimised took about as long as it saved in test run time (#57).
+      # Set per step so that the rust-cache key is unaffected.
+      - run: cargo build --all-targets
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: 0
       - run: cargo test
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: 0
 
   test-python:
     name: Test Python bindings
