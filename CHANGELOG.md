@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build already produced: single-threaded results are unchanged,
   multi-threaded results now equal them. The 1D `pixel_split` table and the
   other methods' tables were already deterministic.
+- Rust projects that depend on the crate no longer build and link an unused
+  `cdylib` next to the `rlib` (#45). `Cargo.toml` no longer declares
+  `crate-type = ["rlib", "cdylib"]`; maturin already built the Python
+  extension with `cargo rustc --crate-type cdylib`, so the Python build runs
+  the same command and the macOS wheel's extension module is byte-identical
+  to the one built from 0.13.0's manifest. Without the `cdylib`, cargo also
+  emits the crate's metadata early, so a dependent can start compiling
+  before the crate's code generation finishes.
 
 ## [0.13.0] - 2026-11-15
 
