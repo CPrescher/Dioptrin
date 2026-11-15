@@ -27,3 +27,6 @@ build-backend = "maturin"
 bindings = "pyo3"
 features = ["python"]
 profile = "release"
+# The crate's include list in Cargo.toml leaves the type stub out of the
+# crates.io package; the sdist still needs it so source builds ship it.
+include = [{ path = "dioptrin.pyi", format = "sdist" }]

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Rust crate is prepared for crates.io. `Cargo.toml` now lists the
+  published files (`src/`, README, changelog, `LICENSE` and the pyFAI notices
+  in `licenses/`), which shrinks the package from 336 files and 22.1 MiB to
+  83 files and 4.2 MiB; test data, docs, examples, benches and integration
+  tests stay in the repository only. It also gains keywords, categories, the
+  manual as homepage and docs.rs settings. The library code is unchanged.
+  maturin builds the PyPI sdist from the same list, so the sdist shrinks from
+  335 to 85 files; it keeps everything a source build needs, and
+  `[tool.maturin] include` adds the `dioptrin.pyi` stub.
+- Pushed release tags now also publish the crate to crates.io (trusted
+  publishing), after the GitHub release and the PyPI upload; a PyPI failure
+  does not stop it. A new `crate` job runs `cargo publish --dry-run` on pull
+  requests and tags, and on tags checks that the tag, `Cargo.toml` and
+  `pyproject.toml` versions agree; the GitHub release and both uploads wait
+  for it. A re-run skips a version that is already on crates.io.
+
 ## [0.13.0] - 2026-11-15
 
 ### Added
