@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 /// Checks a `dim1 x dim2` image against `detector`. A detector with a fixed
 /// shape (`Detector::max_shape`) accepts only that shape or an integer binning
-/// of it for which it defines a pixel pitch, as in [`Geometry::with_detector`];
-/// any other image would be mapped with truncated binning. A detector without
-/// a fixed shape accepts every shape.
+/// of it for which it defines a pixel pitch; any other image would be mapped
+/// with truncated binning. A detector without a fixed shape accepts every
+/// shape. This is the only shape check: [`Geometry::with_detector`],
+/// [`Geometry::set_shape`] and the `Integrator`'s image checks all use it.
 pub(crate) fn check_detector_shape(
     detector: &Detector,
     dim1: usize,
@@ -40,14 +41,23 @@ pub(crate) fn check_detector_shape(
 
 /// Pixel geometry of a `dim1 x dim2` image.
 ///
-/// `dim1` and `dim2` are public, but with a detector attached they must stay a
-/// shape [`Geometry::with_detector`] accepts: the detector's own shape or an
-/// integer binning of it. Every method that maps pixels through the detector
-/// panics with a message naming both shapes if they were set to another one.
+/// The shape is read with [`Geometry::dim1`], [`Geometry::dim2`] or
+/// [`Geometry::shape`] and changed only through [`Geometry::set_shape`], which
+/// checks it against the attached detector. With a detector attached the shape
+/// is therefore always one the detector represents: its own shape or an
+/// integer binning of it (any shape for a detector without a fixed shape).
+///
+/// The fields are private, so a `Geometry` cannot be built or reshaped by hand:
+///
+/// ```compile_fail
+/// # use dioptrin::{geometry::Geometry, poni::Poni};
+/// let mut g = Geometry::new(10, 20, Poni::new());
+/// g.dim1 = 5; // error: field `dim1` of struct `Geometry` is private
+/// ```
 #[derive(Clone)]
 pub struct Geometry {
-    pub dim1: usize,
-    pub dim2: usize,
+    dim1: usize,
+    dim2: usize,
     pub poni: Poni,
     detector: Option<Arc<Detector>>,
     shared_corners: bool,
@@ -129,18 +139,51 @@ impl Geometry {
     pub fn detector(&self) -> Option<&Arc<Detector>> {
         self.detector.as_ref()
     }
-    /// Panics if `dim1`/`dim2` were set by hand to a shape the attached
-    /// detector cannot represent; the constructors and `with_detector` never
-    /// produce one. Without a detector every shape is valid.
-    fn assert_detector_shape(&self) {
-        if let Some(d) = &self.detector
-            && let Err(message) = check_detector_shape(d, self.dim1, self.dim2)
-        {
+    /// Number of image rows (the slow axis).
+    pub fn dim1(&self) -> usize {
+        self.dim1
+    }
+    /// Number of image columns (the fast axis).
+    pub fn dim2(&self) -> usize {
+        self.dim2
+    }
+    /// Image shape as `(dim1, dim2)`, i.e. `(rows, columns)`.
+    pub fn shape(&self) -> (usize, usize) {
+        (self.dim1, self.dim2)
+    }
+    /// Changes the image shape to `dim1 x dim2`.
+    ///
+    /// Without a detector, or with a detector without a fixed shape, every
+    /// shape is accepted. With a fixed-shape detector only its own shape and
+    /// the integer binnings of it that it defines a pixel pitch for are
+    /// accepted, as in [`Geometry::with_detector`]; any other shape returns an
+    /// error naming both shapes and leaves the geometry unchanged.
+    pub fn set_shape(&mut self, dim1: usize, dim2: usize) -> Result<(), String> {
+        if let Some(d) = &self.detector {
+            check_detector_shape(d, dim1, dim2)?;
+        }
+        self.dim1 = dim1;
+        self.dim2 = dim2;
+        Ok(())
+    }
+    /// A copy of this geometry for a `dim1 x dim2` image, for the
+    /// `Integrator`'s per-image geometries. It goes through
+    /// [`Geometry::set_shape`]; the `Integrator` checks every image shape
+    /// against the detector before it gets here (`check_image_shape`), so the
+    /// panic, which carries the same message, is not expected to fire.
+    pub(crate) fn reshaped(&self, dim1: usize, dim2: usize) -> Geometry {
+        let mut geometry = self.clone();
+        if let Err(message) = geometry.set_shape(dim1, dim2) {
             panic!("{message}");
         }
+        geometry
     }
+    // The shape is valid for the attached detector by construction: `new`
+    // attaches none, and `with_detector` and `set_shape` are the only ways to
+    // attach a detector or change the shape, and both check it. The detector
+    // itself sits behind an `Arc` and cannot be changed in place. So the pixel
+    // mapping below needs no shape check of its own.
     fn requires_detector_transform(&self) -> bool {
-        self.assert_detector_shape();
         self.detector.as_ref().is_some_and(|d| {
             let pixels = d.effective_pixels([self.dim1, self.dim2]);
             !matches!(d.map, crate::detector::PixelMap::Uniform)
@@ -150,17 +193,17 @@ impl Geometry {
                 || pixels[1] != self.poni.pixel2
         })
     }
-    /// Attach a physical detector after validating the image's integer binning.
+    /// Attach a physical detector after validating it and checking the image
+    /// shape against it, as [`Geometry::set_shape`] does.
     pub fn with_detector(mut self, detector: Arc<Detector>) -> Result<Self, String> {
         detector.validate()?;
-        detector.binning([self.dim1, self.dim2])?;
+        check_detector_shape(&detector, self.dim1, self.dim2)?;
         self.shared_corners = detector.is_contiguous();
         self.detector = Some(detector);
         Ok(self)
     }
     /// Coordinates in the physical detector frame, [z, slow, fast] metres.
     pub fn detector_position(&self, row: f64, col: f64) -> [f64; 3] {
-        self.assert_detector_shape();
         self.detector
             .as_ref()
             .map(|d| d.position([self.dim1, self.dim2], row, col))

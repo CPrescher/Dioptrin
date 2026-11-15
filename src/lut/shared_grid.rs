@@ -30,11 +30,11 @@ pub(crate) fn build(
     };
     let corner_sign = match &corners {
         Some((r, a)) if grid.pixel_split_mode == PixelSplitMode::PyfaiHistogram => {
-            let width = geometry.dim2 + 1;
+            let width = geometry.dim2() + 1;
             super::pyfai_1d::corner_sign(
                 geometry,
                 (0..radial.len()).into_par_iter().map(|pixel| {
-                    let base = pixel / geometry.dim2 * width + pixel % geometry.dim2;
+                    let base = pixel / geometry.dim2() * width + pixel % geometry.dim2();
                     [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]))
                 }),
             )
@@ -75,8 +75,8 @@ pub(crate) fn build(
                 }
                 IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
                     let (r, a) = corners.as_ref().unwrap();
-                    let width = geometry.dim2 + 1;
-                    let base = pixel / geometry.dim2 * width + pixel % geometry.dim2;
+                    let width = geometry.dim2() + 1;
+                    let base = pixel / geometry.dim2() * width + pixel % geometry.dim2();
                     let indices = [base, base + 1, base + width + 1, base + width];
                     // A pixel enclosing/touching the polar origin has no single
                     // simple polar quad. Use detector-plane samples, coalesced by
@@ -225,8 +225,8 @@ fn sample_pixel<F: Fn(f64) -> f64>(
     offsets: &[(f64, f64)],
     convert: &F,
 ) -> Vec<(usize, f64)> {
-    let row = pixel / geometry.dim2;
-    let col = pixel % geometry.dim2;
+    let row = pixel / geometry.dim2();
+    let col = pixel % geometry.dim2();
     let weight = 1.0 / ((n_ss * n_ss) as f64 * offsets.len() as f64);
     let mut entries = Vec::new();
     for i in 0..n_ss {

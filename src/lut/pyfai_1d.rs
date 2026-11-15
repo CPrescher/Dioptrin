@@ -220,8 +220,8 @@ pub(super) fn sample(
     for row in 0..N {
         for col in 0..N {
             for (dy, dx) in offsets {
-                rows.push((pixel / g.dim2) as f64 + (row as f64 + dy) / N as f64);
-                cols.push((pixel % g.dim2) as f64 + (col as f64 + dx) / N as f64);
+                rows.push((pixel / g.dim2()) as f64 + (row as f64 + dy) / N as f64);
+                cols.push((pixel % g.dim2()) as f64 + (col as f64 + dx) / N as f64);
             }
         }
     }
@@ -466,8 +466,8 @@ mod integration_tests {
         let frame = Frame {
             name: "test".into(),
             data: data.clone(),
-            dim1: g.dim1,
-            dim2: g.dim2,
+            dim1: g.dim1(),
+            dim2: g.dim2(),
         };
         let mut ai = Integrator::new(g)
             .with_method(IntegrationMethod::PyfaiFull)
@@ -682,10 +682,10 @@ mod integration_tests {
             .collect();
         let (d1, d2) = g.corner_grid();
         let (tth, azi) = g.calc_tth_and_azimuth(&d1, &d2);
-        let w = g.dim2 + 1;
+        let w = g.dim2() + 1;
         let two_d = (0..g.size())
             .map(|pixel| {
-                let b = pixel / g.dim2 * w + pixel % g.dim2;
+                let b = pixel / g.dim2() * w + pixel % g.dim2();
                 [b, b + w, b + w + 1, b + 1].map(|i| (tth[i], azi[i]))
             })
             .collect();

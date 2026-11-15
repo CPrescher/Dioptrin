@@ -438,8 +438,8 @@ mod tests {
             .take(ring_count)
             .flatten()
             .collect();
-        let dim1 = geometry.dim1 as f64;
-        let dim2 = geometry.dim2 as f64;
+        let dim1 = geometry.dim1() as f64;
+        let dim2 = geometry.dim2() as f64;
         // Probe on a dense grid; INDEX coordinates (integer = pixel corner).
         let probe_n = 200usize;
         let mut idx_d1 = Vec::with_capacity(probe_n * probe_n);

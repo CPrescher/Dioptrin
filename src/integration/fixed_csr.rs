@@ -464,8 +464,8 @@ mod tests {
                 let mask: Vec<_> = (0..g.size()).map(|i| u8::from(i % 19 == 0)).collect();
                 engine.set_mask(Mask {
                     data: mask.clone(),
-                    dim1: g.dim1,
-                    dim2: g.dim2,
+                    dim1: g.dim1(),
+                    dim2: g.dim2(),
                 });
                 for angles in [
                     (-std::f64::consts::PI, std::f64::consts::PI),
@@ -474,7 +474,7 @@ mod tests {
                 ] {
                     let grid = IntegrationGrid2d::new(67, 29, (0., 12.), angles).unwrap();
                     let plan = engine
-                        .prepare_fixed2d_on_grid((g.dim1, g.dim2), &grid)
+                        .prepare_fixed2d_on_grid((g.dim1(), g.dim2()), &grid)
                         .unwrap();
                     for frame in [1., 3.7] {
                         let data: Vec<_> = (0..g.size())
@@ -483,7 +483,11 @@ mod tests {
                         for errors in [false, true] {
                             let raw = engine
                                 .integrate2d_raw_on_grid_from_slice(
-                                    &data, g.dim1, g.dim2, &grid, errors,
+                                    &data,
+                                    g.dim1(),
+                                    g.dim2(),
+                                    &grid,
+                                    errors,
                                 )
                                 .unwrap();
                             let expected: Vec<_> = raw
@@ -517,14 +521,14 @@ mod tests {
                     engine.set_polarization_factor(Some(0.6));
                     engine.set_mask(Mask {
                         data: vec![1; g.size()],
-                        dim1: g.dim1,
-                        dim2: g.dim2,
+                        dim1: g.dim1(),
+                        dim2: g.dim2(),
                     });
                     same(&plan.integrate_frame(&data, false).unwrap().0, &expected);
                     engine.set_mask(Mask {
                         data: mask.clone(),
-                        dim1: g.dim1,
-                        dim2: g.dim2,
+                        dim1: g.dim1(),
+                        dim2: g.dim2(),
                     });
                     engine.set_radial_unit(RadialUnit::QAngstrom);
                     same(&plan.integrate_frame(&data, false).unwrap().0, &expected);
@@ -541,7 +545,7 @@ mod tests {
     #[test]
     fn integer_plans_use_corrected_polygon_weights_and_clipped_radial_ranges() {
         let g = geometry(true);
-        let shape = (g.dim1, g.dim2);
+        let shape = (g.dim1(), g.dim2());
         let pixels: Vec<u32> = (0..g.size())
             .map(|i| {
                 if i % 7 == 0 {

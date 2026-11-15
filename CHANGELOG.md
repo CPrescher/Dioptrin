@@ -62,6 +62,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the receiver was dropped `process_files_streaming` still integrated
   every file, and `process_queue_streaming` workers kept the integrator for
   as long as the caller's queue stayed open. The Python API is unchanged.
+- **Breaking:** `Geometry`'s `dim1` and `dim2` fields are private. Read the
+  shape with `dim1()`, `dim2()` or `shape()` (a `(dim1, dim2)` tuple, like
+  the plans' `shape()`), and change it with
+  `set_shape(dim1, dim2) -> Result<(), String>`, which checks it against the
+  attached detector: a shape the detector cannot represent now fails there
+  with the "image shape ... does not fit detector ..." error and leaves the
+  geometry unchanged, instead of panicking with that message at first use
+  (#43). Migration:
+  `g.dim1` becomes `g.dim1()`, `g.dim1 = a; g.dim2 = b;` becomes
+  `g.set_shape(a, b)?;`. `with_detector` now uses the same check, so its
+  error for a shape a fixed-shape detector cannot represent is that message
+  too, with the old reason in it (it was "Detector ... is not an integer
+  binning. Select Custom for a cropped image.", "Invalid detector shape." for
+  an empty image, or "Detector binning has no manufacturer pixel-pitch
+  definition."), and it accepts an empty image with a detector without a
+  fixed shape, as the `Integrator` and `Geometry::new` already did. Results
+  are unchanged; Python is not affected.
 
 ### Fixed
 
