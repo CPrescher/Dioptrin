@@ -159,7 +159,7 @@ fn unwrapped_area(poly: &[(f64, f64); 4]) -> f64 {
     let mut chi = poly[0].1;
     let mut pts = [(poly[0].0, chi); 4];
     for i in 1..4 {
-        chi += (poly[i].1 - poly[i - 1].1 + PI).rem_euclid(TAU) - PI;
+        chi += wrap_tau(poly[i].1 - poly[i - 1].1 + PI) - PI;
         pts[i] = (poly[i].0, chi);
     }
     0.5 * (0..4)
@@ -170,13 +170,24 @@ fn unwrapped_area(poly: &[(f64, f64); 4]) -> f64 {
         .sum::<f64>()
 }
 
+/// `x.rem_euclid(TAU)`, bit for bit, without the `fmod` call for values
+/// already in `[0, TAU)` (the common case), which it returns unchanged.
+#[inline]
+pub(super) fn wrap_tau(x: f64) -> f64 {
+    if (0.0..TAU).contains(&x) {
+        x
+    } else {
+        x.rem_euclid(TAU)
+    }
+}
+
 pub(super) fn singular(poly: &[(f64, f64); 4]) -> bool {
     let mut winding = 0.0;
     for i in 0..4 {
         if poly[i].0 == 0.0 {
             return true;
         }
-        let delta = (poly[(i + 1) % 4].1 - poly[i].1 + PI).rem_euclid(TAU) - PI;
+        let delta = wrap_tau(poly[(i + 1) % 4].1 - poly[i].1 + PI) - PI;
         if delta.abs() >= PI - 64.0 * f64::EPSILON {
             return true;
         }
@@ -256,7 +267,7 @@ fn split1d(
         a0 + PI
     };
     for p in &mut poly {
-        p.1 = (p.1 - offset + PI).rem_euclid(TAU) - PI;
+        p.1 = wrap_tau(p.1 - offset + PI) - PI;
     }
     let [a, b, c, d] = poly;
     // Deliberately pyFAI's `area4p` (regrid_common.pxi), operator precedence
@@ -341,6 +352,37 @@ fn split1d(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_tau_is_rem_euclid_bit_for_bit() {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            TAU,
+            -TAU,
+            PI,
+            -PI,
+            TAU.next_down(),
+            TAU.next_up(),
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            1e300,
+            -1e300,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..100_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            values.push((state >> 11) as f64 / (1u64 << 53) as f64 * 8.0 * TAU - 4.0 * TAU);
+        }
+        for x in values {
+            assert_eq!(wrap_tau(x).to_bits(), x.rem_euclid(TAU).to_bits(), "{x:e}");
+        }
+    }
 
     #[test]
     fn radial_line_weights_match_independent_pyfai_golden() {
