@@ -408,6 +408,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve non-finite signal, zero normalization, and signed/zero weights when
   dynamic workers fall back to CSR with supplied variances. The optional spread
   calculation retains its documented sample filtering.
+- `math::histogram::histogram` and `histogram_with_errors` panic with a clear
+  message when `weights` and `data`, or `variances` and `weights`, differ in
+  length, instead of panicking out of bounds or silently ignoring the extra
+  data values.
 
 ### Compatibility and validation
 
@@ -508,6 +512,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across seed searches. Existing `find_peaks` remains available and preserves
   peak ordering, deduplication and subpixel positions. The shared filter also
   accelerates image-wide calibration candidate extraction.
+- The legacy 1D Histogram method keeps each bin's sum and count together:
+  through Python on a Pilatus 1M frame, single-threaded on an Apple M4 Pro,
+  3.33 → 2.91 ms per frame (0.12.0: 3.11 ms). Results are unchanged bit for bit.
+- `pyfai_full` table builds skip the modulo call when wrapping corner azimuths
+  that are already in range, which removes most of the cost of the corner-sign
+  vote with a detector attached: about 7–8 ms less single-threaded on a
+  Pilatus 1M frame (1D build 151 → 144 ms). Results are unchanged bit for bit.
 
 ## [0.12.0] - 2026-11-09
 
