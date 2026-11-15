@@ -59,7 +59,11 @@ jobs:
 
       # The scripts in python_examples compare against the text files these
       # Rust tests write to test_data/test_output; the full suite runs in ci.yml.
+      # They run in seconds, so the crate is compiled unoptimised even if the
+      # test profile asks for more; set per step to leave the cache key alone.
       - name: Generate test output data
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: 0
         run: >-
           cargo test --lib -- --exact
           frame::tests::frame_from_tiff
