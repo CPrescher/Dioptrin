@@ -3,35 +3,13 @@ use std::sync::Arc;
 use super::{GeometryState, Integrator};
 
 impl Integrator {
-    /// Checks a `dim1 x dim2` image against the attached detector. A detector
-    /// with a fixed shape (`Detector::max_shape`) accepts only that shape or an
-    /// integer binning of it for which it defines a pixel pitch, as in
-    /// `Geometry::with_detector`; any other image would be mapped with
-    /// truncated binning. Without a detector, or for a detector without a
-    /// fixed shape, every shape is accepted.
+    /// Checks a `dim1 x dim2` image against the attached detector, as
+    /// [`crate::geometry::check_detector_shape`] does.
     pub(crate) fn check_image_shape(&self, dim1: usize, dim2: usize) -> Result<(), String> {
-        let Some(detector) = self.geometry.detector() else {
-            return Ok(());
-        };
-        let Some([max1, max2]) = detector.max_shape else {
-            return Ok(());
-        };
-        let Err(error) = detector.binning([dim1, dim2]) else {
-            return Ok(());
-        };
-        let reason = if dim1 == 0 || dim2 == 0 {
-            "the image is empty".to_owned()
-        } else if max1 % dim1 != 0 || max2 % dim2 != 0 {
-            "only that shape and integer binnings of it are defined; for a cropped image, \
-             attach a custom detector without a fixed shape, or none"
-                .to_owned()
-        } else {
-            error
-        };
-        Err(format!(
-            "image shape [{dim1}, {dim2}] does not fit detector {} of shape [{max1}, {max2}]: {reason}",
-            detector.name
-        ))
+        match self.geometry.detector() {
+            Some(detector) => crate::geometry::check_detector_shape(detector, dim1, dim2),
+            None => Ok(()),
+        }
     }
 
     /// Returns tth, radial, azimuth, solid angle, polarization and

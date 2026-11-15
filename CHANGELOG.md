@@ -85,6 +85,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the one built from 0.13.0's manifest. Without the `cdylib`, cargo also
   emits the crate's metadata early, so a dependent can start compiling
   before the crate's code generation finishes.
+- A `Geometry` whose public `dim1`/`dim2` were set by hand to a shape its
+  attached detector cannot represent now panics with the shape message the
+  `Integrator` gives (#43). Before, the two-theta, azimuth, solid-angle and
+  corner arrays, `detector_position`, the LUT builders and `refine` returned
+  results for a truncated binning on a non-divisor shape, NaN arrays for a
+  larger shape on a uniform detector, or panicked with an integer overflow or
+  a division by zero. A crop of a uniform detector with a fixed shape is now
+  rejected too, as `with_detector` and the `Integrator` already did, although
+  one larger than half the detector on each axis used to give correct arrays.
+  Shapes `with_detector` accepts give bit-identical arrays, and a geometry
+  without a detector, or with one without a fixed shape, accepts every shape
+  as before.
 
 ## [0.13.0] - 2026-11-15
 

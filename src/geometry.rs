@@ -7,6 +7,43 @@ use crate::poni::Poni;
 use rayon::prelude::*;
 use std::sync::Arc;
 
+/// Checks a `dim1 x dim2` image against `detector`. A detector with a fixed
+/// shape (`Detector::max_shape`) accepts only that shape or an integer binning
+/// of it for which it defines a pixel pitch, as in [`Geometry::with_detector`];
+/// any other image would be mapped with truncated binning. A detector without
+/// a fixed shape accepts every shape.
+pub(crate) fn check_detector_shape(
+    detector: &Detector,
+    dim1: usize,
+    dim2: usize,
+) -> Result<(), String> {
+    let Some([max1, max2]) = detector.max_shape else {
+        return Ok(());
+    };
+    let Err(error) = detector.binning([dim1, dim2]) else {
+        return Ok(());
+    };
+    let reason = if dim1 == 0 || dim2 == 0 {
+        "the image is empty".to_owned()
+    } else if max1 % dim1 != 0 || max2 % dim2 != 0 {
+        "only that shape and integer binnings of it are defined; for a cropped image, \
+         attach a custom detector without a fixed shape, or none"
+            .to_owned()
+    } else {
+        error
+    };
+    Err(format!(
+        "image shape [{dim1}, {dim2}] does not fit detector {} of shape [{max1}, {max2}]: {reason}",
+        detector.name
+    ))
+}
+
+/// Pixel geometry of a `dim1 x dim2` image.
+///
+/// `dim1` and `dim2` are public, but with a detector attached they must stay a
+/// shape [`Geometry::with_detector`] accepts: the detector's own shape or an
+/// integer binning of it. Every method that maps pixels through the detector
+/// panics with a message naming both shapes if they were set to another one.
 #[derive(Clone)]
 pub struct Geometry {
     pub dim1: usize,
@@ -92,7 +129,18 @@ impl Geometry {
     pub fn detector(&self) -> Option<&Arc<Detector>> {
         self.detector.as_ref()
     }
+    /// Panics if `dim1`/`dim2` were set by hand to a shape the attached
+    /// detector cannot represent; the constructors and `with_detector` never
+    /// produce one. Without a detector every shape is valid.
+    fn assert_detector_shape(&self) {
+        if let Some(d) = &self.detector
+            && let Err(message) = check_detector_shape(d, self.dim1, self.dim2)
+        {
+            panic!("{message}");
+        }
+    }
     fn requires_detector_transform(&self) -> bool {
+        self.assert_detector_shape();
         self.detector.as_ref().is_some_and(|d| {
             let pixels = d.effective_pixels([self.dim1, self.dim2]);
             !matches!(d.map, crate::detector::PixelMap::Uniform)
@@ -112,6 +160,7 @@ impl Geometry {
     }
     /// Coordinates in the physical detector frame, [z, slow, fast] metres.
     pub fn detector_position(&self, row: f64, col: f64) -> [f64; 3] {
+        self.assert_detector_shape();
         self.detector
             .as_ref()
             .map(|d| d.position([self.dim1, self.dim2], row, col))
