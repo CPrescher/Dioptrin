@@ -16,6 +16,8 @@ cargo test -- --nocapture          # Tests with output
 cargo bench --bench integrate      # Integration benchmarks
 cargo bench --bench build          # LUT building benchmarks
 cargo bench --bench integrator     # Integrator API benchmarks
+cargo bench --bench methods -- 'methods/build1d/'  # also azimuthal, detectors, plans, multi, batch, massif
+python3 scripts/bench_compare.py v0.12.0 HEAD --benches methods  # compare revisions (docs/benchmarks/README.md)
 cargo run --example integrate1d    # 1D integration example
 cargo run --release --example timing1d  # Performance timing
 
