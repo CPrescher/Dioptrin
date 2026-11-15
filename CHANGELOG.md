@@ -27,25 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Generator-fed `batch1d_iter` and `batch2d_iter` streams lose less time
-  per stream and per frame than in 0.13.0 (#32). A stream now reuses the
-  workers of the previous generator-fed stream on the same `Integrator` once
-  that stream's workers are done, instead of building a new pool (one thread
-  and one Rayon pool per worker) every time; a stream that is still open
-  keeps its workers, and `clear_file_workers()` releases the cached ones too.
-  The work queue now holds the whole credit window (`4 * num_workers` items),
-  so the producer thread waits only for the consumer and no longer competes
-  with it for the GIL whenever a worker takes an item. On an Apple M4 Pro
-  (256×256 frames, 8 workers, `pixel_split`) opening and closing a stream
-  costs 0.26 ms instead of 0.49 ms (0.12.0: 0.26 ms), and throughput is
-  4.5% below 0.12.0 instead of 6.0% on 1600-frame streams (5.1% instead of
-  7.6% on 400-frame streams); 1M and 4M frames and 2D streams are unchanged.
-  The remaining gap is the cost of releasing the GIL while the producer
-  waits, which keeps other Python threads running; keeping it (as 0.12.0 did,
-  or only releasing it when the producer must wait, as tried in #32) costs
-  10–12% on 4M frames. The generator is still read at most
-  `4 * num_workers` items ahead, and closing a stream still stops its
-  workers before `del` returns.
+- Generator-fed `batch1d_iter` and `batch2d_iter` streams no longer build a
+  new worker pool (one thread and one Rayon pool per worker) each time
+  (#32): a stream reuses the workers of the previous generator-fed stream on
+  the same `Integrator` once that stream's workers are done. A stream that
+  is still open keeps its workers, and `clear_file_workers()` releases the
+  cached ones too. On an Apple M4 Pro (256×256 frames, 8 workers,
+  `pixel_split`) opening and closing a stream costs 0.27 ms instead of
+  0.50 ms, as in 0.12.0, so 400-frame streams are 4.1% below 0.12.0 instead
+  of 6.8%. Long streams of small frames stay about 6% below 0.12.0: that is
+  the cost of releasing the GIL while the producer thread waits, which 0.13.0
+  introduced so other Python threads keep running; keeping the GIL there (as
+  0.12.0 did) costs 10–12% on 4M frames instead.
 - The legacy 2D `pixel_split` cake (`IntegrationMethod::PixelSplit`,
   `build_lut2d_ps_csr`, `build_lut2d_ps_csr_with_azimuthal_range`) is now
   bit-identical across runs and thread counts (#34). Its table was filled from
