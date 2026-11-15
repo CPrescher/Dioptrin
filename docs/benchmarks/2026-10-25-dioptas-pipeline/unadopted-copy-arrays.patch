@@ -1,0 +1,549 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 7504ea5..b5816b1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ## [Unreleased]
+ 
++### Added
++
++- Opt-in `batch1d_iter(..., copy_arrays=False)` for independently owned,
++  read-only, C-contiguous float64 NumPy frames. Streaming workers retain each
++  Python owner and a read guard until native integration finishes, avoiding
++  the producer's full-frame snapshot copy. Arrays and storage aliases must
++  remain unchanged while in flight. The default remains `copy_arrays=True`
++  for generators that reuse mutable decoding buffers.
++
++### Fixed
++
++- Release the GIL while a streaming producer waits for queue capacity, allowing
++  native consumers to acquire NumPy read guards without deadlocking. Report
++  invalid yielded arrays and generator exceptions as failed results instead of
++  silently truncating the stream.
++
+ ## [0.6.1] - 2026-10-24
+ 
+ ### Changed
+diff --git a/README.md b/README.md
+index 0828ef0..df6653a 100644
+--- a/README.md
++++ b/README.md
+@@ -403,6 +403,10 @@ results = integrator.batch2d(
+ 
+ For large batches, use streaming iterators to process results as they complete:
+ 
++Application readers can use the unreleased [read-only array handoff](docs/PYTHON_STREAMING_ARRAYS.md)
++to avoid a second full-frame snapshot copy. The default copying interface remains
++appropriate for decoders that reuse mutable buffers.
++
+ ```python
+ # Stream results as they complete
+ for r in integrator.batch1d_iter(files, n_points=1000):
+diff --git a/dioptrin.pyi b/dioptrin.pyi
+index ee08978..076027f 100644
+--- a/dioptrin.pyi
++++ b/dioptrin.pyi
+@@ -499,6 +499,7 @@ class Integrator:
+         num_threads: Optional[int] = None,
+         *,
+         azimuthal_std: bool = False,
++        copy_arrays: bool = True,
+     ) -> BatchIterator:
+         """
+         Perform streaming batch 1D integration.
+@@ -512,6 +513,11 @@ class Integrator:
+             n_points: Number of bins for the 1D integration output
+             errors: Whether to compute Poisson error estimates (default: False)
+             azimuthal_std: Also compute weighted population spread (default: False)
++            copy_arrays: Copy NumPy input storage (default: True). If False,
++                inputs must be read-only contiguous float64 arrays. Their owners
++                remain alive through integration. Do not modify their storage
++                or any aliases until processing completes. Keep the default
++                when a generator overwrites or reuses one array buffer.
+             num_workers: Number of parallel workers (optional)
+             num_threads: Threads per worker (optional)
+ 
+diff --git a/src/batch.rs b/src/batch.rs
+index 6c5d6e2..13fa135 100644
+--- a/src/batch.rs
++++ b/src/batch.rs
+@@ -62,6 +62,27 @@ pub trait IntegrationTask: Send + Sync {
+     /// This method is called by workers in a thread pool context.
+     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output;
+ 
++    /// Execute against storage owned by the caller for the duration of the call.
++    /// Custom tasks retain the owned-frame adapter; standard 1D tasks borrow.
++    #[doc(hidden)]
++    fn execute_slice(
++        &self,
++        integrator: &Integrator,
++        data: &[f64],
++        h: usize,
++        w: usize,
++    ) -> Self::Output {
++        self.execute(
++            integrator,
++            &Frame {
++                name: String::new(),
++                data: data.to_vec(),
++                dim1: h,
++                dim2: w,
++            },
++        )
++    }
++
+     /// Compatibility adapter for custom tasks. Standard CSR tasks override this
+     /// to consume the decoder's typed buffer without a full f64 image copy.
+     #[doc(hidden)]
+@@ -84,6 +105,15 @@ impl IntegrationTask for Integration1D {
+     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
+         integrator.integrate1d(frame, self.n_bins)
+     }
++    fn execute_slice(
++        &self,
++        integrator: &Integrator,
++        data: &[f64],
++        h: usize,
++        w: usize,
++    ) -> Self::Output {
++        integrator.integrate1d_from_slice(data, h, w, self.n_bins)
++    }
+     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+         let (x, y, _) = integrator.integrate_tiff1d::<false>(frame, self.n_bins);
+         (x, y)
+@@ -104,6 +134,15 @@ impl IntegrationTask for Integration1DWithErrors {
+     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
+         integrator.integrate1d_with_errors(frame, self.n_bins)
+     }
++    fn execute_slice(
++        &self,
++        integrator: &Integrator,
++        data: &[f64],
++        h: usize,
++        w: usize,
++    ) -> Self::Output {
++        integrator.integrate1d_with_errors_from_slice(data, h, w, self.n_bins)
++    }
+     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
+         integrator.integrate_tiff1d::<true>(frame, self.n_bins)
+     }
+@@ -122,6 +161,15 @@ impl IntegrationTask for Integration1DWithAzimuthalStd {
+     fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
+         integrator.integrate1d_with_azimuthal_std(frame, self.n_bins, self.errors)
+     }
++    fn execute_slice(
++        &self,
++        integrator: &Integrator,
++        data: &[f64],
++        h: usize,
++        w: usize,
++    ) -> Self::Output {
++        integrator.integrate1d_with_azimuthal_std_from_slice(data, h, w, self.n_bins, self.errors)
++    }
+ }
+ 
+ /// 2D integration task without error propagation.
+@@ -534,6 +582,19 @@ where
+ /// Workers pull items from a shared queue, enabling dynamic load balancing
+ /// and lazy consumption of input (e.g., Python generators).
+ pub enum WorkItem {
++    /// A producer error delivered at its original frame position.
++    Failure {
++        index: usize,
++        name: String,
++        error: String,
++    },
++    /// An immutable Python frame whose owner stays alive until the job finishes.
++    #[cfg(feature = "python")]
++    ReadonlyArray {
++        index: usize,
++        name: String,
++        array: pyo3::Py<numpy::PyArray2<f64>>,
++    },
+     /// A file path — the worker loads the TIFF before integrating.
+     Path { index: usize, path: String },
+     /// An already-loaded frame (e.g., from a numpy array).
+@@ -617,6 +678,13 @@ where
+                 };
+ 
+                 let (index, name, result) = match item {
++                    WorkItem::Failure { index, name, error } => (index, name, Err(error)),
++                    #[cfg(feature = "python")]
++                    WorkItem::ReadonlyArray { index, name, array } => {
++                        let result = pool
++                            .install(|| file_workers::execute_readonly(&task, &integrator, &array));
++                        (index, name, result)
++                    }
+                     WorkItem::Path { index, path } => {
+                         let name = path.clone();
+                         let result = pool.install(|| match path_frame.reload_from_tiff(path) {
+diff --git a/src/batch/file_workers.rs b/src/batch/file_workers.rs
+index 62e7b58..d38cce6 100644
+--- a/src/batch/file_workers.rs
++++ b/src/batch/file_workers.rs
+@@ -3,6 +3,29 @@
+ use super::*;
+ use std::panic::{AssertUnwindSafe, catch_unwind};
+ 
++#[cfg(feature = "python")]
++pub(super) fn execute_readonly<T: IntegrationTask>(
++    task: &T,
++    integrator: &Integrator,
++    array: &pyo3::Py<numpy::PyArray2<f64>>,
++) -> Result<T::Output, String> {
++    use numpy::{PyArrayMethods, PyUntypedArrayMethods};
++    pyo3::Python::attach(|py| {
++        let guard = array.bind(py).try_readonly().map_err(|e| e.to_string())?;
++        let shape = guard.shape();
++        let (h, w) = (shape[0], shape[1]);
++        let data = guard.as_slice().map_err(|e| e.to_string())?;
++        // The Python owner and read guard remain alive outside detach. Only
++        // the plain slice crosses into native computation; no raw pointers.
++        py.detach(|| {
++            catch_unwind(AssertUnwindSafe(|| {
++                task.execute_slice(integrator, data, h, w)
++            }))
++            .map_err(|_| "integration worker panicked".to_owned())
++        })
++    })
++}
++
+ struct Job {
+     run: Box<dyn FnOnce(&mut TiffFrame) + Send>,
+     keep_alive: Arc<FileWorkers>,
+@@ -194,6 +217,12 @@ where
+                     guard.recv()
+                 };
+                 let (index, name, result) = match item {
++                    Ok(WorkItem::Failure { index, name, error }) => (index, name, Err(error)),
++                    #[cfg(feature = "python")]
++                    Ok(WorkItem::ReadonlyArray { index, name, array }) => {
++                        let result = execute_readonly(&task, &integrator, &array);
++                        (index, name, result)
++                    }
+                     Ok(WorkItem::Path { index, path }) => {
+                         let result = execute(&task, &integrator, buffer, &path);
+                         (index, path, result)
+diff --git a/src/python/integrator.rs b/src/python/integrator.rs
+index 32531c9..85d78ac 100644
+--- a/src/python/integrator.rs
++++ b/src/python/integrator.rs
+@@ -24,6 +24,43 @@ use super::utils::{
+     resolve_workers_threads,
+ };
+ 
++fn streaming_item(item: &Bound<'_, PyAny>, index: usize, copy_arrays: bool) -> PyResult<WorkItem> {
++    if !copy_arrays && item.extract::<String>().is_err() {
++        let array = item.cast::<numpy::PyArray2<f64>>().map_err(|_| {
++            PyValueError::new_err("copy_arrays=False requires 2D float64 NumPy arrays")
++        })?;
++        if array
++            .getattr("flags")?
++            .getattr("writeable")?
++            .extract::<bool>()?
++        {
++            return Err(PyValueError::new_err(
++                "copy_arrays=False requires read-only arrays; do not modify their storage or aliases until integration completes",
++            ));
++        }
++        // Validate strides/shape while the producer owns the GIL. Workers
++        // obtain their own read guard before releasing it for computation.
++        let readonly: PyReadonlyArray2<'_, f64> = item.extract()?;
++        extract_array_dims(&readonly, "float64")?;
++        readonly
++            .as_slice()
++            .map_err(|_| PyValueError::new_err("Array must be contiguous"))?;
++        return Ok(WorkItem::ReadonlyArray {
++            index,
++            name: format!("iter[{index}]"),
++            array: array.clone().unbind(),
++        });
++    }
++    Ok(match extract_frame_from_pyany(item, index)? {
++        FrameOrPath::Path(path) => WorkItem::Path { index, path },
++        FrameOrPath::Frame(frame) => WorkItem::Frame {
++            index,
++            name: frame.name.clone(),
++            frame,
++        },
++    })
++}
++
+ #[derive(FromPyObject)]
+ pub enum MaskInput<'p> {
+     Path(String),
+@@ -898,6 +935,10 @@ impl PyIntegrator {
+     ///
+     /// Returns an iterator that yields results as each frame completes.
+     /// More memory-efficient for large batches. Accepts lists or generators/iterators.
++    /// With copy_arrays=False, frames must be read-only contiguous float64
++    /// arrays. Their Python owners are retained until native computation ends.
++    /// Do not modify their storage through any alias while work is in flight.
++    /// The default copies arrays, preserving generators that reuse a buffer.
+     ///
+     /// # Arguments
+     ///
+@@ -930,7 +971,8 @@ impl PyIntegrator {
+     /// for result in integrator.batch1d_iter(frame_gen(), n_points=1000):
+     ///     process(result.result)
+     /// ```
+-    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None, *, azimuthal_std=false))]
++    #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None, *, azimuthal_std=false, copy_arrays=true))]
++    #[allow(clippy::too_many_arguments)] // Preserve the Python API's existing argument order.
+     fn batch1d_iter(
+         &self,
+         images: &Bound<'_, PyAny>,
+@@ -939,6 +981,7 @@ impl PyIntegrator {
+         num_workers: Option<usize>,
+         num_threads: Option<usize>,
+         azimuthal_std: bool,
++        copy_arrays: bool,
+     ) -> PyResult<PyBatchIterator> {
+         #[cfg(feature = "licensed")]
+         self.entitlement
+@@ -949,7 +992,13 @@ impl PyIntegrator {
+         }
+         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
+ 
+-        match classify_batch_input(images)? {
++        let classified = classify_batch_input(images)?;
++        let classified = if !copy_arrays && matches!(&classified, ClassifiedInput::Arrays(_)) {
++            ClassifiedInput::Iterator(images.try_iter()?.into_any())
++        } else {
++            classified
++        };
++        match classified {
+             ClassifiedInput::Paths(tiff_paths) => {
+                 // File-based streaming
+                 let total = tiff_paths.len();
+@@ -1126,18 +1175,20 @@ impl PyIntegrator {
+                         loop {
+                             match iter.call_method0("__next__") {
+                                 Ok(item) => {
+-                                    let work_item = match extract_frame_from_pyany(&item, index) {
+-                                        Ok(FrameOrPath::Path(path)) => {
+-                                            WorkItem::Path { index, path }
++                                    let work_item = match streaming_item(&item, index, copy_arrays)
++                                    {
++                                        Ok(item) => item,
++                                        Err(err) => {
++                                            let failure = WorkItem::Failure {
++                                                index,
++                                                name: format!("iter[{index}]"),
++                                                error: err.to_string(),
++                                            };
++                                            let _ = py.detach(|| work_tx.send(failure));
++                                            break;
+                                         }
+-                                        Ok(FrameOrPath::Frame(frame)) => WorkItem::Frame {
+-                                            index,
+-                                            name: frame.name.clone(),
+-                                            frame,
+-                                        },
+-                                        Err(_) => break, // Extraction error, stop
+                                     };
+-                                    if work_tx.send(work_item).is_err() {
++                                    if py.detach(|| work_tx.send(work_item)).is_err() {
+                                         break; // Workers gone
+                                     }
+                                     index += 1;
+@@ -1146,18 +1197,12 @@ impl PyIntegrator {
+                                     // StopIteration means end of iterator; any other error, stop
+                                     if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py)
+                                     {
+-                                        // Log non-StopIteration errors as the first error result
+-                                        // by sending a poison path that will fail in the worker
+-                                        let _ = work_tx.send(WorkItem::Frame {
++                                        let failure = WorkItem::Failure {
+                                             index,
+                                             name: format!("iter[{}]", index),
+-                                            frame: Frame {
+-                                                name: format!("error: {}", err),
+-                                                data: vec![],
+-                                                dim1: 0,
+-                                                dim2: 0,
+-                                            },
+-                                        });
++                                            error: err.to_string(),
++                                        };
++                                        let _ = py.detach(|| work_tx.send(failure));
+                                     }
+                                     break;
+                                 }
+diff --git a/docs/PYTHON_STREAMING_ARRAYS.md b/docs/PYTHON_STREAMING_ARRAYS.md
+new file mode 100644
+index 0000000..f0189d2
+--- /dev/null
++++ b/docs/PYTHON_STREAMING_ARRAYS.md
+@@ -0,0 +1,56 @@
++# Streaming frames from an application reader
++
++This interface is **unreleased**. Published Dioptrin 0.6.1 supports the default
++copying behavior but does not accept `copy_arrays`.
++
++`batch1d_iter` can consume decoded frames from application readers, including
++readers for HDF5 and formats not handled by Dioptrin's native TIFF loader. A
++bounded input queue connects the Python producer to native integration workers.
++The workers share the integrator's geometry and integration tables.
++
++By default, the producer copies each array before asking the generator for the
++next one. Keep that default if the decoder reuses a mutable buffer. It protects
++previous frames from being overwritten by later reads.
++
++Applications that produce an independent C-contiguous float64 array for each
++frame can avoid that snapshot copy:
++
++```python
++def frames():
++    for source in sources:
++        # This must return independent storage, not a reused decoding buffer.
++        image = read_and_prepare_frame(source)
++        image.setflags(write=False)
++        yield image
++
++for item in integrator.batch1d_iter(
++    frames(), 2000, num_workers=8, num_threads=1,
++    errors=True, copy_arrays=False,
++):
++    if not item.is_ok():
++        raise RuntimeError(item.error)
++    consume(item.result)
++```
++
++Each worker retains the Python array owner and a NumPy read guard until its
++integration finishes. It releases the GIL while computing. The producer also
++releases the GIL when waiting for queue capacity. Input ordering is preserved
++by the result iterator, and deleting the caller's integrator or array references
++does not release in-flight storage.
++
++Read-only flags do not make other aliases immutable. **Do not mutate any alias
++of the storage until its integration finishes.** The opt-in path rejects
++writable arrays, non-float64 arrays and non-C-contiguous arrays. It does not
++remove the application's decoding, corrections or dtype-conversion costs.
++Native path-string inputs retain their existing loading behavior.
++
++New `IntegrationTask::execute_slice` implementations avoid an owned `Frame`
++adapter for standard 1D tasks. Custom Rust tasks retain the copying default
++adapter unless they override it. `WorkItem` gains Python-array and failure
++variants; downstream exhaustive matches must account for them.
++
++`python_examples/test_stream_array_borrowing.py` checks byte parity against
++individual integrations in strict and fast arithmetic, all four integration
++methods, errors and azimuthal spread, and 1/2/4/8 workers. It also checks mutable
++buffer reuse under the default interface, owner lifetime, queue backpressure,
++invalid input, generator exceptions and empty input.
+diff --git a/python_examples/test_stream_array_borrowing.py b/python_examples/test_stream_array_borrowing.py
+new file mode 100644
+index 0000000..f103df4
+--- /dev/null
++++ b/python_examples/test_stream_array_borrowing.py
+@@ -0,0 +1,108 @@
++"""Ownership, backpressure and numerical regressions for borrowed streams."""
++import faulthandler
++import gc
++import unittest
++import weakref
++
++import dioptrin
++import numpy as np
++
++PONI = dict(pixel1=1e-4, pixel2=1e-4, distance=.1,
++            poni1=.0016, poni2=.0032, wavelength=1e-10)
++
++
++def make_ai(method='pixel_split', fast=True):
++    return dioptrin.Integrator.from_poni_dict(
++        PONI, method=method, n_ss=3, polarization_factor=.965, fast_math=fast)
++
++
++def readonly(value):
++    value.setflags(write=False)
++    return value
++
++
++class StreamBorrowingTests(unittest.TestCase):
++    def setUp(self):
++        faulthandler.dump_traceback_later(30, exit=True)
++
++    def tearDown(self):
++        faulthandler.cancel_dump_traceback_later()
++
++    def same(self, actual, expected):
++        for key in ['radial', 'intensity', 'errors', 'azimuthal_std']:
++            a, b = getattr(actual, key), getattr(expected, key)
++            if b is None:
++                self.assertIsNone(a)
++            else:
++                np.testing.assert_array_equal(a, b)
++                self.assertEqual(np.asarray(a).tobytes(), np.asarray(b).tobytes(), key)
++
++    def test_modes_workers_order_and_repeated_images(self):
++        rng = np.random.default_rng(42)
++        a = readonly(rng.uniform(-2, 200, (32, 64)))
++        b = readonly(rng.uniform(-2, 200, (32, 64)))
++        frames = [a, b] * 20  # exceeds every tested queue's capacity
++        mask = np.zeros(a.shape, dtype=np.uint8);mask[0:2] = 1
++        for method in ['counting', 'histogram', 'pixel_split', 'supersampled']:
++            for fast in [False, True]:
++                for errors in [False, True]:
++                    for spread in [False, True]:
++                        ai = make_ai(method, fast);ai.set_mask(mask)
++                        expected = [ai.integrate1d(x, 40, errors=errors, azimuthal_std=spread) for x in [a, b]]
++                        for workers in [1, 2, 4, 8]:
++                            with self.subTest(method=method, fast=fast, errors=errors, spread=spread, workers=workers):
++                                actual = list(ai.batch1d_iter(iter(frames), 40, errors=errors,
++                                    azimuthal_std=spread, num_workers=workers, num_threads=1, copy_arrays=False))
++                                self.assertEqual(len(actual), len(frames))
++                                for i, item in enumerate(actual):
++                                    self.assertTrue(item.is_ok(), item.error)
++                                    self.same(item.result, expected[i % 2])
++
++    def test_default_preserves_a_generator_overwriting_one_buffer(self):
++        ai = make_ai();buffer = np.empty((32, 64))
++        expected = [ai.integrate1d(np.full(buffer.shape, float(i)), 40) for i in range(40)]
++        def frames():
++            for i in range(40):
++                buffer.fill(i)
++                yield buffer
++        actual = list(ai.batch1d_iter(frames(), 40, num_workers=4, num_threads=1))
++        self.assertEqual(len(actual), 40)
++        for item, wanted in zip(actual, expected):self.same(item.result, wanted)
++        self.assertTrue(buffer.flags.writeable)
++
++    def test_owner_survives_parent_and_iterator_lifetime(self):
++        ai = make_ai();frames = [readonly(np.full((32, 64), float(i+1))) for i in range(40)]
++        expected = [ai.integrate1d(x, 40, errors=True) for x in frames]
++        refs = [weakref.ref(x) for x in frames]
++        stream = ai.batch1d_iter(iter(frames), 40, errors=True, num_workers=4, num_threads=1, copy_arrays=False)
++        del frames, ai;gc.collect()
++        actual = list(stream)
++        self.assertEqual(len(actual), 40)
++        for item, wanted in zip(actual, expected):self.same(item.result, wanted)
++        del stream;gc.collect()
++        self.assertTrue(all(ref() is None for ref in refs))
++
++    def test_bad_array_and_generator_error_are_reported_without_deadlock(self):
++        ai = make_ai()
++        for image in [np.ones((32, 64)), readonly(np.ones((32, 64)))[:, ::2], readonly(np.ones((32, 64), dtype='float32'))]:
++            items = list(ai.batch1d_iter(iter([image]), 40, num_workers=1, num_threads=1, copy_arrays=False))
++            self.assertEqual(len(items), 1)
++            self.assertFalse(items[0].is_ok())
++        def broken():
++            for i in range(40):yield readonly(np.full((32, 64), float(i)))
++            raise ValueError('reader failed after frame 40')
++        items = list(ai.batch1d_iter(broken(), 40, num_workers=1, num_threads=1, copy_arrays=False))
++        self.assertEqual(len(items), 41)
++        self.assertTrue(all(x.is_ok() for x in items[:40]))
++        self.assertIn('reader failed after frame 40', items[-1].error)
++        self.assertTrue(ai.batch1d([np.ones((32, 64))], 40)[0].is_ok())
++
++    def test_readonly_list_and_empty_input(self):
++        ai = make_ai();image = readonly(np.ones((32, 64)))
++        results = list(ai.batch1d_iter([image, image], 40, copy_arrays=False, num_workers=2, num_threads=1))
++        self.assertEqual(len(results), 2)
++        for result in results:self.same(result.result, ai.integrate1d(image, 40))
++        self.assertEqual(list(ai.batch1d_iter([], 40, copy_arrays=False)), [])
++
++
++if __name__ == '__main__':unittest.main()

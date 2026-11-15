@@ -1,0 +1,138 @@
+[
+  {
+    "name": "Pilatus1M-TIFF",
+    "detector": "Pilatus1M",
+    "format": "TIFF",
+    "files": [
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0000.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0001.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0002.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0003.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0004.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0005.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0006.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0007.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0008.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0009.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0010.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0011.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0012.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0013.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0014.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0015.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0016.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0017.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0018.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0019.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0020.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0021.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0022.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0023.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0024.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0025.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0026.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0027.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0028.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0029.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0030.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0031.tif"
+    ],
+    "poni": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-coordinates.poni",
+    "mask": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-mask.npy",
+    "frames": 32
+  },
+  {
+    "name": "Pilatus1M-bitshuffle",
+    "detector": "Pilatus1M",
+    "format": "bitshuffle",
+    "files": [
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Pilatus1M-bitshuffle.h5",
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Pilatus1M-bitshuffle.h5"
+    ],
+    "poni": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-coordinates.poni",
+    "mask": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-mask.npy",
+    "frames": 32,
+    "sha256": "5f8bb83b1afc0639e26b2886aa937bb67e17c686d0d7243ed976b86e1aa46dc7"
+  },
+  {
+    "name": "Pilatus1M-gzip",
+    "detector": "Pilatus1M",
+    "format": "gzip",
+    "files": [
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Pilatus1M-gzip.h5",
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Pilatus1M-gzip.h5"
+    ],
+    "poni": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-coordinates.poni",
+    "mask": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-mask.npy",
+    "frames": 32,
+    "sha256": "8c7bf0292959edcf6018b52fcf6d771bc6da06fa9685052e0300a58d9e16a337"
+  },
+  {
+    "name": "Eiger9M-TIFF",
+    "detector": "Eiger9M",
+    "format": "TIFF",
+    "files": [
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0000.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0001.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0002.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0003.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0004.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0005.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0006.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0007.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0008.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0009.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0010.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0011.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0012.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0013.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0014.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0015.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0000.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0001.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0002.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0003.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0004.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0005.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0006.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0007.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0008.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0009.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0010.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0011.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0012.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0013.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0014.tif",
+      "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0015.tif"
+    ],
+    "poni": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-coordinates.poni",
+    "mask": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-mask.npy",
+    "frames": 32
+  },
+  {
+    "name": "Eiger9M-bitshuffle",
+    "detector": "Eiger9M",
+    "format": "bitshuffle",
+    "files": [
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Eiger9M-bitshuffle.h5",
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Eiger9M-bitshuffle.h5"
+    ],
+    "poni": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-coordinates.poni",
+    "mask": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-mask.npy",
+    "frames": 32,
+    "sha256": "4be94f0cd30e2cb145ea6a8ffbc1459c07b7d57490565173c8148662027a7016"
+  },
+  {
+    "name": "Eiger9M-gzip",
+    "detector": "Eiger9M",
+    "format": "gzip",
+    "files": [
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Eiger9M-gzip.h5",
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Eiger9M-gzip.h5"
+    ],
+    "poni": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-coordinates.poni",
+    "mask": "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-mask.npy",
+    "frames": 32,
+    "sha256": "6cfe6f77d15d7329f7e45eabc48f3036e10082d0cbc6910ae059644abb5bd8e0"
+  }
+]
