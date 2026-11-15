@@ -5,7 +5,22 @@ edition = "2024"
 license = "MIT"
 description = "Fast open-source 1D/2D diffraction integration with CSR lookup tables"
 repository = "https://github.com/CPrescher/Dioptrin"
+homepage = "https://dioptrin.readthedocs.io/"
 readme = "README.md"
+keywords = ["diffraction", "x-ray", "crystallography", "synchrotron", "azimuthal"]
+categories = ["science", "science::materials"]
+# Ship only what a dependent build and docs.rs need. Examples, benches and
+# integration tests read fixtures from test_data/, which is not published, so
+# cargo drops those targets from the published manifest. maturin builds the
+# PyPI sdist from this list too, adds pyproject.toml and README-pypi.md
+# itself, and takes dioptrin.pyi from [tool.maturin] include in pyproject.toml.
+include = [
+    "/src/**",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/licenses/*.txt",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -46,3 +61,9 @@ python = ["numpy", "pyo3", "pyo3/extension-module"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
+
+[package.metadata.docs.rs]
+# The Python bindings need a Python interpreter at build time and are not part
+# of the Rust API, so docs.rs documents the default features only. The crate
+# has no platform-specific API, so one target is enough.
+targets = ["x86_64-unknown-linux-gnu"]
