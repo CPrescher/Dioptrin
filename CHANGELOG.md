@@ -7,16 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-15
+
 ### Added
 
 - The Rust crate is prepared for crates.io. `Cargo.toml` now lists the
   published files (`src/`, README, changelog, `LICENSE` and the pyFAI notices
   in `licenses/`), which shrinks the package from 336 files and 22.1 MiB to
-  83 files and 4.2 MiB; test data, docs, examples, benches and integration
+  85 files and 4.2 MiB; test data, docs, examples, benches and integration
   tests stay in the repository only. It also gains keywords, categories, the
   manual as homepage and docs.rs settings. The library code is unchanged.
   maturin builds the PyPI sdist from the same list, so the sdist shrinks from
-  335 to 85 files; it keeps everything a source build needs, and
+  335 to 87 files; it keeps everything a source build needs, and
   `[tool.maturin] include` adds the `dioptrin.pyi` stub.
 - Pushed release tags now also publish the crate to crates.io (trusted
   publishing), after the GitHub release and the PyPI upload; a PyPI failure
@@ -44,7 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which are unchanged. Code that called it can call
   `math::histogram::histogram` with the same arguments: it returns the same
   bins and counts, and per-bin means that can differ only by floating-point
-  rounding, because the terms are added in a different order.
+  rounding, because the terms are added in a different order. In 0.13.0
+  `histogram_parallel` also paired `weights` and `data` chunk by chunk and
+  silently ignored the extra values when they differed in length (#42):
+  longer weights were dropped, and with shorter weights the trailing data was
+  not binned at all, so bins reported wrong means (or NaN, 0 with a mask,
+  when left empty). `histogram` panics on such input instead.
 - **Breaking:** the Rust streaming batch API is now bounded and cancellable
   (issue 41). `batch::process_streaming(input, integrator, task, options)`
   replaces `process_files_streaming` and `process_queue_streaming`; the
@@ -62,23 +69,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the receiver was dropped `process_files_streaming` still integrated
   every file, and `process_queue_streaming` workers kept the integrator for
   as long as the caller's queue stayed open. The Python API is unchanged.
-- **Breaking:** `Geometry`'s `dim1` and `dim2` fields are private. Read the
-  shape with `dim1()`, `dim2()` or `shape()` (a `(dim1, dim2)` tuple, like
+- **Breaking:** `Geometry`'s `dim1` and `dim2` fields are private (#43). Read
+  the shape with `dim1()`, `dim2()` or `shape()` (a `(dim1, dim2)` tuple, like
   the plans' `shape()`), and change it with
   `set_shape(dim1, dim2) -> Result<(), String>`, which checks it against the
-  attached detector: a shape the detector cannot represent now fails there
-  with the "image shape ... does not fit detector ..." error and leaves the
-  geometry unchanged, instead of panicking with that message at first use
-  (#43). Migration:
+  attached detector: a shape the detector cannot represent fails there with
+  the "image shape ... does not fit detector ..." error and leaves the
+  geometry unchanged. Migration:
   `g.dim1` becomes `g.dim1()`, `g.dim1 = a; g.dim2 = b;` becomes
-  `g.set_shape(a, b)?;`. `with_detector` now uses the same check, so its
-  error for a shape a fixed-shape detector cannot represent is that message
-  too, with the old reason in it (it was "Detector ... is not an integer
+  `g.set_shape(a, b)?;`. In 0.13.0 the public fields could be set by hand to
+  such a shape, and the two-theta, azimuth, solid-angle and corner arrays,
+  `detector_position`, the LUT builders and `refine` then returned results
+  for a truncated binning on a non-divisor shape, NaN arrays for a larger
+  shape on a uniform detector, or panicked with an integer overflow or a
+  division by zero. A crop of a uniform detector with a fixed shape is
+  rejected too, as `with_detector` and the `Integrator` already did, although
+  one larger than half the detector on each axis used to give correct arrays.
+  `with_detector` now uses the same check, so its error for a shape a
+  fixed-shape detector cannot represent is that message too, with the old reason in it (it was "Detector ... is not an integer
   binning. Select Custom for a cropped image.", "Invalid detector shape." for
   an empty image, or "Detector binning has no manufacturer pixel-pitch
   definition."), and it accepts an empty image with a detector without a
-  fixed shape, as the `Integrator` and `Geometry::new` already did. Results
-  are unchanged; Python is not affected.
+  fixed shape, as the `Integrator` and `Geometry::new` already did. Shapes
+  `with_detector` accepts give bit-identical arrays, and a geometry without a
+  detector, or with one without a fixed shape, accepts every shape as before;
+  Python is not affected.
 
 ### Fixed
 
@@ -94,10 +109,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cost of releasing the GIL while the producer thread waits, which 0.13.0
   introduced so other Python threads keep running; keeping the GIL there (as
   0.12.0 did) costs 10–12% on 4M frames instead.
-- `batch1d_iter` and `batch2d_iter` over a list of arrays now run like a
-  generator-fed stream (#33): on `num_workers` workers of their own with
-  `num_threads` threads each (both were ignored before; 1D used every core of
-  the global Rayon pool), reading at most `4 * num_workers` frames ahead.
+- **Behaviour change:** `batch1d_iter` and `batch2d_iter` over a list of
+  arrays now run like a generator-fed stream (#33): on `num_workers` workers
+  of their own with `num_threads` threads each (both were ignored before; 1D
+  used every core of the global Rayon pool), reading at most
+  `4 * num_workers` frames ahead.
   Arrays are still checked when the stream is opened, with the same errors,
   but are copied only when the stream reaches them instead of all at once
   under the GIL, so do not change them in place while the stream is open (a
@@ -125,13 +141,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build already produced: single-threaded results are unchanged,
   multi-threaded results now equal them. The 1D `pixel_split` table and the
   other methods' tables were already deterministic.
-- `math::histogram::histogram_parallel` now panics when `weights` and `data`
-  differ in length, like `histogram` and `histogram_with_errors` (#42). It
-  paired them chunk by chunk and silently ignored the extra values: longer
-  weights were dropped, and with shorter weights the trailing data was not
-  binned at all, so bins reported wrong means (or NaN, 0 with a mask, when
-  left empty). A mask shorter than the data still panics and a longer one is
-  still accepted, as in the other two.
 - Rust projects that depend on the crate no longer build and link an unused
   `cdylib` next to the `rlib` (#45). `Cargo.toml` no longer declares
   `crate-type = ["rlib", "cdylib"]`; maturin already built the Python
@@ -140,18 +149,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the one built from 0.13.0's manifest. Without the `cdylib`, cargo also
   emits the crate's metadata early, so a dependent can start compiling
   before the crate's code generation finishes.
-- A `Geometry` whose public `dim1`/`dim2` were set by hand to a shape its
-  attached detector cannot represent now panics with the shape message the
-  `Integrator` gives (#43). Before, the two-theta, azimuth, solid-angle and
-  corner arrays, `detector_position`, the LUT builders and `refine` returned
-  results for a truncated binning on a non-divisor shape, NaN arrays for a
-  larger shape on a uniform detector, or panicked with an integer overflow or
-  a division by zero. A crop of a uniform detector with a fixed shape is now
-  rejected too, as `with_detector` and the `Integrator` already did, although
-  one larger than half the detector on each axis used to give correct arrays.
-  Shapes `with_detector` accepts give bit-identical arrays, and a geometry
-  without a detector, or with one without a fixed shape, accepts every shape
-  as before.
 - `pyfai_full` decides a detector's corner sign correctly for pixels far
   smaller than any real detector's (#44). The vote over the pixels' signed
   areas in (radial, azimuth) used the shoelace sum of absolute coordinates,
@@ -177,9 +174,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panicked. The batch helpers now check the mask shape before integrating, as
   they already did the detector shape, and the other files of the batch still
   integrate. Python array inputs are unchanged:
-  they still raise `ValueError` before any work starts. In Rust, a `Frame`
-  work item that does not match the mask now also gets this error instead of a
-  panic, and a custom `IntegrationTask` is no longer called for such a frame.
+  they still raise `ValueError` before any work starts. In Rust, an in-memory
+  frame (`BatchInput::Frame`) that does not match the mask now also gets this
+  error instead of a panic, and a custom `IntegrationTask` is no longer called
+  for such a frame.
 - **Behaviour change:** a single `str`, `bytes`, `bytearray` or `os.PathLike`
   path (an object whose type defines `__fspath__`) passed where a list is
   expected now raises `TypeError` saying what the argument must be, in
@@ -194,21 +192,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must be `str` (`os.fsdecode(path)` for a `Path` or `bytes`). Other bad
   input, including two bad arguments in one call, raises the same exception,
   with the same "while processing" note, as before.
-- Colour TIFFs (RGB, RGBA and other files the typed TIFF reader hands to the
-  f64 `Frame` reader) now report their real shape, so the mask check and its
-  message are right for them. `Integrator.integrate1d(path)` with a mask set
-  raised `image shape (0, 0) does not match mask shape ...` for them whether
-  or not the mask matched, and a mismatching mask in a batch reported
-  `integration worker panicked`; both now pass or fail the mask check by the
-  file's real shape. Colour TIFFs, the files this mostly concerned, are now
-  rejected before the mask check; see the next entry.
 - **Behaviour change:** colour TIFFs are rejected instead of integrated (#58).
   An RGB, RGBA or CMYK TIFF (also as the first page of a multi-page file, or a
   file declaring 3 or 4 samples per pixel with photometric
   BlackIsZero/WhiteIsZero and a single BitsPerSample value) loaded as the
   first rows × columns samples of its interleaved buffer, which is neither one
   channel nor their mean or sum, so the integrated values were meaningless;
-  `Integrator.set_mask(path)` raised `PanicException` for such a file. Every
+  `Integrator.set_mask(path)` raised `PanicException` for such a file, and
+  with a mask set `Integrator.integrate1d(path)` raised `image shape (0, 0)
+  does not match mask shape ...` for it whether or not the mask matched. Every
   loader (`integrate1d`, `integrate2d`, `set_mask`, all batch methods,
   `MultiIntegrator` and the Rust `Frame::from_tiff`, `Mask::from_tiff` and
   batch helpers) now fails with `unsupported TIFF: photometric interpretation
@@ -1458,7 +1450,8 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/CPrescher/Dioptrin/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/CPrescher/Dioptrin/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/CPrescher/Dioptrin/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/CPrescher/Dioptrin/compare/v0.10.0...v0.11.0

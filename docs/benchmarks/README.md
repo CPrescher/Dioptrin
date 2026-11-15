@@ -30,7 +30,7 @@ the input is the committed Pilatus 1M CeO2 image (1043 x 981) with
 | `detectors` | `Detector::builtin_mask` for the circular-mask MAR 345 and Rayonix133 (unbinned, binned, transformed) and the gapped Eiger2 4M; `Detector::position` at every pixel of uniform (Pilatus 1M, Eiger2 4M binned), separable (Jungfrau 500k, curved CirPAD), transformed, binned and binned transformed maps; with a detector attached via `Geometry::with_detector`: the 1D `pyfai_full` table builder (corner-sign vote included), cold 1D `pixel_split` and `pyfai_full`, warm 1D `pyfai_full`. A transform of a uniform catalogue map only swaps shape, pixel sizes and mask; the Jungfrau 500k cases are the ones that go through `PixelMap::Transformed` | yes |
 | `plans` | `Fixed1dPlan::integrate_frame` (forced CSC, auto layout; the plan as prepared probes a gather kernel on first use and is left out), `Integrator` 1D with `SparseLayout::Csc` vs `Csr`, `FixedCsr1dPlan` (f64) and `FixedCsr1dInputPlan` (u16, u32, u32 with parallel bins), `FixedGrid2dPlan` (`pixel_split`, `pyfai_full`); 1M (CeO2) and 4M (synthetic 2048 x 2048); warm | no (0.13 APIs) |
 | `multi` | `MultiIntegrator` 1D and 2D with 2 and 3 detectors (CeO2 plus two synthetic detectors with other pixel sizes, tilts and beam positions) on one shared range; warm, and cold with 3 detectors; `pixel_split`, `pyfai_full` | yes |
-| `batch` | `process_streaming` on in-memory frames (default read-ahead), 1D and 2D, 2 and 8 workers, 200 synthetic 256 x 256 frames and 16 CeO2 1M frames (frames per second; copying the frames is not timed, freeing them in the workers is; before `process_streaming` replaced it on main after 0.13.0, the same names timed `process_queue_streaming`); `process_files` on 16 CeO2 paths | no (`process_streaming` is new after 0.13) |
+| `batch` | `process_streaming` on in-memory frames (default read-ahead), 1D and 2D, 2 and 8 workers, 200 synthetic 256 x 256 frames and 16 CeO2 1M frames (frames per second; copying the frames is not timed, freeing them in the workers is; before `process_streaming` replaced it in 0.14.0, the same names timed `process_queue_streaming`); `process_files` on 16 CeO2 paths | no (`process_streaming` is new in 0.14) |
 | `massif` | Massif peak search on the LaB6 MarCCD image (2048 x 2048): `find_peaks` (prepares on each call), `PreparedMassif::new`, one seed on a reused `PreparedMassif`, four seeds without and with reuse | no (`PreparedMassif` is new in 0.13) |
 
 Benchmark IDs of the new targets are `<target>/<case>/<variant>`, so the IDs
@@ -104,7 +104,7 @@ Limits:
 - A revision is a commit: uncommitted library changes are not included.
 - Without `--benches` all seven new targets run, which only works for
   revisions from 0.13 on, and `batch` only for revisions with
-  `process_streaming` (after 0.13).
+  `process_streaming` (0.14 on).
 - Fixtures missing from a revision's `test_data/`, or present only as Git
   LFS pointers, are copied from this checkout.
 - The environment is passed on unchanged, including `RAYON_NUM_THREADS`.
