@@ -59,8 +59,10 @@ strip = "symbols"
 [features]
 python = ["numpy", "pyo3", "pyo3/extension-module"]
 
-[lib]
-crate-type = ["rlib", "cdylib"]
+# No [lib] crate-type: Rust dependents need only the default rlib. maturin
+# builds the Python extension module as a cdylib itself (it runs
+# `cargo rustc --crate-type cdylib`), so declaring one here would only make
+# every dependent build and link an unused dynamic library.
 
 [package.metadata.docs.rs]
 # The Python bindings need a Python interpreter at build time and are not part
