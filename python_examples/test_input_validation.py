@@ -24,6 +24,26 @@ def integrator(poni=PONI, **kw):
     return dioptrin.Integrator.from_poni_dict(dict(poni), **kw)
 
 
+def write_raw_tiff(path, image, photometric, samples):
+    """Uncompressed little-endian u8 TIFF with SamplesPerPixel `samples` but
+    a single BitsPerSample value, which tifffile cannot write."""
+    import struct
+
+    height, width = image.shape[:2]
+    data = np.ascontiguousarray(image, np.uint8).tobytes()
+    tags = sorted(
+        [(256, 3, width), (257, 3, height), (258, 3, 8), (259, 3, 1), (262, 3, photometric),
+         (277, 3, samples), (278, 3, height), (279, 4, len(data)), (273, 4, 0)]
+    )
+    offset = 8 + 2 + 12 * len(tags) + 4
+    out = b"II" + struct.pack("<HIH", 42, 8, len(tags))
+    for tag, kind, value in tags:
+        value = offset if tag == 273 else value
+        out += struct.pack("<HHI", tag, kind, 1)
+        out += struct.pack("<HH", value, 0) if kind == 3 else struct.pack("<I", value)
+    Path(path).write_bytes(out + struct.pack("<I", 0) + data)
+
+
 def write_tiff(directory, image):
     # TIFF input follows Dioptrin's vertical-flip convention.
     path = Path(directory) / f"frame_{len(list(Path(directory).iterdir()))}.tif"
@@ -168,71 +188,150 @@ class MaskShapeTests(unittest.TestCase):
                         )
                         self.assertTrue(results[0].is_ok() and results[2].is_ok())
 
-    def test_colour_tiffs_are_checked_with_their_real_shape(self):
-        """TIFFs the typed reader leaves to the legacy f64 reader (colour,
-        extra samples) are checked against the mask with their real shape.
-        Before, the batch workers saw them as 0 x 0 and failed them whenever
-        a mask was set, and Integrator.integrate1d(path) raised for them."""
+    def test_colour_tiffs_are_rejected_on_every_path(self):
+        """Issue 58: colour TIFFs (RGB, RGBA, CMYK, also as the first page of a
+        multi-page file, or declared as grayscale with SamplesPerPixel 3 and
+        one BitsPerSample value) used to integrate the first rows x cols samples of
+        the interleaved buffer. They are now rejected on every path with an
+        error naming the photometric interpretation, samples per pixel and
+        shape, whether or not a mask is set and whatever its shape; files
+        the decoder cannot open with 2 or 5+ samples per pixel, or with a
+        palette, get the same explanation. Other files in a batch still
+        integrate, and nothing reports a worker panic."""
         rng = np.random.default_rng(1)
         shape = (32, 48)
-        colour = {
-            "rgb8": ((rng.random((*shape, 3)) * 255).astype(np.uint8), dict(photometric="rgb")),
-            "rgb16": ((rng.random((*shape, 3)) * 999).astype(np.uint16), dict(photometric="rgb")),
-            "rgba8": (
-                (rng.random((*shape, 4)) * 255).astype(np.uint8),
-                dict(photometric="rgb", extrasamples=["unassalpha"]),
+        only = "only single-channel (grayscale) TIFFs are supported"
+
+        def described(photometric, samples, bits):
+            plural = "" if samples == 1 else "s"
+            return (
+                f"unsupported TIFF: photometric interpretation {photometric}, "
+                f"{samples} sample{plural} per pixel (bits per sample {bits}), "
+                f"image shape (32, 48); {only}"
+            )
+
+        u8 = lambda *extra: (rng.random((*shape, *extra)) * 255).astype(np.uint8)
+        kinds = {
+            "rgb8": (u8(3), dict(photometric="rgb"), described("RGB", 3, [8, 8, 8])),
+            "rgb16": (
+                (rng.random((*shape, 3)) * 999).astype(np.uint16),
+                dict(photometric="rgb"),
+                described("RGB", 3, [16, 16, 16]),
             ),
-        }
-        # Formats the decoder cannot read fail with its error, as before.
-        unreadable = {
-            "gray+alpha": (
-                np.ones((*shape, 2), np.uint16),
-                dict(photometric="minisblack", extrasamples=["unassalpha"]),
-                "2 samples per pixel is unsupported",
+            "rgbf32": (
+                rng.random((*shape, 3)).astype(np.float32),
+                dict(photometric="rgb"),
+                described("RGB", 3, [32, 32, 32]),
+            ),
+            "rgba8": (
+                u8(4),
+                dict(photometric="rgb", extrasamples=["unassalpha"]),
+                described("RGB", 4, [8, 8, 8, 8]),
+            ),
+            "cmyk8": (u8(4), dict(photometric="separated"), described("CMYK", 4, [8, 8, 8, 8])),
+            "multipage rgb8": (
+                np.stack([u8(3), u8(3)]),
+                dict(photometric="rgb"),
+                described("RGB", 3, [8, 8, 8]),
+            ),
+            "gray + 2 extra samples": (
+                np.ones((*shape, 3), np.uint16),
+                dict(photometric="minisblack", extrasamples=["unspecified"] * 2),
+                described("BlackIsZero", 3, [16, 16, 16]),
             ),
             "palette": (
                 np.ones(shape, np.uint8),
                 dict(photometric="palette", colormap=np.zeros((3, 256), np.uint16)),
-                "RGBPalette",
+                described("RGBPalette", 1, [8]),
+            ),
+            "3 samples, one BitsPerSample value": (
+                u8(3),
+                dict(raw=(1, 3)),
+                described("BlackIsZero", 3, [8]),
+            ),
+            "gray+alpha": (
+                np.ones((*shape, 2), np.uint16),
+                dict(photometric="minisblack", extrasamples=["unassalpha"]),
+                f"unsupported TIFF: 2 samples per pixel; {only}",
+            ),
+            "rgb + 2 extra samples": (
+                u8(5),
+                dict(photometric="rgb", extrasamples=["unspecified"] * 2),
+                f"unsupported TIFF: 5 samples per pixel; {only}",
             ),
         }
-        mismatch = "image shape (32, 48) does not match mask shape (32, 32)"
         with tempfile.TemporaryDirectory() as directory:
             gray = write_tiff(directory, np.ones(shape))
             files = {}
-            for name, (data, kw) in {**colour, **{k: v[:2] for k, v in unreadable.items()}}.items():
+            for name, (data, kw, _) in kinds.items():
                 files[name] = str(Path(directory) / f"{name}.tif")
-                tifffile.imwrite(files[name], data, **kw)
+                if "raw" in kw:
+                    write_raw_tiff(files[name], data, *kw["raw"])
+                else:
+                    tifffile.imwrite(files[name], data, **kw)
             for mode in ("fixed", "dynamic"):
-                for mask_shape, expected in ((shape, None), ((32, 32), mismatch)):
+                for mask_shape in (None, shape, (32, 32)):
                     ai = integrator(mask_mode=mode)
-                    ai.set_mask(np.zeros(mask_shape, np.uint8))
-                    gray_error = None if expected is None else mismatch
+                    if mask_shape is not None:
+                        ai.set_mask(np.zeros(mask_shape, np.uint8))
+                    gray_error = (
+                        "image shape (32, 48) does not match mask shape (32, 32)"
+                        if mask_shape == (32, 32)
+                        else None
+                    )
                     calls = {
                         "batch1d": lambda paths: ai.batch1d(paths, 10),
+                        "batch1d errors": lambda paths: ai.batch1d(paths, 10, errors=True),
                         "batch2d": lambda paths: ai.batch2d(paths, 10, 8),
                         "batch1d_iter": lambda paths: list(ai.batch1d_iter(paths, 10)),
+                        "batch1d_iter std": lambda paths: list(
+                            ai.batch1d_iter(paths, 10, azimuthal_std=True)
+                        ),
                         "batch2d_iter": lambda paths: list(ai.batch2d_iter(iter(paths), 10, 8)),
                     }
-                    for call_name, call in calls.items():
-                        for name in colour:
+                    for name, (_, _, message) in kinds.items():
+                        for call_name, call in calls.items():
                             with self.subTest(mode=mode, mask=mask_shape, call=call_name, tiff=name):
                                 results = call([files[name], gray])
                                 self.assertEqual(
-                                    [r.error for r in results], [expected, gray_error]
+                                    [r.error for r in results], [message, gray_error]
                                 )
-                        for name, (_, _, message) in unreadable.items():
+                        single = {
+                            "integrate1d": lambda: ai.integrate1d(files[name], 10),
+                            "integrate1d std": lambda: ai.integrate1d(
+                                files[name], 10, azimuthal_std=True
+                            ),
+                            "integrate2d": lambda: ai.integrate2d(files[name], 10, 8),
+                        }
+                        for call_name, call in single.items():
                             with self.subTest(mode=mode, mask=mask_shape, call=call_name, tiff=name):
-                                error = call([files[name]])[0].error
-                                self.assertIn(message, error)
-                    for name in colour:
-                        with self.subTest(mode=mode, mask=mask_shape, call="integrate1d", tiff=name):
-                            if expected is None:
-                                ai.integrate1d(files[name], 10)
-                                ai.integrate2d(files[name], 10, 8)
-                            else:
-                                with self.assertRaisesRegex(ValueError, r"\(32, 48\) does not match"):
-                                    ai.integrate1d(files[name], 10)
+                                with self.assertRaises(ValueError) as caught:
+                                    call()
+                                self.assertEqual(
+                                    str(caught.exception), f"Failed to load TIFF: {message}"
+                                )
+            multi = dioptrin.MultiIntegrator(
+                [integrator(radial_range=(0.0, 0.1)), integrator(radial_range=(0.0, 0.1))]
+            )
+            for name, (_, _, message) in kinds.items():
+                with self.subTest(call="MultiIntegrator", tiff=name):
+                    detector = f"detector 1: failed to load TIFF: {message}"
+                    for call in (
+                        lambda: multi.integrate1d([gray, files[name]], 10),
+                        lambda: multi.integrate2d([gray, files[name]], 10, 8),
+                    ):
+                        with self.assertRaises(ValueError) as caught:
+                            call()
+                        self.assertEqual(str(caught.exception), detector)
+                    with self.assertRaises(ValueError) as caught:
+                        multi.batch1d([[gray, gray], [gray, files[name]]], 10)
+                    self.assertEqual(str(caught.exception), f"frame set 1, {detector}")
+                with self.subTest(call="set_mask", tiff=name):
+                    # Used to raise PanicException for RGB, RGBA and CMYK.
+                    ai = integrator()
+                    with self.assertRaises(ValueError) as caught:
+                        ai.set_mask(files[name])
+                    self.assertEqual(str(caught.exception), f"Failed to load mask TIFF: {message}")
 
     def test_multi_integrator_per_detector(self):
         masked = integrator(radial_range=(0.0, 0.1))
