@@ -97,6 +97,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Shapes `with_detector` accepts give bit-identical arrays, and a geometry
   without a detector, or with one without a fixed shape, accepts every shape
   as before.
+- `pyfai_full` decides a detector's corner sign correctly for pixels far
+  smaller than any real detector's (#44). The vote over the pixels' signed
+  areas in (radial, azimuth) used the shoelace sum of absolute coordinates,
+  which turned single votes into rounding noise once a pixel spanned less
+  than about 3e-8 rad (pixel size / distance), until the majority flipped: a
+  64×64 detector with 1e-12 m pixels at 1 m,
+  `rot1 = 1.2` and the PONI 0.5 mm beside it voted −1 (974 pixels against
+  962) where +1 is right. The area is now half the cross product of the
+  diagonals, the same quantity computed from coordinate differences, which
+  keeps every pixel's vote down to about 1e-15 rad. Real detectors (1e-6 rad
+  and up) were not affected: over 2,174 detector, orientation, transform,
+  binning and beam cases every pixel's vote and every 1D, 2D, shared-grid and
+  `MultiIntegrator` result is bit-identical to before.
 - A TIFF in a batch whose shape differs from the integrator's mask now fails
   as its own item with `image shape (r, c) does not match mask shape (r, c)`
   (#39). The `batch1d`, `batch2d`, `batch1d_iter` and `batch2d_iter` path
