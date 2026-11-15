@@ -53,7 +53,7 @@ python python_examples/bench_batch_streams.py --sizes 256 1024 --workers 2 8
 ```
 
 It is a benchmark, not a test, and is skipped by `test_examples.py`. See
-[docs/benchmarks/README.md](../docs/benchmarks/README.md) for the Rust benches.
+[docs/benchmarks/README.md](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/README.md) for the Rust benches.
 
 ### HDF5 Processing
 
