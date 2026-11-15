@@ -379,6 +379,20 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
+TIFF images and masks must be single-channel (grayscale), with 8- to 64-bit
+integer or float32/float64 samples; only the first page of a multi-page TIFF
+is read. Colour TIFFs (RGB, RGBA, CMYK, palette) and files with extra samples
+are rejected with an error that says only single-channel TIFFs are supported
+and, where the decoder can read the header, names the photometric
+interpretation, samples per pixel and image shape (`ValueError` in Python, a
+per-file error in batches; planar colour files fail with the decoder's
+"Inconsistent sizes encountered"):
+detectors do not write colour images, so such a file is most likely the wrong
+one. To integrate one channel of a colour image, read it with `tifffile` and
+pass it as an array, e.g. `np.ascontiguousarray(rgb[::-1, :, 0], dtype=np.float64)`
+(the `[::-1]` matches the up-down flip applied to TIFF paths; `tifffile`
+returns planar files as `(3, rows, cols)`, so use `rgb[0, ::-1]` there).
+
 An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the 1D bin grid and drops values outside it; in ordinary single-detector 2D integration only `pyfai_full` uses it, while the other methods keep a detector-local radial grid.
 The legacy `histogram` method always uses the automatic radial range and does not honour `radial_range`; Python raises `ValueError` if both are given.
 

@@ -239,6 +239,15 @@ class Integrator:
 
     The integrator is configured with detector geometry from a PONI file
     and supports various integration methods and corrections.
+
+    TIFF input (image and mask paths) must be single-channel (grayscale):
+    8- to 64-bit integer or float32/float64 samples, one sample per pixel. Only
+    the first page of a multi-page TIFF is read. Colour TIFFs (RGB, RGBA,
+    CMYK, palette) and files with extra samples are rejected with an error
+    that says only single-channel TIFFs are supported and, where the header
+    can be read, names the photometric interpretation, the samples per pixel
+    and the image shape (planar colour files fail with the decoder's
+    "Inconsistent sizes encountered"); they are not reduced to one channel.
     """
 
     def __init__(
@@ -398,7 +407,7 @@ class Integrator:
         Perform 1D radial integration.
 
         Args:
-            image: Path to the TIFF image file or 2D NumPy array
+            image: Path to a single-channel (grayscale) TIFF file or 2D NumPy array
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute Poisson error estimates (default: False)
             azimuthal_std: Also compute weighted population spread (default: False)
@@ -407,8 +416,9 @@ class Integrator:
             IntegrationResult with radial values, intensities, and optional errors
 
         Raises:
-            ValueError: If n_points is 0, the image is empty or not C-contiguous,
-                or its shape does not match the mask
+            ValueError: If n_points is 0, the TIFF cannot be loaded or is not
+                single-channel (e.g. RGB), the image is empty or not
+                C-contiguous, or its shape does not match the mask
 
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
@@ -435,7 +445,7 @@ class Integrator:
         Perform 2D integration.
 
         Args:
-            image: Path to the TIFF image file or 2D NumPy array
+            image: Path to a single-channel (grayscale) TIFF file or 2D NumPy array
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins. Give either this or
                 azimuthal_bracket.
@@ -473,8 +483,9 @@ class Integrator:
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning; if n_radial or n_azimuthal is 0; or if the
-                image is empty or its shape does not match the mask
+                no azimuthal binning; if n_radial or n_azimuthal is 0; if the
+                TIFF cannot be loaded or is not single-channel (e.g. RGB); or if
+                the image is empty or its shape does not match the mask
 
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
@@ -553,10 +564,11 @@ class Integrator:
         In the mask, non-zero values indicate pixels to be masked (ignored).
 
         Args:
-            mask: Path to a TIFF file (str), a NumPy array (uint8 or bool), or None to clear the mask.
+            mask: Path to a single-channel TIFF file (str), a NumPy array (uint8 or bool), or None to clear the mask.
 
         Raises:
-            ValueError: If the mask file cannot be loaded or if the array has an incorrect shape or type.
+            ValueError: If the mask file cannot be loaded or is not single-channel
+                (e.g. RGB), or if the array has an incorrect shape or type.
 
         Example:
             >>> import numpy as np
@@ -634,8 +646,8 @@ class Integrator:
         Raises:
             ValueError: If n_points is 0, or an array is empty, not C-contiguous,
                 or does not match the mask shape. File errors, including a TIFF
-                whose shape does not match the mask, go to that file's
-                BatchResult.error
+                that is not single-channel (e.g. RGB) or whose shape does not
+                match the mask, go to that file's BatchResult.error
             TypeError: If images is not a list of paths or 2D float64 arrays,
                 including a single path (str, bytes, bytearray or os.PathLike) instead of
                 a list: wrap one path in a list
@@ -689,8 +701,9 @@ class Integrator:
                 Lists are checked up front; for a generator the error (or any
                 exception the generator raises) is raised by the iterator at
                 that item's position, after all earlier results.
-                A TIFF path whose image does not match the mask shape is not
-                raised: it gives that item's BatchResult.error
+                A TIFF path that cannot be loaded, is not single-channel (e.g.
+                RGB) or does not match the mask shape is not raised: it gives
+                that item's BatchResult.error
 
         Example:
             >>> # With a list
@@ -769,7 +782,8 @@ class Integrator:
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
                 no azimuthal binning, or if n_radial or n_azimuthal is 0. File
-                errors, including a TIFF whose shape does not match the mask,
+                errors, including a TIFF that is not single-channel (e.g. RGB)
+                or whose shape does not match the mask,
                 go to that file's BatchResult.error
             TypeError: If tiff_paths is not a list of str paths, including a
                 single path (str, bytes, bytearray or os.PathLike): wrap one path in a list
@@ -856,8 +870,9 @@ class Integrator:
                 Lists are checked up front; for a generator the error (or any
                 exception the generator raises) is raised by the iterator at
                 that item's position, after all earlier results.
-                A TIFF path whose image does not match the mask shape is not
-                raised: it gives that item's BatchResult.error
+                A TIFF path that cannot be loaded, is not single-channel (e.g.
+                RGB) or does not match the mask shape is not raised: it gives
+                that item's BatchResult.error
 
         Example:
             >>> # With a list
@@ -941,7 +956,8 @@ class MultiIntegrator:
 
         Raises:
             ValueError: If number of images doesn't match number of detectors,
-                n_points is 0, a TIFF cannot be loaded, or an image is empty or
+                n_points is 0, a TIFF cannot be loaded or is not single-channel
+                (e.g. RGB), or an image is empty or
                 does not match its detector's mask shape
             TypeError: If images is a single path (str, bytes, bytearray or os.PathLike)
                 instead of a list with one image per detector
@@ -1017,7 +1033,8 @@ class MultiIntegrator:
 
         Raises:
             ValueError: If any image-list has wrong length, n_points is 0, a TIFF
-                cannot be loaded, or an image is empty or does not match its
+                cannot be loaded or is not single-channel (e.g. RGB), or an image
+                is empty or does not match its
                 detector's mask shape
             TypeError: If images, or one of its frame sets, is a single path
                 (str, bytes, bytearray or os.PathLike) instead of a list
