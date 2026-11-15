@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
+use tiff::decoder::{Decoder, DecodingResult};
+use tiff::tags::{PhotometricInterpretation, Tag};
+use tiff::{ColorType, TiffError, TiffUnsupportedError};
 
 mod tiff_input;
 #[doc(hidden)]
@@ -53,48 +56,34 @@ impl Frame {
         let path = Path::new(&file_path);
         let f = File::open(path)?;
         let reader = BufReader::new(f);
-        let mut decoder = tiff::decoder::Decoder::new(reader)?;
+        let mut decoder = open_tiff(reader)?;
+        require_single_channel(&mut decoder)?;
 
         let dims = decoder.dimensions()?;
         // tiff library returns (width, height) but we want (height, width)
         let dim1 = dims.1 as usize;
         let dim2 = dims.0 as usize;
-        let size = dim1 * dim2;
+        let size = dim1
+            .checked_mul(dim2)
+            .ok_or(tiff::TiffError::IntSizeError)?;
+
+        let image = decoder.read_image()?;
+        check_decoded_len(&image, dim1, dim2)?;
 
         self.data.clear();
         self.data.reserve(size);
 
-        match decoder.read_image()? {
-            tiff::decoder::DecodingResult::U8(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::U16(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::U32(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::U64(v) => {
-                convert_and_flip_into_u64(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::I8(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::I16(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::I32(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::I64(v) => {
-                convert_and_flip_into_i64(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::F32(v) => {
-                convert_and_flip_into(&v, dim2, dim1, &mut self.data)
-            }
-            tiff::decoder::DecodingResult::F64(v) => {
-                flip_ud_into_f64(&v, dim2, dim1, &mut self.data)
-            }
+        match image {
+            DecodingResult::U8(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::U16(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::U32(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::U64(v) => convert_and_flip_into_u64(&v, dim2, dim1, &mut self.data),
+            DecodingResult::I8(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::I16(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::I32(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::I64(v) => convert_and_flip_into_i64(&v, dim2, dim1, &mut self.data),
+            DecodingResult::F32(v) => convert_and_flip_into(&v, dim2, dim1, &mut self.data),
+            DecodingResult::F64(v) => flip_ud_into_f64(&v, dim2, dim1, &mut self.data),
         }
 
         self.dim1 = dim1;
@@ -102,6 +91,106 @@ impl Frame {
         self.name = file_path;
         Ok(())
     }
+}
+
+const SINGLE_CHANNEL_ONLY: &str = "only single-channel (grayscale) TIFFs are supported";
+
+/// Open a TIFF decoder. A file whose sample count the decoder cannot handle
+/// at all (2 or 5+ samples per pixel) fails here, so its error gets the same
+/// "single-channel only" explanation as the colour files rejected by
+/// [`require_single_channel`].
+pub(crate) fn open_tiff<R: Read + Seek>(
+    reader: R,
+) -> Result<Decoder<R>, Box<dyn std::error::Error>> {
+    Decoder::new(reader).map_err(|err| match err {
+        TiffError::UnsupportedError(TiffUnsupportedError::UnsupportedSampleDepth(samples)) => {
+            format!("unsupported TIFF: {samples} samples per pixel; {SINGLE_CHANNEL_ONLY}").into()
+        }
+        err => err.into(),
+    })
+}
+
+/// Reject any TIFF image that does not hold exactly one sample per pixel.
+///
+/// Diffraction detectors write single-channel images. A colour TIFF (RGB,
+/// RGBA, CMYK, palette, planar colour) is almost certainly the wrong file,
+/// and the decoder returns its samples interleaved, so it is rejected rather
+/// than reduced to one channel. The error names the photometric
+/// interpretation, the samples per pixel and the image shape (rows, columns).
+pub(crate) fn require_single_channel<R: Read + Seek>(
+    decoder: &mut Decoder<R>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // `ColorType::Gray` means BlackIsZero/WhiteIsZero with one BitsPerSample
+    // entry. The tiff crate (0.8) also reports it for SamplesPerPixel 3 or 4
+    // with a single BitsPerSample value (accepted by libtiff and tifffile) and
+    // then decodes only the first rows x cols interleaved samples, so the
+    // SamplesPerPixel tag must say 1 as well.
+    let samples_tag = decoder
+        .find_tag_unsigned::<u16>(Tag::SamplesPerPixel)
+        .ok()
+        .flatten();
+    if let Ok(ColorType::Gray(_)) = decoder.colortype()
+        && samples_tag.unwrap_or(1) == 1
+    {
+        return Ok(());
+    }
+    let photometric = match decoder.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation) {
+        Ok(Some(value)) => match PhotometricInterpretation::from_u16(value) {
+            Some(p) => format!("{p:?}"),
+            None => format!("unknown ({value})"),
+        },
+        _ => "missing".to_owned(),
+    };
+    let bits = decoder
+        .find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    // Without the tag, the number of BitsPerSample entries is the best guess.
+    let samples = samples_tag.unwrap_or(bits.len().max(1) as u16);
+    let (width, height) = decoder.dimensions()?;
+    let plural = if samples == 1 { "" } else { "s" };
+    Err(format!(
+        "unsupported TIFF: photometric interpretation {photometric}, {samples} sample{plural} \
+         per pixel (bits per sample {bits:?}), image shape ({height}, {width}); \
+         {SINGLE_CHANNEL_ONLY}"
+    )
+    .into())
+}
+
+/// Number of samples in a decoded TIFF buffer.
+fn decoded_len(image: &DecodingResult) -> usize {
+    match image {
+        DecodingResult::U8(v) => v.len(),
+        DecodingResult::U16(v) => v.len(),
+        DecodingResult::U32(v) => v.len(),
+        DecodingResult::U64(v) => v.len(),
+        DecodingResult::I8(v) => v.len(),
+        DecodingResult::I16(v) => v.len(),
+        DecodingResult::I32(v) => v.len(),
+        DecodingResult::I64(v) => v.len(),
+        DecodingResult::F32(v) => v.len(),
+        DecodingResult::F64(v) => v.len(),
+    }
+}
+
+/// Invariant behind [`require_single_channel`]: the decoded buffer holds
+/// exactly one sample per pixel. Catches any kind the colour check misses
+/// with an error instead of reading a wrong slice or panicking.
+pub(crate) fn check_decoded_len(
+    image: &DecodingResult,
+    dim1: usize,
+    dim2: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let len = decoded_len(image);
+    if Some(len) == dim1.checked_mul(dim2) {
+        return Ok(());
+    }
+    Err(format!(
+        "unsupported TIFF: decoded {len} samples for an image of shape ({dim1}, {dim2}); \
+         {SINGLE_CHANNEL_ONLY}"
+    )
+    .into())
 }
 
 /// Convert to f64 and flip up-down in a single pass into a caller-supplied buffer.

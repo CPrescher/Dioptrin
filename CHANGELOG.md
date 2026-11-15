@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `math::histogram::histogram_parallel` is removed. Nothing in
+  the library, its Python bindings or Dioptas called it; the legacy
+  `Histogram` integration method uses `histogram` and `histogram_with_errors`,
+  which are unchanged. Code that called it can call
+  `math::histogram::histogram` with the same arguments: it returns the same
+  bins and counts, and per-bin means that can differ only by floating-point
+  rounding, because the terms are added in a different order.
 - **Breaking:** the Rust streaming batch API is now bounded and cancellable
   (issue 41). `batch::process_streaming(input, integrator, task, options)`
   replaces `process_files_streaming` and `process_queue_streaming`; the
@@ -165,8 +172,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raised `image shape (0, 0) does not match mask shape ...` for them whether
   or not the mask matched, and a mismatching mask in a batch reported
   `integration worker panicked`; both now pass or fail the mask check by the
-  file's real shape. How colour data is integrated is unchanged. Gray+alpha
-  and palette TIFFs are still rejected by the decoder, as before.
+  file's real shape. Colour TIFFs, the files this mostly concerned, are now
+  rejected before the mask check; see the next entry.
+- **Behaviour change:** colour TIFFs are rejected instead of integrated (#58).
+  An RGB, RGBA or CMYK TIFF (also as the first page of a multi-page file, or a
+  file declaring 3 or 4 samples per pixel with photometric
+  BlackIsZero/WhiteIsZero and a single BitsPerSample value) loaded as the
+  first rows × columns samples of its interleaved buffer, which is neither one
+  channel nor their mean or sum, so the integrated values were meaningless;
+  `Integrator.set_mask(path)` raised `PanicException` for such a file. Every
+  loader (`integrate1d`, `integrate2d`, `set_mask`, all batch methods,
+  `MultiIntegrator` and the Rust `Frame::from_tiff`, `Mask::from_tiff` and
+  batch helpers) now fails with `unsupported TIFF: photometric interpretation
+  RGB, 3 samples per pixel (bits per sample [8, 8, 8]), image shape (h, w);
+  only single-channel (grayscale) TIFFs are supported` — a `ValueError` for
+  single images and masks, the file's `BatchResult.error` in batches, where
+  the other files still integrate. Palette TIFFs and files with extra samples
+  (gray+alpha, grayscale with 3 samples, RGB with 5), which the decoder
+  already refused, now get the same explanation (for 2 or 5+ samples without
+  the photometric interpretation and shape, which the decoder does not expose)
+  instead of the decoder's message; planar colour TIFFs still fail with the
+  decoder's "Inconsistent sizes encountered". Grayscale loading is unchanged,
+  bit for bit. To integrate one channel of a colour image, read it with
+  `tifffile` and pass the channel as a float64 array.
 
 ## [0.13.0] - 2026-11-15
 

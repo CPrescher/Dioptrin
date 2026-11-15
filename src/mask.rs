@@ -13,14 +13,17 @@ impl Mask {
         let path = Path::new(&file_path);
 
         let f = fs::File::open(path)?;
-        let mut decoder = tiff::decoder::Decoder::new(f)?;
+        let mut decoder = crate::frame::open_tiff(f)?;
+        crate::frame::require_single_channel(&mut decoder)?;
 
         let dims = decoder.dimensions()?;
         // tiff library returns (width, height) but we want (height, width)
         let dim1 = dims.1 as usize;
         let dim2 = dims.0 as usize;
 
-        let array: Vec<u8> = match decoder.read_image()? {
+        let image = decoder.read_image()?;
+        crate::frame::check_decoded_len(&image, dim1, dim2)?;
+        let array: Vec<u8> = match image {
             tiff::decoder::DecodingResult::U8(v) => {
                 v.iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
             }
