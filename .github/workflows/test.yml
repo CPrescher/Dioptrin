@@ -6,42 +6,14 @@ on:
   pull_request:
     branches: [ main ]
 
+# A new push to a pull request cancels the run for the previous push; runs on
+# main each get their own group, so every merged commit is tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The full Rust test suite and the format check run in ci.yml.
 jobs:
-  rust-tests:
-    name: Rust Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run Rust tests
-        run: cargo test
-
-      - name: Check Rust formatting
-        run: cargo fmt -- --check
-
   python-tests:
     name: Python Tests & Examples
     runs-on: ubuntu-latest
@@ -63,45 +35,47 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Caches dependencies only; the extension module itself is always
+      # rebuilt. One cache per Python version, since PyO3 builds against it.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-py${{ matrix.python-version }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          key: py${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      # Installs only the test dependencies, not the project: building the
+      # project here would compile the extension a second time.
       - name: Install Python dependencies
         run: |
           uv venv .venv
           source .venv/bin/activate
-          uv pip install maturin
+          uv pip install maturin -r pyproject.toml --extra test
 
       - name: Build Python package
         run: |
           source .venv/bin/activate
-          maturin develop --features python
+          maturin develop --release --features python
 
-      - name: Install test dependencies
-        run: |
-          source .venv/bin/activate
-          uv pip install .[test]
-
+      # The scripts in python_examples compare against the text files these
+      # Rust tests write to test_data/test_output; the full suite runs in ci.yml.
       - name: Generate test output data
-        run: cargo test
+        run: >-
+          cargo test --lib -- --exact
+          frame::tests::frame_from_tiff
+          geometry::tests::calc_azimuth_all
+          geometry::tests::calc_pixel_positions_det_reference
+          geometry::tests::calc_pixel_positions_poni_reference
+          geometry::tests::calc_pixel_positions_with_sample_reference
+          geometry::tests::calc_polarization
+          geometry::tests::calc_solid_angle
+          geometry::tests::calc_tth_all
+          integration::tests::test_integrate_counting_1d
+          integration::tests::test_integrate_counting_1d_with_errors
+          integration::tests::test_integrate_pixel_split_1d
+          integration::tests::test_integrate_pixel_split_1d_with_errors
+          integration::tests::test_integrate_supersampled_1d
+          integration::tests::test_integrator
 
       - name: Test integration and array batch regressions
         run: |
@@ -133,6 +107,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Run benchmarks
         run: |
