@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build already produced: single-threaded results are unchanged,
   multi-threaded results now equal them. The 1D `pixel_split` table and the
   other methods' tables were already deterministic.
+- `math::histogram::histogram_parallel` now panics when `weights` and `data`
+  differ in length, like `histogram` and `histogram_with_errors` (#42). It
+  paired them chunk by chunk and silently ignored the extra values: longer
+  weights were dropped, and with shorter weights the trailing data was not
+  binned at all, so bins reported wrong means (or NaN, 0 with a mask, when
+  left empty). A mask shorter than the data still panics and a longer one is
+  still accepted, as in the other two.
 
 ## [0.13.0] - 2026-11-15
 

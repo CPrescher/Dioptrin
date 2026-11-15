@@ -123,12 +123,17 @@ fn check_lengths(data: &[f64], weights: &[f64]) {
 /// the input length and `n_points`, and their partial sums are combined in
 /// chunk order, so the result is bit-identical from run to run and for any
 /// thread count.
+///
+/// # Panics
+///
+/// If `weights` and `data` differ in length, or `mask` is shorter than them.
 pub fn histogram_parallel(
     data: &[f64],
     weights: &[f64],
     n_points: usize,
     mask: Option<&[u8]>,
 ) -> (Vec<f64>, Vec<f64>) {
+    check_lengths(data, weights);
     let (min, _max, step) = min_max_step(data, n_points);
     let chunk = parallel_chunk_len(data.len(), n_points);
 
@@ -303,6 +308,36 @@ mod tests {
     #[should_panic(expected = "variances must have one value per weight")]
     fn histogram_with_errors_rejects_short_variances() {
         histogram_with_errors(&[0.0; 10], &[1.0; 10], &[1.0; 8], 4, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "weights must have one value per data value")]
+    fn histogram_parallel_rejects_weights_longer_than_data() {
+        histogram_parallel(&[0.0; 10], &[1.0; 12], 4, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "weights must have one value per data value")]
+    fn histogram_parallel_rejects_weights_shorter_than_data() {
+        histogram_parallel(&[0.0; 10], &[1.0; 8], 4, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn histogram_parallel_rejects_short_mask() {
+        histogram_parallel(&[0.0; 10], &[1.0; 10], 4, Some(&[0; 8]));
+    }
+
+    #[test]
+    fn histogram_parallel_ignores_mask_values_past_the_data() {
+        // As in `histogram`, a longer mask is accepted and its extra values
+        // are not used.
+        let data = [0.0, 1.0, 2.0, 3.0];
+        let weights = [1.0, 2.0, 3.0, 4.0];
+        let (_, y) = histogram_parallel(&data, &weights, 2, Some(&[0, 0, 0, 0, 1, 1]));
+        let (_, y_ref) = histogram(&data, &weights, 2, Some(&[0, 0, 0, 0, 1, 1]));
+        assert_eq!(y, [1.5, 3.5]);
+        assert_eq!(y, y_ref);
     }
 
     #[test]
