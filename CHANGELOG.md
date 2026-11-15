@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests and tags, and on tags checks that the tag, `Cargo.toml` and
   `pyproject.toml` versions agree; the GitHub release and both uploads wait
   for it. A re-run skips a version that is already on crates.io.
+- Criterion benches for paths the existing ones did not time (#47):
+  `methods` (counting, `pixel_split`, supersampled and `pyfai_full`, cold and
+  warm, 1D and 2D), `azimuthal` (the three azimuthal-range APIs),
+  `detectors` (circular masks, `Detector::position`, integration with a
+  catalogue detector attached, binned and transformed), `plans` (fixed and
+  prepared plans, CSC versus CSR), `multi` (`MultiIntegrator`), `batch` (the
+  Rust batch helpers) and `massif` (with and without `PreparedMassif`).
+  `scripts/bench_compare.py` runs them on two revisions and prints a
+  comparison table, and `python_examples/bench_batch_streams.py` measures
+  the Python batch and stream methods in frames per second. See
+  `docs/benchmarks/README.md`. CI only compiles the new benches.
 
 ### Fixed
 

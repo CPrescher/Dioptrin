@@ -671,6 +671,14 @@ Run LUT build benchmarks:
 cargo bench --bench build
 ```
 
+Further targets time the four methods side by side (`methods`), azimuthal
+ranges (`azimuthal`), physical detectors (`detectors`), prepared plans and
+sparse layouts (`plans`), `MultiIntegrator` (`multi`), the batch helpers
+(`batch`) and the Massif peak search (`massif`). Filter by benchmark ID, e.g.
+`cargo bench --bench methods -- 'methods/build1d/'`, and compare two revisions
+with `python3 scripts/bench_compare.py A B`; see
+[docs/benchmarks/README.md](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/README.md).
+
 ## pyFAI-compatible full pixel splitting
 
 Select `method="pyfai_full"` in Python or `IntegrationMethod::PyfaiFull`
