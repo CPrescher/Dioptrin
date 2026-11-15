@@ -187,3 +187,55 @@ fn typed_tiff_2d_rejects_histogram() {
     let ai = Integrator::new(Geometry::new(3, 3, p)).with_method(IntegrationMethod::Histogram);
     let _ = ai.integrate_tiff2d::<false>(&typed, 5, 4, None);
 }
+
+/// A colour TIFF is decoded through the legacy f64 reader, and the typed frame
+/// still reports its shape. Before, `dim1`/`dim2` stayed 0, so the mask and
+/// detector checks of the pooled batch workers (`check_frame_shape` on the
+/// typed frame) rejected it as a 0 x 0 image.
+#[test]
+fn fallback_tiff_reports_its_shape() {
+    let path = std::env::temp_dir().join(format!(
+        "dioptrin-rgb-{}-{}.tif",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let mut enc = TiffEncoder::new(File::create(&path).unwrap()).unwrap();
+        let rgb: Vec<u8> = (0..4 * 2 * 3).map(|v| v as u8).collect();
+        enc.write_image::<colortype::RGB8>(4, 2, &rgb).unwrap();
+    }
+    let mut typed = TiffFrame::default();
+    typed.reload(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let legacy = typed.legacy().expect("RGB goes through the legacy reader");
+    assert_eq!((legacy.dim1, legacy.dim2), (2, 4));
+    assert_eq!((typed.dim1, typed.dim2), (2, 4));
+
+    let mut p = Poni::new();
+    p.pixel1 = 0.1;
+    p.pixel2 = 0.1;
+    p.distance = 1.0;
+    let masked = |dim1: usize, dim2: usize| {
+        Integrator::new(Geometry::new(2, 4, p.clone())).with_mask(Mask {
+            data: vec![0; dim1 * dim2],
+            dim1,
+            dim2,
+        })
+    };
+    assert_eq!(
+        masked(2, 4).check_frame_shape(typed.dim1, typed.dim2),
+        Ok(())
+    );
+    assert_eq!(
+        masked(3, 3).check_frame_shape(typed.dim1, typed.dim2),
+        Err("image shape (2, 4) does not match mask shape (3, 3)".to_owned())
+    );
+    // The typed frame integrates like the f64 frame it holds.
+    let ai = masked(2, 4).with_method(IntegrationMethod::Counting);
+    let (_, typed_y, _) = ai.integrate_tiff1d::<false>(&typed, 4);
+    let (_, legacy_y) = ai.integrate1d(legacy, 4);
+    same(&typed_y, &legacy_y);
+}

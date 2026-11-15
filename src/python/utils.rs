@@ -1,7 +1,7 @@
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rayon::ThreadPoolBuilder;
 use std::thread;
 
@@ -234,6 +234,85 @@ pub fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     Ok(poni)
 }
 
+/// `#[pyo3(from_py_with)]` extractors for the batch arguments that must be
+/// lists. They run during argument extraction, in parameter order, so a bad
+/// value raises before the later arguments are converted, and PyO3 adds its
+/// "while processing 'name'" note as for a typed parameter.
+pub fn batch_images<'py>(obj: &Bound<'py, PyAny>) -> PyResult<BatchImageInput<'py>> {
+    reject_single_path(
+        obj,
+        "images",
+        "a list of file paths or a list of 2D float64 numpy arrays",
+    )?;
+    obj.extract()
+}
+
+/// See [`batch_images`]; for `Integrator.batch2d`'s `tiff_paths`.
+pub fn tiff_path_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    reject_single_path(obj, "tiff_paths", "a list of file paths")?;
+    obj.extract()
+}
+
+/// See [`batch_images`]; one image per detector (`MultiIntegrator`).
+pub fn detector_images<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<ImageInput<'py>>> {
+    reject_single_path(obj, "images", "a list with one image per detector")?;
+    obj.extract()
+}
+
+/// See [`batch_images`]; frame sets of one image per detector
+/// (`MultiIntegrator.batch1d`). Each frame set is checked for a single path too.
+pub fn detector_image_sets<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<Vec<ImageInput<'py>>>> {
+    reject_single_path(
+        obj,
+        "images",
+        "a list of frame sets, each a list with one image per detector",
+    )?;
+    let sets: Vec<Bound<'py, PyAny>> = obj.extract()?;
+    sets.iter()
+        .enumerate()
+        .map(|(i, set)| {
+            reject_single_path(
+                set,
+                &format!("images[{i}]"),
+                "a list with one image per detector",
+            )?;
+            set.extract()
+        })
+        .collect()
+}
+
+/// Raise TypeError when `obj` is a single path (`str`, `bytes`, `bytearray`
+/// or `os.PathLike`) where a list of images is expected. Python would iterate
+/// a `str` character by character and treat each one as a file path. Any
+/// object whose type defines `__fspath__` counts as a path, even a list
+/// subclass. `name`
+/// is the argument, `expected` what it must be, e.g. "a list of file paths".
+pub fn reject_single_path(obj: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<()> {
+    let single = obj.is_instance_of::<PyString>()
+        || obj.is_instance_of::<PyBytes>()
+        || obj.is_instance_of::<PyByteArray>()
+        // Looked up on the type, as os.fspath does: an instance __getattr__
+        // (a proxy, or one that raises) does not make an object a path.
+        || obj.get_type().hasattr("__fspath__")?;
+    if !single {
+        return Ok(());
+    }
+    let type_name = obj
+        .get_type()
+        .name()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|_| "path".to_owned());
+    // Only str paths are accepted inside the list too.
+    let hint = if obj.is_instance_of::<PyString>() {
+        ""
+    } else {
+        " (file paths must be str, e.g. os.fsdecode(path))"
+    };
+    Err(PyTypeError::new_err(format!(
+        "{name} must be {expected}, not a single {type_name}{hint}"
+    )))
+}
+
 /// Classified input for batch operations.
 ///
 /// Tries extraction in order: Vec<String> (paths), Vec<Array> (numpy),
@@ -252,6 +331,11 @@ pub enum ClassifiedInput<'py> {
 /// the stream; generators/iterators fall through to the Iterator variant and
 /// are checked as they are consumed.
 pub fn classify_batch_input<'py>(obj: &Bound<'py, PyAny>) -> PyResult<ClassifiedInput<'py>> {
+    reject_single_path(
+        obj,
+        "images",
+        "a list or iterable of file paths or 2D float64 numpy arrays",
+    )?;
     // Try Vec<String> first
     if let Ok(paths) = obj.extract::<Vec<String>>() {
         return Ok(ClassifiedInput::Paths(paths));

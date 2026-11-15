@@ -24,10 +24,10 @@ use super::results::{
     BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult, StreamError, panic_message,
 };
 use super::utils::{
-    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, check_mask_shape,
+    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, batch_images, check_mask_shape,
     check_method_radial_range, check_polarization_factor, check_positive, check_unit_wavelength,
     classify_batch_input, extract_array_dims, extract_frame_from_pyany, extract_item_dims,
-    mask_shape, parse_method, parse_unit, poni_from_dict, resolve_workers_threads,
+    mask_shape, parse_method, parse_unit, poni_from_dict, resolve_workers_threads, tiff_path_list,
     validate_integrator_options,
 };
 
@@ -1161,10 +1161,10 @@ impl PyIntegrator {
     /// ```
     #[allow(clippy::too_many_arguments)] // Python keyword options plus the GIL token.
     #[pyo3(signature = (images, n_points, errors=false, num_workers=None, num_threads=None, *, azimuthal_std=false))]
-    fn batch1d(
+    fn batch1d<'py>(
         &self,
-        py: Python<'_>,
-        images: BatchImageInput,
+        py: Python<'py>,
+        #[pyo3(from_py_with = batch_images)] images: BatchImageInput<'py>,
         n_points: usize,
         errors: bool,
         num_workers: Option<usize>,
@@ -1556,7 +1556,7 @@ impl PyIntegrator {
     fn batch2d(
         &self,
         py: Python<'_>,
-        tiff_paths: Vec<String>,
+        #[pyo3(from_py_with = tiff_path_list)] tiff_paths: Vec<String>,
         n_radial: usize,
         n_azimuthal: Option<usize>,
         errors: bool,

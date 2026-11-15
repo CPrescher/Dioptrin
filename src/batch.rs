@@ -54,9 +54,10 @@ pub(crate) use file_workers::{
 /// Implement this trait to specify which integration method to use
 /// and what output type to produce.
 ///
-/// The batch helpers check every frame against the integrator's detector
-/// first: a shape the detector does not define (see `Geometry::with_detector`)
-/// is reported as that item's error and the task is not run for it.
+/// The batch helpers check every frame against the integrator's mask and
+/// detector first: an image whose shape differs from the mask's, or a shape
+/// the detector does not define (see `Geometry::with_detector`), is reported
+/// as that item's error and the task is not run for it.
 pub trait IntegrationTask: Send + Sync {
     /// The output type produced by this integration task.
     type Output: Send;
@@ -90,14 +91,14 @@ fn rejection<T: IntegrationTask>(integrator: &Integrator, task: &T) -> Option<St
 }
 
 /// Runs `task` on `frame`, or returns the error for an image shape the
-/// integrator's detector does not accept (which the integration call would
-/// panic with), so that one item fails instead of a worker.
+/// integrator's mask or detector does not accept (which the integration call
+/// would panic with), so that one item fails instead of a worker.
 pub(crate) fn run<T: IntegrationTask>(
     task: &T,
     integrator: &Integrator,
     frame: &Frame,
 ) -> Result<T::Output, String> {
-    integrator.check_image_shape(frame.dim1, frame.dim2)?;
+    integrator.check_frame_shape(frame.dim1, frame.dim2)?;
     Ok(task.execute(integrator, frame))
 }
 
@@ -1104,6 +1105,118 @@ mod tests {
                 },
                 "integrate2d_on_azimuthal_range is not supported for Histogram method",
             );
+        }
+    }
+
+    /// Writes one `width x height` TIFF (an image of shape `(height, width)`).
+    fn write_tiff(tag: &str, width: u32, height: u32) -> String {
+        use tiff::encoder::{TiffEncoder, colortype};
+        let path = std::env::temp_dir().join(format!(
+            "dioptrin-batch-{tag}-{}-{width}x{height}.tif",
+            std::process::id()
+        ));
+        let mut enc = TiffEncoder::new(std::fs::File::create(&path).unwrap()).unwrap();
+        let data: Vec<u16> = (0..width * height).map(|v| v as u16 + 1).collect();
+        enc.write_image::<colortype::Gray16>(width, height, &data)
+            .unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    /// A TIFF whose shape differs from the mask fails as its own item with
+    /// both shapes named, in either mask mode and through every file helper
+    /// (the pooled helpers behind the Python bindings included); the other
+    /// files of the batch still integrate. Before, the pooled helpers reported
+    /// "integration worker panicked" and `process_files` and
+    /// `process_files_streaming` lost the whole worker chunk to the panic.
+    #[test]
+    fn mask_shape_mismatch_fails_only_that_item() {
+        use crate::integration::MaskMode;
+        use crate::mask::Mask;
+        let good = write_tiff("maskmix", 3, 3);
+        let other = write_tiff("maskmix", 4, 2);
+        let files = vec![good.clone(), other.clone(), good.clone(), other.clone()];
+        let expected = "image shape (2, 4) does not match mask shape (3, 3)";
+        type Item = (usize, String, Result<(Vec<f64>, Vec<f64>), String>);
+        let check = |helper: &str, mut results: Vec<Item>| {
+            assert_eq!(results.len(), files.len(), "{helper}");
+            results.sort_by_key(|r| r.0);
+            for (i, (index, name, result)) in results.into_iter().enumerate() {
+                assert_eq!((index, &name), (i, &files[i]), "{helper}");
+                if i % 2 == 0 {
+                    assert!(result.is_ok(), "{helper}: {:?}", result.err());
+                } else {
+                    assert_eq!(result.err().as_deref(), Some(expected), "{helper}");
+                }
+            }
+        };
+        let indexed = |v: Vec<(String, Result<_, String>)>| {
+            v.into_iter()
+                .enumerate()
+                .map(|(i, (name, r))| (i, name, r))
+                .collect()
+        };
+        for mode in [MaskMode::Fixed, MaskMode::Dynamic] {
+            let integrator = Arc::new(
+                Integrator::new(Geometry::new(3, 3, test_poni()))
+                    .with_method(IntegrationMethod::Counting)
+                    .with_mask_mode(mode)
+                    .with_mask(Mask {
+                        data: vec![0; 9],
+                        dim1: 3,
+                        dim2: 3,
+                    }),
+            );
+            let task = Integration1D { n_bins: 4 };
+            check(
+                "process_files",
+                indexed(process_files(&files, Arc::clone(&integrator), task, 2, 1)),
+            );
+            check(
+                "process_files_sequential",
+                indexed(process_files_sequential(&files, &integrator, task)),
+            );
+            let batch = process_files_streaming(&files, Arc::clone(&integrator), task, 2, 1);
+            check("process_files_streaming", batch.into_iter().collect());
+            let queue = || {
+                let (work_tx, work_rx) = mpsc::channel();
+                for (index, path) in files.iter().enumerate() {
+                    work_tx
+                        .send(WorkItem::Path {
+                            index,
+                            path: path.clone(),
+                        })
+                        .unwrap();
+                }
+                work_rx
+            };
+            let batch = process_queue_streaming(queue(), Arc::clone(&integrator), task, 2, 1);
+            check("process_queue_streaming", batch.into_iter().collect());
+            #[cfg(feature = "python")]
+            {
+                use file_workers::*;
+                let pool = FileWorkers::new(2, 1).unwrap();
+                let results = process_files_with_pool(&files, Arc::clone(&integrator), task, pool);
+                check("process_files_with_pool", indexed(results));
+                let pool = FileWorkers::new(2, 1).unwrap();
+                let batch =
+                    process_files_streaming_with_pool(&files, Arc::clone(&integrator), task, pool);
+                check(
+                    "process_files_streaming_with_pool",
+                    batch.into_iter().collect(),
+                );
+                let pool = FileWorkers::new(2, 1).unwrap();
+                let batch = process_queue_with_pool(
+                    queue(),
+                    Arc::clone(&integrator),
+                    task,
+                    pool,
+                    StreamControl::new(),
+                );
+                check("process_queue_with_pool", batch.into_iter().collect());
+            }
+        }
+        for file in [good, other] {
+            std::fs::remove_file(file).unwrap();
         }
     }
 

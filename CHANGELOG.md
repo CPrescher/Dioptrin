@@ -110,6 +110,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and up) were not affected: over 2,174 detector, orientation, transform,
   binning and beam cases every pixel's vote and every 1D, 2D, shared-grid and
   `MultiIntegrator` result is bit-identical to before.
+- A TIFF in a batch whose shape differs from the integrator's mask now fails
+  as its own item with `image shape (r, c) does not match mask shape (r, c)`
+  (#39). The `batch1d`, `batch2d`, `batch1d_iter` and `batch2d_iter` path
+  inputs (lists and generators, fixed and dynamic mask modes) reported only
+  `integration worker panicked` and printed a Rust panic to stderr. In Rust,
+  `process_files` dropped the panicking worker's whole share of the files from
+  its result, `process_files_streaming` the rest of that share,
+  `process_queue_streaming` lost the item and the worker, and
+  `process_files_sequential` panicked. The batch helpers now check the mask
+  shape before integrating, as they already did the detector shape, and the
+  other files of the batch still integrate. Python array inputs are unchanged:
+  they still raise `ValueError` before any work starts. In Rust, a `Frame`
+  work item that does not match the mask now also gets this error instead of a
+  panic, and a custom `IntegrationTask` is no longer called for such a frame.
+- **Behaviour change:** a single `str`, `bytes`, `bytearray` or `os.PathLike`
+  path (an object whose type defines `__fspath__`) passed where a list is
+  expected now raises `TypeError` saying what the argument must be, in
+  `Integrator.batch1d`, `batch2d`, `batch1d_iter` and `batch2d_iter` and in
+  `MultiIntegrator.batch1d` (the outer list and each frame set), `integrate1d`
+  and `integrate2d` (#40). `batch1d_iter` and `batch2d_iter` used to iterate a
+  `str` character by character and stream one "file not found" result per
+  character, raised `TypeError` only at the first `next()` for `bytes` and
+  `bytearray` (whose items are integers), and raised `ValueError` for a
+  `pathlib.Path`; the other methods already raised `TypeError`, with messages
+  such as "Can't extract `str` to `Vec`". Wrap a single path in a list; paths
+  must be `str` (`os.fsdecode(path)` for a `Path` or `bytes`). Other bad
+  input, including two bad arguments in one call, raises the same exception,
+  with the same "while processing" note, as before.
+- Colour TIFFs (RGB, RGBA and other files the typed TIFF reader hands to the
+  f64 `Frame` reader) now report their real shape, so the mask check and its
+  message are right for them. `Integrator.integrate1d(path)` with a mask set
+  raised `image shape (0, 0) does not match mask shape ...` for them whether
+  or not the mask matched, and a mismatching mask in a batch reported
+  `integration worker panicked`; both now pass or fail the mask check by the
+  file's real shape. How colour data is integrated is unchanged. Gray+alpha
+  and palette TIFFs are still rejected by the decoder, as before.
 
 ## [0.13.0] - 2026-11-15
 

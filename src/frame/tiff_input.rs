@@ -36,8 +36,7 @@ impl TiffFrame {
         let (width, height) = decoder.dimensions()?;
         let tiff::ColorType::Gray(bits) = decoder.colortype()? else {
             // Preserve the legacy handling of non-detector/multichannel files.
-            self.fallback = Some(Frame::from_tiff(path.to_owned())?);
-            return Ok(());
+            return self.load_fallback(path);
         };
         let format = decoder
             .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)?
@@ -71,10 +70,7 @@ impl TiffFrame {
             (2, 33..=64) => buffer!(I64, i64),
             (3, 32) => buffer!(F32, f32),
             (3, 64) => buffer!(F64, f64),
-            _ => {
-                self.fallback = Some(Frame::from_tiff(path.to_owned())?);
-                return Ok(());
-            }
+            _ => return self.load_fallback(path),
         }
         if size != 0 {
             let (cw, ch) = decoder.chunk_dimensions();
@@ -115,6 +111,20 @@ impl TiffFrame {
         self.dim2 = width as usize;
         self.name.clear();
         self.name.push_str(path);
+        Ok(())
+    }
+
+    /// Load `path` through the f64 `Frame` reader, for TIFFs the typed path
+    /// does not decode (colour, palette, extra samples, unusual sample
+    /// formats). `dim1`/`dim2` are set to that frame's shape, so shape checks
+    /// see the real image and not 0 x 0.
+    fn load_fallback(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let frame = Frame::from_tiff(path.to_owned())?;
+        self.dim1 = frame.dim1;
+        self.dim2 = frame.dim2;
+        self.name.clear();
+        self.name.push_str(path);
+        self.fallback = Some(frame);
         Ok(())
     }
 
