@@ -1,4 +1,4 @@
-name: Python Build
+name: Release
 
 # Pull requests build a smoke matrix (one Python per OS) and only when
 # packaging-relevant files change. Tags and manual runs build every wheel.
@@ -18,7 +18,7 @@ on:
       - 'licenses/**'
       - 'scripts/**'
       - 'python_examples/**'
-      - '.github/workflows/python-release.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
