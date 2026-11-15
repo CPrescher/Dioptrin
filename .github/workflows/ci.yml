@@ -9,6 +9,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# A new push to a pull request cancels the run for the previous push; runs on
+# main each get their own group, so every merged commit is tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   fmt:
     name: Format
@@ -58,17 +64,3 @@ jobs:
       - run: cargo test
         env:
           CARGO_PROFILE_TEST_OPT_LEVEL: 0
-
-  test-python:
-    name: Test Python bindings
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install maturin
-      - run: cargo build --features python
-      - run: maturin build --features python

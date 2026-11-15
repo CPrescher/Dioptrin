@@ -153,8 +153,16 @@ pub(super) fn corner_sign(
     if votes < 0 { -1.0 } else { 1.0 }
 }
 
-/// Shoelace area of a quadrilateral whose azimuths are unwrapped along the
+/// Signed area of a quadrilateral whose azimuths are unwrapped along the
 /// contour (consecutive differences taken in (-π, π]).
+///
+/// Computed as half the cross product of the diagonals, which equals the
+/// shoelace sum for any quadrilateral but works on coordinate differences
+/// (pixel-sized) instead of products of absolute coordinates (of order one).
+/// In the shoelace sum single votes turned to rounding noise below a pixel
+/// span of about 3e-8 rad, and the majority could flip further down (issue
+/// #44); this form keeps every vote until neighbouring corner angles are a
+/// few ulps apart (pixel / distance about 1e-15).
 fn unwrapped_area(poly: &[(f64, f64); 4]) -> f64 {
     let mut chi = poly[0].1;
     let mut pts = [(poly[0].0, chi); 4];
@@ -162,12 +170,8 @@ fn unwrapped_area(poly: &[(f64, f64); 4]) -> f64 {
         chi += wrap_tau(poly[i].1 - poly[i - 1].1 + PI) - PI;
         pts[i] = (poly[i].0, chi);
     }
-    0.5 * (0..4)
-        .map(|i| {
-            let (p, q) = (pts[i], pts[(i + 1) % 4]);
-            p.0 * q.1 - q.0 * p.1
-        })
-        .sum::<f64>()
+    let [a, b, c, d] = pts;
+    0.5 * ((c.0 - a.0) * (d.1 - b.1) - (c.1 - a.1) * (d.0 - b.0))
 }
 
 /// `x.rem_euclid(TAU)`, bit for bit, without the `fmod` call for values
@@ -656,6 +660,202 @@ mod integration_tests {
             corner_sign(&g, vec![regular, mirrored].into_par_iter()),
             1.0
         );
+        // A collapsed pixel is not singular but has no area: it abstains.
+        let point = [(0.1, 0.2); 4];
+        assert!(!singular(&point) && unwrapped_area(&point) == 0.0);
+        assert_eq!(corner_sign(&g, vec![point; 3].into_par_iter()), 1.0);
+        assert_eq!(
+            corner_sign(&g, vec![point, point, mirrored].into_par_iter()),
+            -1.0
+        );
+    }
+
+    /// Pixel polygons as `build_lut1d_pyfai_csr` (per-pixel corners) and the
+    /// shared-grid builder (corner grid) hand them to `corner_sign`.
+    fn corner_polygons(g: &Geometry) -> [Vec<[(f64, f64); 4]>; 2] {
+        let (tth, azi) = g.angular_corners();
+        let one_d = (0..g.size())
+            .map(|pixel| {
+                let [a, b, c, d] = g.corner_indices(pixel);
+                [a, d, c, b].map(|i| (tth[i], azi[i]))
+            })
+            .collect();
+        let (d1, d2) = g.corner_grid();
+        let (tth, azi) = g.calc_tth_and_azimuth(&d1, &d2);
+        let w = g.dim2 + 1;
+        let two_d = (0..g.size())
+            .map(|pixel| {
+                let b = pixel / g.dim2 * w + pixel % g.dim2;
+                [b, b + w, b + w + 1, b + 1].map(|i| (tth[i], azi[i]))
+            })
+            .collect();
+        [one_d, two_d]
+    }
+
+    /// `corner_sign` of `polygons`, checking that every pixel that votes
+    /// (non-singular, non-zero area) votes for it.
+    #[track_caller]
+    fn unanimous_sign(g: &Geometry, polygons: &[[(f64, f64); 4]], label: &str) -> f64 {
+        let sign = corner_sign(g, polygons.par_iter().copied());
+        let voting = polygons.iter().filter(|p| !singular(p)).count();
+        let agree = polygons
+            .iter()
+            .filter(|p| !singular(p) && unwrapped_area(p) * sign < 0.0)
+            .count();
+        assert!(voting > 0, "{label}: no votes");
+        assert_eq!(
+            agree, voting,
+            "{label}: {agree} of {voting} pixels vote {sign}"
+        );
+        sign
+    }
+
+    fn mirrored(orientation: u8) -> bool {
+        matches!(orientation, 2 | 4)
+    }
+
+    /// Issue #44: pixel / distance of 1e-12 and 1e-14, the PONI 0.5 mm beside
+    /// the detector and rot1 = 1.2. The shoelace sum of absolute (2θ, χ)
+    /// products cancelled to rounding noise; with 1e-12 m pixels orientations
+    /// 0 and 3 voted -1 (974 against 962 pixels, 2160 areas exactly zero).
+    #[test]
+    fn corner_sign_is_unanimous_for_unphysically_small_pixels() {
+        use crate::{detector::Detector, poni::Poni};
+        use std::sync::Arc;
+        for pixel in [1e-12, 1e-14] {
+            for orientation in 0..=4 {
+                let mut p = Poni::new();
+                (p.pixel1, p.pixel2, p.distance, p.wavelength) = (pixel, pixel, 1.0, 1e-10);
+                (p.poni1, p.poni2, p.rot1) = (4.5e-4, 5.5e-4, 1.2);
+                let mut d = Detector::custom(pixel, pixel);
+                d.orientation = orientation;
+                let g = Geometry::new(64, 64, p).with_detector(Arc::new(d)).unwrap();
+                let expected = if mirrored(orientation) { -1.0 } else { 1.0 };
+                for (path, polygons) in ["1D", "2D"].iter().zip(corner_polygons(&g)) {
+                    let label = format!("{pixel:e} m, orientation {orientation}, {path}");
+                    assert_eq!(unanimous_sign(&g, &polygons, &label), expected, "{label}");
+                }
+            }
+        }
+    }
+
+    /// The sign for every pixel-map kind, orientation and transform, binned
+    /// and unbinned, with the beam on the detector (the seam crosses it).
+    /// Per-pixel corners (1D) keep the base detector's order, so their sign is
+    /// pyFAI's rule for the base orientation. The corner grid (2D) follows the
+    /// transformed image, so a transform that mirrors (Transpose, Transverse,
+    /// Horizontal, Vertical) flips it. A uniform map without spline is not
+    /// remapped by `transformed` and keeps the rule in both.
+    #[test]
+    fn corner_sign_for_every_map_kind_orientation_and_transform() {
+        use crate::{
+            detector::{Detector, DetectorTransform::*, PixelMap, spline::Spline},
+            poni::Poni,
+        };
+        use std::sync::Arc;
+        const FULL: [usize; 2] = [36, 72];
+        const PIXEL: f64 = 1e-4;
+        let edges = |n: usize, axis: usize, gaps: bool, curved: bool| -> Vec<[[f64; 3]; 2]> {
+            let mut lo = 0.;
+            (0..n)
+                .map(|i| {
+                    if gaps && (i == 7 || i == 20) {
+                        lo += 0.4 * PIXEL;
+                    }
+                    let hi = lo + PIXEL * (1. + 0.05 * (i as f64 * 0.7).sin());
+                    let z = |x: f64| {
+                        if curved {
+                            2e-4 * (x / 3e-3).powi(2)
+                        } else {
+                            0.
+                        }
+                    };
+                    let (mut a, mut b) = ([z(lo), 0., 0.], [z(hi), 0., 0.]);
+                    (a[axis], b[axis]) = (lo, hi);
+                    lo = hi;
+                    [a, b]
+                })
+                .collect()
+        };
+        let separable = |gaps, curved| PixelMap::Separable {
+            slow: edges(FULL[0], 1, gaps, curved),
+            fast: edges(FULL[1], 2, gaps, curved),
+        };
+        let corners = {
+            let PixelMap::Separable { slow, fast } = separable(true, false) else {
+                unreachable!()
+            };
+            let add = |a: [f64; 3], b: [f64; 3]| std::array::from_fn(|k| a[k] + b[k]);
+            let values = (0..FULL[0] * FULL[1])
+                .map(|i| {
+                    let (s, f) = (slow[i / FULL[1]], fast[i % FULL[1]]);
+                    [
+                        add(s[0], f[0]),
+                        add(s[1], f[0]),
+                        add(s[1], f[1]),
+                        add(s[0], f[1]),
+                    ]
+                })
+                .collect();
+            PixelMap::Corners {
+                shape: FULL,
+                values: Arc::new(values),
+            }
+        };
+        let spline = Arc::new(
+            Spline::parse(include_str!("../../test_data/detector_reference.spline")).unwrap(),
+        );
+        let mut cases = 0;
+        for orientation in 0..=4 {
+            let base = |map: PixelMap, with_spline: bool| {
+                let mut d = Detector::custom(PIXEL, PIXEL);
+                d.max_shape = Some(FULL);
+                d.orientation = orientation;
+                d.map = map;
+                d.spline = with_spline.then(|| spline.clone());
+                d
+            };
+            let bases = [
+                ("uniform", base(PixelMap::Uniform, false)),
+                ("spline", base(PixelMap::Uniform, true)),
+                ("separable", base(separable(false, false), false)),
+                ("gapped", base(separable(true, false), false)),
+                ("curved", base(separable(true, true), false)),
+                ("corners", base(corners.clone(), false)),
+            ];
+            for (name, base) in bases {
+                for op in [
+                    Identity, Half, Transpose, Transverse, Left, Right, Horizontal, Vertical,
+                ] {
+                    let t = base.transformed(op).unwrap();
+                    let rule = if mirrored(orientation) { -1.0 } else { 1.0 };
+                    let flip = matches!(t.map, PixelMap::Transformed { .. })
+                        && matches!(op, Transpose | Transverse | Horizontal | Vertical);
+                    let expected = [rule, if flip { -rule } else { rule }];
+                    let full = t.max_shape.unwrap();
+                    for bin in [[1, 1], [2, 3]] {
+                        let n = [full[0] / bin[0], full[1] / bin[1]];
+                        let px = t.effective_pixels(n);
+                        let mut p = Poni::new();
+                        (p.pixel1, p.pixel2, p.distance, p.wavelength) =
+                            (px[0], px[1], 0.03, 1e-10);
+                        p.poni1 = (n[0] as f64 * 0.47 + 0.3) * px[0];
+                        p.poni2 = (n[1] as f64 * 0.53 + 0.2) * px[1];
+                        let g = Geometry::new(n[0], n[1], p)
+                            .with_detector(Arc::new(t.clone()))
+                            .unwrap();
+                        for ((path, polygons), expected) in
+                            ["1D", "2D"].iter().zip(corner_polygons(&g)).zip(expected)
+                        {
+                            let label = format!("{name} o{orientation} {op:?} {bin:?} {path}");
+                            assert_eq!(unanimous_sign(&g, &polygons, &label), expected, "{label}");
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 5 * 6 * 8 * 2 * 2);
     }
 
     #[test]
