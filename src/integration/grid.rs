@@ -630,9 +630,7 @@ impl Integrator {
             return edges;
         }
         let state = &view.state;
-        let mut geom = self.geometry.clone();
-        geom.dim1 = dim1;
-        geom.dim2 = dim2;
+        let geom = self.geometry.reshaped(dim1, dim2);
         let unit = self.radial_unit;
         let edges = match self.method {
             IntegrationMethod::Counting => {

@@ -217,8 +217,8 @@ fn sectors_exclude_pixels_outside_their_edges() {
 fn subpixel_radial(g: &Geometry, unit: RadialUnit, n_ss: usize) -> Vec<f64> {
     let transform = g.subpixel_transform();
     let mut out = Vec::with_capacity(g.size() * n_ss * n_ss);
-    for row in 0..g.dim1 {
-        for col in 0..g.dim2 {
+    for row in 0..g.dim1() {
+        for col in 0..g.dim2() {
             for i in 0..n_ss {
                 for j in 0..n_ss {
                     let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;

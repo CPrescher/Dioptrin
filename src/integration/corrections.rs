@@ -56,9 +56,7 @@ impl Integrator {
 
     fn compute_geometry(&self, dim1: usize, dim2: usize) -> GeometryState {
         let size = dim1 * dim2;
-        let mut temp_geometry = self.geometry.clone();
-        temp_geometry.dim1 = dim1;
-        temp_geometry.dim2 = dim2;
+        let temp_geometry = self.geometry.reshaped(dim1, dim2);
 
         let tth = temp_geometry.calc_tth_all();
         let radial = self
@@ -106,9 +104,7 @@ impl Integrator {
         }
 
         // Need geometry with correct dimensions for calc_polarization
-        let mut temp_geometry = self.geometry.clone();
-        temp_geometry.dim1 = state.dim1;
-        temp_geometry.dim2 = state.dim2;
+        let temp_geometry = self.geometry.reshaped(state.dim1, state.dim2);
 
         state.polarization = match self.polarization_factor {
             Some(factor) => temp_geometry.calc_polarization(factor, &state.tth, &state.azimuth),

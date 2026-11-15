@@ -63,12 +63,12 @@ fn build_counted_csr<F>(
 where
     F: Fn(f64, f64) -> Option<usize> + Sync,
 {
-    let rows: Vec<Box<[Contribution]>> = (0..geometry.dim1)
+    let rows: Vec<Box<[Contribution]>> = (0..geometry.dim1())
         .into_par_iter()
         .map(|row| {
-            let mut entries = Vec::with_capacity(geometry.dim2 * 2);
+            let mut entries = Vec::with_capacity(geometry.dim2() * 2);
             let mut counts: Vec<(usize, usize)> = Vec::new();
-            for col in 0..geometry.dim2 {
+            for col in 0..geometry.dim2() {
                 counts.clear();
                 for i in 0..n_ss {
                     let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;
@@ -86,7 +86,7 @@ where
                         }
                     }
                 }
-                let pixel = row * geometry.dim2 + col;
+                let pixel = row * geometry.dim2() + col;
                 entries.extend(counts.iter().map(|&(bin, count)| Contribution {
                     bin,
                     pixel,
@@ -587,7 +587,7 @@ mod tests {
         let mut expected = vec![0.0; geometry.size()];
         let mut expected_bins = vec![0usize; n_points];
         for (pixel, total) in expected.iter_mut().enumerate() {
-            let (row, col) = (pixel / geometry.dim2, pixel % geometry.dim2);
+            let (row, col) = (pixel / geometry.dim2(), pixel % geometry.dim2());
             for i in 0..n_ss {
                 for j in 0..n_ss {
                     let d1 = row as f64 + (i as f64 + 0.5) / n_ss as f64;

@@ -241,7 +241,7 @@ pub fn ss_tth_min_max_step(
     n_ss: usize,
     unit: crate::integration::RadialUnit,
 ) -> (f64, f64, f64) {
-    let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1, geometry.dim2, n_ss);
+    let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1(), geometry.dim2(), n_ss);
     let hull_tth = geometry.calc_tth(&hull_d1, &hull_d2);
     let hull_radial = unit.convert_from_tth(&hull_tth, geometry.poni.wavelength);
 
@@ -257,7 +257,7 @@ pub fn supersampled_azimuthal_min_max_step(
     n_points: usize,
     n_subpixels: usize,
 ) -> (f64, f64, f64) {
-    let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1, geometry.dim2, n_subpixels);
+    let (hull_d1, hull_d2) = lut::hull_grid(geometry.dim1(), geometry.dim2(), n_subpixels);
     let hull_azimuthal = geometry.calc_azimuth(&hull_d1, &hull_d2);
 
     let min = math::min_slice(azimuthal).min(math::min(&hull_azimuthal));

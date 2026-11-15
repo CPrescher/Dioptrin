@@ -24,14 +24,14 @@ mod legacy {
         let wavelength = geometry.poni.wavelength;
 
         // Collect all (bin, pixel) occurrences from supersampling
-        let per_row = geometry.dim2 * n_ss * n_ss;
-        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
+        let per_row = geometry.dim2() * n_ss * n_ss;
+        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1())
             .into_par_iter()
             .fold(
                 || Vec::with_capacity(per_row),
                 |mut acc, row| {
                     let (d1, d2, actual_index) =
-                        crate::lut::common::subgrid(row, geometry.dim2, n_ss);
+                        crate::lut::common::subgrid(row, geometry.dim2(), n_ss);
                     let tth_ss = geometry.calc_tth(&d1, &d2);
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for (i, &v) in radial_ss.iter().enumerate() {
@@ -111,14 +111,14 @@ mod legacy {
 
         let wavelength = geometry.poni.wavelength;
 
-        let per_row = geometry.dim2 * n_ss * n_ss;
-        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
+        let per_row = geometry.dim2() * n_ss * n_ss;
+        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1())
             .into_par_iter()
             .fold(
                 || Vec::with_capacity(per_row),
                 |mut acc, row| {
                     let (d1, d2, actual_index) =
-                        crate::lut::common::subgrid(row, geometry.dim2, n_ss);
+                        crate::lut::common::subgrid(row, geometry.dim2(), n_ss);
                     let tth_ss = geometry.calc_tth(&d1, &d2);
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for (i, &v) in radial_ss.iter().enumerate() {
@@ -204,14 +204,14 @@ mod legacy {
         let wavelength = geometry.poni.wavelength;
 
         let rows = n_radial * n_azimuthal;
-        let per_row = geometry.dim2 * n_ss * n_ss;
-        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
+        let per_row = geometry.dim2() * n_ss * n_ss;
+        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1())
             .into_par_iter()
             .fold(
                 || Vec::with_capacity(per_row),
                 |mut acc, r| {
                     let (d1, d2, actual_index) =
-                        crate::lut::common::subgrid(r, geometry.dim2, n_ss);
+                        crate::lut::common::subgrid(r, geometry.dim2(), n_ss);
                     let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for i in 0..radial_ss.len() {
@@ -305,14 +305,14 @@ mod legacy {
         let wavelength = geometry.poni.wavelength;
 
         let rows = n_radial * n_azimuthal;
-        let per_row = geometry.dim2 * n_ss * n_ss;
-        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1)
+        let per_row = geometry.dim2() * n_ss * n_ss;
+        let mut pairs: Vec<(usize, usize)> = (0..geometry.dim1())
             .into_par_iter()
             .fold(
                 || Vec::with_capacity(per_row),
                 |mut acc, r| {
                     let (d1, d2, actual_index) =
-                        crate::lut::common::subgrid(r, geometry.dim2, n_ss);
+                        crate::lut::common::subgrid(r, geometry.dim2(), n_ss);
                     let (tth_ss, azimuthal_ss) = geometry.calc_tth_and_azimuth(&d1, &d2);
                     let radial_ss = unit.convert_from_tth(&tth_ss, wavelength);
                     for i in 0..radial_ss.len() {

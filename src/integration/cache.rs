@@ -420,9 +420,7 @@ impl ShapeView<'_> {
                     unit,
                     radial_range,
                 } => {
-                    let mut geom = integrator.geometry.clone();
-                    geom.dim1 = state.dim1;
-                    geom.dim2 = state.dim2;
+                    let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
                     if pyfai {
                         lut::build_lut1d_pyfai_csr(
                             &geom,
@@ -454,9 +452,7 @@ impl ShapeView<'_> {
                     unit,
                     radial_range,
                 } => {
-                    let mut geom = integrator.geometry.clone();
-                    geom.dim1 = state.dim1;
-                    geom.dim2 = state.dim2;
+                    let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
                     match radial_range {
                         Some(rr) => lut::build_lut1d_ss_csr_with_range(
                             &geom,
@@ -504,9 +500,7 @@ impl ShapeView<'_> {
         } else {
             let radial = &state.radial;
             let azimuth = &state.azimuth;
-            let mut geom = integrator.geometry.clone();
-            geom.dim1 = state.dim1;
-            geom.dim2 = state.dim2;
+            let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
 
             // Build the LUT
             let lut2d = match key {

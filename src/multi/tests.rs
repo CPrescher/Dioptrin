@@ -61,8 +61,8 @@ fn single_matches_ordinary_2d_on_matched_edges() {
         let ordinary = ai(g.clone(), method);
         let (y, e) = ordinary.integrate2d_with_azimuthal_range_and_errors_from_slice(
             &data,
-            g.dim1,
-            g.dim2,
+            g.dim1(),
+            g.dim2(),
             11,
             17,
             -PI + PI / 17.0,
@@ -73,7 +73,7 @@ fn single_matches_ordinary_2d_on_matched_edges() {
                 .unwrap();
         let out = single
             .integrate2d_from_slices(
-                &[(&data, g.dim1, g.dim2)],
+                &[(&data, g.dim1(), g.dim2())],
                 11,
                 17,
                 &Multi2dOptions {
@@ -155,7 +155,7 @@ fn unequal_geometries_match_independent_counting_oracle() {
             .map(|(i, g)| {
                 ai(g.clone(), IntegrationMethod::Counting)
                     .with_polarization_factor(0.3 + i as f64 * 0.2)
-                    .with_mask(Mask::from_vec(masks[i].clone(), g.dim1, g.dim2).unwrap())
+                    .with_mask(Mask::from_vec(masks[i].clone(), g.dim1(), g.dim2()).unwrap())
             })
             .collect();
         let multi = MultiIntegrator::try_new(integrators).unwrap();
@@ -168,7 +168,7 @@ fn unequal_geometries_match_independent_counting_oracle() {
         let slices: Vec<_> = geoms
             .iter()
             .zip(&data)
-            .map(|(g, d)| (d.as_slice(), g.dim1, g.dim2))
+            .map(|(g, d)| (d.as_slice(), g.dim1(), g.dim2()))
             .collect();
         let out = multi
             .integrate2d_from_slices(&slices, 8, 13, &options)
@@ -234,8 +234,7 @@ fn fractional_split_weights_do_not_give_each_detector_equal_weight() {
         g.poni.poni1 = -0.001;
         g.poni.poni2 = -0.001;
         let mut h = g.clone();
-        h.dim1 = 1;
-        h.dim2 = 1;
+        h.set_shape(1, 1).unwrap();
         let multi =
             MultiIntegrator::try_new(vec![ai(g.clone(), method), ai(h.clone(), method)]).unwrap();
         let data = vec![10.0; 6];
@@ -779,14 +778,14 @@ fn azint_style_twenty_one_subpixels_match_vector_geometry_oracle() {
                     .with_radial_unit(unit)
                     .with_radial_range(0.0, hi)
                     .with_polarization_factor(0.6)
-                    .with_mask(Mask::from_vec(masks[i].clone(), g.dim1, g.dim2).unwrap())
+                    .with_mask(Mask::from_vec(masks[i].clone(), g.dim1(), g.dim2()).unwrap())
             })
             .collect();
         let multi = MultiIntegrator::try_new(integrators).unwrap();
         let slices: Vec<_> = geoms
             .iter()
             .zip(&data)
-            .map(|(g, d)| (d.as_slice(), g.dim1, g.dim2))
+            .map(|(g, d)| (d.as_slice(), g.dim1(), g.dim2()))
             .collect();
         let out = multi
             .integrate2d_from_slices(
@@ -808,8 +807,8 @@ fn azint_style_twenty_one_subpixels_match_vector_geometry_oracle() {
             let mut x = Vec::new();
             // Independent vector geometry calculation, rather than the scalar
             // transform used to build the production supersampled LUT.
-            for row in 0..g.dim1 {
-                for col in 0..g.dim2 {
+            for row in 0..g.dim1() {
+                for col in 0..g.dim2() {
                     for i in 0..21 {
                         for j in 0..21 {
                             y.push(row as f64 + (i as f64 + 0.5) / 21.0);
@@ -1008,12 +1007,12 @@ fn split_detector_merges_to_the_whole_detector_pattern_in_1d() {
     whole.poni.poni1 = -0.001;
     whole.poni.poni2 = -0.001;
     let mut top = whole.clone();
-    top.dim1 = cut;
+    top.set_shape(cut, cols).unwrap();
     let mut bottom = whole.clone();
-    bottom.dim1 = rows - cut;
+    bottom.set_shape(rows - cut, cols).unwrap();
     bottom.poni.poni1 -= cut as f64 * whole.poni.pixel1;
-    let top = Geometry::new(top.dim1, cols, top.poni);
-    let bottom = Geometry::new(bottom.dim1, cols, bottom.poni);
+    let top = Geometry::new(top.dim1(), cols, top.poni);
+    let bottom = Geometry::new(bottom.dim1(), cols, bottom.poni);
 
     let data: Vec<_> = (0..rows * cols)
         .map(|i| 10.0 + (i * 7 % 31) as f64 + 40.0 * (i / cols < cut) as u8 as f64)

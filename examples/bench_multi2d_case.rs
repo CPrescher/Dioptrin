@@ -86,8 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .zip(masks)
         .map(|(g, m)| {
-            let rows = g.dim1;
-            let cols = g.dim2;
+            let rows = g.dim1();
+            let cols = g.dim2();
             Ok(Integrator::new(g)
                 .with_method(method)
                 .with_radial_unit(RadialUnit::QAngstrom)

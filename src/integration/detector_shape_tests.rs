@@ -399,88 +399,50 @@ fn valid_shapes_still_integrate() {
     }
 }
 
-/// `Geometry`'s public `dim1`/`dim2` set by hand after `with_detector`: a
-/// shape the detector cannot represent fails on every method that maps pixels
-/// through the detector with the message the `Integrator` gives, instead of
-/// returning arrays for a truncated binning (a crop), NaN arrays (a larger
-/// uniform image) or panicking on an index overflow or a division by zero.
+/// `Geometry::set_shape` after `with_detector`: a shape the detector cannot
+/// represent returns the message the `Integrator` gives and leaves the
+/// geometry unchanged, instead of producing arrays for a truncated binning (a
+/// crop), NaN arrays (a larger uniform image) or a panic on an index overflow
+/// or a division by zero at first use. `with_detector` rejects the same shapes
+/// with the same message.
 #[test]
-fn hand_set_geometry_shapes_fail_with_the_shape_message() {
-    use crate::calibration::{Calibrant, CalibrationOptions, CalibrationPoints, ParamMask, refine};
-    use crate::lut::{RadialUnit, build_lut1d_ps_csr, build_lut1d_ss_csr};
-    let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").unwrap();
-    let mut points = CalibrationPoints::new();
-    for (d1, d2) in [(1., 2.), (3., 30.), (8., 10.), (5., 20.)] {
-        points.push(d1, d2, Some(0));
-    }
-    let options = CalibrationOptions {
-        mask: ParamMask {
-            distance: true,
-            poni1: false,
-            poni2: false,
-            rot1: false,
-            rot2: false,
-            rot3: false,
-            wavelength: false,
-        },
-        ..CalibrationOptions::default()
-    };
+fn set_shape_rejects_shapes_the_detector_cannot_represent() {
+    let bits = |v: Vec<f64>| v.into_iter().map(f64::to_bits).collect::<Vec<_>>();
     for (name, detector) in fixed_detectors() {
         let full = detector.max_shape.unwrap();
         let binned = [full[0] / 2, full[1] / 2];
+        let attach = |s: [usize; 2]| {
+            Geometry::new(s[0], s[1], poni()).with_detector(Arc::new(detector.clone()))
+        };
         for start in [full, binned] {
             let mut shapes = invalid_shapes(full).to_vec();
             shapes.extend([[0, full[1]], [0, 0]]);
             for shape in shapes {
-                let mut g = Geometry::new(start[0], start[1], poni())
-                    .with_detector(Arc::new(detector.clone()))
-                    .unwrap();
-                g.dim1 = shape[0];
-                g.dim2 = shape[1];
                 let what = format!("{name} {start:?} -> {shape:?}");
-                let check = |method: &str, f: &dyn Fn()| {
-                    assert_panics(shape, full, &format!("{what} {method}"), f)
-                };
-                let (r, c) = ([0.5, 1.5], [0.5, 2.5]);
-                check("calc_tth_all", &|| drop(g.calc_tth_all()));
-                check("calc_azimuth_all", &|| drop(g.calc_azimuth_all()));
-                check("calc_solid_angle", &|| drop(g.calc_solid_angle()));
-                check("angular_corners", &|| drop(g.angular_corners()));
-                check("calc_tth", &|| drop(g.calc_tth(&r, &c)));
-                check("calc_azimuth", &|| drop(g.calc_azimuth(&r, &c)));
-                check("calc_tth_and_azimuth", &|| {
-                    drop(g.calc_tth_and_azimuth(&r, &c))
+                let mut g = attach(start).unwrap();
+                let before = bits(g.calc_tth_all());
+                assert_err(shape, full, &what, || g.set_shape(shape[0], shape[1]));
+                assert_eq!(g.shape(), (start[0], start[1]), "{what}");
+                assert!(bits(g.calc_tth_all()) == before, "{what}");
+                assert_err(shape, full, &format!("{what} with_detector"), || {
+                    attach(shape)
                 });
-                check("detector_position", &|| {
-                    let _ = g.detector_position(0.5, 0.5);
-                });
-                let radial = vec![0.1; g.size()];
-                check("build_lut1d_ps_csr", &|| {
-                    drop(build_lut1d_ps_csr(&g, &radial, 8, RadialUnit::TthRad))
-                });
-                // `hull_grid` underflows on a 0 x 0 shape before any pixel is
-                // mapped, with or without a detector.
-                if shape != [0, 0] {
-                    check("build_lut1d_ss_csr", &|| {
-                        drop(build_lut1d_ss_csr(&g, &radial, 8, 2, RadialUnit::TthRad))
-                    });
-                }
-                check("refine", &|| drop(refine(&g, &points, &cal, &options)));
             }
         }
     }
 }
 
-/// Hand-set shapes the detector does represent (another integer binning, the
-/// full shape from a binned start) give the arrays `with_detector` gives for
-/// that shape, bit for bit; without a fixed shape every shape stays valid.
+/// Shapes the detector does represent (another integer binning, the full
+/// shape from a binned start), set through `set_shape`, give the arrays
+/// `with_detector` gives for that shape, bit for bit; without a fixed shape
+/// every shape stays valid.
 #[test]
-fn valid_hand_set_geometry_shapes_match_with_detector() {
+fn valid_set_shape_shapes_match_with_detector() {
     let bits = |v: Vec<f64>| v.into_iter().map(f64::to_bits).collect::<Vec<_>>();
     let arrays = |g: &Geometry| {
         let (corner_r, corner_a) = g.angular_corners();
         let position = (0..g.size())
-            .flat_map(|i| g.detector_position((i / g.dim2) as f64 + 0.5, (i % g.dim2) as f64))
+            .flat_map(|i| g.detector_position((i / g.dim2()) as f64 + 0.5, (i % g.dim2()) as f64))
             .collect();
         [
             g.calc_tth_all(),
@@ -512,8 +474,7 @@ fn valid_hand_set_geometry_shapes_match_with_detector() {
                     .unwrap()
             };
             let mut g = attach(start);
-            g.dim1 = shape[0];
-            g.dim2 = shape[1];
+            g.set_shape(shape[0], shape[1]).unwrap();
             assert!(
                 arrays(&g) == arrays(&attach(shape)),
                 "{name} {start:?} -> {shape:?}"
