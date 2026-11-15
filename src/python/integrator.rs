@@ -47,8 +47,14 @@ fn validate_azimuthal_range(
 /// caller: queued, being integrated, or waiting in the result channel or the
 /// reorder buffer. Bounds the memory of a stream nobody consumes (an endless
 /// generator would otherwise be drained as fast as the workers run) while
-/// keeping every worker busy: a full work queue (`2 * workers`), one item per
+/// keeping every worker busy: queued items (`2 * workers`), one item per
 /// worker, and one finished result per worker.
+///
+/// The work queue holds a whole window, so the credit wait is the only place
+/// the producer blocks. Credit is granted by the consumer, which hands the
+/// GIL back as soon as it waits for its next result; waiting for queue space
+/// instead would wake the producer whenever a worker took an item and make it
+/// contend for the GIL with the consumer (measurably slower on small frames).
 fn iterator_window(num_workers: usize) -> usize {
     num_workers.max(1) * 4
 }
@@ -237,6 +243,9 @@ pub enum MaskInput<'p> {
 pub struct PyIntegrator {
     integrator: Arc<Integrator>,
     file_workers: Mutex<Option<Arc<FileWorkers>>>,
+    /// Workers of the last Python-iterator stream, with that stream's control;
+    /// lent to the next such stream once that stream's workers are done.
+    iterator_workers: Mutex<Option<(Arc<FileWorkers>, Arc<StreamControl>)>>,
 }
 
 impl PyIntegrator {
@@ -290,6 +299,7 @@ impl PyIntegrator {
         Ok(Self {
             integrator: Arc::new(integrator),
             file_workers: Mutex::new(None),
+            iterator_workers: Mutex::new(None),
         })
     }
 
@@ -314,13 +324,39 @@ impl PyIntegrator {
         Ok(pool)
     }
 
-    /// Workers for a stream fed by a Python iterator. Such a stream holds every
-    /// worker of its pool until the iterator is exhausted (or the stream is
-    /// dropped), so it gets a pool of its own: on the shared cached pool a
-    /// later synchronous batch, or a second stream, would queue behind it for
-    /// as long as the caller's generator keeps producing.
-    fn iterator_pool(workers: usize, threads: usize) -> PyResult<Arc<FileWorkers>> {
-        FileWorkers::new(workers, threads).map_err(PyValueError::new_err)
+    /// Workers for a stream fed by a Python iterator, run by `control`. Such a
+    /// stream holds every worker of its pool until the iterator is exhausted
+    /// (or the stream is dropped), so it gets a pool of its own: on the shared
+    /// cached pool a later synchronous batch, or a second stream, would queue
+    /// behind it for as long as the caller's generator keeps producing.
+    ///
+    /// Building a pool costs a few hundred microseconds (one OS thread and one
+    /// Rayon pool per worker), noticeable for short streams. The pool of the
+    /// previous iterator stream is therefore reused when its workers have all
+    /// finished (the stream ended or was closed); a stream that is still open
+    /// keeps its pool and the new stream gets a fresh one.
+    fn iterator_pool(
+        &self,
+        workers: usize,
+        threads: usize,
+        control: &Arc<StreamControl>,
+    ) -> PyResult<Arc<FileWorkers>> {
+        let mut cache = self
+            .iterator_workers
+            .lock()
+            .expect("iterator worker cache lock poisoned");
+        let pool = match cache.as_ref() {
+            Some((pool, last))
+                if pool.workers() == workers
+                    && pool.num_threads == threads
+                    && last.workers_idle() =>
+            {
+                Arc::clone(pool)
+            }
+            _ => FileWorkers::new(workers, threads).map_err(PyValueError::new_err)?,
+        };
+        *cache = Some((Arc::clone(&pool), Arc::clone(control)));
+        Ok(pool)
     }
 
     /// Integrate `paths` on the cached file workers and wait for all results.
@@ -393,12 +429,18 @@ impl PyIntegrator {
         })
     }
 
-    /// Release cached file workers and decoding buffers. Admitted streaming work
-    /// finishes normally; the next file batch creates a new pool.
+    /// Release cached file workers and decoding buffers: the pool of the
+    /// synchronous and list batches, and the workers kept from the last
+    /// finished generator-fed stream for the next one. Admitted streaming work
+    /// finishes normally; the next batch or stream creates a new pool.
     fn clear_file_workers(&self) {
         self.file_workers
             .lock()
             .expect("file worker cache lock poisoned")
+            .take();
+        self.iterator_workers
+            .lock()
+            .expect("iterator worker cache lock poisoned")
             .take();
     }
 
@@ -1379,10 +1421,11 @@ impl PyIntegrator {
             }
             ClassifiedInput::Iterator(iter) => {
                 // Generator/iterator path: a producer thread pulls items lazily.
-                let pool = Self::iterator_pool(num_workers, num_threads)?;
-                let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
-                let stream_error = StreamError::default();
                 let control = StreamControl::for_iterator();
+                let pool = self.iterator_pool(num_workers, num_threads, &control)?;
+                let (work_tx, work_rx) =
+                    std::sync::mpsc::sync_channel(iterator_window(num_workers));
+                let stream_error = StreamError::default();
                 spawn_iterator_producer(
                     iter.unbind(),
                     work_tx,
@@ -1787,9 +1830,10 @@ impl PyIntegrator {
         // Array streams are finite and need no Python, so they share the
         // cached workers; a Python iterator gets its own (see `iterator_pool`).
         let (pool, control) = if matches!(classified, ClassifiedInput::Iterator(_)) {
+            let control = StreamControl::for_iterator();
             (
-                Self::iterator_pool(num_workers, num_threads)?,
-                StreamControl::for_iterator(),
+                self.iterator_pool(num_workers, num_threads, &control)?,
+                control,
             )
         } else {
             (
@@ -1797,7 +1841,7 @@ impl PyIntegrator {
                 StreamControl::for_shared_pool(),
             )
         };
-        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(num_workers * 2);
+        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(iterator_window(num_workers));
         let stream_error = StreamError::default();
 
         let total = match classified {

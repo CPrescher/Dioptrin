@@ -382,7 +382,11 @@ class Integrator:
         ...
 
     def clear_file_workers(self) -> None:
-        """Release cached file workers and TIFF buffers; admitted streams finish normally."""
+        """Release cached file workers and TIFF buffers; admitted streams finish normally.
+
+        Covers the workers of synchronous and list batches and the workers a
+        finished generator-fed stream leaves for the next one.
+        """
         ...
 
     def integrate1d(
