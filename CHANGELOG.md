@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyproject.toml` versions agree; the GitHub release and both uploads wait
   for it. A re-run skips a version that is already on crates.io.
 
+### Changed
+
+- **Breaking:** `math::histogram::histogram_parallel` is removed. Nothing in
+  the library, its Python bindings or Dioptas called it; the legacy
+  `Histogram` integration method uses `histogram` and `histogram_with_errors`,
+  which are unchanged. Code that called it can call
+  `math::histogram::histogram` with the same arguments: it returns the same
+  bins and counts, and per-bin means that can differ only by floating-point
+  rounding, because the terms are added in a different order.
+
 ### Fixed
 
 - Generator-fed `batch1d_iter` and `batch2d_iter` streams no longer build a
