@@ -48,7 +48,9 @@ jobs:
           lfs: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-targets
+      # Builds the benches, which cargo test skips, in the test profile so
+      # that cargo test reuses the library instead of compiling it again.
+      - run: cargo test --no-run --benches
       - run: cargo test
 
   test-python:

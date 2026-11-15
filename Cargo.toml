@@ -50,6 +50,19 @@ harness = false
 name = "integrator"
 harness = false
 
+# Tests spend most of their time in loops over whole detector frames, which
+# run several times slower without optimisation (`cargo test` takes about a
+# sixth of the time with these settings). Dependencies are compiled once and
+# cached, so every dev and test build optimises them fully. The crate itself
+# gets light optimisation in the test profile only: debug assertions and
+# overflow checks stay on, and `cargo build` still compiles it unoptimised.
+# Dev and test builds therefore no longer share the crate's own artifacts.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 1
+
 [profile.release]
 lto = true
 codegen-units = 1
