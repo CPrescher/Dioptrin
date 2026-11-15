@@ -298,25 +298,12 @@ fn colour_tiffs_are_rejected_by_every_loader() {
             "process_files_sequential",
             crate::batch::process_files_sequential(&files, &integrator, task),
         );
+        let options = crate::batch::StreamOptions::new(2, 1);
         let streamed =
-            crate::batch::process_files_streaming(&files, integrator.clone(), task, 2, 1);
+            crate::batch::process_streaming(files.clone(), integrator.clone(), task, options);
         check(
-            "process_files_streaming",
-            streamed.into_iter().map(|(_, name, r)| (name, r)).collect(),
-        );
-        let (tx, rx) = std::sync::mpsc::channel();
-        for (index, path) in files.iter().enumerate() {
-            tx.send(crate::batch::WorkItem::Path {
-                index,
-                path: path.clone(),
-            })
-            .unwrap();
-        }
-        drop(tx);
-        let queued = crate::batch::process_queue_streaming(rx, integrator.clone(), task, 2, 1);
-        check(
-            "process_queue_streaming",
-            queued.into_iter().map(|(_, name, r)| (name, r)).collect(),
+            "process_streaming",
+            streamed.unwrap().map(|(_, name, r)| (name, r)).collect(),
         );
         std::fs::remove_file(path).unwrap();
     }
