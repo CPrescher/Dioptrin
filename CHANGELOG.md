@@ -135,17 +135,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bytearray` (whose items are integers), and raised `ValueError` for a
   `pathlib.Path`; the other methods already raised `TypeError`, with messages
   such as "Can't extract `str` to `Vec`". Wrap a single path in a list; paths
-  must be `str` (`os.fsdecode(path)` for a `Path` or `bytes`). The list
-  arguments are still converted before the later arguments, so other bad input
-  raises the same exception, with the same "while processing" note, as before.
+  must be `str` (`os.fsdecode(path)` for a `Path` or `bytes`). Other bad
+  input, including two bad arguments in one call, raises the same exception,
+  with the same "while processing" note, as before.
 - Colour TIFFs (RGB, RGBA and other files the typed TIFF reader hands to the
-  f64 `Frame` reader) now report their real shape to the mask check.
-  `Integrator.integrate1d(path)` with a mask set raised `image shape (0, 0)
-  does not match mask shape ...` for them whether or not the mask matched, and
-  a mismatching mask in a batch reported `integration worker panicked`; both
-  now behave as for grayscale TIFFs. Batches with a matching mask already
-  integrated them. Gray+alpha and palette TIFFs are still rejected by the
-  decoder, as before.
+  f64 `Frame` reader) now report their real shape, so the mask check and its
+  message are right for them. `Integrator.integrate1d(path)` with a mask set
+  raised `image shape (0, 0) does not match mask shape ...` for them whether
+  or not the mask matched, and a mismatching mask in a batch reported
+  `integration worker panicked`; both now pass or fail the mask check by the
+  file's real shape. How colour data is integrated is unchanged. Gray+alpha
+  and palette TIFFs are still rejected by the decoder, as before.
 
 ## [0.13.0] - 2026-11-15
 
