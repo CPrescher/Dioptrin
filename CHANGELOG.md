@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-15
+
 ### Added
 
 - Azimuthal brackets for texture analysis: 2D rows can be given as centre ±
@@ -28,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task `batch::Integration2DOnAzimuthalRange` runs it per file. The existing
   `integrate2d_with_azimuthal_range*` functions keep their meaning (first-bin
   centre and step, wrapping periodically).
+- Accept finite, resolvable azimuthal starts outside ±2π on shared grids and
+  true-range 2D APIs. For example, (-3π, -π) uses the equivalent (-π, π)
+  calculation and returns the corrected (-π, π) axis. Spans above one full
+  turn, such as (-4π, 4π), remain rejected. Previously accepted ranges and
+  their documented pyFAI seam behavior are unchanged.
 
 ### Fixed
 
@@ -398,6 +405,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_shape`, `circular_mask`, mask intervals) are kept; the intervals are
   re-encoded for the new orientation so they mask the same pixels. Nothing
   in the crate calls `clear_spline`.
+- Preserve non-finite signal, zero normalization, and signed/zero weights when
+  dynamic workers fall back to CSR with supplied variances. The optional spread
+  calculation retains its documented sample filtering.
 
 ### Compatibility and validation
 
@@ -471,20 +481,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/export_1d_weights.rs` exports single-pixel 1D weights for
   comparison with independent references.
 
-### Consolidation follow-up
-
-- Preserve non-finite signal, zero normalization, and signed/zero weights when
-  dynamic workers fall back to CSR with supplied variances. The optional spread
-  calculation retains its documented sample filtering.
-
-### Range support
-
-- Accept finite, resolvable azimuthal starts outside ±2π on shared grids and
-  true-range 2D APIs. For example, (-3π, -π) uses the equivalent (-π, π)
-  calculation and returns the corrected (-π, π) axis. Spans above one full
-  turn, such as (-4π, 4π), remain rejected. Previously accepted ranges and
-  their documented pyFAI seam behavior are unchanged.
-
 ### Performance
 
 - Add reusable `Dynamic1dWorker` execution with supplied variances and changing
@@ -492,31 +488,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `FixedCsr1dInputPlan` for strict uint16/uint32 integration without a
   full-frame float64 conversion, with serial frame-worker and parallel-bin
   single-image entry points.
-
 - Add an opt-in resident 1D CSC/CSR selector using a broad detector-size/bin estimate:
   CSR generally, with a CSC exception above about 8 MP for high bin counts
   without Poisson errors. No runtime timing probes are used;
   streamed/parallel block execution is unchanged.
   Splitting weights are unchanged; ordinary CSR and CSC can differ in rounding.
-
 - Cache a bin-oriented execution table for sufficiently large resident fixed-mask
   1D frames. Preserve CSC coefficients, chunk/lane reductions and Poisson errors
   bitwise while avoiding histogram scatter/merge work. Streamed block and outer
   Rayon batch workers retain CSC; the optional resident table is capped at 128 MiB.
-
 - Add strict `FixedCsr1dPlan` snapshots for compatibility LUTs, caching fixed-mask
   normalization while retaining the original signal and error reduction order.
 - Add `prepare_fixed2d_on_grid` / `FixedGrid2dPlan` for normalized cached cakes,
   validating static geometry once and avoiding unused raw-sum/count output arrays.
   Frame dimensions and unmasked finite samples remain checked on each call.
-
 - Vectorize and parallelize the full-resolution Massif Gaussian background
   filter while preserving each pixel's floating-point summation order.
 - Add Rust `PreparedMassif` to reuse immutable samples and component labels
   across seed searches. Existing `find_peaks` remains available and preserves
   peak ordering, deduplication and subpixel positions. The shared filter also
   accelerates image-wide calibration candidate extraction.
-
 
 ## [0.12.0] - 2026-11-09
 
@@ -1239,8 +1230,12 @@ user-visible changes.
 Earliest tagged release tracked in this changelog. See `git log v0.3.0`
 for the contents at this point.
 
-[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/CPrescher/Dioptrin/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/CPrescher/Dioptrin/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/CPrescher/Dioptrin/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/CPrescher/Dioptrin/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/CPrescher/Dioptrin/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/CPrescher/Dioptrin/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/CPrescher/Dioptrin/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/CPrescher/Dioptrin/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/CPrescher/Dioptrin/compare/v0.6.0...v0.6.1
