@@ -1,0 +1,33 @@
+{
+  "dioptas": {
+    "passed": 339,
+    "skipped": 2
+  },
+  "rust": {
+    "unit_passed": 162,
+    "doc_passed": 16
+  },
+  "native_streaming": {
+    "tests_passed": 5,
+    "frame_mode_worker_combinations": 5120
+  },
+  "existing_array_and_generator_scripts": "passed",
+  "reader_checks": {
+    "version": "candidate",
+    "checks": [
+      "TIFF rejected before constructing an HDF5 loader",
+      "HDF5 signature probe supports unusual extensions and 512-byte user blocks",
+      "Mixed TIFF / bitshuffle with user block / TIFF / gzip: 10 frames, intensity and spread, exact parity"
+    ],
+    "bitwise_equal": true,
+    "frames_checked": 20
+  },
+  "logs_sha256": {
+    "dioptas-tests.log": "f768e434036f6fd1fdb7f73a68fe3a05c76193c13d6af02f206696ba8dea8b78",
+    "rust-tests.log": "36dc5c21a79ff966069e99368fb8a3397f8b641323bce8146cb5339528b47f8b",
+    "native-regressions.log": "c5a6397e6993978d6738878b7cafe7794edcabef03912314de6d382750e5cf36",
+    "native-existing-array-tests.log": "78f35e52142c3e4fa827c4ad56d1d6af8e45f8a7adce62fe17ca219b87467cfb",
+    "native-existing-generator-tests.log": "2671b02f8b26369f8b215f33357abda99eb9dd9ec64071f3be3595de34cd30c2",
+    "clippy.log": "50931a547a95040d95249c84e9de38ec5a0f5a20841611d510ba035dfdedfed9"
+  }
+}

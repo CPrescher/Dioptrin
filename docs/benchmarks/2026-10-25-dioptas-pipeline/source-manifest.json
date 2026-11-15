@@ -1,0 +1,296 @@
+{
+  "date": "2026-10-25",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "cpu": "Apple M4 Pro",
+  "ram_bytes": 51539607552,
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "cargo": "cargo 1.93.0 (083ac5135 2025-12-15)",
+  "build": {
+    "profile": "release",
+    "opt_level": 3,
+    "lto": true,
+    "codegen_units": 1,
+    "cpu_target": "generic",
+    "features": [
+      "python",
+      "licensed"
+    ],
+    "rustflags": "",
+    "baseline_lock_sha256": "b202e2441f76eaeabc852e238564baac6d7d830ed2eb80129f1654f7b11e4ac3",
+    "candidate_lock_sha256": "b202e2441f76eaeabc852e238564baac6d7d830ed2eb80129f1654f7b11e4ac3"
+  },
+  "sources": {
+    "dioptrin": {
+      "path": "/Users/clemens/.codex/worktrees/dioptas-streaming-input/Dioptrin",
+      "head": "c6cb083de0510d6a3dbaa95b1a93b35be651e81a",
+      "changes": {
+        "dioptrin.pyi": "ce0302bb51994db6ed26dc78845bf5c2ec4b45790b6775d5c13f30f13431adb5",
+        "python_examples/test_stream_array_borrowing.py": "a00f6e4fd53c07b780407e06549856f720488d94b3270f0fc618b6afa4f69dd1",
+        "src/batch.rs": "e471522cf53959f5e649fd2308da7f9704ad163578e2a91dbf44f636aef691a8",
+        "src/batch/file_workers.rs": "92cdb096ad3a4b0edda4a36b7010c9baead314b1a3eec2f14b10a57c4658f48a",
+        "src/python/integrator.rs": "b4df7cd3ba19e1be0e86d7270a3b2c6dba00281a38e16af2135579e5589c5c22"
+      }
+    },
+    "dioptas": {
+      "path": "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/Dioptas",
+      "head": "a4bf8c42997897028740b9551c07d810ac2bcb7c",
+      "changes": {
+        "dioptas/model/BatchModel.py": "2db477e9d69d0f7ab502453bf1bf247c50640b6cd30cb35bda7d6b55ccff4cac",
+        "dioptas/model/CalibrationModel.py": "28153ddf2215314c5191ccf64587056ba11178edd5f3cdb66517bceb4e41a9eb",
+        "dioptas/model/Configuration.py": "0d13d17c68fd26599e8ab7efa73c63dbb8a7c2a36557093c22f11851ad6bf545",
+        "dioptas/model/ImgModel.py": "8ea9eb7cc5fcae5cc0a820809588abca0bf803356a0bef6ebaaec2f955369855",
+        "dioptas/model/MapModel.py": "ee9f43cc600c728834086aaf3ec19c9e65f975046187c2a12384fee766fd3bf3",
+        "dioptas/model/util/integration.py": "c3996f5910c28ab2ef47fe9bf8cd62c24d9b8431937ba9d91fbdfdb1ca9005bd",
+        "dioptas/tests/unit_tests/test_pipeline_handoff.py": "548ea9a60a5cadaab55a7ebeead85c7821df24fa188a420eba3bc404954210a1"
+      }
+    },
+    "baseline_dioptas": {
+      "path": "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/baseline-Dioptas",
+      "head": "a4bf8c42997897028740b9551c07d810ac2bcb7c",
+      "changes": {}
+    }
+  },
+  "native_binaries": {
+    "baseline": {
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/baseline-native/dioptrin/dioptrin.cpython-313-darwin.so": "78e91bfbbccd69f688d5025708b3b852ff43a40c190cc3127ef8ecb94ae58150"
+    },
+    "candidate": {
+      "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/candidate-native/dioptrin/dioptrin.cpython-313-darwin.so": "b453b17f385ec81ed660bb2a28e61a1ef1a5e51b9a2586eb9b306deb8c4858a0"
+    },
+    "published": {
+      "/Users/clemens/Programming/Dioptas/.venv/lib/python3.13/site-packages/dioptrin/dioptrin.cpython-313-darwin.so": "e384213c0fe3393dc4e9120aaff55b2024a8be2beede977b23a409f7ecc7f1da"
+    }
+  },
+  "inputs": {
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0000.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0001.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0002.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0003.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0004.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0005.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0006.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0007.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0008.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0009.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0010.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0011.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0012.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0013.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0014.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0015.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0016.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0017.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0018.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0019.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0020.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0021.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0022.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0023.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0024.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0025.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0026.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0027.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0028.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0029.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0030.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Pilatus1M/frame-0031.tif": {
+      "bytes": 4096828,
+      "sha256": "1d4320d23608d84cccbab0d08b8445761980292dbb415fc281a7f34db7990c41"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-coordinates.poni": {
+      "bytes": 283,
+      "sha256": "4c58c38c3b3efd81e13f171e47c37fb1f83b4b9360a161555cbbc419836d19e7"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Pilatus1M-file-mask.npy": {
+      "bytes": 1023311,
+      "sha256": "eed20775f6ff4e6a3c60d62d726c44e5ec9000538472af03d803edb489df13bf"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Pilatus1M-bitshuffle.h5": {
+      "bytes": 17210776,
+      "sha256": "5f8bb83b1afc0639e26b2886aa937bb67e17c686d0d7243ed976b86e1aa46dc7"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Pilatus1M-gzip.h5": {
+      "bytes": 14042632,
+      "sha256": "8c7bf0292959edcf6018b52fcf6d771bc6da06fa9685052e0300a58d9e16a337"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0000.tif": {
+      "bytes": 40553318,
+      "sha256": "86d0809d554c388e252b8930eddd651771c1c411ea88e16ab877e55d6ba88996"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0001.tif": {
+      "bytes": 40553318,
+      "sha256": "e6997dece30ef186bed0e9b7ca50c4ee76fcb0008a270ff80efb1234505220bc"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0002.tif": {
+      "bytes": 40553318,
+      "sha256": "128d20111b904906fc48daafc282c26a774f28d1bc551d319e1a1effaf490998"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0003.tif": {
+      "bytes": 40553318,
+      "sha256": "9a94cd2cade7fdc2252605b8526d8662bac259a84b27803feb9b88372be854fd"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0004.tif": {
+      "bytes": 40553318,
+      "sha256": "5a6baedf8a597a6b014cd496b155462abc20b35aa1661c7f102e18591d6ea162"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0005.tif": {
+      "bytes": 40553318,
+      "sha256": "6245efdd14b2972c92412f180f3f5d1ae075d708a1bf1b6dcddf411d8b0a28d4"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0006.tif": {
+      "bytes": 40553318,
+      "sha256": "f199024f31c2eb6e362e2df597ba3fc1db311fa61ba7d9bc350f514bd149173b"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0007.tif": {
+      "bytes": 40553318,
+      "sha256": "01850f8635d52ebd0d43661dbd43d715075d8c4e60bfc3195695fa9f0adb7929"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0008.tif": {
+      "bytes": 40553318,
+      "sha256": "5ab162d1ed8b2f669a5d611d6cde50805f851620c21287685cf5cc0e10982ee4"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0009.tif": {
+      "bytes": 40553318,
+      "sha256": "1525d9440788799b48f455921f54a5d94f33b696d6fd46593fc5bbbee525ba78"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0010.tif": {
+      "bytes": 40553318,
+      "sha256": "25c9c64273dacbfc0bb0452f7161820f0c6839139dae2c87cf77582511884849"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0011.tif": {
+      "bytes": 40553318,
+      "sha256": "680cc1a90fd4e6136dcc8e2cf9588de4a27a998d9b1820c5c9cb3c3e8be1caf6"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0012.tif": {
+      "bytes": 40553318,
+      "sha256": "f7b0fcdf0d0440c42d699670d09d0cec87143311344880be635aeed21cb2249a"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0013.tif": {
+      "bytes": 40553318,
+      "sha256": "e21ee6982b611994efdccb4f73cedf5debad70f1422e10aed4ba2a96d5d75e0a"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0014.tif": {
+      "bytes": 40553318,
+      "sha256": "9e8de6d3c2f0814e97c4310e57db75f01f1b3faca701ad5d831b7574f8775e3e"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/files/Eiger9M/frame-0015.tif": {
+      "bytes": 40553318,
+      "sha256": "cfe6363e0863b3e68691b67c1dd149aa434f94255a8903565343cc333570365d"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-coordinates.poni": {
+      "bytes": 320,
+      "sha256": "75c6c04708a383748281a87bce428d7c68f5eb7e8924fa29238240cc1aa75b9f"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-23/can-x20/work/real-world-io/Eiger9M-file-mask.npy": {
+      "bytes": 10138424,
+      "sha256": "057e52db612f92ef2d1909e999faeb0e7a1a15835dee046f8be13ea55ddcd81a"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Eiger9M-bitshuffle.h5": {
+      "bytes": 145216886,
+      "sha256": "4be94f0cd30e2cb145ea6a8ffbc1459c07b7d57490565173c8148662027a7016"
+    },
+    "/Users/clemens/Documents/Codex/2026-10-25/dioptas-pipeline-speed/data/Eiger9M-gzip.h5": {
+      "bytes": 142981411,
+      "sha256": "6cfe6f77d15d7329f7e45eabc48f3036e10082d0cbc6910ae059644abb5bd8e0"
+    }
+  },
+  "harness": {
+    "bench.py": "fad0c08dd1f82b4883b169a34c7749f58e8a069d4fce062625de809d6bb14214",
+    "run.py": "1b0dde7e7cec29e66902f8d47f9752e260a0b2fbd8760509f7a0f7b794599d78",
+    "prepare.py": "b59a8570fdec029d759692c28150981faa4dd49d00ff14d7cc80f509e326b324"
+  }
+}

@@ -1,4 +1,5 @@
-"""Regression coverage for synchronous batches borrowing NumPy image data."""
+"""Regression coverage for synchronous batches borrowing NumPy image data, and
+for streams copying it."""
 from pathlib import Path
 import tempfile
 import unittest
@@ -88,6 +89,53 @@ class BatchArrayBorrowingTests(unittest.TestCase):
         actual = integrator().batch1d(frames, 40, errors=True)
         for item, wanted in zip(actual, expected):
             self.compare_results(item.result, wanted)
+
+
+class StreamArrayCopyTests(unittest.TestCase):
+    """Streams, unlike the synchronous batches above, copy each NumPy frame
+    when the producer pulls it, before it pulls the next one."""
+
+    def test_generator_overwriting_one_buffer_gets_per_frame_results(self):
+        # A reader that decodes every frame into the same buffer: each frame
+        # must be integrated as it was when yielded, although the generator
+        # overwrites the buffer before workers (running behind the producer)
+        # get to it. 40 frames exceed every tested stream's read-ahead.
+        n = 40
+        streams = {
+            "1d": (lambda ai, src, workers: ai.batch1d_iter(
+                       src, 40, errors=True, num_workers=workers, num_threads=1),
+                   lambda ai, image: ai.integrate1d(image, 40, errors=True)),
+            "2d": (lambda ai, src, workers: ai.batch2d_iter(
+                       src, 40, 8, errors=True, num_workers=workers, num_threads=1),
+                   lambda ai, image: ai.integrate2d(image, 40, 8, errors=True)),
+        }
+        ai = integrator()
+        buffer = np.empty((32, 64))
+        for name, (stream, single) in streams.items():
+            expected = [single(ai, np.full(buffer.shape, float(i))) for i in range(n)]
+
+            def frames():
+                for i in range(n):
+                    buffer.fill(i)
+                    yield buffer
+
+            for workers in (1, 4):
+                with self.subTest(stream=name, workers=workers):
+                    actual = list(stream(ai, frames(), workers))
+                    self.assertEqual(len(actual), n)
+                    for i, (item, wanted) in enumerate(zip(actual, expected)):
+                        self.assertTrue(item.is_ok(), item.error)
+                        self.assertEqual(item.filename, f"iter[{i}]")
+                        self.compare_results(item.result, wanted)
+        self.assertTrue(buffer.flags.writeable)
+
+    def compare_results(self, actual, expected):
+        for field in ("radial", "azimuthal", "intensity", "errors"):
+            value, reference = getattr(actual, field), getattr(expected, field)
+            if reference is None:
+                self.assertIsNone(value)
+            else:
+                assert_array_equal(value, reference, err_msg=field)
 
 
 if __name__ == "__main__":

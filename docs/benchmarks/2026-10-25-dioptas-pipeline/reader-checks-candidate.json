@@ -1,0 +1,10 @@
+{
+  "version": "candidate",
+  "checks": [
+    "TIFF rejected before constructing an HDF5 loader",
+    "HDF5 signature probe supports unusual extensions and 512-byte user blocks",
+    "Mixed TIFF / bitshuffle with user block / TIFF / gzip: 10 frames, intensity and spread, exact parity"
+  ],
+  "bitwise_equal": true,
+  "frames_checked": 20
+}
