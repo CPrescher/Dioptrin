@@ -41,6 +41,20 @@ from `test_examples.py`'s 60-second quick-example budget; the numerical
 regression tests run in CI. See the [multi-detector guide](../docs/MULTI_DETECTOR.md)
 for complete API examples and benchmark scope.
 
+### Batch and stream throughput
+
+`bench_batch_streams.py` prints frames per second (median, range and spread
+over repeats) for `batch1d`, `batch2d` with TIFF paths, `batch1d_iter` and
+`batch2d_iter`, by frame size, worker count and input kind (lists or
+generators of arrays or paths):
+
+```sh
+python python_examples/bench_batch_streams.py --sizes 256 1024 --workers 2 8
+```
+
+It is a benchmark, not a test, and is skipped by `test_examples.py`. See
+[docs/benchmarks/README.md](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/README.md) for the Rust benches.
+
 ### HDF5 Processing
 
 **`hdf5_chunked_batch.py`** - Memory-efficient batch processing of large HDF5 files
