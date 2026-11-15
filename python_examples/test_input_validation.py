@@ -130,6 +130,44 @@ class MaskShapeTests(unittest.TestCase):
         # The integrator stays usable with a matching image.
         self.assertTrue(ai.batch1d([np.ones((32, 32))], 10)[0].is_ok())
 
+    def test_tiff_batches_fail_per_item_with_both_shapes(self):
+        """Issue 39: TIFF paths are read inside the workers, so a mask
+        mismatch is a per-item error naming both shapes (not "integration
+        worker panicked"), and the matching files still integrate."""
+        message = "image shape (64, 96) does not match mask shape (32, 32)"
+        with tempfile.TemporaryDirectory() as directory:
+            other = write_tiff(directory, np.ones((32, 32)))
+            bad = write_tiff(directory, IMAGE)
+            paths = [other, bad, other, bad]
+            for mode in ("fixed", "dynamic"):
+                ai = integrator(mask_mode=mode)
+                ai.set_mask(np.zeros((32, 32), np.uint8))
+                calls = {
+                    "batch1d": lambda: ai.batch1d(paths, 10),
+                    "batch1d errors": lambda: ai.batch1d(paths, 10, errors=True),
+                    "batch1d std": lambda: ai.batch1d(paths, 10, azimuthal_std=True),
+                    "batch2d": lambda: ai.batch2d(paths, 10, 8),
+                    "batch2d errors": lambda: ai.batch2d(paths, 10, 8, errors=True),
+                    "batch2d range": lambda: ai.batch2d(paths, 10, 8, azimuthal_range=(0, 1)),
+                    "batch1d_iter": lambda: list(ai.batch1d_iter(paths, 10)),
+                    "batch1d_iter errors": lambda: list(ai.batch1d_iter(paths, 10, errors=True)),
+                    "batch1d_iter std": lambda: list(ai.batch1d_iter(paths, 10, azimuthal_std=True)),
+                    "batch1d_iter generator": lambda: list(ai.batch1d_iter(iter(paths), 10)),
+                    "batch2d_iter": lambda: list(ai.batch2d_iter(paths, 10, 8)),
+                    "batch2d_iter generator": lambda: list(ai.batch2d_iter(iter(paths), 10, 8)),
+                    "batch2d_iter range": lambda: list(
+                        ai.batch2d_iter(paths, 10, 8, azimuthal_range=(0, 1))
+                    ),
+                }
+                for name, call in calls.items():
+                    with self.subTest(mode=mode, call=name):
+                        results = call()
+                        self.assertEqual([r.filename for r in results], paths)
+                        self.assertEqual(
+                            [r.error for r in results], [None, message, None, message]
+                        )
+                        self.assertTrue(results[0].is_ok() and results[2].is_ok())
+
     def test_multi_integrator_per_detector(self):
         masked = integrator(radial_range=(0.0, 0.1))
         masked.set_mask(np.zeros((32, 32), np.uint8))
@@ -141,6 +179,70 @@ class MaskShapeTests(unittest.TestCase):
             multi.batch1d([[GOOD, GOOD]], 10)
         with self.assertRaisesRegex(ValueError, message):
             multi.integrate2d([GOOD, GOOD], 10, 8)
+
+
+class SinglePathTests(unittest.TestCase):
+    """Issue 40: a single path where a list is expected raises TypeError
+    instead of being iterated character by character."""
+
+    def test_every_batch_method_rejects_a_single_path(self):
+        ai = integrator()
+        multi = dioptrin.MultiIntegrator(
+            [integrator(radial_range=(0.0, 0.1)), integrator(radial_range=(0.0, 0.1))]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_tiff(directory, IMAGE)
+            singles = {
+                "str": (path, r"not a single str$"),
+                "bytes": (path.encode(), r"not a single bytes \(file paths must be str"),
+                "Path": (Path(path), r"not a single \w*Path \(file paths must be str"),
+                "bytearray": (bytearray(path.encode()), r"not a single bytearray \(file paths must be str"),
+            }
+            for kind, (single, suffix) in singles.items():
+                calls = {
+                    "batch1d": (lambda: ai.batch1d(single, 10), "images must be a list of file paths"),
+                    "batch2d": (lambda: ai.batch2d(single, 10, 8), "tiff_paths must be a list of file paths"),
+                    "batch1d_iter": (lambda: ai.batch1d_iter(single, 10), "images must be a list or iterable"),
+                    "batch2d_iter": (lambda: ai.batch2d_iter(single, 10, 8), "images must be a list or iterable"),
+                    "multi.batch1d": (lambda: multi.batch1d(single, 10), "images must be a list of frame sets"),
+                    "multi.batch1d frame set": (
+                        lambda: multi.batch1d([single], 10),
+                        r"images\[0\] must be a list with one image per detector",
+                    ),
+                    "multi.integrate1d": (
+                        lambda: multi.integrate1d(single, 10),
+                        "images must be a list with one image per detector",
+                    ),
+                    "multi.integrate2d": (
+                        lambda: multi.integrate2d(single, 10, 8),
+                        "images must be a list with one image per detector",
+                    ),
+                }
+                for name, (call, prefix) in calls.items():
+                    with self.subTest(kind=kind, call=name):
+                        with self.assertRaisesRegex(TypeError, f"^{prefix}.*{suffix}"):
+                            call()
+
+            # Other bad arguments still name the argument, as typed PyO3
+            # parameters do.
+            prefixed = {
+                "batch1d": (lambda: ai.batch1d(5, 10), "images"),
+                "batch2d": (lambda: ai.batch2d([Path(path)], 10, 8), "tiff_paths"),
+                "multi.batch1d": (lambda: multi.batch1d(5, 10), "images"),
+                "multi.integrate1d": (lambda: multi.integrate1d(5, 10), "images"),
+                "multi.integrate2d": (lambda: multi.integrate2d(5, 10, 8), "images"),
+            }
+            for name, (call, argument) in prefixed.items():
+                with self.subTest(call=name):
+                    with self.assertRaisesRegex(TypeError, f"^argument '{argument}': "):
+                        call()
+
+            # A one-item list still works everywhere.
+            self.assertTrue(ai.batch1d([path], 10)[0].is_ok())
+            self.assertTrue(ai.batch2d([path], 10, 8)[0].is_ok())
+            self.assertTrue(next(ai.batch1d_iter([path], 10)).is_ok())
+            self.assertTrue(next(ai.batch2d_iter((p for p in [path]), 10, 8)).is_ok())
+            self.assertEqual(len(multi.batch1d([[path, path]], 10)), 1)
 
 
 class MultiIntegratorMixedInputTests(unittest.TestCase):

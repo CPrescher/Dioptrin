@@ -1,7 +1,7 @@
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rayon::ThreadPoolBuilder;
 use std::thread;
 
@@ -234,6 +234,55 @@ pub fn poni_from_dict(poni_dict: &Bound<'_, PyDict>) -> PyResult<Poni> {
     Ok(poni)
 }
 
+/// Extract argument `name` the way a typed `#[pyo3]` parameter would, keeping
+/// PyO3's "argument 'name': ..." prefix on a TypeError, for arguments taken as
+/// `&Bound<PyAny>` so they can be checked first with [`reject_single_path`].
+pub fn extract_argument<'a, 'py, T>(obj: &'a Bound<'py, PyAny>, name: &str) -> PyResult<T>
+where
+    T: FromPyObject<'a, 'py>,
+    T::Error: Into<PyErr>,
+{
+    obj.extract::<T>().map_err(|err| {
+        let err: PyErr = err.into();
+        let py = obj.py();
+        if !err.is_instance_of::<PyTypeError>(py) {
+            return err;
+        }
+        let wrapped = PyTypeError::new_err(format!("argument '{name}': {}", err.value(py)));
+        wrapped.set_cause(py, Some(err));
+        wrapped
+    })
+}
+
+/// Raise TypeError when `obj` is a single path (`str`, `bytes`, `bytearray`
+/// or `os.PathLike`) where a list of images is expected. Python would iterate
+/// a `str` character by character and treat each one as a file path. Any
+/// object with `__fspath__` counts as a path, even a list subclass. `name`
+/// is the argument, `expected` what it must be, e.g. "a list of file paths".
+pub fn reject_single_path(obj: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<()> {
+    let single = obj.is_instance_of::<PyString>()
+        || obj.is_instance_of::<PyBytes>()
+        || obj.is_instance_of::<PyByteArray>()
+        || obj.hasattr("__fspath__")?;
+    if !single {
+        return Ok(());
+    }
+    let type_name = obj
+        .get_type()
+        .name()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|_| "path".to_owned());
+    // Only str paths are accepted inside the list too.
+    let hint = if obj.is_instance_of::<PyString>() {
+        ""
+    } else {
+        " (file paths must be str, e.g. os.fsdecode(path))"
+    };
+    Err(PyTypeError::new_err(format!(
+        "{name} must be {expected}, not a single {type_name}{hint}"
+    )))
+}
+
 /// Classified input for batch operations.
 ///
 /// Tries extraction in order: Vec<String> (paths), Vec<Array> (numpy),
@@ -252,6 +301,11 @@ pub enum ClassifiedInput<'py> {
 /// the stream; generators/iterators fall through to the Iterator variant and
 /// are checked as they are consumed.
 pub fn classify_batch_input<'py>(obj: &Bound<'py, PyAny>) -> PyResult<ClassifiedInput<'py>> {
+    reject_single_path(
+        obj,
+        "images",
+        "a list or iterable of file paths or 2D float64 numpy arrays",
+    )?;
     // Try Vec<String> first
     if let Ok(paths) = obj.extract::<Vec<String>>() {
         return Ok(ClassifiedInput::Paths(paths));

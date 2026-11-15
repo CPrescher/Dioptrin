@@ -633,8 +633,12 @@ class Integrator:
 
         Raises:
             ValueError: If n_points is 0, or an array is empty, not C-contiguous,
-                or does not match the mask shape (file errors go to BatchResult.error)
-            TypeError: If images is not a list of paths or 2D float64 arrays
+                or does not match the mask shape. File errors, including a TIFF
+                whose shape does not match the mask, go to that file's
+                BatchResult.error
+            TypeError: If images is not a list of paths or 2D float64 arrays,
+                including a single path (str, bytes, bytearray or os.PathLike) instead of
+                a list: wrap one path in a list
 
         Example:
             >>> results = integrator.batch1d(files, n_points=1000, errors=True)
@@ -677,12 +681,16 @@ class Integrator:
             When using a generator, `total` is 0 and `progress` returns None.
 
         Raises:
-            ValueError: If n_points is 0, or an image is empty, not C-contiguous,
+            ValueError: If n_points is 0, or an array is empty, not C-contiguous,
                 or does not match the mask shape
-            TypeError: If an item is neither a path nor a 2D float64 array.
+            TypeError: If images is a single path (str, bytes, bytearray or os.PathLike)
+                instead of a list or iterable (wrap one path in a list), or an
+                item is neither a path nor a 2D float64 array.
                 Lists are checked up front; for a generator the error (or any
                 exception the generator raises) is raised by the iterator at
-                that item's position, after all earlier results
+                that item's position, after all earlier results.
+                A TIFF path whose image does not match the mask shape is not
+                raised: it gives that item's BatchResult.error
 
         Example:
             >>> # With a list
@@ -760,7 +768,11 @@ class Integrator:
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning, or if n_radial or n_azimuthal is 0
+                no azimuthal binning, or if n_radial or n_azimuthal is 0. File
+                errors, including a TIFF whose shape does not match the mask,
+                go to that file's BatchResult.error
+            TypeError: If tiff_paths is not a list of str paths, including a
+                single path (str, bytes, bytearray or os.PathLike): wrap one path in a list
 
         Example:
             >>> # Full 2D integration
@@ -837,11 +849,15 @@ class Integrator:
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
                 no azimuthal binning; if n_radial or n_azimuthal is 0; or if an
-                image is empty, not C-contiguous, or does not match the mask shape
-            TypeError: If an item is neither a path nor a 2D float64 array.
+                array is empty, not C-contiguous, or does not match the mask shape
+            TypeError: If images is a single path (str, bytes, bytearray or os.PathLike)
+                instead of a list or iterable (wrap one path in a list), or an
+                item is neither a path nor a 2D float64 array.
                 Lists are checked up front; for a generator the error (or any
                 exception the generator raises) is raised by the iterator at
-                that item's position, after all earlier results
+                that item's position, after all earlier results.
+                A TIFF path whose image does not match the mask shape is not
+                raised: it gives that item's BatchResult.error
 
         Example:
             >>> # With a list
@@ -927,6 +943,8 @@ class MultiIntegrator:
             ValueError: If number of images doesn't match number of detectors,
                 n_points is 0, a TIFF cannot be loaded, or an image is empty or
                 does not match its detector's mask shape
+            TypeError: If images is a single path (str, bytes, bytearray or os.PathLike)
+                instead of a list with one image per detector
 
         Example:
             >>> result = multi.integrate1d(images=[img1, img2], n_points=2000)
@@ -970,6 +988,8 @@ class MultiIntegrator:
         Coordinates contain bin centers; flat intensity/errors reshape to
         (n_azimuthal, n_radial). Empty bins have zero intensity/error.
         Invalid grids, shapes, masks, geometry or factors raise ValueError.
+        A single path (str, bytes, bytearray or os.PathLike) instead of a list with one
+        image per detector raises TypeError.
         """
         ...
 
@@ -999,6 +1019,8 @@ class MultiIntegrator:
             ValueError: If any image-list has wrong length, n_points is 0, a TIFF
                 cannot be loaded, or an image is empty or does not match its
                 detector's mask shape
+            TypeError: If images, or one of its frame sets, is a single path
+                (str, bytes, bytearray or os.PathLike) instead of a list
 
         Example:
             >>> image_sets = [[img1_a, img2_a], [img1_b, img2_b]]

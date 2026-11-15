@@ -3,6 +3,23 @@ use std::sync::Arc;
 use super::{GeometryState, Integrator};
 
 impl Integrator {
+    /// Checks a `dim1 x dim2` image against the mask and the attached
+    /// detector (see [`Integrator::check_image_shape`]): the two conditions
+    /// under which integrating the image would panic. The batch helpers call it
+    /// before integrating each frame, so a mismatch fails that item with this
+    /// message instead of a worker panic.
+    pub(crate) fn check_frame_shape(&self, dim1: usize, dim2: usize) -> Result<(), String> {
+        if let Some(mask) = &self.mask
+            && (mask.dim1, mask.dim2) != (dim1, dim2)
+        {
+            return Err(format!(
+                "image shape ({dim1}, {dim2}) does not match mask shape ({}, {})",
+                mask.dim1, mask.dim2
+            ));
+        }
+        self.check_image_shape(dim1, dim2)
+    }
+
     /// Checks a `dim1 x dim2` image against the attached detector. A detector
     /// with a fixed shape (`Detector::max_shape`) accepts only that shape or an
     /// integer binning of it for which it defines a pixel pitch, as in
