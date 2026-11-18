@@ -230,12 +230,22 @@ impl<'a> Plan<'a> {
         if frames == 0 || frames > i32::MAX as u32 / self.bins {
             return Err("CUDA batch exceeds the grid limit or is empty".into());
         }
+        let elements = |per_frame: usize, element_bytes: usize| {
+            per_frame
+                .checked_mul(frames as usize)
+                .filter(|&len| len <= isize::MAX as usize / element_bytes)
+                .ok_or("CUDA batch allocation exceeds the addressable range")
+        };
+        let input_len = elements(self.pixels as usize, size_of::<f32>())?;
+        let output_len = elements(
+            self.bins as usize * (1 + usize::from(errors)),
+            size_of::<f64>(),
+        )?;
         let stream = &self.cuda.stream;
         Ok(Batch {
             plan: self,
-            input: stream.alloc_zeros(self.pixels as usize * frames as usize)?,
-            output: stream
-                .alloc_zeros(self.bins as usize * frames as usize * (1 + usize::from(errors)))?,
+            input: stream.alloc_zeros(input_len)?,
+            output: stream.alloc_zeros(output_len)?,
             frames,
             errors,
         })
@@ -256,11 +266,22 @@ impl<'a> Plan<'a> {
 }
 
 impl Batch<'_> {
-    fn upload(&mut self, frames: &(impl HostSlice<f32> + ?Sized)) -> Result<()> {
-        if frames.len() != self.input.len() {
-            return Err("host input does not match CUDA batch shape".into());
+    fn upload(&mut self, offset: usize, frames: &(impl HostSlice<f32> + ?Sized)) -> Result<()> {
+        let pixels = self.plan.pixels as usize;
+        let end = offset
+            .checked_add(frames.len())
+            .filter(|&end| end <= self.input.len());
+        if !offset.is_multiple_of(pixels) || !frames.len().is_multiple_of(pixels) {
+            return Err("CUDA upload must cover whole frames".into());
         }
-        Ok(self.plan.cuda.stream.memcpy_htod(frames, &mut self.input)?)
+        let mut destination = self
+            .input
+            .slice_mut(offset..end.ok_or("CUDA upload exceeds the batch")?);
+        Ok(self
+            .plan
+            .cuda
+            .stream
+            .memcpy_htod(frames, &mut destination)?)
     }
 
     fn run(&mut self, kernel: &Kernel) -> Result<()> {

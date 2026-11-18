@@ -70,7 +70,7 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
                     })
                     .collect();
                 let mut batch = plan.batch(2, errors)?;
-                batch.upload(&input)?;
+                batch.upload(0, &input)?;
                 let mut output = vec![0.0; 2 * bins as usize * stride];
                 for layout in Layout::ALL {
                     for mode in Accumulation::ALL {
@@ -110,7 +110,8 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
     let mut batch = plan.batch(257, true)?;
     let mut input = vec![1.0; 257 * 4];
     input[256 * 4..].fill(7.0);
-    batch.upload(&input)?;
+    batch.upload(0, &input[..256 * 4])?;
+    batch.upload(256 * 4, &input[256 * 4..])?;
     batch.run(&plan.kernel(Accumulation::Compensated, Layout::Warp, true)?)?;
     let mut output = vec![0.0; 257 * 2];
     batch.download(&mut output)?;

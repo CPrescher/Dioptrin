@@ -73,7 +73,9 @@ def main():
     parser.add_argument("--cases", default="pilatus")
     parser.add_argument("--eiger-dir", type=Path, default=ROOT / "test_data")
     parser.add_argument("--batches", default="1,8,64,256,max")
+    parser.add_argument("--methods", default="counting,pixel_split,pyfai_full")
     parser.add_argument("--layouts", choices=("block,warp", "block", "warp"), default="block,warp")
+    parser.add_argument("--cpu-threads", default="1,4,8,16")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--host-bytes", type=int, default=15_000_000_000)
     parser.add_argument("--cargo", default="cargo")
@@ -82,6 +84,7 @@ def main():
     output = args.out.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     raw = output.with_suffix(".jsonl")
+    raw.write_text("", encoding="utf-8")
     host_available = available_host_bytes()
     host_limit = min(args.host_bytes, 15_000_000_000, host_available - 2 * 1024**3)
     if host_limit <= 0:
@@ -91,7 +94,9 @@ def main():
         DIOPTRIN_CUDA_OUT=str(raw),
         DIOPTRIN_CUDA_CASES=args.cases,
         DIOPTRIN_CUDA_BATCHES=args.batches,
+        DIOPTRIN_CUDA_METHODS=args.methods,
         DIOPTRIN_CUDA_LAYOUTS=args.layouts,
+        DIOPTRIN_CUDA_CPU_THREADS=args.cpu_threads,
         DIOPTRIN_CUDA_EIGER_DIR=str(args.eiger_dir.resolve()),
         DIOPTRIN_CUDA_REPEATS=str(args.repeats),
         DIOPTRIN_CUDA_HOST_BYTES=str(host_limit),
@@ -111,7 +116,9 @@ def main():
         "host_bytes_available_before": host_available,
         "cases": args.cases,
         "batches": args.batches,
+        "methods": args.methods,
         "layouts": args.layouts,
+        "cpu_threads": args.cpu_threads,
         "gpu_before": gpu_snapshot(),
     }
     sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *ROOT.glob("src/integration/cuda/*")]

@@ -17,6 +17,7 @@ use std::{
     hint::black_box,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 const BINS: u32 = 3_000;
@@ -60,12 +61,64 @@ impl StagingInput for PinnedHostSlice<f32> {
     }
 }
 
+struct Staging<I> {
+    full: I,
+    tail: Option<I>,
+}
+
+impl<I: StagingInput> Staging<I> {
+    fn new(
+        work: &Workload<'_>,
+        elements: usize,
+        mut allocate: impl FnMut(usize) -> Result<I>,
+    ) -> Result<Self> {
+        let mut full = allocate(work.data.len())?;
+        cast_pixels(full.pixels_mut()?, work.data, work.casting_pool);
+        let remaining = elements % full.len();
+        let tail = if remaining == 0 {
+            None
+        } else {
+            let mut tail = allocate(remaining)?;
+            cast_pixels(
+                tail.pixels_mut()?,
+                &work.data[..remaining],
+                work.casting_pool,
+            );
+            Some(tail)
+        };
+        Ok(Self { full, tail })
+    }
+
+    fn upload(&mut self, batch: &mut Batch<'_>, convert: Option<&Workload<'_>>) -> Result<()> {
+        let full_len = self.full.len();
+        let end = batch.input.len() - batch.input.len() % full_len;
+        for offset in (0..end).step_by(full_len) {
+            if let Some(work) = convert {
+                cast_pixels(self.full.pixels_mut()?, work.data, work.casting_pool);
+            }
+            batch.upload(offset, &self.full)?;
+        }
+        if let Some(tail) = &mut self.tail {
+            if let Some(work) = convert {
+                let remaining = tail.len();
+                cast_pixels(
+                    tail.pixels_mut()?,
+                    &work.data[..remaining],
+                    work.casting_pool,
+                );
+            }
+            batch.upload(end, tail)?;
+        }
+        Ok(())
+    }
+}
+
 fn measure_gpu(
     batch: &mut Batch<'_>,
     layout: Layout,
     mode: Accumulation,
     workload: &Workload<'_>,
-    input: &mut impl StagingInput,
+    input: &mut Staging<impl StagingInput>,
     output: &mut impl HostSlice<f64>,
 ) -> Result<Vec<Samples>> {
     let stream = &batch.plan.cuda.stream;
@@ -73,7 +126,7 @@ fn measure_gpu(
     let mut samples = Vec::with_capacity(workload.repeats);
     for iteration in 0..workload.repeats + 2 {
         let start = Instant::now();
-        batch.upload(input)?;
+        input.upload(batch, None)?;
         stream.synchronize()?;
         let upload_ms = elapsed_ms(start);
 
@@ -93,15 +146,14 @@ fn measure_gpu(
         let resident_wall_ms = elapsed_ms(start);
 
         let start = Instant::now();
-        batch.upload(input)?;
+        input.upload(batch, None)?;
         batch.run(&kernel)?;
         batch.download(output)?;
         stream.synchronize()?;
         let host_f32_ms = elapsed_ms(start);
 
         let start = Instant::now();
-        cast_pixels(input.pixels_mut()?, workload.data, workload.casting_pool);
-        batch.upload(input)?;
+        input.upload(batch, Some(workload))?;
         batch.run(&kernel)?;
         batch.download(output)?;
         stream.synchronize()?;
@@ -308,6 +360,39 @@ fn sha256(path: impl AsRef<Path>) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
+fn free_dedicated_bytes(context: &CudaContext) -> Option<usize> {
+    // On WDDM, CUDA's allocation budget can exceed free dedicated VRAM.
+    // Match the visible GPU by UUID so this also works with CUDA_VISIBLE_DEVICES.
+    let bytes = context.uuid().ok()?.bytes.map(|byte| byte as u8);
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let device = format!(
+        "GPU-{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..],
+    );
+    let output = Command::new("nvidia-smi")
+        .args([
+            "--id",
+            &device,
+            "--query-gpu=memory.free",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mib: usize = std::str::from_utf8(&output.stdout)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    mib.checked_mul(1024 * 1024)
+}
+
 fn log(out: &mut impl Write, record: serde_json::Value) -> Result<()> {
     serde_json::to_writer(&mut *out, &record)?;
     writeln!(out)?;
@@ -331,6 +416,13 @@ fn benchmark_cuda() -> Result<()> {
     let suite = env::var("DIOPTRIN_CUDA_CASES").unwrap_or_else(|_| "pilatus".into());
     let requested = env::var("DIOPTRIN_CUDA_BATCHES").unwrap_or_else(|_| "1,8,64,256,max".into());
     let layout_names = env::var("DIOPTRIN_CUDA_LAYOUTS").unwrap_or_else(|_| "block,warp".into());
+    let method_names = env::var("DIOPTRIN_CUDA_METHODS")
+        .unwrap_or_else(|_| "counting,pixel_split,pyfai_full".into());
+    let cpu_threads = env::var("DIOPTRIN_CUDA_CPU_THREADS").unwrap_or_else(|_| "1,4,8,16".into());
+    let cpu_threads = cpu_threads
+        .split(',')
+        .map(str::parse::<usize>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let layouts: Vec<_> = Layout::ALL
         .into_iter()
         .filter(|layout| layout_names.split(',').any(|name| name == layout.name()))
@@ -362,17 +454,24 @@ fn benchmark_cuda() -> Result<()> {
             json!({"type": "case", "case": case.name, "shape": case.shape, "sha256": case.files}),
         )?;
         for (method, label) in METHODS {
+            if !method_names.split(',').any(|name| name == label) {
+                continue;
+            }
             eprintln!("{} {label}", case.name);
             let strict = case.strict(method)?;
             let setup = Instant::now();
             let plan = cuda.prepare(&strict, case.shape, BINS)?;
+            let prepare_ms = elapsed_ms(setup);
             let (free, total) = cuda.context.mem_get_info()?;
+            let dedicated = free_dedicated_bytes(&cuda.context);
+            let budget = dedicated.map_or(free, |bytes| bytes.min(free));
             log(
                 &mut out,
                 json!({
                     "type": "table", "case": case.name, "method": label, "entries": plan.entries,
-                    "prepare_ms": elapsed_ms(setup), "upload_ms": plan.upload_ms,
-                    "free_device_bytes_after_table": free, "device_bytes": total,
+                    "prepare_ms": prepare_ms, "upload_ms": plan.upload_ms,
+                    "free_device_bytes_after_table": free, "free_dedicated_bytes_after_table": dedicated,
+                    "device_bytes": total,
                 }),
             )?;
             let mut cpu = [case.strict(method)?, case.strict(method)?, strict];
@@ -387,13 +486,12 @@ fn benchmark_cuda() -> Result<()> {
             );
             for errors in [false, true] {
                 let stride = 1 + usize::from(errors);
-                let device_cost = case.pixels.len() * size_of::<f32>()
-                    + BINS as usize * stride * size_of::<f64>();
-                let host_cost = device_cost + case.pixels.len() * size_of::<f64>();
-                let device_batches = free.saturating_sub(GPU_RESERVE) / device_cost;
-                let max = device_batches
-                    .min(host_limit / host_cost)
-                    .min(i32::MAX as usize / BINS as usize);
+                let pixels = case.pixels.len();
+                let result_cost = BINS as usize * stride * size_of::<f64>();
+                let device_cost = pixels * size_of::<f32>() + result_cost;
+                let input_cost = pixels * (size_of::<f64>() + size_of::<f32>());
+                let device_batches = budget.saturating_sub(GPU_RESERVE) / device_cost;
+                let max = device_batches.min(i32::MAX as usize / BINS as usize);
                 let mut prev = None;
                 for batch_name in requested.split(',') {
                     let count: usize = if batch_name == "max" {
@@ -401,7 +499,16 @@ fn benchmark_cuda() -> Result<()> {
                     } else {
                         batch_name.parse()?
                     };
-                    if count == 0 || count > max {
+                    let staging_budget =
+                        host_limit.saturating_sub(result_cost.saturating_mul(count));
+                    let host_frames = if count <= staging_budget / input_cost {
+                        count
+                    } else {
+                        // Large batches reuse a host slab. Budget for a
+                        // second f32 buffer in case a final partial slab remains.
+                        (staging_budget / (input_cost + pixels * size_of::<f32>())).min(64)
+                    };
+                    if count == 0 || count > max || host_frames == 0 {
                         log(
                             &mut out,
                             json!({"type":"skip", "case": name, "method": label, "errors": errors, "batch": batch_name, "max": max, "reason": "buffer budget"}),
@@ -412,8 +519,10 @@ fn benchmark_cuda() -> Result<()> {
                         continue;
                     }
                     prev = Some(count);
-                    eprintln!("  variance={errors} {batch_name} ({count} frames)");
-                    let data = case.pixels.repeat(count);
+                    eprintln!(
+                        "  variance={errors} {batch_name} ({count} frames, {host_frames} on host)"
+                    );
+                    let data = case.pixels.repeat(host_frames);
                     let workload = Workload {
                         data: &data,
                         repeats,
@@ -425,12 +534,15 @@ fn benchmark_cuda() -> Result<()> {
                         json!({
                             "type": kind, "case": name, "method": label, "errors": errors,
                             "batch": batch_name, "frames": count, "max_device_frames": device_batches,
-                            "host_buffer_bytes": host_cost * count,
+                            "host_frames": host_frames,
+                            "host_buffer_bytes": input_cost * host_frames
+                                + (count % host_frames) * pixels * size_of::<f32>()
+                                + result_cost * count,
                         })
                     };
                     {
-                        let mut input = vec![0.0; data.len()];
-                        cast_pixels(&mut input, &data, &pools[2]);
+                        let mut input =
+                            Staging::new(&workload, batch.input.len(), |len| Ok(vec![0.0; len]))?;
                         let mut output = vec![0.0; samples_count];
                         for &layout in &layouts {
                             for mode in Accumulation::ALL {
@@ -442,6 +554,8 @@ fn benchmark_cuda() -> Result<()> {
                                     &mut input,
                                     &mut output,
                                 )?;
+                                let pattern = BINS as usize * stride;
+                                assert_eq!(&output[..pattern], &output[output.len() - pattern..]);
                                 let mut row = record("gpu");
                                 row["memory"] = json!("pageable");
                                 row["layout"] = json!(layout.name());
@@ -466,11 +580,12 @@ fn benchmark_cuda() -> Result<()> {
                             }
                         }
                     }
-                    match pinned::<f32>(&cuda.context, data.len())
-                        .and_then(|input| Ok((input, pinned::<f64>(&cuda.context, samples_count)?)))
+                    match Staging::new(&workload, batch.input.len(), |len| {
+                        pinned::<f32>(&cuda.context, len)
+                    })
+                    .and_then(|input| Ok((input, pinned::<f64>(&cuda.context, samples_count)?)))
                     {
                         Ok((mut input, mut output)) => {
-                            cast_pixels(input.as_mut_slice()?, &data, &pools[2]);
                             for &layout in &layouts {
                                 for mode in Accumulation::ALL {
                                     let samples = measure_gpu(
@@ -500,27 +615,33 @@ fn benchmark_cuda() -> Result<()> {
                     drop(batch);
                     for (cpu, layout) in cpu.iter().zip(["fast_csc", "fast_csr", "strict_csr"]) {
                         for (pool, threads) in pools.iter().zip([1, 4, 8, 16]) {
+                            if !cpu_threads.contains(&threads) {
+                                continue;
+                            }
                             let mut samples = Vec::with_capacity(repeats);
                             for i in 0..repeats + 2 {
                                 let start = Instant::now();
                                 pool.install(|| {
-                                    data.par_chunks_exact(case.pixels.len()).for_each(|frame| {
-                                        if errors {
-                                            black_box(cpu.integrate1d_with_errors_from_slice(
-                                                frame,
-                                                case.shape.0,
-                                                case.shape.1,
-                                                BINS as usize,
-                                            ));
-                                        } else {
-                                            black_box(cpu.integrate1d_from_slice(
-                                                frame,
-                                                case.shape.0,
-                                                case.shape.1,
-                                                BINS as usize,
-                                            ));
-                                        }
-                                    });
+                                    for offset in (0..count).step_by(host_frames) {
+                                        let len = host_frames.min(count - offset) * pixels;
+                                        data[..len].par_chunks_exact(pixels).for_each(|frame| {
+                                            if errors {
+                                                black_box(cpu.integrate1d_with_errors_from_slice(
+                                                    frame,
+                                                    case.shape.0,
+                                                    case.shape.1,
+                                                    BINS as usize,
+                                                ));
+                                            } else {
+                                                black_box(cpu.integrate1d_from_slice(
+                                                    frame,
+                                                    case.shape.0,
+                                                    case.shape.1,
+                                                    BINS as usize,
+                                                ));
+                                            }
+                                        });
+                                    }
                                 });
                                 if i >= 2 {
                                     samples.push(elapsed_ms(start));
