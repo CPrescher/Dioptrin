@@ -1,0 +1,17 @@
+[package]
+name = "dioptrin-metal-setup"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+dioptrin = { path = "../../../.." }
+rayon = "1.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
