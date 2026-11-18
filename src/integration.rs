@@ -2,6 +2,8 @@
 mod arithmetic;
 mod cache;
 mod corrections;
+#[cfg(all(feature = "cuda", test))]
+mod cuda;
 mod dynamic;
 pub(crate) mod grid;
 pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode, azimuthal_bracket_bins};

@@ -285,9 +285,15 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
         }
         let view = self.for_shape(dim1, dim2);
+        if let Some(key) = self.one_d_table_key(n_points) {
+            drop(view.ensure_lut1d(key));
+        }
+    }
+
+    pub(super) fn one_d_table_key(&self, n_points: usize) -> Option<OneDKey> {
         let unit = self.radial_unit;
         let radial_range = self.radial_range_key();
-        let key = match self.method {
+        Some(match self.method {
             super::IntegrationMethod::Counting => OneDKey::Counting {
                 n_points,
                 unit,
@@ -307,9 +313,8 @@ impl Integrator {
                 unit,
                 radial_range,
             },
-            super::IntegrationMethod::Histogram => return,
-        };
-        drop(view.ensure_lut1d(key));
+            super::IntegrationMethod::Histogram => return None,
+        })
     }
 
     pub(super) fn pixel_split2d_key(
