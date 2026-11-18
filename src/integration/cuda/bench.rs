@@ -20,6 +20,8 @@ use std::{
     process::Command,
 };
 
+mod startup;
+
 const BINS: u32 = 3_000;
 const HOST_LIMIT: usize = 15_000_000_000;
 const GPU_RESERVE: usize = 128 * 1024 * 1024;
@@ -229,14 +231,18 @@ struct Case {
 }
 
 impl Case {
-    fn load(name: &str) -> Result<Self> {
+    fn load(name: &str, record_hashes: bool) -> Result<Self> {
         let (geometry, shape, pixels, mask, files) = match name {
             "pilatus" => {
                 let image = "test_data/CeO2_Pilatus1M.tif";
                 let poni = "test_data/v1.poni";
                 let frame = Frame::from_tiff(image.into())?;
                 let shape = (frame.dim1, frame.dim2);
-                let files = json!({image: sha256(image)?, poni: sha256(poni)?});
+                let files = if record_hashes {
+                    json!({image: sha256(image)?, poni: sha256(poni)?})
+                } else {
+                    json!({})
+                };
                 let mask = frame
                     .data
                     .iter()
@@ -259,11 +265,15 @@ impl Case {
                 let mut mask =
                     Mask::from_tiff(mask_path.to_str().ok_or("invalid mask path")?.into())?;
                 let shape = (mask.dim1, mask.dim2);
-                let mut files = json!({
-                    "eiger_0000.poni": sha256(&base_poni)?,
-                    "eiger_0000.mask": sha256(&mask_path)?,
-                    calibration: sha256(calibration)?,
-                });
+                let mut files = if record_hashes {
+                    json!({
+                        "eiger_0000.poni": sha256(&base_poni)?,
+                        "eiger_0000.mask": sha256(&mask_path)?,
+                        calibration: sha256(calibration)?,
+                    })
+                } else {
+                    json!({})
+                };
                 let pixels = if name == "eiger" {
                     let image = dir.join("eiger_0000.tiff");
                     let frame =
@@ -276,7 +286,9 @@ impl Case {
                             *value = 1;
                         }
                     }
-                    files["eiger_0000.tiff"] = json!(sha256(image)?);
+                    if record_hashes {
+                        files["eiger_0000.tiff"] = json!(sha256(image)?);
+                    }
                     frame.data
                 } else {
                     synthetic_pixels(mask.data.len())
@@ -448,7 +460,7 @@ fn benchmark_cuda() -> Result<()> {
     )?;
 
     for name in suite.split(',') {
-        let case = Case::load(name)?;
+        let case = Case::load(name, true)?;
         log(
             &mut out,
             json!({"type": "case", "case": case.name, "shape": case.shape, "sha256": case.files}),

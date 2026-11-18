@@ -121,7 +121,7 @@ def main():
         "cpu_threads": args.cpu_threads,
         "gpu_before": gpu_snapshot(),
     }
-    sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *ROOT.glob("src/integration/cuda/*")]
+    sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *(ROOT / "src/integration/cuda").rglob("*")]
     metadata["source_sha256"] = {
         str(path.resolve().relative_to(ROOT)).replace(os.sep, "/"): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sources
