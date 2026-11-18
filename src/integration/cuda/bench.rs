@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    frame::Frame,
+    frame::{Frame, Pixel},
     geometry::Geometry,
     integration::{RadialUnit, SparseLayout},
     mask::Mask,
@@ -23,6 +23,7 @@ use std::{
 mod file_batch;
 mod float32;
 mod full_f64;
+mod hdf5;
 mod headroom;
 mod inputs;
 mod startup;
@@ -428,6 +429,24 @@ fn sample(repeats: usize, mut work: impl FnMut() -> Result<()>) -> Result<Vec<f6
         }
     }
     Ok(times)
+}
+
+fn integrate_pixels<P: Pixel>(
+    cpu: &Integrator,
+    shape: (usize, usize),
+    pixels: &[P],
+    errors: bool,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let view = cpu.for_shape(shape.0, shape.1);
+    let norm = view.normalization();
+    let lut = view.ensure_lut1d(cpu.one_d_table_key(BINS as usize).unwrap());
+    let mask = cpu.mask().map(|mask| mask.data.as_slice());
+    match (cpu.fast_math(), errors) {
+        (true, true) => lut.integrate_pixels::<true, true, P>(pixels, mask, &norm),
+        (true, false) => lut.integrate_pixels::<true, false, P>(pixels, mask, &norm),
+        (false, true) => lut.integrate_pixels::<false, true, P>(pixels, mask, &norm),
+        (false, false) => lut.integrate_pixels::<false, false, P>(pixels, mask, &norm),
+    }
 }
 
 fn cpu_batch(

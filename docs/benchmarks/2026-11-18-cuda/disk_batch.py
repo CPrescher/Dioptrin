@@ -18,7 +18,7 @@ from run import ROOT, command, cpu_model, gpu_snapshot
 from startup import build, input_hashes
 
 TEST = "integration::cuda::bench::file_batch::eiger_files"
-BACKENDS = ("cpu", "cuda_pageable", "cuda_pinned")
+BACKENDS = ("cpu", "cuda_pageable", "cuda_pinned", "cuda_native", "cuda_native_direct")
 METHODS = ("counting", "pixel_split", "pyfai_full")
 FRAMES = 64
 BATCH_MARKER = "DIOPTRIN_FILE_BATCH "
@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--nvrtc", type=Path)
     parser.add_argument("--direct-io", action="store_true", help="Bypass the Windows filesystem data cache")
     parser.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
+    parser.add_argument("--backends", nargs="+", choices=BACKENDS, default=BACKENDS)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--cargo", default="cargo")
     args = parser.parse_args()
@@ -123,7 +124,7 @@ def main():
     for method in args.methods:
         reference = None
         for number in range(1, args.repeats + 1):
-            order = list(BACKENDS)
+            order = list(args.backends)
             rng.shuffle(order)
             for backend in order:
                 print(f"{method} {backend} trial {number}", flush=True)

@@ -81,6 +81,73 @@ struct Phases {
     gpu_download_ms: f64,
 }
 
+struct Loaded {
+    read_decode: f64,
+    direct_read: f64,
+    stage: f64,
+}
+
+type Load<I> = fn(&mut Reader, &str, (usize, usize), &mut [I]) -> Result<Loaded>;
+
+struct Loader<'a, I> {
+    shape: (usize, usize),
+    pool: &'a ThreadPool,
+    load: Load<I>,
+}
+
+fn decode_copied<I: From<i32>>(
+    reader: &mut Reader,
+    path: &str,
+    shape: (usize, usize),
+    dst: &mut [I],
+) -> Result<Loaded> {
+    let start = Instant::now();
+    let (frame, direct_read) = reader.reload(path)?;
+    let read_decode = elapsed_ms(start);
+    if (frame.dim1, frame.dim2) != shape {
+        return Err(format!("unexpected frame shape for {path}").into());
+    }
+    let DecodingResult::I32(pixels) = &frame.pixels else {
+        return Err(format!("expected the signed 32-bit Eiger TIFF at {path}").into());
+    };
+    let start = Instant::now();
+    for (d, &s) in dst.iter_mut().zip(pixels) {
+        *d = I::from(s);
+    }
+    Ok(Loaded {
+        read_decode,
+        direct_read,
+        stage: elapsed_ms(start),
+    })
+}
+
+fn decode_native(
+    reader: &mut Reader,
+    path: &str,
+    shape: (usize, usize),
+    dst: &mut [i32],
+) -> Result<Loaded> {
+    let start = Instant::now();
+    #[cfg(windows)]
+    if let Some(buffer) = &mut reader.direct {
+        let source = read_unbuffered(path, buffer)?;
+        let direct_read = elapsed_ms(start);
+        TiffFrame::read_i32_into(source, shape, dst)?;
+        return Ok(Loaded {
+            read_decode: elapsed_ms(start),
+            direct_read,
+            stage: 0.,
+        });
+    }
+    let _ = reader;
+    TiffFrame::read_i32_into(std::io::BufReader::new(File::open(path)?), shape, dst)?;
+    Ok(Loaded {
+        read_decode: elapsed_ms(start),
+        direct_read: 0.,
+        stage: 0.,
+    })
+}
+
 fn cpu_files(
     integrator: &Integrator,
     paths: &[String],
@@ -122,9 +189,9 @@ fn cpu_files(
     Ok((output, phases))
 }
 
-enum Input {
-    Ordinary(Vec<f64>),
-    Pinned(PinnedHostSlice<f64>),
+enum Input<I> {
+    Ordinary(Vec<I>),
+    Pinned(PinnedHostSlice<I>),
 }
 
 struct Pending {
@@ -135,23 +202,23 @@ struct Pending {
     downloaded: CudaEvent,
 }
 
-struct Tile<'a> {
-    batch: Batch<'a, f64>,
-    input: Input,
+struct Tile<'a, I> {
+    batch: Batch<'a, f64, I>,
+    input: Input<I>,
     decoded: Vec<Reader>,
     output: PinnedHostSlice<f64>,
     pending: Option<Pending>,
 }
 
-impl<'a> Tile<'a> {
+impl<'a, I: DeviceRepr + ValidAsZeroBits + From<i32> + Default + Copy + Send> Tile<'a, I> {
     fn new(plan: &'a Plan<'a, f64>, use_pinned: bool) -> Result<Self> {
         let n = plan.pixels as usize * TILE;
         Ok(Self {
-            batch: plan.batch_on(TILE as u32, true, plan.cuda.context.new_stream()?)?,
+            batch: plan.batch_with_input(TILE as u32, true, plan.cuda.context.new_stream()?)?,
             input: if use_pinned {
                 Input::Pinned(pinned(&plan.cuda.context, n)?)
             } else {
-                Input::Ordinary(vec![0.0; n])
+                Input::Ordinary(vec![I::default(); n])
             },
             decoded: (0..TILE).map(|_| Reader::new()).collect(),
             output: pinned(&plan.cuda.context, TILE * PATTERN)?,
@@ -163,9 +230,8 @@ impl<'a> Tile<'a> {
         &mut self,
         first: usize,
         paths: &[String],
-        shape: (usize, usize),
-        pool: &ThreadPool,
-        kernel: &Kernel<f64>,
+        loader: &Loader<'_, I>,
+        kernel: &Kernel<f64, I>,
         phases: &mut Phases,
     ) -> Result<()> {
         let start = Instant::now();
@@ -173,34 +239,21 @@ impl<'a> Tile<'a> {
             Input::Ordinary(buf) => buf.as_mut_slice(),
             Input::Pinned(buf) => buf.as_mut_slice()?,
         };
-        let loads = pool.install(|| {
+        let loads = loader.pool.install(|| {
             self.decoded
                 .par_iter_mut()
                 .zip(paths.par_iter())
-                .zip(input.par_chunks_exact_mut(shape.0 * shape.1))
+                .zip(input.par_chunks_exact_mut(loader.shape.0 * loader.shape.1))
                 .map(|((reader, path), dst)| {
-                    let start = Instant::now();
-                    let (frame, read_ms) = reader.reload(path).map_err(|err| err.to_string())?;
-                    let read_decode = elapsed_ms(start);
-                    if (frame.dim1, frame.dim2) != shape {
-                        return Err(format!("unexpected frame shape for {path}"));
-                    }
-                    let DecodingResult::I32(pixels) = &frame.pixels else {
-                        return Err(format!("expected the signed 32-bit Eiger TIFF at {path}"));
-                    };
-                    let start = Instant::now();
-                    for (d, &s) in dst.iter_mut().zip(pixels) {
-                        *d = f64::from(s);
-                    }
-                    Ok((read_decode, read_ms, elapsed_ms(start)))
+                    (loader.load)(reader, path, loader.shape, dst).map_err(|err| err.to_string())
                 })
                 .collect::<std::result::Result<Vec<_>, String>>()
         })?;
         phases.gpu_loader_wall_ms += elapsed_ms(start);
-        for (read_decode, read, widen) in loads {
-            phases.read_decode_worker_ms += read_decode;
-            phases.direct_read_worker_ms += read;
-            phases.widen_worker_ms += widen;
+        for times in loads {
+            phases.read_decode_worker_ms += times.read_decode;
+            phases.direct_read_worker_ms += times.direct_read;
+            phases.widen_worker_ms += times.stage;
         }
         let stream = Arc::clone(&self.batch.stream);
         let event = || stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT));
@@ -237,12 +290,11 @@ impl<'a> Tile<'a> {
     }
 }
 
-fn gpu_files(
-    tiles: &mut [Tile<'_>; 2],
+fn gpu_files<I: DeviceRepr + ValidAsZeroBits + From<i32> + Default + Copy + Send>(
+    tiles: &mut [Tile<'_, I>; 2],
     paths: &[String],
-    shape: (usize, usize),
-    pool: &ThreadPool,
-    kernel: &Kernel<f64>,
+    loader: &Loader<'_, I>,
+    kernel: &Kernel<f64, I>,
 ) -> Result<(Vec<f64>, Phases)> {
     let mut output = vec![0.0; paths.len() * PATTERN];
     let mut phases = Phases::default();
@@ -252,7 +304,7 @@ fn gpu_files(
         for (i, paths) in path_tiles.iter().enumerate() {
             let tile = &mut tiles[i % 2];
             tile.finish(&mut output, &mut phases)?;
-            tile.submit(i * TILE, paths, shape, pool, kernel, &mut phases)?;
+            tile.submit(i * TILE, paths, loader, kernel, &mut phases)?;
         }
         for tile in tiles.iter_mut() {
             tile.finish(&mut output, &mut phases)?;
@@ -314,10 +366,13 @@ fn eiger_files() -> Result<()> {
             cpu_files(&cpu, &paths, &pool, &mut buffers)
         })?;
     } else {
-        if !matches!(selection.as_str(), "cuda_pageable" | "cuda_pinned") {
+        if !matches!(
+            selection.as_str(),
+            "cuda_pageable" | "cuda_pinned" | "cuda_native" | "cuda_native_direct"
+        ) {
             return Err("unknown disk benchmark backend".into());
         }
-        let use_pinned = selection == "cuda_pinned";
+        let use_pinned = selection != "cuda_pageable";
         let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
         let plan = cuda.prepare_f64(&cpu, case.shape, BINS)?;
         let layout = if use_pinned || matches!(method, IntegrationMethod::Counting) {
@@ -325,12 +380,35 @@ fn eiger_files() -> Result<()> {
         } else {
             Layout::Warp
         };
-        let kernel = plan.kernel(layout, true)?;
         let pool = ThreadPoolBuilder::new().num_threads(TILE).build()?;
-        let mut tiles = [Tile::new(&plan, use_pinned)?, Tile::new(&plan, use_pinned)?];
-        measure(fixture_ms, prepare, || {
-            gpu_files(&mut tiles, &paths, case.shape, &pool, &kernel)
-        })?;
+        if matches!(selection.as_str(), "cuda_native" | "cuda_native_direct") {
+            let kernel = plan.kernel_i32(layout, true)?;
+            let mut tiles = [Tile::new(&plan, true)?, Tile::new(&plan, true)?];
+            let load = if selection == "cuda_native_direct" {
+                decode_native
+            } else {
+                decode_copied
+            };
+            let loader = Loader {
+                shape: case.shape,
+                pool: &pool,
+                load,
+            };
+            measure(fixture_ms, prepare, || {
+                gpu_files(&mut tiles, &paths, &loader, &kernel)
+            })?;
+        } else {
+            let kernel = plan.kernel(layout, true)?;
+            let mut tiles = [Tile::new(&plan, use_pinned)?, Tile::new(&plan, use_pinned)?];
+            let loader = Loader {
+                shape: case.shape,
+                pool: &pool,
+                load: decode_copied,
+            };
+            measure(fixture_ms, prepare, || {
+                gpu_files(&mut tiles, &paths, &loader, &kernel)
+            })?;
+        }
     }
     Ok(())
 }

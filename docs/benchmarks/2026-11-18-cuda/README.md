@@ -409,6 +409,162 @@ python -B docs/benchmarks/2026-11-18-cuda/disk_batch.py \
     --out benchmark-results/cuda/windows-eiger-files-direct.json
 ```
 
+### Native integer upload and HDF5
+
+CUDA can upload the detector's four-byte pixels and widen them to f64 in
+the gather kernel. Every signed or unsigned 32-bit integer converts
+exactly to f64. The kernels still read f64 weights, compute both sums
+and normalize in f64. This halves pixel transfer volume against f64
+uploads and avoids an expanded device input buffer.
+
+For the TIFF fixture, the signed-32 CUDA path can either copy from the
+existing typed decoder buffer or decode and orient the frame directly in
+the pinned upload buffer. The direct path keeps the same TIFF chunk
+reader and detector row order. The benchmark checks every returned
+pattern for agreement with the f64 CPU path.
+
+With normal Windows buffering, these are prepared-batch medians in
+seconds for 64 TIFFs and Poisson std over three fresh trials.
+
+| Method | f64 CPU, 14 workers | CUDA, pinned f64 upload | CUDA, int32 copy | CUDA, int32 direct decode |
+| --- | ---: | ---: | ---: | ---: |
+| Counting | 0.338 | 0.561 | 0.406 | 0.288 |
+| Pixel splitting | 0.645 | 0.572 | 0.411 | 0.295 |
+| Full splitting | 0.566 | 0.586 | 0.411 | 0.291 |
+
+For full splitting, the pinned f64 and direct int32 paths used 166 ms
+and 85 ms of CUDA upload time across the tiles. The tiled host loader
+time fell from 567 ms to 277 ms. The phases overlap. Fresh-process
+medians for full splitting were 3.08 s on CPU, 4.54 s with f64 upload,
+and 4.11 s with direct int32. The raw JSON includes the spreads for
+each method and phase.
+
+With unbuffered Windows reads, the CPU and direct int32 CUDA medians
+were 0.379 and 0.507 s for counting, 0.672 and 0.552 s for pixel
+splitting, and 0.629 and 0.523 s for full splitting. CPU counting and
+CUDA with direct decoding for both splitting methods had the lower
+median. The fresh-process CPU median was lower for all three methods
+with either file-cache configuration.
+
+~~~sh
+python -B docs/benchmarks/2026-11-18-cuda/disk_batch.py \
+    --eiger-dir test_data --backends cpu cuda_pinned cuda_native cuda_native_direct \
+    --repeats 3 --out benchmark-results/cuda/windows-eiger-native-buffered.json
+~~~
+
+Add --direct-io and a separate output path for the unbuffered run.
+
+The HDF5 scan contains 2,500 distinct 2162×2068 uint32 frames, one
+bitshuffle/LZ4 chunk per frame. Both backends use the same native HDF5
+reader and the normal Windows file cache. The nominal benchmark geometry
+uses pixel sizes, beam center, distance and wavelength from the matching
+BLISS sidecar, zero detector rotations and the catalog Eiger2 CdTe 4M
+mask. It represents a common geometry for the throughput comparison.
+
+The CPU reader and 14 Rayon integration workers use two reusable tiles
+and overlap reading and decoding with integration. The native CUDA path
+decodes into the upload buffer and overlaps the next read with work on
+two CUDA streams. The CUDA f64-upload control decodes the same integers
+and widens them into pinned f64 memory with eight host workers. The first
+batch includes opening the scan, initializing the backend and preparing
+the table. Prepared batches reuse those resources and still read and
+decode every selected frame. Output comparison is outside the timer.
+
+The HDF5 destination dataspace retains the dimensions of the selected
+file region. On this machine an eight-frame H5Dread took about 0.09 s
+with matched dimensions versus 0.64 s with a one-dimensional destination,
+with the same file, filter and data type.
+
+These are median [min–max] seconds for 64 frames and 3,000 bins with
+Poisson std. Each cell gives the fastest tested layout and tile size
+for three prepared batches. Full splitting tested 8, 16 and 32 frames
+per tile. The other methods used 16.
+
+| Method | f64 CPU, 14 workers | CUDA, f64 upload | CUDA, native uint32 upload |
+| --- | ---: | ---: | ---: |
+| Counting | 0.786 [0.786–0.793] | 0.892 [0.870–0.915] | 0.764 [0.761–0.765] |
+| Pixel splitting | 0.889 [0.880–0.898] | 0.907 [0.903–0.931] | 0.792 [0.788–0.802] |
+| Full splitting | 0.846 [0.843–0.870] | 0.898 [0.896–0.904] | 0.788 [0.784–0.791] |
+
+On the eight-frame full-split configuration, native upload reduced the
+summed CUDA upload time from 49.35 to 22.82 ms per 64 frames and removed
+96.18 ms of host widening. The native path spent 781 ms reading and
+decoding. That phase overlaps with GPU work, and the end-to-end median
+was 12% lower than the f64-upload median and 7% lower than CPU. The
+fastest fresh-process full-split times were 2.10 s on CPU and 3.55 s on
+native CUDA, each from one run of the selected configuration.
+
+For the complete scan, independent reader processes integrate disjoint
+contiguous ranges and the parent assembles the patterns in order. The CPU
+uses 14 integration workers split across the processes. Each process has
+its own reader, and each CUDA process has its own context. The file was
+hashed and read once before these trials. Each result below includes
+process launch, HDF5 reads and decoding, backend setup, integration, and
+collecting all patterns into the caller through temporary files.
+
+| Readers | f64 CPU with CSR | Native uint32 CUDA |
+| ---: | ---: | ---: |
+| 1 | 37.65 s | 33.70 s |
+| 2 | 22.79 s | 24.20 s |
+| 4 | 15.73 s [15.72–15.74] | 15.93 s [14.99–16.87] |
+| 8 | 19.27 s [19.16–19.38] | 13.18 s [13.01–13.35] |
+
+The one- and two-reader entries are single observations. The four- and
+eight-reader entries are medians over two runs with ranges in brackets.
+All configurations used 16-frame tiles and full splitting. Four readers
+gave the lowest CPU median, and eight gave the lowest CUDA median and an
+overall time 16% lower than the best CPU median. All CPU reader counts
+produced identical results. Across all 2,500 frames and 3,000 bins per
+frame, CUDA differed by at most 1.08e-8 in intensity and 8.89e-14 in
+standard deviation in absolute terms.
+
+The Windows runner uses h5py, hdf5plugin, and NumPy. It opens the installed
+native HDF5 library in each benchmark process and registers the filter via
+the HDF5 plugin search path. Pass --library to select a compatible native
+HDF5 library explicitly.
+
+~~~sh
+python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --methods pyfai_full --tile-sizes 8 16 32 --repeats 3 \
+    --out benchmark-results/cuda/windows-hdf5-tuning.json
+python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --frames 0 --methods pyfai_full --tile-sizes 16 \
+    --backends cpu_csr cuda_native_block --readers 1 2 4 --repeats 0 \
+    --out benchmark-results/cuda/windows-hdf5-full-scan.json
+python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --frames 0 --methods pyfai_full --tile-sizes 16 \
+    --backends cpu_csr cuda_native_block --readers 4 8 8 --repeats 0 \
+    --out benchmark-results/cuda/windows-hdf5-reader-sweep.json
+~~~
+
+### Proposed automatic selection
+
+Use the requested integration method and precision as requirements.
+Choose among available CPU layouts and CUDA paths that satisfy them.
+Benchmark file inputs from the start of reading and decoding, with
+separate results for a fresh process and an already prepared plan.
+Keep the result local to the machine and workload. The key should
+include the hardware, dtype, image shape, bin count, uncertainty
+setting, method, input format, and whether a plan is already available.
+Include a tested batch-size range before applying a result to other
+batch lengths.
+
+The prototype recommender ranks paths from a local benchmark record
+and reports the selected backend, layout and reader count when measured, median and
+spread. It prefers CPU when the fastest CUDA range overlaps the best
+CPU range. A production automatic backend could expose the recommendation
+and let the caller override it. It should use CPU when CUDA is unavailable
+or the requested method or precision has no tested CUDA path. An explicit
+CUDA request should report an unavailable backend or unsupported mode.
+
+~~~sh
+python -B docs/benchmarks/2026-11-18-cuda/recommend.py \
+    benchmark-results/cuda/windows-hdf5-tuning.json --method pyfai_full
+~~~
+
 ### Pixel splitting by batch size
 
 These are median ms/frame with Poisson std. Each CUDA cell gives the

@@ -2,6 +2,48 @@ use super::*;
 use crate::{geometry::Geometry, mask::Mask, poni::Poni};
 
 #[test]
+fn native_integer_upload_matches_f64_exactly() -> Result<()> {
+    let Some(cuda) = Cuda::open()? else {
+        assert!(std::env::var_os("DIOPTRIN_REQUIRE_CUDA").is_none());
+        return Ok(());
+    };
+    let shape = (3, 4);
+    let mut poni = Poni::new();
+    poni.pixel1 = 7.5e-5;
+    poni.pixel2 = 7.5e-5;
+    poni.distance = 0.1;
+    let cpu = Integrator::new(Geometry::new(shape.0, shape.1, poni))
+        .with_method(IntegrationMethod::PyfaiFull);
+    let plan = cuda.prepare_f64(&cpu, shape, 23)?;
+    let u32_data = [0, 1, 16_777_217, u32::MAX, 19, 7, 0, 0, 4, 5, 6, 30];
+    let i32_data = [-1, 1, -16_777_217, i32::MAX, i32::MIN, 7, 0, 0, 4, 5, 6, 30];
+    for layout in Layout::ALL {
+        let mut wide = plan.batch(1, true)?;
+        let mut unsigned = plan.batch_with_input(1, true, Arc::clone(&cuda.stream))?;
+        let mut signed = plan.batch_with_input(1, true, Arc::clone(&cuda.stream))?;
+        unsigned.upload(0, u32_data.as_slice())?;
+        signed.upload(0, i32_data.as_slice())?;
+        unsigned.run(&plan.kernel_u32(layout, true)?)?;
+        signed.run(&plan.kernel_i32(layout, true)?)?;
+        let mut actual = vec![0.; 46];
+        let mut expected = vec![0.; 46];
+        let kernel = plan.kernel(layout, true)?;
+        for (pixels, integer_batch) in [
+            (u32_data.map(f64::from), &unsigned.output),
+            (i32_data.map(f64::from), &signed.output),
+        ] {
+            wide.upload(0, pixels.as_slice())?;
+            wide.run(&kernel)?;
+            wide.download(&mut expected)?;
+            cuda.stream.memcpy_dtoh(integer_batch, &mut actual)?;
+            cuda.stream.synchronize()?;
+            assert_eq!(actual, expected);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
     let Some(cuda) = Cuda::open()? else {
         assert!(

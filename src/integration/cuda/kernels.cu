@@ -58,9 +58,9 @@ template<> struct Sum<2> {
     __device__ double result() const { return value; }
 };
 
-template<typename Storage, int Mode, bool Variance, int BinsPerBlock>
+template<typename Weight, typename Pixel, int Mode, bool Variance, int BinsPerBlock>
 __device__ void gather(const unsigned *rows, const unsigned *columns,
-                       const Storage *weights, const double *norm, const Storage *frames,
+                       const Weight *weights, const double *norm, const Pixel *frames,
                        double *output, unsigned pixels, unsigned bins, unsigned weighted) {
     using Acc = Sum<Mode>;
     using Scalar = typename Acc::Scalar;
@@ -71,7 +71,7 @@ __device__ void gather(const unsigned *rows, const unsigned *columns,
     unsigned thread = threadIdx.x % ThreadsPerBin;
     unsigned bin = (blockIdx.x % groups) * BinsPerBlock + threadIdx.x / ThreadsPerBin;
     if (bin >= bins) return;  // Entire warps exit together.
-    const Storage *image = frames + (unsigned long long)frame * pixels;
+    const Pixel *image = frames + (unsigned long long)frame * pixels;
     double *result = output + ((unsigned long long)frame * bins + bin) * (Variance ? 2 : 1);
     Acc signal{}, variance{};
     for (unsigned k = rows[bin] + thread; k < rows[bin + 1]; k += ThreadsPerBin) {
@@ -108,14 +108,14 @@ __device__ void gather(const unsigned *rows, const unsigned *columns,
     }
 }
 
-#define STORED_KERNEL(Name, Storage, Mode, Variance, Bins) \
+#define STORED_KERNEL(Name, Weight, Pixel, Mode, Variance, Bins) \
 extern "C" __global__ void Name(const unsigned *rows, const unsigned *columns, \
-                                const Storage *weights, const double *norm, const Storage *frames, \
+                                const Weight *weights, const double *norm, const Pixel *frames, \
                                 double *output, unsigned pixels, unsigned bins, unsigned weighted) { \
-    gather<Storage, Mode, Variance, Bins>(rows, columns, weights, norm, frames, output, pixels, bins, weighted); \
+    gather<Weight, Pixel, Mode, Variance, Bins>(rows, columns, weights, norm, frames, output, pixels, bins, weighted); \
 }
 
-#define KERNEL(Name, Mode, Variance, Bins) STORED_KERNEL(Name, float, Mode, Variance, Bins)
+#define KERNEL(Name, Mode, Variance, Bins) STORED_KERNEL(Name, float, float, Mode, Variance, Bins)
 KERNEL(plain_block_i, 0, false, 1)
 KERNEL(plain_block_iv, 0, true, 1)
 KERNEL(compensated_block_i, 1, false, 1)
@@ -128,10 +128,15 @@ KERNEL(compensated_warp_i, 1, false, 4)
 KERNEL(compensated_warp_iv, 1, true, 4)
 KERNEL(double_warp_i, 2, false, 4)
 KERNEL(double_warp_iv, 2, true, 4)
-STORED_KERNEL(full_f64_block_i, double, 2, false, 1)
-STORED_KERNEL(full_f64_block_iv, double, 2, true, 1)
-STORED_KERNEL(full_f64_warp_i, double, 2, false, 4)
-STORED_KERNEL(full_f64_warp_iv, double, 2, true, 4)
+#define F64_KERNELS(Prefix, Pixel) \
+STORED_KERNEL(Prefix##_block_i, double, Pixel, 2, false, 1) \
+STORED_KERNEL(Prefix##_block_iv, double, Pixel, 2, true, 1) \
+STORED_KERNEL(Prefix##_warp_i, double, Pixel, 2, false, 4) \
+STORED_KERNEL(Prefix##_warp_iv, double, Pixel, 2, true, 4)
+
+F64_KERNELS(full_f64, double)
+F64_KERNELS(u32_f64, unsigned)
+F64_KERNELS(i32_f64, int)
 
 extern "C" __global__ void cast_f64_input(const double *src, float *dst,
                                            unsigned long long len) {

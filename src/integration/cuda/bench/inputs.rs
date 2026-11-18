@@ -1,24 +1,5 @@
 use super::float32::Float32;
 use super::*;
-use crate::frame::Pixel;
-
-fn integrate<P: Pixel>(
-    cpu: &Integrator,
-    shape: (usize, usize),
-    pixels: &[P],
-    errors: bool,
-) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let view = cpu.for_shape(shape.0, shape.1);
-    let norm = view.normalization();
-    let lut = view.ensure_lut1d(cpu.one_d_table_key(BINS as usize).unwrap());
-    let mask = cpu.mask().map(|mask| mask.data.as_slice());
-    match (cpu.fast_math(), errors) {
-        (true, true) => lut.integrate_pixels::<true, true, P>(pixels, mask, &norm),
-        (true, false) => lut.integrate_pixels::<true, false, P>(pixels, mask, &norm),
-        (false, true) => lut.integrate_pixels::<false, true, P>(pixels, mask, &norm),
-        (false, false) => lut.integrate_pixels::<false, false, P>(pixels, mask, &norm),
-    }
-}
 
 fn batch<P: Pixel>(
     cpu: &Integrator,
@@ -29,7 +10,7 @@ fn batch<P: Pixel>(
 ) {
     pool.install(|| {
         data.par_chunks_exact(shape.0 * shape.1).for_each(|frame| {
-            black_box(integrate(cpu, shape, frame, errors));
+            black_box(integrate_pixels(cpu, shape, frame, errors));
         });
     });
 }
@@ -89,7 +70,7 @@ fn cpu_inputs() -> Result<()> {
                     for errors in [false, true] {
                         let (height, width) = case.shape;
                         let (reference, rounded, all_f32) = pools[0].install(|| {
-                            let reference = integrate(cpu, case.shape, &case.pixels, errors);
+                            let reference = integrate_pixels(cpu, case.shape, &case.pixels, errors);
                             let public = if errors {
                                 cpu.integrate1d_with_errors_from_slice(
                                     &case.pixels,
@@ -109,7 +90,7 @@ fn cpu_inputs() -> Result<()> {
                             assert_eq!(reference, public);
                             (
                                 reference,
-                                integrate(cpu, case.shape, &input32, errors),
+                                integrate_pixels(cpu, case.shape, &input32, errors),
                                 plan32.integrate(&input32, errors),
                             )
                         });

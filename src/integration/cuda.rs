@@ -232,20 +232,20 @@ struct Plan<'a, T = f32> {
     upload_ms: f64,
 }
 
-struct Batch<'a, T = f32> {
+struct Batch<'a, T = f32, I = T> {
     plan: &'a Plan<'a, T>,
     stream: Arc<CudaStream>,
-    input: CudaSlice<T>,
+    input: CudaSlice<I>,
     output: CudaSlice<f64>,
     frames: u32,
     errors: bool,
 }
 
-struct Kernel<T = f32> {
+struct Kernel<T = f32, I = T> {
     function: CudaFunction,
     layout: Layout,
     errors: bool,
-    storage: PhantomData<T>,
+    storage: PhantomData<(T, I)>,
 }
 
 impl<'a, T: DeviceRepr + ValidAsZeroBits> Plan<'a, T> {
@@ -259,6 +259,15 @@ impl<'a, T: DeviceRepr + ValidAsZeroBits> Plan<'a, T> {
         errors: bool,
         stream: Arc<CudaStream>,
     ) -> Result<Batch<'a, T>> {
+        self.batch_with_input(frames, errors, stream)
+    }
+
+    fn batch_with_input<I: DeviceRepr + ValidAsZeroBits>(
+        &'a self,
+        frames: u32,
+        errors: bool,
+        stream: Arc<CudaStream>,
+    ) -> Result<Batch<'a, T, I>> {
         if frames == 0 || frames > i32::MAX as u32 / self.bins {
             return Err("CUDA batch exceeds the grid limit or is empty".into());
         }
@@ -268,7 +277,7 @@ impl<'a, T: DeviceRepr + ValidAsZeroBits> Plan<'a, T> {
                 .filter(|&len| len <= isize::MAX as usize / element_bytes)
                 .ok_or("CUDA batch allocation exceeds the addressable range")
         };
-        let input_len = elements(self.pixels as usize, size_of::<T>())?;
+        let input_len = elements(self.pixels as usize, size_of::<I>())?;
         let output_len = elements(
             self.bins as usize * (1 + usize::from(errors)),
             size_of::<f64>(),
@@ -283,7 +292,7 @@ impl<'a, T: DeviceRepr + ValidAsZeroBits> Plan<'a, T> {
         })
     }
 
-    fn load_kernel(&self, name: &str, layout: Layout, errors: bool) -> Result<Kernel<T>> {
+    fn load_kernel<I>(&self, name: &str, layout: Layout, errors: bool) -> Result<Kernel<T, I>> {
         let suffix = if errors { "iv" } else { "i" };
         Ok(Kernel {
             function: self
@@ -307,10 +316,18 @@ impl Plan<'_, f64> {
     fn kernel(&self, layout: Layout, errors: bool) -> Result<Kernel<f64>> {
         self.load_kernel("full_f64", layout, errors)
     }
+
+    fn kernel_u32(&self, layout: Layout, errors: bool) -> Result<Kernel<f64, u32>> {
+        self.load_kernel("u32_f64", layout, errors)
+    }
+
+    fn kernel_i32(&self, layout: Layout, errors: bool) -> Result<Kernel<f64, i32>> {
+        self.load_kernel("i32_f64", layout, errors)
+    }
 }
 
-impl<T: DeviceRepr> Batch<'_, T> {
-    fn upload(&mut self, offset: usize, frames: &(impl HostSlice<T> + ?Sized)) -> Result<()> {
+impl<T: DeviceRepr, I: DeviceRepr> Batch<'_, T, I> {
+    fn upload(&mut self, offset: usize, frames: &(impl HostSlice<I> + ?Sized)) -> Result<()> {
         let pixels = self.plan.pixels as usize;
         let end = offset
             .checked_add(frames.len())
@@ -359,12 +376,12 @@ impl Batch<'_> {
     }
 }
 
-impl<T: DeviceRepr> Batch<'_, T> {
-    fn run(&mut self, kernel: &Kernel<T>) -> Result<()> {
+impl<T: DeviceRepr, I: DeviceRepr> Batch<'_, T, I> {
+    fn run(&mut self, kernel: &Kernel<T, I>) -> Result<()> {
         self.run_frames(self.frames, kernel)
     }
 
-    fn run_frames(&mut self, frames: u32, kernel: &Kernel<T>) -> Result<()> {
+    fn run_frames(&mut self, frames: u32, kernel: &Kernel<T, I>) -> Result<()> {
         if frames == 0 || frames > self.frames {
             return Err("CUDA launch frame count exceeds the allocated batch or is empty".into());
         }
