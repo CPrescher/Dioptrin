@@ -20,6 +20,7 @@ use std::{
     process::Command,
 };
 
+mod headroom;
 mod startup;
 
 const BINS: u32 = 3_000;
@@ -412,6 +413,52 @@ fn log(out: &mut impl Write, record: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+fn cpu_batch(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    data: &[f64],
+    count: usize,
+    errors: bool,
+    pool: &ThreadPool,
+) {
+    let pixels = shape.0 * shape.1;
+    let host_frames = data.len() / pixels;
+    pool.install(|| {
+        for offset in (0..count).step_by(host_frames) {
+            let len = host_frames.min(count - offset) * pixels;
+            data[..len].par_chunks_exact(pixels).for_each(|frame| {
+                if errors {
+                    black_box(integrator.integrate1d_with_errors_from_slice(
+                        frame,
+                        shape.0,
+                        shape.1,
+                        BINS as usize,
+                    ));
+                } else {
+                    black_box(integrator.integrate1d_from_slice(
+                        frame,
+                        shape.0,
+                        shape.1,
+                        BINS as usize,
+                    ));
+                }
+            });
+        }
+    });
+}
+
+fn thread_counts(default: &str) -> Result<Vec<usize>> {
+    let counts = env::var("DIOPTRIN_CUDA_CPU_THREADS").unwrap_or_else(|_| default.into());
+    let counts = counts
+        .split(',')
+        .map(str::parse::<usize>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if counts.contains(&0) {
+        return Err("CPU thread count must be positive".into());
+    }
+    Ok(counts)
+}
+
 #[test]
 #[ignore = "hardware benchmark; run docs/benchmarks/2026-11-18-cuda/run.py"]
 fn benchmark_cuda() -> Result<()> {
@@ -430,11 +477,7 @@ fn benchmark_cuda() -> Result<()> {
     let layout_names = env::var("DIOPTRIN_CUDA_LAYOUTS").unwrap_or_else(|_| "block,warp".into());
     let method_names = env::var("DIOPTRIN_CUDA_METHODS")
         .unwrap_or_else(|_| "counting,pixel_split,pyfai_full".into());
-    let cpu_threads = env::var("DIOPTRIN_CUDA_CPU_THREADS").unwrap_or_else(|_| "1,4,8,16".into());
-    let cpu_threads = cpu_threads
-        .split(',')
-        .map(str::parse::<usize>)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let cpu_threads = thread_counts("1,4,8,16")?;
     let layouts: Vec<_> = Layout::ALL
         .into_iter()
         .filter(|layout| layout_names.split(',').any(|name| name == layout.name()))
@@ -442,10 +485,11 @@ fn benchmark_cuda() -> Result<()> {
     if layouts.is_empty() {
         return Err("select block, warp or both CUDA layouts".into());
     }
-    let pools: Vec<_> = [1, 4, 8, 16]
-        .into_iter()
-        .map(|n| ThreadPoolBuilder::new().num_threads(n).build())
+    let pools: Vec<_> = cpu_threads
+        .iter()
+        .map(|&n| ThreadPoolBuilder::new().num_threads(n).build())
         .collect::<std::result::Result<_, _>>()?;
+    let casting_pool = ThreadPoolBuilder::new().num_threads(8).build()?;
     let mut nvrtc_major = 0;
     let mut nvrtc_minor = 0;
     unsafe { cudarc::nvrtc::sys::nvrtcVersion(&mut nvrtc_major, &mut nvrtc_minor) };
@@ -538,7 +582,7 @@ fn benchmark_cuda() -> Result<()> {
                     let workload = Workload {
                         data: &data,
                         repeats,
-                        casting_pool: &pools[2],
+                        casting_pool: &casting_pool,
                     };
                     let mut batch = plan.batch(u32::try_from(count)?, errors)?;
                     let samples_count = BINS as usize * count * stride;
@@ -626,35 +670,11 @@ fn benchmark_cuda() -> Result<()> {
                     }
                     drop(batch);
                     for (cpu, layout) in cpu.iter().zip(["fast_csc", "fast_csr", "strict_csr"]) {
-                        for (pool, threads) in pools.iter().zip([1, 4, 8, 16]) {
-                            if !cpu_threads.contains(&threads) {
-                                continue;
-                            }
+                        for (pool, threads) in pools.iter().zip(&cpu_threads) {
                             let mut samples = Vec::with_capacity(repeats);
                             for i in 0..repeats + 2 {
                                 let start = Instant::now();
-                                pool.install(|| {
-                                    for offset in (0..count).step_by(host_frames) {
-                                        let len = host_frames.min(count - offset) * pixels;
-                                        data[..len].par_chunks_exact(pixels).for_each(|frame| {
-                                            if errors {
-                                                black_box(cpu.integrate1d_with_errors_from_slice(
-                                                    frame,
-                                                    case.shape.0,
-                                                    case.shape.1,
-                                                    BINS as usize,
-                                                ));
-                                            } else {
-                                                black_box(cpu.integrate1d_from_slice(
-                                                    frame,
-                                                    case.shape.0,
-                                                    case.shape.1,
-                                                    BINS as usize,
-                                                ));
-                                            }
-                                        });
-                                    }
-                                });
+                                cpu_batch(cpu, case.shape, &data, count, errors, pool);
                                 if i >= 2 {
                                     samples.push(elapsed_ms(start));
                                 }

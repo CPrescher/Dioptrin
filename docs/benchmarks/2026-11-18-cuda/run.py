@@ -11,6 +11,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
 TEST = "integration::cuda::bench::benchmark_cuda"
+CPU_TEST = "integration::cuda::bench::headroom::cpu_headroom"
 GPU_FIELDS = (
     "name,driver_version,memory.total,memory.free,temperature.gpu,"
     "clocks.sm,clocks.mem,utilization.gpu,pstate"
@@ -72,15 +73,18 @@ def main():
     parser.add_argument("--nvrtc", type=Path, help="Directory with the NVRTC shared libraries")
     parser.add_argument("--cases", default="pilatus")
     parser.add_argument("--eiger-dir", type=Path, default=ROOT / "test_data")
-    parser.add_argument("--batches", default="1,8,64,256,max")
+    parser.add_argument("--cpu-only", action="store_true", help="Compare CPU worker counts")
+    parser.add_argument("--batches")
     parser.add_argument("--methods", default="counting,pixel_split,pyfai_full")
     parser.add_argument("--layouts", choices=("block,warp", "block", "warp"), default="block,warp")
-    parser.add_argument("--cpu-threads", default="1,4,8,16")
+    parser.add_argument("--cpu-threads")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--host-bytes", type=int, default=15_000_000_000)
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--rustc", default="rustc")
     args = parser.parse_args()
+    batches = args.batches or ("1,64" if args.cpu_only else "1,8,64,256,max")
+    cpu_threads = args.cpu_threads or ("14,16" if args.cpu_only else "1,4,8,16")
     output = args.out.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     raw = output.with_suffix(".jsonl")
@@ -93,10 +97,10 @@ def main():
     env.update(
         DIOPTRIN_CUDA_OUT=str(raw),
         DIOPTRIN_CUDA_CASES=args.cases,
-        DIOPTRIN_CUDA_BATCHES=args.batches,
+        DIOPTRIN_CUDA_BATCHES=batches,
         DIOPTRIN_CUDA_METHODS=args.methods,
         DIOPTRIN_CUDA_LAYOUTS=args.layouts,
-        DIOPTRIN_CUDA_CPU_THREADS=args.cpu_threads,
+        DIOPTRIN_CUDA_CPU_THREADS=cpu_threads,
         DIOPTRIN_CUDA_EIGER_DIR=str(args.eiger_dir.resolve()),
         DIOPTRIN_CUDA_REPEATS=str(args.repeats),
         DIOPTRIN_CUDA_HOST_BYTES=str(host_limit),
@@ -115,10 +119,11 @@ def main():
         "logical_cores": os.cpu_count(),
         "host_bytes_available_before": host_available,
         "cases": args.cases,
-        "batches": args.batches,
+        "batches": batches,
         "methods": args.methods,
         "layouts": args.layouts,
-        "cpu_threads": args.cpu_threads,
+        "cpu_threads": cpu_threads,
+        "cpu_only": args.cpu_only,
         "gpu_before": gpu_snapshot(),
     }
     sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *(ROOT / "src/integration/cuda").rglob("*")]
@@ -127,7 +132,8 @@ def main():
         for path in sources
         if path.is_file()
     }
-    run = [args.cargo, "test", "--release", "--features", "cuda", "--lib", TEST,
+    run = [args.cargo, "test", "--release", "--features", "cuda", "--lib",
+           CPU_TEST if args.cpu_only else TEST,
            "--", "--exact", "--ignored", "--nocapture"]
     completed = subprocess.run(run, cwd=ROOT, env=env)
     metadata["exit_status"] = completed.returncode
