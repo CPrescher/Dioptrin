@@ -1,5 +1,8 @@
 # Native CUDA fixed-mask 1D integration
 
+The follow-up [pyFAI CPU and OpenCL comparison](PYFAI.md) uses
+the same workstation and real fixtures.
+
 The prototype gathers each bin from Dioptrin’s prepared CSR table. The CPU
 applies the fixed mask, builds the table and computes its f64 denominators.
 CUDA uploads that table once and uses the same kernels for `counting`,
