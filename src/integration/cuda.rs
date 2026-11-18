@@ -219,6 +219,12 @@ struct Batch<'a> {
     errors: bool,
 }
 
+struct Kernel {
+    function: CudaFunction,
+    layout: Layout,
+    errors: bool,
+}
+
 impl<'a> Plan<'a> {
     fn batch(&'a self, frames: u32, errors: bool) -> Result<Batch<'a>> {
         if frames == 0 || frames > i32::MAX as u32 / self.bins {
@@ -235,13 +241,17 @@ impl<'a> Plan<'a> {
         })
     }
 
-    fn function(&self, mode: Accumulation, layout: Layout, errors: bool) -> Result<CudaFunction> {
+    fn kernel(&self, mode: Accumulation, layout: Layout, errors: bool) -> Result<Kernel> {
         let suffix = if errors { "iv" } else { "i" };
-        Ok(self.cuda.module.load_function(&format!(
-            "{}_{}_{suffix}",
-            mode.name(),
-            layout.name()
-        ))?)
+        Ok(Kernel {
+            function: self.cuda.module.load_function(&format!(
+                "{}_{}_{suffix}",
+                mode.name(),
+                layout.name()
+            ))?,
+            layout,
+            errors,
+        })
     }
 }
 
@@ -253,7 +263,10 @@ impl Batch<'_> {
         Ok(self.plan.cuda.stream.memcpy_htod(frames, &mut self.input)?)
     }
 
-    fn run(&mut self, function: &CudaFunction, layout: Layout) -> Result<()> {
+    fn run(&mut self, kernel: &Kernel) -> Result<()> {
+        if self.errors != kernel.errors {
+            return Err("CUDA kernel and output strides differ".into());
+        }
         let plan = self.plan;
         let output_per_frame = plan.bins as usize * (1 + usize::from(self.errors));
         let pixels = plan.pixels as usize;
@@ -268,14 +281,14 @@ impl Batch<'_> {
                 .slice_mut(first as usize * output_per_frame..end as usize * output_per_frame);
             let config = LaunchConfig {
                 grid_dim: (
-                    plan.bins.div_ceil(layout.bins_per_block()) * (end - first),
+                    plan.bins.div_ceil(kernel.layout.bins_per_block()) * (end - first),
                     1,
                     1,
                 ),
                 block_dim: (128, 1, 1),
                 shared_mem_bytes: 0,
             };
-            let mut launch = plan.cuda.stream.launch_builder(function);
+            let mut launch = plan.cuda.stream.launch_builder(&kernel.function);
             launch
                 .arg(&plan.rows)
                 .arg(&plan.columns)
@@ -287,7 +300,7 @@ impl Batch<'_> {
                 .arg(&plan.bins)
                 .arg(&plan.weighted);
             // SAFETY: the views span exactly the launched frames and the
-            // caller selected the matching layout and variance specialization.
+            // kernel carries its layout and the matching variance specialization.
             unsafe { launch.launch(config)? };
         }
         Ok(())

@@ -1,12 +1,12 @@
 """Build and measure the native Dioptrin CUDA prototype. Requires Python 3."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import subprocess
-import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -40,22 +40,40 @@ def gpu_snapshot():
     return command("nvidia-smi", f"--query-gpu={GPU_FIELDS}", "--format=csv")
 
 
-def prep_eiger(path):
-    # The benchmark TIFF and mask must use the same row orientation. The
-    # existing Rust TIFF reader flips rows, so apply the same flip to the mask.
-    import fabio
-    import numpy as np
+def available_host_bytes():
+    if os.name == "nt":
+        import ctypes
 
-    image = fabio.open(str(ROOT / "test_data/eiger_0000.mask")).data
-    path.write_bytes(np.ascontiguousarray(image[::-1] != 0, dtype=np.uint8).tobytes())
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_uint32),
+                ("load", ctypes.c_uint32),
+                ("total", ctypes.c_uint64),
+                ("available", ctypes.c_uint64),
+                ("other", ctypes.c_uint64 * 5),
+            ]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            raise OSError("GlobalMemoryStatusEx failed")
+        return status.available
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        for line in meminfo.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    raise OSError("Could not query available host memory")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--nvrtc", type=Path, help="Directory with the NVRTC shared libraries")
-    parser.add_argument("--cases", default="256,pilatus,1024,2048")
+    parser.add_argument("--cases", default="pilatus")
+    parser.add_argument("--eiger-dir", type=Path, default=ROOT / "test_data")
     parser.add_argument("--batches", default="1,8,64,256,max")
+    parser.add_argument("--layouts", choices=("block,warp", "block", "warp"), default="block,warp")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--host-bytes", type=int, default=15_000_000_000)
     parser.add_argument("--cargo", default="cargo")
@@ -64,13 +82,19 @@ def main():
     output = args.out.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     raw = output.with_suffix(".jsonl")
+    host_available = available_host_bytes()
+    host_limit = min(args.host_bytes, 15_000_000_000, host_available - 2 * 1024**3)
+    if host_limit <= 0:
+        parser.error("need at least 2 GiB of spare host memory")
     env = os.environ.copy()
     env.update(
         DIOPTRIN_CUDA_OUT=str(raw),
         DIOPTRIN_CUDA_CASES=args.cases,
         DIOPTRIN_CUDA_BATCHES=args.batches,
+        DIOPTRIN_CUDA_LAYOUTS=args.layouts,
+        DIOPTRIN_CUDA_EIGER_DIR=str(args.eiger_dir.resolve()),
         DIOPTRIN_CUDA_REPEATS=str(args.repeats),
-        DIOPTRIN_CUDA_HOST_BYTES=str(args.host_bytes),
+        DIOPTRIN_CUDA_HOST_BYTES=str(host_limit),
     )
     if args.nvrtc:
         search = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
@@ -84,23 +108,28 @@ def main():
         "platform": platform.platform(),
         "cpu": cpu_model(),
         "logical_cores": os.cpu_count(),
+        "host_bytes_available_before": host_available,
         "cases": args.cases,
         "batches": args.batches,
+        "layouts": args.layouts,
         "gpu_before": gpu_snapshot(),
     }
-    with tempfile.TemporaryDirectory(prefix="dioptrin-cuda-") as temp:
-        if "eiger" in args.cases.split(","):
-            mask = Path(temp) / "eiger-mask.u8"
-            prep_eiger(mask)
-            env["DIOPTRIN_CUDA_EIGER_MASK_U8"] = str(mask)
-        run = [args.cargo, "test", "--release", "--features", "cuda", "--lib", TEST,
-               "--", "--exact", "--ignored", "--nocapture"]
-        subprocess.run(run, cwd=ROOT, env=env, check=True)
+    sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *ROOT.glob("src/integration/cuda/*")]
+    metadata["source_sha256"] = {
+        str(path.resolve().relative_to(ROOT)).replace(os.sep, "/"): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sources
+        if path.is_file()
+    }
+    run = [args.cargo, "test", "--release", "--features", "cuda", "--lib", TEST,
+           "--", "--exact", "--ignored", "--nocapture"]
+    completed = subprocess.run(run, cwd=ROOT, env=env)
+    metadata["exit_status"] = completed.returncode
     metadata["gpu_after"] = gpu_snapshot()
     with raw.open(encoding="utf-8") as stream:
         records = [json.loads(line) for line in stream]
     output.write_text(json.dumps({"metadata": metadata, "records": records}, indent=2) + "\n",
                       encoding="utf-8")
+    completed.check_returncode()
 
 
 if __name__ == "__main__":

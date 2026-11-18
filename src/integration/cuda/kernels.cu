@@ -7,6 +7,8 @@ template<> struct Sum<0> {
     float value;
     __device__ void add(float x) { value += x; }
     __device__ void combine(Sum x) { add(x.value); }
+    __device__ void product(float w, float x) { value = __fmaf_rn(w, x, value); }
+    __device__ void squared_product(float w, float x) { product(w * w, x); }
     __device__ Sum shuffle(int offset) const {
         return {__shfl_down_sync(0xffffffff, value, offset)};
     }
@@ -17,18 +19,25 @@ template<> struct Sum<1> {
     using Scalar = float;
     float hi;
     float lo;
-    __device__ void add(float x) {
+    __device__ void combine(Sum x) {
         // TwoSum with a persistent low component, also used for tree merges.
-        float total = hi + x;
+        float total = hi + x.hi;
         float part = total - hi;
-        float error = (hi - (total - part)) + (x - part);
-        float tail = lo + error;
+        float error = (hi - (total - part)) + (x.hi - part);
+        float tail = (error + lo) + x.lo;
         hi = total + tail;
         lo = tail - (hi - total);
     }
-    __device__ void combine(Sum x) {
-        add(x.hi);
-        add(x.lo);
+    __device__ static Sum exact_product(float a, float b) {
+        float hi = a * b;
+        return {hi, __fmaf_rn(a, b, -hi)};
+    }
+    __device__ void product(float w, float x) { combine(exact_product(w, x)); }
+    __device__ void squared_product(float w, float x) {
+        Sum square = exact_product(w, w);
+        Sum term = exact_product(square.hi, x);
+        term.lo += square.lo * x;
+        combine(term);
     }
     __device__ Sum shuffle(int offset) const {
         return {__shfl_down_sync(0xffffffff, hi, offset),
@@ -42,6 +51,8 @@ template<> struct Sum<2> {
     double value;
     __device__ void add(double x) { value += x; }
     __device__ void combine(Sum x) { add(x.value); }
+    __device__ void product(double w, double x) { add(w * x); }
+    __device__ void squared_product(double w, double x) { add(w * w * x); }
     __device__ Sum shuffle(int offset) const {
         return {__shfl_down_sync(0xffffffff, value, offset)};
     }
@@ -67,8 +78,8 @@ __device__ void gather(const unsigned *rows, const unsigned *columns,
     for (unsigned k = rows[bin] + thread; k < rows[bin + 1]; k += ThreadsPerBin) {
         Scalar s = image[columns[k]];
         Scalar w = weighted ? weights[k] : 1;
-        signal.add(w * s);
-        if constexpr (Variance) variance.add(w * w * (s > 0 ? s : 0));
+        signal.product(w, s);
+        if constexpr (Variance) variance.squared_product(w, s > 0 ? s : 0);
     }
     for (int offset = 16; offset > 0; offset /= 2) {
         signal.combine(signal.shuffle(offset));
@@ -93,7 +104,7 @@ __device__ void gather(const unsigned *rows, const unsigned *columns,
         double denominator = norm[bin];
         result[0] = denominator == 0 ? 0 : signal.result() / denominator;
         if constexpr (Variance) {
-            result[1] = denominator == 0 ? 0 : sqrt(variance.result()) / denominator;
+            result[1] = denominator == 0 ? 0 : sqrt(fmax(variance.result(), 0.0)) / fabs(denominator);
         }
     }
 }

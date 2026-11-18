@@ -1,5 +1,11 @@
 use super::*;
-use crate::{frame::Frame, geometry::Geometry, integration::SparseLayout, mask::Mask, poni::Poni};
+use crate::{
+    frame::Frame,
+    geometry::Geometry,
+    integration::{RadialUnit, SparseLayout},
+    mask::Mask,
+    poni::Poni,
+};
 use cudarc::driver::{DeviceRepr, PinnedHostSlice, ValidAsZeroBits, sys::CUevent_flags};
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::Serialize;
@@ -10,7 +16,7 @@ use std::{
     fs::{self, File},
     hint::black_box,
     io::{BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 const BINS: u32 = 3_000;
@@ -38,17 +44,32 @@ struct Workload<'a> {
     casting_pool: &'a ThreadPool,
 }
 
+trait StagingInput: HostSlice<f32> {
+    fn pixels_mut(&mut self) -> Result<&mut [f32]>;
+}
+
+impl StagingInput for Vec<f32> {
+    fn pixels_mut(&mut self) -> Result<&mut [f32]> {
+        Ok(self)
+    }
+}
+
+impl StagingInput for PinnedHostSlice<f32> {
+    fn pixels_mut(&mut self) -> Result<&mut [f32]> {
+        Ok(self.as_mut_slice()?)
+    }
+}
+
 fn measure_gpu(
     batch: &mut Batch<'_>,
     layout: Layout,
     mode: Accumulation,
     workload: &Workload<'_>,
-    input: &mut impl HostSlice<f32>,
-    fill: impl Fn(&mut [f32], &[f64], &ThreadPool),
+    input: &mut impl StagingInput,
     output: &mut impl HostSlice<f64>,
 ) -> Result<Vec<Samples>> {
     let stream = &batch.plan.cuda.stream;
-    let function = batch.plan.function(mode, layout, batch.errors)?;
+    let kernel = batch.plan.kernel(mode, layout, batch.errors)?;
     let mut samples = Vec::with_capacity(workload.repeats);
     for iteration in 0..workload.repeats + 2 {
         let start = Instant::now();
@@ -57,7 +78,7 @@ fn measure_gpu(
         let upload_ms = elapsed_ms(start);
 
         let event_start = stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
-        batch.run(&function, layout)?;
+        batch.run(&kernel)?;
         let event_end = stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
         let device_kernel_ms = f64::from(event_start.elapsed_ms(&event_end)?);
 
@@ -67,23 +88,21 @@ fn measure_gpu(
         let download_ms = elapsed_ms(start);
 
         let start = Instant::now();
-        batch.run(&function, layout)?;
+        batch.run(&kernel)?;
         stream.synchronize()?;
         let resident_wall_ms = elapsed_ms(start);
 
         let start = Instant::now();
         batch.upload(input)?;
-        batch.run(&function, layout)?;
+        batch.run(&kernel)?;
         batch.download(output)?;
         stream.synchronize()?;
         let host_f32_ms = elapsed_ms(start);
 
         let start = Instant::now();
-        // The host buffer is initialized and the stream was synchronized.
-        let (destination, _) = unsafe { input.stream_synced_mut_slice(stream) };
-        fill(destination, workload.data, workload.casting_pool);
+        cast_pixels(input.pixels_mut()?, workload.data, workload.casting_pool);
         batch.upload(input)?;
-        batch.run(&function, layout)?;
+        batch.run(&kernel)?;
         batch.download(output)?;
         stream.synchronize()?;
         let host_f64_ms = elapsed_ms(start);
@@ -160,30 +179,67 @@ struct Case {
 impl Case {
     fn load(name: &str) -> Result<Self> {
         let (geometry, shape, pixels, mask, files) = match name {
-            "pilatus" | "eiger" => {
-                let (image, poni) = if name == "pilatus" {
-                    ("test_data/CeO2_Pilatus1M.tif", "test_data/v1.poni")
-                } else {
-                    ("test_data/eiger_0000.tiff", "test_data/eiger_0000.poni")
-                };
+            "pilatus" => {
+                let image = "test_data/CeO2_Pilatus1M.tif";
+                let poni = "test_data/v1.poni";
                 let frame = Frame::from_tiff(image.into())?;
                 let shape = (frame.dim1, frame.dim2);
                 let files = json!({image: sha256(image)?, poni: sha256(poni)?});
-                let (mask, files) = if name == "eiger" {
-                    let raw = env::var("DIOPTRIN_CUDA_EIGER_MASK_U8")?;
-                    let mask = fs::read(raw)?;
-                    let mut files = files;
-                    files["test_data/eiger_0000.mask"] =
-                        json!(sha256("test_data/eiger_0000.mask")?);
-                    (mask, files)
-                } else {
-                    (synthetic_mask(frame.data.len()), files)
-                };
+                let mask = frame
+                    .data
+                    .iter()
+                    .map(|x| u8::from(!x.is_finite() || *x < 0.0))
+                    .collect();
                 (
                     Geometry::new(shape.0, shape.1, Poni::load(poni)?),
                     shape,
                     frame.data,
                     mask,
+                    files,
+                )
+            }
+            "eiger" | "eiger-synthetic" => {
+                let dir = env::var_os("DIOPTRIN_CUDA_EIGER_DIR")
+                    .map_or_else(|| PathBuf::from("test_data"), PathBuf::from);
+                let calibration = "docs/benchmarks/2026-11-05-bslz4/calibration.poni";
+                let mask_path = dir.join("eiger_0000.mask");
+                let base_poni = dir.join("eiger_0000.poni");
+                let mut mask =
+                    Mask::from_tiff(mask_path.to_str().ok_or("invalid mask path")?.into())?;
+                let shape = (mask.dim1, mask.dim2);
+                let mut files = json!({
+                    "eiger_0000.poni": sha256(&base_poni)?,
+                    "eiger_0000.mask": sha256(&mask_path)?,
+                    calibration: sha256(calibration)?,
+                });
+                let pixels = if name == "eiger" {
+                    let image = dir.join("eiger_0000.tiff");
+                    let frame =
+                        Frame::from_tiff(image.to_str().ok_or("invalid TIFF path")?.into())?;
+                    if shape != (frame.dim1, frame.dim2) {
+                        return Err("Eiger TIFF and mask shapes differ".into());
+                    }
+                    for (&pixel, value) in frame.data.iter().zip(&mut mask.data) {
+                        if !pixel.is_finite() || pixel < 0.0 {
+                            *value = 1;
+                        }
+                    }
+                    files["eiger_0000.tiff"] = json!(sha256(image)?);
+                    frame.data
+                } else {
+                    synthetic_pixels(mask.data.len())
+                };
+                let mut poni = Poni::load(base_poni.to_str().ok_or("invalid PONI path")?)?;
+                // The original PONI has no pixel sizes. Fill them from the
+                // derived calibration used for the Metal benchmark.
+                let explicit = Poni::load(calibration)?;
+                poni.pixel1 = explicit.pixel1;
+                poni.pixel2 = explicit.pixel2;
+                (
+                    Geometry::new(shape.0, shape.1, poni),
+                    shape,
+                    pixels,
+                    mask.data,
                     files,
                 )
             }
@@ -198,20 +254,10 @@ impl Case {
                 poni.poni2 = 0.53 * side as f64 * poni.pixel2;
                 poni.rot1 = 0.02;
                 poni.rot2 = -0.015;
-                let mut seed = 0x1bbd_412b_9aa4_3809_u64;
-                let data = (0..count)
-                    .map(|i| {
-                        seed ^= seed << 13;
-                        seed ^= seed >> 7;
-                        seed ^= seed << 17;
-                        let s = (seed % 70_000) as f64 / 97.0 - 3.0;
-                        if i % 1_681 == 0 { s * 1_000.0 } else { s }
-                    })
-                    .collect();
                 (
                     Geometry::new(side, side, poni),
                     (side, side),
-                    data,
+                    synthetic_pixels(count),
                     synthetic_mask(count),
                     json!({}),
                 )
@@ -235,9 +281,23 @@ impl Case {
                 self.shape.0,
                 self.shape.1,
             )?)
-            .with_polarization_factor(0.95)
+            .with_radial_unit(RadialUnit::TthDeg)
+            .with_polarization_factor(0.965)
             .with_fast_math(false))
     }
+}
+
+fn synthetic_pixels(count: usize) -> Vec<f64> {
+    let mut seed = 0x1bbd_412b_9aa4_3809_u64;
+    (0..count)
+        .map(|i| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let s = (seed % 70_000) as f64 / 97.0 - 3.0;
+            if i % 1_681 == 0 { s * 1_000.0 } else { s }
+        })
+        .collect()
 }
 
 fn synthetic_mask(count: usize) -> Vec<u8> {
@@ -268,8 +328,16 @@ fn benchmark_cuda() -> Result<()> {
     }
     let host_limit: usize =
         env::var("DIOPTRIN_CUDA_HOST_BYTES").map_or(Ok(HOST_LIMIT), |v| v.parse())?;
-    let suite = env::var("DIOPTRIN_CUDA_CASES").unwrap_or_else(|_| "256,pilatus,1024,2048".into());
+    let suite = env::var("DIOPTRIN_CUDA_CASES").unwrap_or_else(|_| "pilatus".into());
     let requested = env::var("DIOPTRIN_CUDA_BATCHES").unwrap_or_else(|_| "1,8,64,256,max".into());
+    let layout_names = env::var("DIOPTRIN_CUDA_LAYOUTS").unwrap_or_else(|_| "block,warp".into());
+    let layouts: Vec<_> = Layout::ALL
+        .into_iter()
+        .filter(|layout| layout_names.split(',').any(|name| name == layout.name()))
+        .collect();
+    if layouts.is_empty() {
+        return Err("select block, warp or both CUDA layouts".into());
+    }
     let pools: Vec<_> = [1, 4, 8, 16]
         .into_iter()
         .map(|n| ThreadPoolBuilder::new().num_threads(n).build())
@@ -364,7 +432,7 @@ fn benchmark_cuda() -> Result<()> {
                         let mut input = vec![0.0; data.len()];
                         cast_pixels(&mut input, &data, &pools[2]);
                         let mut output = vec![0.0; samples_count];
-                        for layout in Layout::ALL {
+                        for &layout in &layouts {
                             for mode in Accumulation::ALL {
                                 let samples = measure_gpu(
                                     &mut batch,
@@ -372,7 +440,6 @@ fn benchmark_cuda() -> Result<()> {
                                     mode,
                                     &workload,
                                     &mut input,
-                                    cast_pixels,
                                     &mut output,
                                 )?;
                                 let mut row = record("gpu");
@@ -404,7 +471,7 @@ fn benchmark_cuda() -> Result<()> {
                     {
                         Ok((mut input, mut output)) => {
                             cast_pixels(input.as_mut_slice()?, &data, &pools[2]);
-                            for layout in Layout::ALL {
+                            for &layout in &layouts {
                                 for mode in Accumulation::ALL {
                                     let samples = measure_gpu(
                                         &mut batch,
@@ -412,7 +479,6 @@ fn benchmark_cuda() -> Result<()> {
                                         mode,
                                         &workload,
                                         &mut input,
-                                        cast_pixels,
                                         &mut output,
                                     )?;
                                     let mut row = record("gpu");

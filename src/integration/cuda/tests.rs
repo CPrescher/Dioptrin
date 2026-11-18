@@ -74,7 +74,7 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
                 let mut output = vec![0.0; 2 * bins as usize * stride];
                 for layout in Layout::ALL {
                     for mode in Accumulation::ALL {
-                        batch.run(&plan.function(mode, layout, errors)?, layout)?;
+                        batch.run(&plan.kernel(mode, layout, errors)?)?;
                         batch.download(&mut output)?;
                         cuda.stream.synchronize()?;
                         for (frame, (signal, sigma)) in
@@ -102,5 +102,22 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
             }
         }
     }
+    let shape = (2, 2);
+    let integrator = Integrator::new(Geometry::new(shape.0, shape.1, poni))
+        .with_method(IntegrationMethod::Counting)
+        .with_fast_math(false);
+    let plan = cuda.prepare(&integrator, shape, 1)?;
+    let mut batch = plan.batch(257, true)?;
+    let mut input = vec![1.0; 257 * 4];
+    input[256 * 4..].fill(7.0);
+    batch.upload(&input)?;
+    batch.run(&plan.kernel(Accumulation::Compensated, Layout::Warp, true)?)?;
+    let mut output = vec![0.0; 257 * 2];
+    batch.download(&mut output)?;
+    cuda.stream.synchronize()?;
+    let (_, intensity, sigma) = integrator.integrate1d_with_errors_from_slice(&[7.0; 4], 2, 2, 1);
+    assert!((output[512] - intensity[0]).abs() < 1e-12);
+    assert!((output[513] - sigma[0]).abs() < 1e-12);
+    assert!(output[512] > output[510]);
     Ok(())
 }
