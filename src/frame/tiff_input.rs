@@ -1,6 +1,9 @@
 //! Worker-owned decoding storage; the public f64 `Frame` API is unchanged.
 use super::Frame;
-use std::{fs::File, io::BufReader};
+use std::{
+    fs::File,
+    io::{BufReader, Read, Seek},
+};
 use tiff::decoder::{ChunkType, DecodingResult, Limits};
 use tiff::tags::Tag;
 
@@ -28,11 +31,19 @@ impl Default for TiffFrame {
 
 impl TiffFrame {
     pub fn reload(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.reload_from_reader(path, || Ok(BufReader::new(File::open(path)?)))
+    }
+
+    pub(crate) fn reload_from_reader<R: Read + Seek>(
+        &mut self,
+        path: &str,
+        reader: impl FnOnce() -> Result<R, Box<dyn std::error::Error>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Never expose partially decoded pixels after an error.
         self.dim1 = 0;
         self.dim2 = 0;
         self.fallback = None;
-        let mut decoder = super::open_tiff(BufReader::new(File::open(path)?))?;
+        let mut decoder = super::open_tiff(reader()?)?;
         // Colour and other multi-sample files fail here, before either path.
         super::require_single_channel(&mut decoder)?;
         let (width, height) = decoder.dimensions()?;

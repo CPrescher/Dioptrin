@@ -321,6 +321,94 @@ python docs/benchmarks/2026-11-18-cuda/run.py --gpu-full-f64 \
     --out benchmark-results/cuda/windows-gpu-full-f64.json
 ```
 
+### Eiger TIFF files to finished patterns
+
+The file benchmark opens and decodes each TIFF inside the interval and
+returns all 64 intensity and Poisson std patterns to host memory. The
+source is the matching Dropbox Eiger fixture. The script creates and
+hashes 64 separate, byte-identical TIFF files under `target/` before
+timing. Each batch reads 2.60 GB of TIFF data. The buffered run uses the
+normal Windows filesystem cache after verifying the files. The unbuffered
+run bypasses the Windows file-data cache, reads each TIFF into a reusable
+aligned buffer, then decodes it with the same TIFF reader. Windows and the
+drive can still cache file metadata and storage firmware can cache data.
+[Windows file buffering](https://learn.microsoft.com/windows/win32/fileio/file-buffering).
+
+The CPU uses 14 workers and the native signed 32-bit TIFF decoder used by
+the file batch path. It widens each pixel when doing the f64 arithmetic.
+CUDA uses the same decoder with eight worker threads per tile and widens
+directly into ordinary or pinned f64 upload buffers. Two eight-frame
+tiles can overlap loading and widening with work already queued on the
+GPU. The CUDA kernel keeps the same f64 pixels, weights and arithmetic
+as the resident-batch comparison above. Preparation of the pinned buffers
+and conversion into them both count in the first-batch timing. Conversion
+into the reused buffers also counts on each prepared batch.
+
+Each process runs the batch twice. The first measurement starts at process
+launch and includes reading the configuration and reference image used to
+fix the mask, preparing the lookup table, and initializing the backend.
+The prepared measurement reuses that setup and still reopens and decodes
+all 64 files. The script interleaves the backends across fresh processes
+and checks the returned intensity and std against each other outside the
+timed intervals.
+
+With the normal filesystem cache, the times below are median [min–max]
+seconds per 64-frame batch over five trials. The first batch includes
+process launch and backend setup.
+
+| Method | Backend | First batch | Prepared batch |
+| --- | --- | ---: | ---: |
+| Counting | CPU | 0.935 [0.911–0.940] | 0.335 [0.327–0.344] |
+| Counting | CUDA, ordinary | 2.403 [2.394–2.619] | 0.802 [0.784–0.866] |
+| Counting | CUDA, pinned | 2.259 [2.251–2.289] | 0.543 [0.539–0.545] |
+| Pixel splitting | CPU | 2.719 [2.643–2.751] | 0.566 [0.539–0.622] |
+| Pixel splitting | CUDA, ordinary | 3.897 [3.808–3.985] | 0.781 [0.762–0.794] |
+| Pixel splitting | CUDA, pinned | 3.782 [3.773–3.812] | 0.542 [0.541–0.556] |
+| Full splitting | CPU | 3.150 [3.080–3.192] | 0.523 [0.507–0.540] |
+| Full splitting | CUDA, ordinary | 4.212 [4.041–4.240] | 0.813 [0.803–0.817] |
+| Full splitting | CUDA, pinned | 4.060 [3.985–4.106] | 0.551 [0.548–0.566] |
+
+For prepared full splitting, the pinned CUDA path spent 0.532 s on the
+host loading and widening the tiles. CUDA events measured 0.175 s of
+upload and 0.035 s of kernel time across the tiles. Those phases overlap.
+With ordinary memory the loader took 0.495 s, the uploads 0.311 s, and the
+kernels 0.039 s. Including TIFF loading, the pinned CUDA full-split
+median was 5% higher than the CPU median. CPU counting was faster than
+either CUDA path. Prepared pixel splitting was close to a tie and the
+sample ranges overlapped.
+
+With unbuffered Windows reads, these are median [min–max] seconds per
+batch over three trials.
+
+| Method | Backend | First batch | Prepared batch |
+| --- | --- | ---: | ---: |
+| Counting | CPU | 1.020 [1.007–1.026] | 0.405 [0.362–0.444] |
+| Counting | CUDA, ordinary | 2.558 [2.548–2.942] | 0.964 [0.931–1.008] |
+| Counting | CUDA, pinned | 2.459 [2.417–2.493] | 0.762 [0.705–0.764] |
+| Pixel splitting | CPU | 2.832 [2.791–2.834] | 0.666 [0.646–0.668] |
+| Pixel splitting | CUDA, ordinary | 4.038 [3.975–4.047] | 0.989 [0.964–1.003] |
+| Pixel splitting | CUDA, pinned | 3.964 [3.929–3.990] | 0.777 [0.753–0.803] |
+| Full splitting | CPU | 3.064 [3.012–3.074] | 0.643 [0.624–0.678] |
+| Full splitting | CUDA, ordinary | 4.314 [4.313–4.373] | 0.993 [0.963–1.056] |
+| Full splitting | CUDA, pinned | 4.189 [4.167–4.192] | 0.736 [0.702–0.758] |
+
+The CPU had the lowest median for every unbuffered case. In the prepared
+full-split batch, pinned CUDA took 14% longer than the CPU. Its loader
+spent 0.717 s reading, decoding, and widening the tiles, while CUDA
+events recorded 0.113 s of uploads and 0.034 s of kernel time. Those
+phases overlap. The raw records include elapsed worker times for
+unbuffered reads and for the combined read-and-decode phase.
+Elapsed times summed across workers can exceed batch wall time.
+
+```sh
+python -B docs/benchmarks/2026-11-18-cuda/disk_batch.py \
+    --eiger-dir test_data --repeats 5 \
+    --out benchmark-results/cuda/windows-eiger-files.json
+python -B docs/benchmarks/2026-11-18-cuda/disk_batch.py \
+    --eiger-dir test_data --direct-io --repeats 3 \
+    --out benchmark-results/cuda/windows-eiger-files-direct.json
+```
+
 ### Pixel splitting by batch size
 
 These are median ms/frame with Poisson std. Each CUDA cell gives the

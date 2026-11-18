@@ -20,6 +20,7 @@ use std::{
     process::Command,
 };
 
+mod file_batch;
 mod float32;
 mod full_f64;
 mod headroom;
