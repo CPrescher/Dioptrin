@@ -26,6 +26,7 @@ mod full_f64;
 mod hdf5;
 mod headroom;
 mod inputs;
+mod paper;
 mod startup;
 mod transfers;
 

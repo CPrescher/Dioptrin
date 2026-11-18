@@ -28,6 +28,11 @@ def run(command, **kwargs):
 
 def compiler_environment(portable=False):
     env = os.environ.copy()
+    env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + (
+        " -C target-cpu=native" if not portable else ""
+    )
+    if sys.platform == "win32":
+        return env
     if "CXX" not in env:
         if sys.platform == "darwin":
             choices = glob.glob("/opt/homebrew/bin/g++-*") + glob.glob(
@@ -58,9 +63,6 @@ def compiler_environment(portable=False):
     env["CXXFLAGS"] = f"{env.get('CXXFLAGS', '')} -O3" + (
         f" {native}" if not portable else ""
     )
-    env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + (
-        " -C target-cpu=native" if not portable else ""
-    )
     return env
 
 
@@ -78,10 +80,11 @@ def main():
         help="Build metadata/wheels; default: <venv>/build-record",
     )
     args = parser.parse_args()
-    if sys.platform not in ("linux", "darwin"):
-        parser.error(
-            "The comparison tool currently supports Linux/macOS; on Windows use WSL2."
-        )
+    windows = sys.platform == "win32"
+    if sys.platform not in ("linux", "darwin", "win32"):
+        parser.error("Use Linux, macOS, or Windows")
+    if windows and not shutil.which("cl"):
+        parser.error("Open a Visual Studio Developer PowerShell with the MSVC C++ build tools")
     if not (3, 11) <= sys.version_info[:2] < (3, 16):
         parser.error("Use Python 3.11–3.15")
     for tool in ("cargo", "rustc", "git"):
@@ -101,30 +104,28 @@ def main():
         env = compiler_environment(args.portable)
         with tempfile.TemporaryDirectory(prefix="dioptrin-openmp-") as temporary:
             source = Path(temporary) / "check.cpp"
-            executable = Path(temporary) / "check"
+            executable = Path(temporary) / ("check.exe" if windows else "check")
             source.write_text(
                 "#include <omp.h>\nint main() { return omp_get_max_threads() < 1; }\n"
             )
-            run(
-                [
-                    *shlex.split(env["CXX"]),
-                    "-std=c++17",
-                    "-fopenmp",
-                    source,
-                    "-o",
-                    executable,
-                ],
-                env=env,
-            )
+            if windows:
+                compiler = subprocess.check_output(
+                    ["cl", "/Bv", "/std:c++17", "/openmp", source.name],
+                    cwd=temporary, env=env, text=True, errors="replace", stderr=subprocess.STDOUT,
+                )
+            else:
+                cxx = shlex.split(env["CXX"])
+                run([*cxx, "-std=c++17", "-fopenmp", source, "-o", executable], env=env)
+                compiler = subprocess.check_output([*cxx, "--version"], env=env, text=True)
             run([executable], env=env)
         if not (target / "pyvenv.cfg").exists():
             venv.create(target, with_pip=True)
-        python = target / "bin" / "python"
+        python = target / ("Scripts/python.exe" if windows else "bin/python")
         # Isolate the environment from module/user Python paths on clusters.
         env.pop("PYTHONPATH", None)
         env["PYTHONNOUSERSITE"] = "1"
         env["VIRTUAL_ENV"] = str(target)
-        env["PATH"] = str(target / "bin") + os.pathsep + env["PATH"]
+        env["PATH"] = str(python.parent) + os.pathsep + env["PATH"]
         artifacts.mkdir(parents=True, exist_ok=True)
         wheels = artifacts / "wheels"
         wheels.mkdir(exist_ok=True)
@@ -203,11 +204,11 @@ def main():
         for filename, command in (
             ("python-packages.txt", [python, "-m", "pip", "freeze", "--all"]),
             ("rustc.txt", ["rustc", "-Vv"]),
-            ("cxx.txt", [*shlex.split(env["CXX"]), "--version"]),
         ):
             (artifacts / filename).write_text(
                 subprocess.check_output(list(map(str, command)), env=env, text=True)
             )
+        (artifacts / "cxx.txt").write_text(compiler, encoding="utf-8")
         shutil.copy2(ROOT / "Cargo.lock", artifacts / "Cargo.lock")
         source = {}
         if (ROOT / ".git").exists():
@@ -246,7 +247,8 @@ def main():
                     portable=args.portable,
                     flags={
                         k: env[k]
-                        for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "RUSTFLAGS")
+                        for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "RUSTFLAGS", "CL", "_CL_")
+                        if k in env
                     },
                 ),
                 indent=2,

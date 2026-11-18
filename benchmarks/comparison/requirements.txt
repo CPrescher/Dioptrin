@@ -5,6 +5,7 @@ pyfai==2026.9.0
 fabio>=2024.9.0
 pillow
 h5py
+psutil>=5.9
 certifi
 setuptools>=80
 wheel

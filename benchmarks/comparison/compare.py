@@ -12,13 +12,13 @@ import math
 import os
 from pathlib import Path
 import platform
-import resource
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fixtures import MANIFEST, manifest, prepare, sha256
+from hardware import capture
 from provenance import verify_build
 
 
@@ -41,6 +41,43 @@ def contiguous_chunks(frames, workers):
     indexed = list(enumerate(frames))
     size = (len(frames) + workers - 1) // workers
     return [indexed[i * size : (i + 1) * size] for i in range(workers)]
+
+
+def peak_rss_bytes():
+    if sys.platform != "win32":
+        import resource
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak if sys.platform == "darwin" else peak * 1024
+
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    current = ctypes.WinDLL("kernel32", use_last_error=True).GetCurrentProcess
+    current.argtypes = []
+    current.restype = wintypes.HANDLE
+    info = ctypes.WinDLL("psapi", use_last_error=True).GetProcessMemoryInfo
+    info.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    info.restype = wintypes.BOOL
+    counters = Counters()
+    counters.cb = ctypes.sizeof(counters)
+    if not info(current(), ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return counters.PeakWorkingSetSize
 
 
 def worker(case_path):
@@ -255,9 +292,7 @@ def worker(case_path):
     validate(run())
     if pool:
         pool.shutdown()
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    if sys.platform != "darwin":
-        peak *= 1024
+    peak = peak_rss_bytes()
     rates = [count / duration for count, duration in zip(counts, durations)]
     result_path = Path(case["result"])
     negative_sigma = np.argwhere(sample[2] < 0).tolist() if errors else []
@@ -336,13 +371,20 @@ def summarize(output):
     for row in rows:
         if row["workers"] != 1 or row["trial"] != 0:
             continue
+        variant = row["variant"]
+        if variant in ("azint", "dioptrin-supersampled"):
+            reference_variant = "dioptrin-supersampled"
+        elif variant in ("pyfai-full", "dioptrin-pyfai_full"):
+            reference_variant = "dioptrin-pyfai_full"
+        else:
+            reference_variant = "dioptrin-pixel_split"
         reference = next(
             (
                 r
                 for r in rows
                 if r["dataset"] == row["dataset"]
                 and r["workload"] == row["workload"]
-                and r["variant"] == "dioptrin-pixel_split"
+                and r["variant"] == reference_variant
                 and r["workers"] == 1
                 and r["trial"] == 0
                 and r["errors"] == row["errors"]
@@ -360,7 +402,7 @@ def summarize(output):
             workload=row["workload"],
             variant=row["variant"],
             error_mode=row["error_mode"],
-            reference="dioptrin-pixel_split",
+            reference=reference_variant,
             negative_sigma_bins=row.get("negative_sigma_bins", 0),
             max_axis_difference_deg=float(np.max(np.abs(a["radial"] - b["radial"]))),
         )
@@ -451,6 +493,8 @@ def main():
     parser.add_argument(
         "--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS)
     )
+    parser.add_argument("--modes", nargs="+", choices=("intensity", "poisson"),
+                        default=["intensity", "poisson"])
     parser.add_argument("--bins", type=int)
     parser.add_argument("--frames", type=int)
     parser.add_argument("--trials", type=int)
@@ -472,11 +516,8 @@ def main():
     for key in ("bins", "frames", "trials", "blocks", "seconds"):
         if getattr(args, key) <= 0 or not math.isfinite(getattr(args, key)):
             parser.error(f"--{key} must be positive and finite")
-    available = (
-        len(os.sched_getaffinity(0))
-        if hasattr(os, "sched_getaffinity")
-        else (os.cpu_count() or 1)
-    )
+    hardware = capture()
+    available = len(hardware["cpu_affinity"] or ()) or (os.cpu_count() or 1)
     try:
         workers = (
             sorted({int(w) for w in args.workers.split(",")})
@@ -538,6 +579,7 @@ def main():
             platform=platform.platform(),
             node=platform.node(),
             available_logical_cpus=available,
+            hardware=hardware,
             cpu_budgets=workers,
             arguments={
                 k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -546,7 +588,7 @@ def main():
             manifest_sha256=sha256(MANIFEST),
             runner_sha256={
                 name: sha256(Path(__file__).with_name(name))
-                for name in ("compare.py", "fixtures.py", "provenance.py")
+                for name in ("compare.py", "fixtures.py", "hardware.py", "provenance.py")
             },
             installed_build=installed_build,
             build_verification_problems=build_problems,
@@ -568,10 +610,10 @@ def main():
                 if workload == "frames" and metadata[dataset]["distinct_frames"] < 2:
                     continue
                 for count in workers:
-                    for errors in (False, True):
+                    for mode in args.modes:
+                        errors = mode == "poisson"
                         for variant in variants:
                             suffix = f"{dataset}-{workload}-{variant}"
-                            mode = "poisson" if errors else "intensity"
                             label = f"{suffix}-w{count}-{mode}-t{trial}"
                             case_path = output / "cases" / f"{label}.json"
                             case = dict(

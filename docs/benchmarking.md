@@ -1,0 +1,71 @@
+# Comparison benchmarks
+
+The [benchmark suite](https://github.com/CPrescher/Dioptrin/tree/main/benchmarks/comparison)
+compares 1D integration across CPUs, GPUs and detector sizes. Check out the same
+Dioptrin revision and use the same dependency versions and input hashes when
+repeating measurements across machines.
+
+## Timing boundaries
+
+| Measurement | What is timed |
+| --- | --- |
+| CPU worker scaling | Integrate prepared host-memory frames and return patterns. Record setup, first result and peak process memory separately. |
+| GPU detector scaling | Upload prepared host-memory frames, integrate and return patterns to the host. Record CUDA with pinned and ordinary input buffers and pyFAI OpenCL with ordinary buffers. |
+| File to pattern | Read and decode image files or HDF5 datasets, apply the specified corrections and integrate the frames. Record the storage and file-cache conditions. |
+
+The worker sweep uses a measured Pilatus 1M frame and generated 4M and 9M
+frames. The recipe below repeats one frame per detector, with the same mask,
+geometry, corrections and 2,000 radial bins. Compare Dioptrin full splitting
+with pyFAI full CSR, and Dioptrin supersampling with AZINT subpixel integration.
+The suite records numerical differences alongside throughput. GPU trials use
+native 32-bit pixels on the same fixtures and report intensity-only and Poisson
+results. The separate [Eiger HDF5 and TIFF measurements](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-18-cuda/README.md#native-integer-upload-and-hdf5)
+include file loading and decoding.
+
+## Repeat the detector-size comparison
+
+Follow the [environment setup and validation instructions](https://github.com/CPrescher/Dioptrin/tree/main/benchmarks/comparison#clone-install-and-run).
+Activate the comparison environment and run the CPU sweep from the repository
+root. This example uses the Windows workstation's worker budgets.
+
+```text
+python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 1 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
+```
+
+- On Windows, run natively. Install the GPU dependencies for the CUDA and
+  OpenCL comparison on the NVIDIA card.
+- On the MacBook, sweep through 12 workers where the system supports that
+  budget. The suite records performance and efficiency core counts where
+  macOS reports them.
+- On DESY Maxwell, pass the same detector and algorithm arguments to
+  `sbatch benchmarks/comparison/maxwell.sbatch`. Leave out `--output` so the
+  wrapper can name the run by Slurm job. Choose worker budgets within the
+  CPU allocation and use matching compute nodes for repeated trials. Request a
+  GPU allocation for the GPU comparison if a suitable NVIDIA node is available.
+  See the [Maxwell batch job documentation](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/).
+
+For GPU runs, install PyOpenCL and make CUDA NVRTC available to the benchmark
+executable. Specify the NVIDIA model present in the allocation. The runner
+checks that both backends use the requested model and that pyFAI selected its
+OpenCL engine. Use a single-GPU allocation where both runtimes can see the
+same device.
+
+```text
+python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --output benchmark-results/paper-gpu
+```
+
+## Machine records and results
+
+The CPU runner writes `environment.json` and the GPU runner writes
+`gpu-results.json`. Both capture the OS, CPU model, physical and logical core
+counts, RAM and, where available, CPU affinity and GPU inventory. The GPU run
+records the device and driver used by OpenCL. On Maxwell, the suite records the
+Slurm allocation, and the wrapper saves the scheduler's job details and the
+loaded software modules. Keep the CPU worker budget with the results because a
+worker count can include simultaneous multithreading on one physical core.
+
+Add any relevant run conditions that require local knowledge, such as laptop
+power mode, whether it was plugged in, competing jobs, or which storage held
+the files for a file-to-pattern run. Keep the benchmark code and fixtures in the
+Dioptrin repository and archive the paper's raw timings, figures, environment
+records and input hashes with its supplementary material.

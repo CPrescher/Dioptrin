@@ -55,7 +55,8 @@ class RunnerTests(unittest.TestCase):
         with patch.dict(os.environ, {"CC": "gcc", "CXX": "g++"}, clear=True):
             portable = compiler_environment(portable=True)
             native = compiler_environment()
-        for key in ("CFLAGS", "CXXFLAGS", "RUSTFLAGS"):
+        flags = ("RUSTFLAGS",) if sys.platform == "win32" else ("CFLAGS", "CXXFLAGS", "RUSTFLAGS")
+        for key in flags:
             self.assertNotIn("native", portable[key])
             self.assertIn("native", native[key])
 

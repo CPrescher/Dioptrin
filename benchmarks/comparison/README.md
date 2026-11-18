@@ -1,4 +1,4 @@
-# Reproducible CPU integration benchmarks
+# Reproducible 1D integration benchmarks
 
 Compare Dioptrin, azint, and pyFAI from a normal Git clone. The **standard suite
 requires no private files, manual data copying, or dataset preparation**.
@@ -10,7 +10,8 @@ On Linux or macOS, install Python 3.11+, the stable Rust toolchain, Git, and a
 C++17 compiler with OpenMP. Linux distributions normally provide the latter in
 GCC (`g++`). On macOS, use `brew install gcc`; setup selects Homebrew's versioned
 compiler automatically. Set `CC` and `CXX` to override that selection. On Windows,
-use WSL2 for this benchmark tooling.
+use a Visual Studio Developer PowerShell with the MSVC C++ build tools and the
+Rust MSVC toolchain.
 
 ```bash
 git clone https://github.com/CPrescher/Dioptrin.git
@@ -18,6 +19,11 @@ cd Dioptrin
 python3 benchmarks/comparison/setup.py
 .venv-benchmark/bin/python benchmarks/comparison/compare.py
 ```
+
+On Windows, run `python benchmarks/comparison/setup.py`, then use
+`.venv-benchmark\Scripts\python.exe -E -s -B` in place of the interpreter in
+the examples. To reproduce the Ryzen 7 9800X3D build, set `$env:CL = '/arch:AVX2'`
+before setup.
 
 Setup creates `.venv-benchmark`, builds the current Dioptrin source in release
 mode, builds the pinned upstream azint source, and installs pyFAI. Both source
@@ -40,6 +46,10 @@ overrides the check and records a visible warning. Both parent and workers ignor
 Results go into a new, ignored `benchmark-results/<timestamp>/` directory:
 `summary.md`, `results.csv`, `numerical.json`, raw timing blocks, per-case logs
 and output arrays, hardware/thread settings, source revision, and input hashes.
+CPU runs save machine details in `environment.json` and GPU runs save them in
+`gpu-results.json`. Capture covers the OS, CPU model, physical and logical cores,
+RAM, and, where available, CPU affinity, Apple performance and efficiency cores,
+GPU inventory and driver, and relevant Slurm allocation settings.
 The standard run time depends on the CPU and setup costs; use the quick suite
 first to verify installation.
 
@@ -157,8 +167,50 @@ clone because the library does not track Cargo.lock; Python build/transitive
 dependencies also float within their constraints. For an exact environment
 replay, reuse the saved Cargo.lock and Python freeze alongside the same source
 and compiler. The default recipe fixes core versions and inputs, not every
-transitive dependency across future dates. This suite measures CPU 1D integration; it does not assess
-2D caking, GPU integration, decompression, or file-reading performance.
+transitive dependency across future dates. The CPU runner measures 1D integration
+on preloaded frames.
+
+## Detector-size and GPU comparison
+
+The CPU runner also accepts a native Windows environment with Dioptrin,
+pyFAI and AZINT installed. On Windows, peak RSS uses the peak process
+working set. To reproduce the paper's CPU worker sweep, use the saved
+build record with the exact Dioptrin wheel and the pinned AZINT commit.
+The Windows run used the official pyFAI wheel and compiled AZINT with
+MSVC and OpenMP from the upstream source.
+
+~~~text
+python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full --modes poisson --frames 16 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
+~~~
+
+The GPU runner uses the same geometry, detector masks, radial range and
+bin count. It requires pyopencl in the comparison environment and native
+CUDA with NVRTC available to the Rust test executable. Each prepared
+uint32 frame is checked against the fixture for exact representation.
+Dioptrin measures both ordinary and pinned uploads and calculates
+products and sums in f64. pyFAI uses its full-split CSR OpenCL engine
+with ordinary NumPy buffers.
+The script checks the exact OpenCL implementation and device and rejects
+fallbacks. The timed batch starts in host memory and ends with the
+patterns back on host memory. Plan preparation, allocation and input
+conversion into the already prepared buffers happen before warm timing.
+
+~~~text
+python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --output benchmark-results/paper-gpu
+python -B benchmarks/comparison/plot_scaling.py --cpu benchmark-results/paper-cpu --gpu benchmark-results/paper-gpu/gpu-results.json --output benchmark-results/paper-figures
+~~~
+
+Pass --nvrtc with the directory containing the CUDA libraries if they
+are outside the search path. The GPU results include intensity-only
+and Poisson modes, five timed batches after two warmups, both CUDA
+layouts, and cross-engine numerical differences. The GPU series is
+separate from CPU core scaling because it measures GPU work on a
+single device. Plotting requires Matplotlib and produces PDF and PNG.
+
+This comparison uses prepared inputs. The separate
+[Eiger file benchmarks](../../docs/benchmarks/2026-11-18-cuda/README.md#native-integer-upload-and-hdf5)
+report the effect of real HDF5 and TIFF loading, including decoding,
+with their own calibration, file-cache settings and timing boundaries.
 
 ## Maxwell Slurm wrapper
 
