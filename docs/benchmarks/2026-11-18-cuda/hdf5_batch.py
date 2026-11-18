@@ -139,6 +139,8 @@ def main():
     parser.add_argument("--dataset", default="/entry_0000/ESRF-ID11/eiger/data")
     parser.add_argument("--library", type=Path, help="Path to native HDF5 library")
     parser.add_argument("--nvrtc", type=Path)
+    parser.add_argument("--benchmark-exe", type=Path, help="Use a prebuilt HDF5 benchmark test executable")
+    parser.add_argument("--extra-mask", type=Path, help="JSON list of extra masked flat pixel indices")
     parser.add_argument("--frames", type=int, default=64, help="Use 0 for all frames")
     parser.add_argument("--tile-sizes", nargs="+", type=int, default=[16])
     parser.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
@@ -165,6 +167,9 @@ def main():
     env.pop("CUDA_CACHE_DISABLE", None)
     env.pop("DIOPTRIN_HDF5_FIRST", None)
     env.pop("DIOPTRIN_HDF5_CPU_WORKERS", None)
+    env.pop("DIOPTRIN_HDF5_EXTRA_MASK", None)
+    if args.extra_mask:
+        env["DIOPTRIN_HDF5_EXTRA_MASK"] = str(args.extra_mask.resolve(strict=True))
     search = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
     libs = [str(library.parent), env.get(search)]
     if args.nvrtc:
@@ -184,7 +189,7 @@ def main():
         DIOPTRIN_HDF5_FRAMES=str(frames),
         DIOPTRIN_HDF5_REPEATS=str(args.repeats),
     )
-    executable = build(args.cargo, env)
+    executable = str(args.benchmark_exe.resolve(strict=True)) if args.benchmark_exe else build(args.cargo, env)
     # The full-scan comparisons start with the same cache conditions. Hash
     # the file as it is read to record the input without another full pass.
     full_digest = digest_file(args.hdf5) if args.readers else None
@@ -199,6 +204,8 @@ def main():
                            for p in sources},
             hdf5_version=h5py.version.hdf5_version,
             hdf5plugin_version=hdf5plugin.version,
+            executable_sha256=digest_file(Path(executable)),
+            extra_mask_sha256=digest_file(args.extra_mask) if args.extra_mask else None,
             file_bytes=args.hdf5.stat().st_size,
             file_sha256=full_digest, metadata_sha256=digest_file(args.metadata),
             dataset=args.dataset, shape=shape, frames=frames, compressed_bytes=compressed,

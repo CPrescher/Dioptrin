@@ -21,7 +21,15 @@ struct ScanGeometry {
 impl ScanGeometry {
     fn integrator(&self, shape: (usize, usize), method: IntegrationMethod) -> Result<Integrator> {
         let detector = crate::detector::named(&self.detector)?;
-        let mask = detector.builtin_mask([shape.0, shape.1])?;
+        let mut mask = detector.builtin_mask([shape.0, shape.1])?;
+        if let Some(path) = env::var_os("DIOPTRIN_HDF5_EXTRA_MASK") {
+            let indices: Vec<usize> = serde_json::from_reader(File::open(path)?)?;
+            for index in indices {
+                *mask
+                    .get_mut(index)
+                    .ok_or("HDF5 mask index outside detector")? = 1;
+            }
+        }
         let mut poni = Poni::new();
         poni.pixel1 = self.pixel1;
         poni.pixel2 = self.pixel2;

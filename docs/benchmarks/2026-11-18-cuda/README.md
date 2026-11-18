@@ -540,6 +540,88 @@ python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
     --out benchmark-results/cuda/windows-hdf5-reader-sweep.json
 ~~~
 
+### Eiger HDF5 with FabIO and dioptrin-io
+
+This comparison uses the same 2,500-frame Eiger scan, catalog mask, nominal
+geometry, and 3,000 two-theta bins with Poisson uncertainty. The source file is
+read once before each benchmark group to warm the Windows file cache. The
+decode-only tests time from already-open readers to host uint32 arrays. The
+full-pipeline tests start before the reader and integrator processes launch
+and end after the caller has collected every intensity and uncertainty pair.
+
+The matched pipeline trials augment the catalog mask with the two pixel
+locations where the scan contains Eiger invalid codes. An untimed calibration
+pass derives this mask from the original uint32 samples. pyFAI automatically
+rejects the detector's dummy value on individual frames. Applying the same
+fixed mask to both engines keeps the pixels and normalization matched across
+the batch. This benchmark uses a finished scan and a fixed mask.
+
+FabIO 2026.6.0 opens the BLISS dataset through its `file::dataset` reader and
+returns a new NumPy array per frame. The h5py control uses `read_direct` into a
+reusable NumPy array or a mapped PyOpenCL buffer. The pyFAI runs use the stock
+2026.9.0 full-split CSR OpenCL engine on the RTX 5070 Ti. Each reader process
+alternates between two input slots, so HDF5 decoding can overlap integration.
+Mapping and unmapping the OpenCL slots are inside the timed pipeline.
+
+The `dioptrin-io` benchmark uses its indexed Bitshuffle/LZ4 snapshot reader
+from `97f5ba73ca1f8b169ce3037ff79b0a51b40f6098` with the
+[caller-buffer patch](dioptrin_io_caller_buffer.patch). The decoder writes native
+uint32 pixels into the caller's slice. The Rust CPU reader supplies ordinary
+buffers, native CUDA supplies pinned upload buffers, and the pyFAI wrapper
+supplies either NumPy memory or mapped OpenCL memory. The patch and bridge are
+benchmark prototypes for the Dioptas reader pipeline.
+
+The decoded uint32 arrays matched exactly at the beginning, middle, and end of
+the scan. The indexed reader resolves chunk offsets once and performs the
+bounded Bitshuffle/LZ4 decode outside the HDF5 library's frame-read path.
+The [Windows benchmark summary](https://github.com/CPrescher/Dioptrin/pull/67)
+reports decode-only and file-to-pattern timings with the numerical checks.
+
+#### Reproduction
+
+Install the pyFAI comparison environment and keep an existing checkout of
+`dioptrin-io` with the cited revision. The staging script copies the Rust
+sources into a new build directory and applies the reader patch to that copy.
+Build with a release Rust toolchain, a C compiler and CMake. On Windows, use a
+Visual Studio Developer PowerShell and equivalent environment variables.
+
+~~~sh
+python -B docs/benchmarks/2026-11-18-cuda/prepare_io_benchmarks.py \
+    --io-source path/to/dioptrin-io --work target/eiger-io-repro
+cargo build --release --manifest-path target/eiger-io-repro/bridge/Cargo.toml
+cargo test --release --features cuda --lib --no-run \
+    --manifest-path target/eiger-io-repro/dioptrin/Cargo.toml
+~~~
+
+Use the bridge shared library built by Cargo as `--io-bridge` below. Pass
+the Rust test executable reported by Cargo as `--benchmark-exe` to
+`hdf5_batch.py` to select the `dioptrin-io` reader. Keep the same release CPU
+target on the two Rust builds. The measurements here use
+`RUSTFLAGS="-C target-cpu=native"` for the caller-buffer build.
+
+~~~sh
+python -B docs/benchmarks/2026-11-18-cuda/eiger_decode.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --io-bridge path/to/eiger_io_bridge.dll --readers 1 4 8 \
+    --out benchmark-results/cuda/eiger-io-decode.json
+python -B docs/benchmarks/2026-11-18-cuda/eiger_decode.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --io-bridge path/to/eiger_io_bridge.dll --readers 4 \
+    --extra-mask-out benchmark-results/cuda/eiger-sentinel-mask.json
+python -B docs/benchmarks/2026-11-18-cuda/pyfai_hdf5.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --io-bridge path/to/eiger_io_bridge.dll --readers 4 \
+    --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
+    --inputs fabio ordinary opencl-host io-ordinary io-opencl-host --repeats 2 \
+    --out benchmark-results/cuda/eiger-io-pyfai.json
+python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --benchmark-exe path/to/dioptrin-io-test-executable \
+    --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
+    --frames 0 --methods pyfai_full --tile-sizes 16 --backends cpu_csr cuda_native_block \
+    --readers 4 4 --repeats 0 --out benchmark-results/cuda/eiger-io-dioptrin.json
+~~~
+
 ### Proposed automatic selection
 
 Use the requested integration method and precision as requirements.

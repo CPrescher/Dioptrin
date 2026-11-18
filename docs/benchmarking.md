@@ -21,6 +21,8 @@ The suite records numerical differences alongside throughput. GPU trials use
 native 32-bit pixels on the same fixtures and report intensity-only and Poisson
 results. The separate [Eiger HDF5 and TIFF measurements](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-18-cuda/README.md#native-integer-upload-and-hdf5)
 include file loading and decoding.
+The [FabIO and dioptrin-io comparison](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-18-cuda/README.md#eiger-hdf5-with-fabio-and-dioptrin-io)
+includes decoding into ordinary host memory and directly into GPU upload buffers.
 
 ## Repeat the detector-size comparison
 
