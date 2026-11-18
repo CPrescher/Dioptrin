@@ -14,6 +14,7 @@ TEST = "integration::cuda::bench::benchmark_cuda"
 CPU_TEST = "integration::cuda::bench::headroom::cpu_headroom"
 INPUT_TEST = "integration::cuda::bench::inputs::cpu_inputs"
 TRANSFER_TEST = "integration::cuda::bench::transfers::gpu_transfers"
+FULL_F64_TEST = "integration::cuda::bench::full_f64::gpu_full_f64"
 GPU_FIELDS = (
     "name,driver_version,memory.total,memory.free,temperature.gpu,"
     "clocks.sm,clocks.mem,utilization.gpu,pstate"
@@ -73,12 +74,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--nvrtc", type=Path, help="Directory with the NVRTC shared libraries")
-    parser.add_argument("--cases", default="pilatus")
+    parser.add_argument("--cases")
     parser.add_argument("--eiger-dir", type=Path, default=ROOT / "test_data")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--cpu-only", action="store_true", help="Compare CPU worker counts")
     mode.add_argument("--cpu-inputs", action="store_true", help="Compare f32 and f64 CPU inputs and arithmetic")
     mode.add_argument("--gpu-transfers", action="store_true", help="Compare CUDA conversion and transfer paths")
+    mode.add_argument("--gpu-full-f64", action="store_true", help="Compare full f64 CUDA and CPU with Poisson std")
     parser.add_argument("--batches")
     parser.add_argument("--methods", default="counting,pixel_split,pyfai_full")
     parser.add_argument("--layouts", choices=("block,warp", "block", "warp"), default="block,warp")
@@ -96,6 +98,9 @@ def main():
         test, default_batches, default_threads = CPU_TEST, "1,64", "14,16"
     elif args.gpu_transfers:
         test, default_batches = TRANSFER_TEST, "1,8,64"
+    elif args.gpu_full_f64:
+        test, default_batches, default_threads = FULL_F64_TEST, "64", "14"
+    cases = args.cases or ("eiger" if args.gpu_full_f64 else "pilatus")
     batches = args.batches or default_batches
     cpu_threads = args.cpu_threads or default_threads
     output = args.out.resolve()
@@ -109,7 +114,7 @@ def main():
     env = os.environ.copy()
     env.update(
         DIOPTRIN_CUDA_OUT=str(raw),
-        DIOPTRIN_CUDA_CASES=args.cases,
+        DIOPTRIN_CUDA_CASES=cases,
         DIOPTRIN_CUDA_BATCHES=batches,
         DIOPTRIN_CUDA_METHODS=args.methods,
         DIOPTRIN_CUDA_LAYOUTS=args.layouts,
@@ -131,7 +136,7 @@ def main():
         "cpu": cpu_model(),
         "logical_cores": os.cpu_count(),
         "host_bytes_available_before": host_available,
-        "cases": args.cases,
+        "cases": cases,
         "batches": batches,
         "methods": args.methods,
         "layouts": args.layouts,
@@ -139,6 +144,7 @@ def main():
         "cpu_only": cpu_only,
         "compare_cpu_inputs": args.cpu_inputs,
         "compare_gpu_transfers": args.gpu_transfers,
+        "compare_full_f64": args.gpu_full_f64,
         "gpu_before": gpu_snapshot(),
     }
     sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *(ROOT / "src/integration/cuda").rglob("*")]

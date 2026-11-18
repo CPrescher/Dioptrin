@@ -10,14 +10,17 @@ CUDA uploads that table once and uses the same kernels for `counting`,
 intensity-only and Poisson standard-deviation kernels return zero for bins
 with zero normalization.
 
-All three accumulation policies read f32 frames and weights. Plain f32
-uses explicit fused multiply-add in the per-thread loop. Compensated f32
+The original three accumulation policies read f32 frames and weights.
+Plain f32 uses explicit fused multiply-add in the per-thread loop. Compensated f32
 retains product residuals with explicit FMA and merges high/low pairs within
 and across warps, as in the Metal prototype. The double policy widens the
 operands before multiplication and accumulates in f64. Each policy uses the
 CPU’s f64 denominator and returns f64 output, so the comparison includes
 input quantization and the arithmetic of the selected policy. NVRTC compiles
 with implicit FMA contraction disabled and without fast math.
+
+The full-f64 follow-up keeps the original f64 pixels and weights on the
+GPU and uses the same double-precision reduction and normalization.
 
 The two GPU layouts assign either a 128-thread block to one bin or each
 of four warps in a block to its own bin. The warp layout eliminates block
@@ -266,6 +269,58 @@ python docs/benchmarks/2026-11-18-cuda/run.py --gpu-transfers \
     --out benchmark-results/cuda/windows-gpu-transfers.json
 ```
 
+### Full-f64 CUDA and CPU on Eiger
+
+The full-f64 CUDA mode uploads the original f64 pixels and CSR weights and
+uses f64 products, signal and variance sums, and final normalization.
+The CPU still prepares the shared geometry and lookup table. The comparison
+repeats the same 3262×3108 Eiger fixture for 64 frames, uses 3,000 bins and
+requests intensity and Poisson std. Each batch contains 5.19 GB of f64
+pixel data.
+
+CPU timings use the public `Integrator` with 14 Rayon workers over the
+frames. GPU timings start with ordinary or already-pinned f64 host memory
+and end when the f64 output is back in host memory. Buffer allocation,
+pinned input preparation and lookup table preparation are outside the
+timed batch. The JSON records seven samples after two warmups for fast CSC,
+fast CSR and strict CSR on the CPU, and both CUDA layouts for each host
+memory type. The GPU phase timings are measured separately from the full
+round trip.
+
+Each timing is median [min–max] ms/frame for the fastest tested layout
+in that column. Fast CSR won CPU counting and fast CSC won both weighted
+methods. CUDA selected the block layout for all pinned measurements and
+for ordinary-memory counting. It selected the warp layout for the two
+ordinary-memory weighted measurements.
+
+| Method | f64 CPU, 14 workers | Full-f64 CUDA, ordinary memory | Full-f64 CUDA, already pinned |
+| --- | ---: | ---: | ---: |
+| Counting | 2.015 [1.969–2.214] | 4.503 [4.422–4.655] | 1.773 [1.770–1.784] |
+| Pixel splitting | 4.300 [4.254–4.751] | 4.977 [4.872–5.238] | 2.061 [2.056–2.068] |
+| Full splitting | 4.324 [4.271–4.833] | 4.716 [4.670–5.002] | 2.060 [2.058–2.074] |
+
+For full splitting, the median upload took 4.177 ms/frame from ordinary
+memory and 1.548 ms/frame from pinned memory. The kernels took 0.570 and
+0.512 ms/frame in the selected layouts. The pinned path delivered 2.10×
+the CPU throughput. The ordinary-memory path had a 9% higher median time
+than the CPU, with overlapping ranges.
+
+Maximum absolute / relative differences versus strict f64 CPU, over both
+CUDA layouts and host memory types. Relative differences use nonzero
+reference bins.
+
+| Method | Intensity | Poisson std |
+| --- | ---: | ---: |
+| Counting | 0 / 0 | 1.46e-11 / 2.55e-16 |
+| Pixel splitting | 2.98e-7 / 9.33e-15 | 1.46e-11 / 5.65e-15 |
+| Full splitting | 4.77e-7 / 9.24e-15 | 1.46e-11 / 4.96e-15 |
+
+```sh
+python docs/benchmarks/2026-11-18-cuda/run.py --gpu-full-f64 \
+    --cases eiger --batches 64 --cpu-threads 14 --repeats 7 \
+    --out benchmark-results/cuda/windows-gpu-full-f64.json
+```
+
 ### Pixel splitting by batch size
 
 These are median ms/frame with Poisson std. Each CUDA cell gives the
@@ -455,7 +510,7 @@ Across the longer runs, recorded GPU temperatures were 44–59 °C and
 spot checks showed SM clocks of about 2.86 GHz when busy. Clocks varied
 at lighter loads. All measurements were native Windows.
 
-The transfer and CPU precision follow-ups use the same Windows system
-and fixtures. A producer that emits pinned f32 directly would use the
+The transfer, CPU precision and full-f64 follow-ups use the same Windows
+system and fixtures. A producer that emits pinned f32 directly would use the
 fastest observed host-input path. For latency, a retained CUDA context,
 compiled module and prepared table would amortize the startup work.

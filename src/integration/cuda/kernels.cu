@@ -1,5 +1,4 @@
-// Fixed-mask CSR gather. Inputs and weights are f32 in all three policies,
-// so comparing the policies isolates accumulation and product precision.
+// Fixed-mask CSR gather. The storage type is independent of the sum policy.
 template<int Mode> struct Sum;
 
 template<> struct Sum<0> {
@@ -59,9 +58,9 @@ template<> struct Sum<2> {
     __device__ double result() const { return value; }
 };
 
-template<int Mode, bool Variance, int BinsPerBlock>
+template<typename Storage, int Mode, bool Variance, int BinsPerBlock>
 __device__ void gather(const unsigned *rows, const unsigned *columns,
-                       const float *weights, const double *norm, const float *frames,
+                       const Storage *weights, const double *norm, const Storage *frames,
                        double *output, unsigned pixels, unsigned bins, unsigned weighted) {
     using Acc = Sum<Mode>;
     using Scalar = typename Acc::Scalar;
@@ -72,7 +71,7 @@ __device__ void gather(const unsigned *rows, const unsigned *columns,
     unsigned thread = threadIdx.x % ThreadsPerBin;
     unsigned bin = (blockIdx.x % groups) * BinsPerBlock + threadIdx.x / ThreadsPerBin;
     if (bin >= bins) return;  // Entire warps exit together.
-    const float *image = frames + (unsigned long long)frame * pixels;
+    const Storage *image = frames + (unsigned long long)frame * pixels;
     double *result = output + ((unsigned long long)frame * bins + bin) * (Variance ? 2 : 1);
     Acc signal{}, variance{};
     for (unsigned k = rows[bin] + thread; k < rows[bin + 1]; k += ThreadsPerBin) {
@@ -109,13 +108,14 @@ __device__ void gather(const unsigned *rows, const unsigned *columns,
     }
 }
 
-#define KERNEL(Name, Mode, Variance, Bins) \
+#define STORED_KERNEL(Name, Storage, Mode, Variance, Bins) \
 extern "C" __global__ void Name(const unsigned *rows, const unsigned *columns, \
-                                const float *weights, const double *norm, const float *frames, \
+                                const Storage *weights, const double *norm, const Storage *frames, \
                                 double *output, unsigned pixels, unsigned bins, unsigned weighted) { \
-    gather<Mode, Variance, Bins>(rows, columns, weights, norm, frames, output, pixels, bins, weighted); \
+    gather<Storage, Mode, Variance, Bins>(rows, columns, weights, norm, frames, output, pixels, bins, weighted); \
 }
 
+#define KERNEL(Name, Mode, Variance, Bins) STORED_KERNEL(Name, float, Mode, Variance, Bins)
 KERNEL(plain_block_i, 0, false, 1)
 KERNEL(plain_block_iv, 0, true, 1)
 KERNEL(compensated_block_i, 1, false, 1)
@@ -128,6 +128,10 @@ KERNEL(compensated_warp_i, 1, false, 4)
 KERNEL(compensated_warp_iv, 1, true, 4)
 KERNEL(double_warp_i, 2, false, 4)
 KERNEL(double_warp_iv, 2, true, 4)
+STORED_KERNEL(full_f64_block_i, double, 2, false, 1)
+STORED_KERNEL(full_f64_block_iv, double, 2, true, 1)
+STORED_KERNEL(full_f64_warp_i, double, 2, false, 4)
+STORED_KERNEL(full_f64_warp_iv, double, 2, true, 4)
 
 extern "C" __global__ void cast_f64_input(const double *src, float *dst,
                                            unsigned long long len) {

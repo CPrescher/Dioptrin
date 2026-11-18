@@ -21,6 +21,7 @@ use std::{
 };
 
 mod float32;
+mod full_f64;
 mod headroom;
 mod inputs;
 mod startup;
@@ -414,6 +415,18 @@ fn log(out: &mut impl Write, record: serde_json::Value) -> Result<()> {
     writeln!(out)?;
     out.flush()?;
     Ok(())
+}
+
+fn sample(repeats: usize, mut work: impl FnMut() -> Result<()>) -> Result<Vec<f64>> {
+    let mut times = Vec::with_capacity(repeats);
+    for i in 0..repeats + 2 {
+        let start = Instant::now();
+        work()?;
+        if i >= 2 {
+            times.push(elapsed_ms(start));
+        }
+    }
+    Ok(times)
 }
 
 fn cpu_batch(

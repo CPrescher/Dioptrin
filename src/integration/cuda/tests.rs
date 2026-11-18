@@ -25,6 +25,10 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
         .map(|i| ((i * 271 % 293) as f32 - 14.0) / 7.0)
         .collect();
     let reference_input: Vec<f64> = input.iter().copied().map(f64::from).collect();
+    let wide_input: Vec<f64> = (0..pixels * 2)
+        .map(|i| ((i * 271 % 293) as f64 - 14.0) / 7.0)
+        .collect();
+    assert_ne!(reference_input, wide_input);
     for method in [
         IntegrationMethod::Counting,
         IntegrationMethod::PixelSplit,
@@ -44,33 +48,41 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
                 .with_polarization_factor(0.72)
                 .with_fast_math(false);
             let plan = cuda.prepare(&integrator, shape, bins)?;
+            let wide_plan = cuda.prepare_f64(&integrator, shape, bins)?;
             assert_eq!(plan.entries == 0, all_masked);
             for errors in [false, true] {
                 let stride = 1 + usize::from(errors);
-                let expected: Vec<_> = reference_input
-                    .chunks_exact(pixels)
-                    .map(|frame| {
-                        if errors {
-                            let (_, signal, sigma) = integrator.integrate1d_with_errors_from_slice(
-                                frame,
-                                shape.0,
-                                shape.1,
-                                bins as usize,
-                            );
-                            (signal, sigma)
-                        } else {
-                            let (_, signal) = integrator.integrate1d_from_slice(
-                                frame,
-                                shape.0,
-                                shape.1,
-                                bins as usize,
-                            );
-                            (signal, Vec::new())
-                        }
-                    })
-                    .collect();
+                let reference = |input: &[f64]| {
+                    input
+                        .chunks_exact(pixels)
+                        .map(|frame| {
+                            if errors {
+                                let (_, signal, sigma) = integrator
+                                    .integrate1d_with_errors_from_slice(
+                                        frame,
+                                        shape.0,
+                                        shape.1,
+                                        bins as usize,
+                                    );
+                                (signal, sigma)
+                            } else {
+                                let (_, signal) = integrator.integrate1d_from_slice(
+                                    frame,
+                                    shape.0,
+                                    shape.1,
+                                    bins as usize,
+                                );
+                                (signal, Vec::new())
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let expected = reference(&reference_input);
+                let wide_expected = reference(&wide_input);
                 let mut batch = plan.batch(2, errors)?;
                 batch.upload(0, &input)?;
+                let mut wide_batch = wide_plan.batch(2, errors)?;
+                wide_batch.upload(0, &wide_input)?;
                 let mut output = vec![0.0; 2 * bins as usize * stride];
                 for layout in Layout::ALL {
                     for mode in Accumulation::ALL {
@@ -95,6 +107,26 @@ fn fixed_mask_batches_match_strict_cpu() -> Result<()> {
                                 if errors {
                                     check(row[1], sigma[bin]);
                                 }
+                            }
+                        }
+                    }
+                    wide_batch.run(&wide_plan.kernel(layout, errors)?)?;
+                    wide_batch.download(&mut output)?;
+                    cuda.stream.synchronize()?;
+                    for (frame, (signal, sigma)) in output
+                        .chunks_exact(bins as usize * stride)
+                        .zip(&wide_expected)
+                    {
+                        for (bin, row) in frame.chunks_exact(stride).enumerate() {
+                            let check = |value: f64, reference: f64| {
+                                assert!(
+                                    (value - reference).abs() <= 1e-12 * reference.abs().max(1.0),
+                                    "{method:?} {layout:?} full f64 bin {bin}: {value} vs {reference}"
+                                );
+                            };
+                            check(row[0], signal[bin]);
+                            if errors {
+                                check(row[1], sigma[bin]);
                             }
                         }
                     }

@@ -51,18 +51,6 @@ fn slots<'a>(plan: &'a Plan<'a>, count: usize, tile: u32, errors: bool) -> Resul
         .collect()
 }
 
-fn sample(repeats: usize, mut work: impl FnMut() -> Result<()>) -> Result<Vec<f64>> {
-    let mut times = Vec::with_capacity(repeats);
-    for i in 0..repeats + 2 {
-        let start = Instant::now();
-        work()?;
-        if i >= 2 {
-            times.push(elapsed_ms(start));
-        }
-    }
-    Ok(times)
-}
-
 #[test]
 fn gpu_transfer_variants_preserve_rounded_input_and_frame_order() -> Result<()> {
     let Some(cuda) = Cuda::open()? else {

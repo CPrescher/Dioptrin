@@ -1,10 +1,10 @@
 //! Internal fixed-mask CUDA prototype, exercised through its tests and benchmark.
-use std::{borrow::Cow, error::Error, sync::Arc, time::Instant};
+use std::{borrow::Cow, error::Error, marker::PhantomData, sync::Arc, time::Instant};
 
 use cudarc::{
     driver::{
-        CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, HostSlice, LaunchConfig,
-        PushKernelArg, sys::CUresult,
+        CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceRepr, HostSlice,
+        LaunchConfig, PushKernelArg, ValidAsZeroBits, sys::CUresult,
     },
     nvrtc::{CompileOptions, compile_ptx_with_opts},
 };
@@ -116,6 +116,30 @@ impl Cuda {
         shape: (usize, usize),
         bins: u32,
     ) -> Result<Plan<'_>> {
+        self.prepare_with(integrator, shape, bins, [1.0_f32], |weights| {
+            Cow::Owned(weights.iter().map(|&w| w as f32).collect())
+        })
+    }
+
+    fn prepare_f64(
+        &self,
+        integrator: &Integrator,
+        shape: (usize, usize),
+        bins: u32,
+    ) -> Result<Plan<'_, f64>> {
+        self.prepare_with(integrator, shape, bins, [1.0_f64], |weights| {
+            Cow::Borrowed(weights)
+        })
+    }
+
+    fn prepare_with<T: DeviceRepr + Clone>(
+        &self,
+        integrator: &Integrator,
+        shape: (usize, usize),
+        bins: u32,
+        unit_weight: [T; 1],
+        encode_weights: impl for<'w> FnOnce(&'w [f64]) -> Cow<'w, [T]>,
+    ) -> Result<Plan<'_, T>> {
         let pixels = shape.0.checked_mul(shape.1).ok_or("image shape overflow")?;
         let pixels = u32::try_from(pixels)?;
         if pixels == 0 || bins == 0 || bins > i32::MAX as u32 {
@@ -164,10 +188,7 @@ impl Cuda {
                     .collect::<std::result::Result<Vec<_>, _>>()?,
             ),
         };
-        let weights = table
-            .values
-            .as_ref()
-            .map(|weights| weights.iter().map(|&w| w as f32).collect::<Vec<_>>());
+        let weights = table.values.as_deref().map(encode_weights);
         let start = Instant::now();
         let rows = self.stream.clone_htod(&rows)?;
         // Use one dummy entry for fully masked tables and implicit unit weights.
@@ -179,7 +200,7 @@ impl Cuda {
         let w = weights
             .as_deref()
             .filter(|w| !w.is_empty())
-            .unwrap_or(&[1.0]);
+            .unwrap_or(&unit_weight);
         let weights_device = self.stream.clone_htod(w)?;
         let denominator = self.stream.clone_htod(denominator)?;
         self.stream.synchronize()?;
@@ -198,40 +219,46 @@ impl Cuda {
     }
 }
 
-struct Plan<'a> {
+struct Plan<'a, T = f32> {
     cuda: &'a Cuda,
     pixels: u32,
     bins: u32,
     entries: u32,
     rows: CudaSlice<u32>,
     columns: CudaSlice<u32>,
-    weights: CudaSlice<f32>,
+    weights: CudaSlice<T>,
     weighted: u32,
     denominator: CudaSlice<f64>,
     upload_ms: f64,
 }
 
-struct Batch<'a> {
-    plan: &'a Plan<'a>,
+struct Batch<'a, T = f32> {
+    plan: &'a Plan<'a, T>,
     stream: Arc<CudaStream>,
-    input: CudaSlice<f32>,
+    input: CudaSlice<T>,
     output: CudaSlice<f64>,
     frames: u32,
     errors: bool,
 }
 
-struct Kernel {
+struct Kernel<T = f32> {
     function: CudaFunction,
     layout: Layout,
     errors: bool,
+    storage: PhantomData<T>,
 }
 
-impl<'a> Plan<'a> {
-    fn batch(&'a self, frames: u32, errors: bool) -> Result<Batch<'a>> {
+impl<'a, T: DeviceRepr + ValidAsZeroBits> Plan<'a, T> {
+    fn batch(&'a self, frames: u32, errors: bool) -> Result<Batch<'a, T>> {
         self.batch_on(frames, errors, Arc::clone(&self.cuda.stream))
     }
 
-    fn batch_on(&'a self, frames: u32, errors: bool, stream: Arc<CudaStream>) -> Result<Batch<'a>> {
+    fn batch_on(
+        &'a self,
+        frames: u32,
+        errors: bool,
+        stream: Arc<CudaStream>,
+    ) -> Result<Batch<'a, T>> {
         if frames == 0 || frames > i32::MAX as u32 / self.bins {
             return Err("CUDA batch exceeds the grid limit or is empty".into());
         }
@@ -241,7 +268,7 @@ impl<'a> Plan<'a> {
                 .filter(|&len| len <= isize::MAX as usize / element_bytes)
                 .ok_or("CUDA batch allocation exceeds the addressable range")
         };
-        let input_len = elements(self.pixels as usize, size_of::<f32>())?;
+        let input_len = elements(self.pixels as usize, size_of::<T>())?;
         let output_len = elements(
             self.bins as usize * (1 + usize::from(errors)),
             size_of::<f64>(),
@@ -256,22 +283,34 @@ impl<'a> Plan<'a> {
         })
     }
 
-    fn kernel(&self, mode: Accumulation, layout: Layout, errors: bool) -> Result<Kernel> {
+    fn load_kernel(&self, name: &str, layout: Layout, errors: bool) -> Result<Kernel<T>> {
         let suffix = if errors { "iv" } else { "i" };
         Ok(Kernel {
-            function: self.cuda.module.load_function(&format!(
-                "{}_{}_{suffix}",
-                mode.name(),
-                layout.name()
-            ))?,
+            function: self
+                .cuda
+                .module
+                .load_function(&format!("{name}_{}_{suffix}", layout.name()))?,
             layout,
             errors,
+            storage: PhantomData,
         })
     }
 }
 
-impl Batch<'_> {
-    fn upload(&mut self, offset: usize, frames: &(impl HostSlice<f32> + ?Sized)) -> Result<()> {
+impl Plan<'_> {
+    fn kernel(&self, mode: Accumulation, layout: Layout, errors: bool) -> Result<Kernel> {
+        self.load_kernel(mode.name(), layout, errors)
+    }
+}
+
+impl Plan<'_, f64> {
+    fn kernel(&self, layout: Layout, errors: bool) -> Result<Kernel<f64>> {
+        self.load_kernel("full_f64", layout, errors)
+    }
+}
+
+impl<T: DeviceRepr> Batch<'_, T> {
+    fn upload(&mut self, offset: usize, frames: &(impl HostSlice<T> + ?Sized)) -> Result<()> {
         let pixels = self.plan.pixels as usize;
         let end = offset
             .checked_add(frames.len())
@@ -284,7 +323,9 @@ impl Batch<'_> {
             .slice_mut(offset..end.ok_or("CUDA upload exceeds the batch")?);
         Ok(self.stream.memcpy_htod(frames, &mut destination)?)
     }
+}
 
+impl Batch<'_> {
     fn upload_f64(
         &mut self,
         frames: &(impl HostSlice<f64> + ?Sized),
@@ -316,12 +357,14 @@ impl Batch<'_> {
         unsafe { launch.launch(config)? };
         Ok(())
     }
+}
 
-    fn run(&mut self, kernel: &Kernel) -> Result<()> {
+impl<T: DeviceRepr> Batch<'_, T> {
+    fn run(&mut self, kernel: &Kernel<T>) -> Result<()> {
         self.run_frames(self.frames, kernel)
     }
 
-    fn run_frames(&mut self, frames: u32, kernel: &Kernel) -> Result<()> {
+    fn run_frames(&mut self, frames: u32, kernel: &Kernel<T>) -> Result<()> {
         if frames == 0 || frames > self.frames {
             return Err("CUDA launch frame count exceeds the allocated batch or is empty".into());
         }
@@ -361,7 +404,7 @@ impl Batch<'_> {
                 .arg(&plan.bins)
                 .arg(&plan.weighted);
             // SAFETY: the views span exactly the launched frames and the
-            // kernel carries its layout and the matching variance specialization.
+            // kernel matches the storage type, layout and variance specialization.
             unsafe { launch.launch(config)? };
         }
         Ok(())
