@@ -128,3 +128,12 @@ KERNEL(compensated_warp_i, 1, false, 4)
 KERNEL(compensated_warp_iv, 1, true, 4)
 KERNEL(double_warp_i, 2, false, 4)
 KERNEL(double_warp_iv, 2, true, 4)
+
+extern "C" __global__ void cast_f64_input(const double *src, float *dst,
+                                           unsigned long long len) {
+    const unsigned long long stride = (unsigned long long)blockDim.x * gridDim.x;
+    for (unsigned long long i = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+         i < len; i += stride) {
+        dst[i] = __double2float_rn(src[i]);
+    }
+}

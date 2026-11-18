@@ -213,6 +213,7 @@ struct Plan<'a> {
 
 struct Batch<'a> {
     plan: &'a Plan<'a>,
+    stream: Arc<CudaStream>,
     input: CudaSlice<f32>,
     output: CudaSlice<f64>,
     frames: u32,
@@ -227,6 +228,10 @@ struct Kernel {
 
 impl<'a> Plan<'a> {
     fn batch(&'a self, frames: u32, errors: bool) -> Result<Batch<'a>> {
+        self.batch_on(frames, errors, Arc::clone(&self.cuda.stream))
+    }
+
+    fn batch_on(&'a self, frames: u32, errors: bool, stream: Arc<CudaStream>) -> Result<Batch<'a>> {
         if frames == 0 || frames > i32::MAX as u32 / self.bins {
             return Err("CUDA batch exceeds the grid limit or is empty".into());
         }
@@ -241,11 +246,11 @@ impl<'a> Plan<'a> {
             self.bins as usize * (1 + usize::from(errors)),
             size_of::<f64>(),
         )?;
-        let stream = &self.cuda.stream;
         Ok(Batch {
             plan: self,
             input: stream.alloc_zeros(input_len)?,
             output: stream.alloc_zeros(output_len)?,
+            stream,
             frames,
             errors,
         })
@@ -277,14 +282,49 @@ impl Batch<'_> {
         let mut destination = self
             .input
             .slice_mut(offset..end.ok_or("CUDA upload exceeds the batch")?);
-        Ok(self
-            .plan
-            .cuda
-            .stream
-            .memcpy_htod(frames, &mut destination)?)
+        Ok(self.stream.memcpy_htod(frames, &mut destination)?)
+    }
+
+    fn upload_f64(
+        &mut self,
+        frames: &(impl HostSlice<f64> + ?Sized),
+        staging: &mut CudaSlice<f64>,
+        cast: &CudaFunction,
+    ) -> Result<()> {
+        let len = frames.len();
+        if len == 0
+            || !len.is_multiple_of(self.plan.pixels as usize)
+            || len > self.input.len()
+            || len > staging.len()
+        {
+            return Err("f64 upload must fit both buffers and cover whole frames".into());
+        }
+        let mut source = staging.slice_mut(..len);
+        let mut destination = self.input.slice_mut(..len);
+        self.stream.memcpy_htod(frames, &mut source)?;
+        let source = staging.slice(..len);
+        let config = LaunchConfig {
+            grid_dim: (len.div_ceil(256).min(65_535) as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let len = len as u64;
+        let mut launch = self.stream.launch_builder(cast);
+        launch.arg(&source).arg(&mut destination).arg(&len);
+        // SAFETY: both views cover len elements and cast is the matching
+        // f64-to-f32 function in this plan's CUDA module.
+        unsafe { launch.launch(config)? };
+        Ok(())
     }
 
     fn run(&mut self, kernel: &Kernel) -> Result<()> {
+        self.run_frames(self.frames, kernel)
+    }
+
+    fn run_frames(&mut self, frames: u32, kernel: &Kernel) -> Result<()> {
+        if frames == 0 || frames > self.frames {
+            return Err("CUDA launch frame count exceeds the allocated batch or is empty".into());
+        }
         if self.errors != kernel.errors {
             return Err("CUDA kernel and output strides differ".into());
         }
@@ -292,8 +332,8 @@ impl Batch<'_> {
         let output_per_frame = plan.bins as usize * (1 + usize::from(self.errors));
         let pixels = plan.pixels as usize;
         // Bound the work in each launch on display GPUs with a watchdog.
-        for first in (0..self.frames).step_by(256) {
-            let end = (first + 256).min(self.frames);
+        for first in (0..frames).step_by(256) {
+            let end = (first + 256).min(frames);
             let input = self
                 .input
                 .slice(first as usize * pixels..end as usize * pixels);
@@ -309,7 +349,7 @@ impl Batch<'_> {
                 block_dim: (128, 1, 1),
                 shared_mem_bytes: 0,
             };
-            let mut launch = plan.cuda.stream.launch_builder(&kernel.function);
+            let mut launch = self.stream.launch_builder(&kernel.function);
             launch
                 .arg(&plan.rows)
                 .arg(&plan.columns)
@@ -328,10 +368,24 @@ impl Batch<'_> {
     }
 
     fn download(&self, output: &mut (impl HostSlice<f64> + ?Sized)) -> Result<()> {
-        if output.len() != self.output.len() {
+        self.download_frames(self.frames, output)
+    }
+
+    fn download_frames(
+        &self,
+        frames: u32,
+        output: &mut (impl HostSlice<f64> + ?Sized),
+    ) -> Result<()> {
+        if frames == 0
+            || frames > self.frames
+            || output.len()
+                != frames as usize * self.plan.bins as usize * (1 + usize::from(self.errors))
+        {
             return Err("host output does not match CUDA batch shape".into());
         }
-        Ok(self.plan.cuda.stream.memcpy_dtoh(&self.output, output)?)
+        Ok(self
+            .stream
+            .memcpy_dtoh(&self.output.slice(..output.len()), output)?)
     }
 }
 

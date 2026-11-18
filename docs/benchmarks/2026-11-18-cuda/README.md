@@ -186,6 +186,86 @@ python docs/benchmarks/2026-11-18-cuda/run.py --cpu-only \
     --out benchmark-results/cuda/windows-cpu-headroom.json
 ```
 
+### CPU f32 accumulation
+
+The CPU test prepares the plans and input buffers before timing and rotates
+the three precision modes through seven repeats at 14 Rayon workers.
+The mixed path widens the input on read and uses the existing f64 weights,
+sums and normalization. The experimental f32 path rounds the prepared
+weights and normalization once and performs the per-frame weighting,
+signal and variance sums, division and square root in f32. Geometry and
+initial normalization preparation use f64 in all three modes. The public
+`Integrator` API and defaults are unchanged.
+
+Entries are the lowest median ms/frame across the three layouts for
+64 frames with Poisson std. Each precision mode can select a different layout.
+
+| Image | Method | f64 input and math | f32 input, f64 math | f32 input and math |
+| --- | --- | ---: | ---: | ---: |
+| Pilatus | counting | 0.204 | 0.174 | 0.151 |
+| Pilatus | pixel_split | 0.632 | 0.446 | 0.342 |
+| Pilatus | pyfai_full | 0.609 | 0.445 | 0.343 |
+| Eiger | counting | 2.067 | 1.480 | 1.327 |
+| Eiger | pixel_split | 4.704 | 3.871 | 2.869 |
+| Eiger | pyfai_full | 4.622 | 4.332 | 2.851 |
+
+For Eiger full splitting, all three minima were fast CSC. The medians
+and ranges were 4.622 [4.484–5.193], 4.332 [4.291–4.494] and
+2.851 [2.819–2.981] ms/frame. With f32 input held constant, moving the
+rest of the per-frame path to f32 reduced time by 34%. This also narrows
+the prepared weights and scratch buffers and changes how CSC merges
+chunk partials, so the benchmark measures the combined effect.
+
+Against the existing f64 CSC path, the f32 full-split result had maximum
+relative differences of 1.18e-6 for intensity and 5.52e-7 for std. The corresponding
+maximum absolute differences were 606.2 and 0.00567 on the Eiger fixture,
+which includes unmasked saturation values. Across all Eiger tests, strict
+CSR with counting gave the largest relative differences at 7.30e-5 for
+intensity and 3.66e-5 for std. Relative errors use nonzero reference bins.
+
+```sh
+python docs/benchmarks/2026-11-18-cuda/run.py --cpu-inputs \
+    --cases pilatus,eiger --batches 1,64 --cpu-threads 14 --repeats 7 \
+    --out benchmark-results/cuda/windows-cpu-f32-sums.json
+```
+
+### CUDA transfer and conversion
+
+The transfer test times prepared batches from host input to host output,
+with compensated GPU integration and Poisson std. It compares a single
+whole-batch CPU conversion with tiled CPU conversion and a device-side cast.
+In the tiled path the CPU can convert the next tile while the GPU processes
+the previous tile. The already-pinned variants prepare their inputs in
+pinned memory outside the interval, along with all buffer allocation and
+plan creation.
+
+The table gives median [min–max] ms/frame for seven repeats of 64 frames
+using full splitting. The comparison holds the GPU integration kernel
+constant for each image.
+
+| Host input and transfer path | Pilatus | Eiger |
+| --- | ---: | ---: |
+| Ordinary f64, whole-batch CPU cast | 0.400 [0.397–0.431] | 3.962 [3.949–4.071] |
+| Ordinary f64, tiled CPU cast | 0.344 [0.339–0.348] | 3.314 [3.275–3.383] |
+| Ordinary f64, GPU cast | 0.515 [0.486–0.540] | 5.101 [4.896–6.109] |
+| Already-pinned f64, GPU cast | 0.218 [0.215–0.228] | 2.065 [2.055–2.082] |
+| Already-pinned f32, whole batch | 0.117 [0.117–0.137] | 1.114 [1.097–1.146] |
+| Already-pinned f32, tiled | 0.125 [0.121–0.140] | 1.104 [1.099–1.121] |
+
+For ordinary Eiger f64 input, the fastest full-split configuration used
+four frames per tile and one stream. It reduced time by 16%. A producer
+that writes f64 directly into pinned memory could use the device cast,
+which reduced time by 48% in this test. Direct uploads from ordinary f64
+memory were slower. Tiling gave no clear benefit for already-pinned f32
+input in this case. All f64 transfer variants round to f32 before
+integration and matched the baseline outputs exactly.
+
+```sh
+python docs/benchmarks/2026-11-18-cuda/run.py --gpu-transfers \
+    --cases pilatus,eiger --batches 1,8,64 --repeats 7 \
+    --out benchmark-results/cuda/windows-gpu-transfers.json
+```
+
 ### Pixel splitting by batch size
 
 These are median ms/frame with Poisson std. Each CUDA cell gives the
@@ -375,9 +455,7 @@ Across the longer runs, recorded GPU temperatures were 44–59 °C and
 spot checks showed SM clocks of about 2.86 GHz when busy. Clocks varied
 at lighter loads. All measurements were native Windows.
 
-For throughput, the next experiment would overlap PCIe transfers and
-kernel execution using two pinned staging buffers. For the f64-input
-path, the first target is the host conversion cost. The large difference
-between resident and host-input costs also motivates testing a producer
-that emits f32 directly. For latency, a retained CUDA context, compiled
-module and prepared table would amortize the startup work.
+The transfer and CPU precision follow-ups use the same Windows system
+and fixtures. A producer that emits pinned f32 directly would use the
+fastest observed host-input path. For latency, a retained CUDA context,
+compiled module and prepared table would amortize the startup work.

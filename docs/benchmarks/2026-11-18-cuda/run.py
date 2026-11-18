@@ -12,6 +12,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[3]
 TEST = "integration::cuda::bench::benchmark_cuda"
 CPU_TEST = "integration::cuda::bench::headroom::cpu_headroom"
+INPUT_TEST = "integration::cuda::bench::inputs::cpu_inputs"
+TRANSFER_TEST = "integration::cuda::bench::transfers::gpu_transfers"
 GPU_FIELDS = (
     "name,driver_version,memory.total,memory.free,temperature.gpu,"
     "clocks.sm,clocks.mem,utilization.gpu,pstate"
@@ -73,7 +75,10 @@ def main():
     parser.add_argument("--nvrtc", type=Path, help="Directory with the NVRTC shared libraries")
     parser.add_argument("--cases", default="pilatus")
     parser.add_argument("--eiger-dir", type=Path, default=ROOT / "test_data")
-    parser.add_argument("--cpu-only", action="store_true", help="Compare CPU worker counts")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--cpu-only", action="store_true", help="Compare CPU worker counts")
+    mode.add_argument("--cpu-inputs", action="store_true", help="Compare f32 and f64 CPU inputs and arithmetic")
+    mode.add_argument("--gpu-transfers", action="store_true", help="Compare CUDA conversion and transfer paths")
     parser.add_argument("--batches")
     parser.add_argument("--methods", default="counting,pixel_split,pyfai_full")
     parser.add_argument("--layouts", choices=("block,warp", "block", "warp"), default="block,warp")
@@ -83,8 +88,16 @@ def main():
     parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--rustc", default="rustc")
     args = parser.parse_args()
-    batches = args.batches or ("1,64" if args.cpu_only else "1,8,64,256,max")
-    cpu_threads = args.cpu_threads or ("14,16" if args.cpu_only else "1,4,8,16")
+    cpu_only = args.cpu_only or args.cpu_inputs
+    test, default_batches, default_threads = TEST, "1,8,64,256,max", "1,4,8,16"
+    if args.cpu_inputs:
+        test, default_batches, default_threads = INPUT_TEST, "1,64", "14"
+    elif args.cpu_only:
+        test, default_batches, default_threads = CPU_TEST, "1,64", "14,16"
+    elif args.gpu_transfers:
+        test, default_batches = TRANSFER_TEST, "1,8,64"
+    batches = args.batches or default_batches
+    cpu_threads = args.cpu_threads or default_threads
     output = args.out.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     raw = output.with_suffix(".jsonl")
@@ -123,17 +136,20 @@ def main():
         "methods": args.methods,
         "layouts": args.layouts,
         "cpu_threads": cpu_threads,
-        "cpu_only": args.cpu_only,
+        "cpu_only": cpu_only,
+        "compare_cpu_inputs": args.cpu_inputs,
+        "compare_gpu_transfers": args.gpu_transfers,
         "gpu_before": gpu_snapshot(),
     }
     sources = [Path(__file__), ROOT / "src/integration/cuda.rs", *(ROOT / "src/integration/cuda").rglob("*")]
+    if args.cpu_inputs:
+        sources.append(ROOT / "src/lut/csc.rs")
     metadata["source_sha256"] = {
         str(path.resolve().relative_to(ROOT)).replace(os.sep, "/"): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sources
         if path.is_file()
     }
-    run = [args.cargo, "test", "--release", "--features", "cuda", "--lib",
-           CPU_TEST if args.cpu_only else TEST,
+    run = [args.cargo, "test", "--release", "--features", "cuda", "--lib", test,
            "--", "--exact", "--ignored", "--nocapture"]
     completed = subprocess.run(run, cwd=ROOT, env=env)
     metadata["exit_status"] = completed.returncode
