@@ -205,7 +205,7 @@ fn paper_native_cuda() -> Result<()> {
         .collect();
     let mut validation = plan.batch_with_input(2, case.errors, Arc::clone(&cuda.stream))?;
     validation.upload(0, &pixels)?;
-    validation.upload(1, &distinct)?;
+    validation.upload(count, &distinct)?;
     validation.run(&kernel)?;
     let mut checked = vec![0.; pattern * 2];
     validation.download(&mut checked)?;
