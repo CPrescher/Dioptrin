@@ -56,15 +56,15 @@ root. On Windows, use the workstation's worker budgets.
 python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
 ```
 
-For macOS, run the same CPU workload with the common worker budgets through 12
-where the machine supports them. The runner records performance and efficiency
-core counts where macOS reports them.
+On the M4 Pro MacBook, run the same workload with 1, 2, 4, 6, 8 and 10 workers.
+The chip has 10 performance cores and 4 efficiency cores. macOS schedules the
+workers. Use 1, 2, 4 and 8 for direct comparisons with the Windows sweep above.
 
 ```bash
 python3 benchmarks/comparison/setup.py
 .venv-benchmark/bin/python -E -s -B benchmarks/comparison/compare.py \
   --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
-  --workers 1,2,4,8,12 \
+  --workers 1,2,4,6,8,10 \
   --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full \
   --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 \
   --output benchmark-results/paper-macos-cpu
