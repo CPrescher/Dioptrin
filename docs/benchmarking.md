@@ -88,6 +88,10 @@ same device.
 
 [NVIDIA CUDA compatibility documentation](https://docs.nvidia.com/deploy/cuda-compatibility/latest/why-cuda-compatibility.html)
 
+For the Windows x64 replay, set `$env:RUSTFLAGS = '-C target-cpu=x86-64-v3'`
+in a Visual Studio Developer PowerShell before building the GPU benchmark.
+Pass `--nvrtc` if the NVRTC libraries are outside the Windows search path.
+
 ```text
 python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --trials 3 --output benchmark-results/paper-gpu
 ```
