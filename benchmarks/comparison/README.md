@@ -230,6 +230,8 @@ with their own calibration, file-cache settings and timing boundaries.
 
 ## Maxwell Slurm wrapper
 
+For the paper runs, follow the [EuXFEL node selection and replay commands](../../docs/benchmarking.md#run-on-desy-maxwell).
+
 From a terminal on Maxwell, clone the repository and submit from its root:
 
 ```bash

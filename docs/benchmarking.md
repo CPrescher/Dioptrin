@@ -53,12 +53,13 @@ Activate the comparison environment and run the CPU sweep from the repository
 root. On Windows, use the workstation's worker budgets.
 
 ```text
-python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
+python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,6,8,10,12,14 --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
 ```
 
 On the M4 Pro MacBook, run the same workload with 1, 2, 4, 6, 8 and 10 workers.
 The chip has 10 performance cores and 4 efficiency cores. macOS schedules the
-workers. Use 1, 2, 4 and 8 for direct comparisons with the Windows sweep above.
+workers. Windows and Maxwell use the same worker budgets through 10, with
+additional 12- and 14-worker points.
 
 ```bash
 python3 benchmarks/comparison/setup.py
@@ -69,13 +70,6 @@ python3 benchmarks/comparison/setup.py
   --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 \
   --output benchmark-results/paper-macos-cpu
 ```
-
-- On DESY Maxwell, pass the same detector and algorithm arguments to
-  `sbatch benchmarks/comparison/maxwell.sbatch`. Leave out `--output` so the
-  wrapper can name the run by Slurm job. Choose worker budgets within the
-  CPU allocation and use matching compute nodes for repeated trials. Request a
-  GPU allocation for the GPU comparison if a suitable NVIDIA node is available.
-  See the [Maxwell batch job documentation](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/).
 
 For GPU runs, install PyOpenCL and make CUDA NVRTC available to the benchmark
 executable. The CUDA 13 build needs compute capability 7.5 or newer and a
@@ -95,6 +89,141 @@ Pass `--nvrtc` if the NVRTC libraries are outside the Windows search path.
 ```text
 python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --trials 3 --output benchmark-results/paper-gpu
 ```
+
+## Run on DESY Maxwell
+
+Log in to `max-exfl-display.desy.de` with your Maxwell account. Clone the
+benchmark revision on shared storage. The example uses the PR #67 branch.
+Submit jobs from the login shell and run the timed work on Slurm compute nodes. Check
+your partitions before submitting. DESY lists `exfel` for eligible EuXFEL
+staff and `upex` for eligible EuXFEL users. [Maxwell login](https://docs.desy.de/maxwell/documentation/interactive_login/), [partition access](https://docs.desy.de/maxwell/documentation/access/), [EuXFEL allocation guide](https://dataanalysis.pages.xfel.eu/user-documentation/jhub/)
+
+```bash
+ssh USER@max-exfl-display.desy.de
+git clone --branch codex/cuda-1d-prototype https://github.com/CPrescher/Dioptrin.git
+cd Dioptrin
+git rev-parse HEAD
+/software/tools/bin/my-partitions
+partition=exfel                   # use upex if that is your allocation
+sinfo -N -p "$partition" -o '%N %t %c %m %f %G'
+```
+
+Use the same checked-out revision as the Mac run. Use Python 3.14 if
+available. The batch wrapper accepts `PYTHON_BIN` when the default interpreter
+differs. To prepare that interpreter once, run the following from the login
+shell. [Maxwell Mamba setup](https://docs.desy.de/maxwell/development/python/mamba-setup/)
+
+```bash
+module load maxwell mamba
+. mamba-init
+mamba create -y -n dioptrin-paper python=3.14
+mamba activate dioptrin-paper
+export PYTHON_BIN="$(command -v python)"
+```
+
+### CPU target and submission
+
+Target one exclusive **AMD EPYC CPU node** in `exfel` or `upex`. Start with
+the `EPYC` constraint. When `sinfo` shows a specific available CPU model,
+use that model's feature together with `EPYC` for subsequent submissions.
+If your allocation offers Intel Xeon nodes, use one Xeon model consistently
+when an EPYC node is unavailable.
+The example requests 14 physical cores with one hardware thread per core.
+Check the recorded effective CPU affinity and model when comparing runs.
+The worker budgets still describe the number of software workers on each
+machine. [Maxwell node constraints](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/#using-constraints), [Slurm CPU placement](https://slurm.schedmd.com/mc_support.html)
+
+```bash
+cpu_feature=EPYC
+sbatch --partition="$partition" --constraint="$cpu_feature" \
+  --ntasks=1 --cpus-per-task=14 --hint=nomultithread --time=02:00:00 \
+  benchmarks/comparison/maxwell.sbatch \
+  --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
+  --workers 1,2,4,6,8,10,12,14 \
+  --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full \
+  --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25
+squeue -u "$USER"
+```
+
+The wrapper builds and caches the Python environment on the first run for a
+given node class and source revision. It writes the result to
+`benchmark-results/maxwell/<job-id>-.../comparison/` and saves the hostname,
+Slurm allocation and module list alongside it. Keep `comparison/results.csv`,
+`comparison/numerical.json`, `comparison/environment.json` and the build
+record for the PR. `sbatch --test-only` can check the resource request.
+Use the partition list above to check account access.
+
+### GPU target and allocation
+
+Target **one NVIDIA A100** for both Dioptrin CUDA and pyFAI OpenCL. Its
+compute capability is 8.0, and it provides a data-center FP64 comparison to
+the Windows RTX 5070 Ti. Check for `A100` under your EuXFEL partition first.
+The public Maxwell availability snapshot on 19 November 2026 showed P100s
+under `exfel` and `upex`. A P100 has compute capability 6.0 and would need
+a separate CUDA 12 build and validation for this comparison. If the live
+EuXFEL list has only P100s, check `allgpu` for an A100 if `my-partitions`
+lists it. `allgpu` jobs can be preempted. An H100 or H200 is another
+compatible target if listed and accessible. [Maxwell GPU availability](https://max-jhub.desy.de/hub/static/nodes.html), [partition preemption](https://docs.desy.de/maxwell/documentation/jobs/preemption/), [NVIDIA GPU capabilities](https://developer.nvidia.com/blog/nvidia-ampere-architecture-in-depth/), [CUDA 13 architecture support](https://docs.nvidia.com/cuda/cuda-features-archive/)
+
+```bash
+sinfo -N -p "$partition" -o '%N %t %f %G' | grep -E 'A100|H100|H200|P100'
+sinfo -N -p allgpu -o '%N %t %f %G' | grep -E 'A100|H100|H200'
+gpu_partition="$partition"        # use allgpu if that is where the A100 is available
+gpu_feature=A100                  # use the exact Slurm feature shown by sinfo
+/software/tools/bin/savail -p "$gpu_partition" -f "$gpu_feature"
+srun --partition="$gpu_partition" --constraint="$gpu_feature" --gres=gpu:1 \
+  --nodes=1 --ntasks=1 --cpus-per-task=14 --hint=nomultithread \
+  --time=02:00:00 --pty bash -l
+```
+
+Inside the allocation, check the model, GPU visibility and driver before
+building. For the Windows-matched NVRTC 13.4.59, target an R615 or newer
+driver, and run the CUDA smoke test to verify that the driver accepts the
+generated PTX. Use a recent Rust toolchain on the compute node. Install it
+in your user environment with `rustup` if `cargo` is unavailable. The NVRTC
+wheel provides the user-space compiler libraries. The node supplies the
+driver and NVIDIA OpenCL ICD. [CUDA 13.4 driver branches](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#cuda-driver), [PTX compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html), [Rust installation](https://www.rust-lang.org/tools/install), [NVIDIA NVRTC wheel](https://pypi.org/project/nvidia-cuda-nvrtc/13.4.59/)
+
+```bash
+nvidia-smi --query-gpu=name,uuid,driver_version,compute_cap --format=csv
+module load maxwell mamba
+. mamba-init
+mamba activate dioptrin-paper
+command -v cargo && rustc -Vv
+gpu_env="$PWD/.benchmark-environments/maxwell-gpu-$SLURM_JOB_ID"
+python benchmarks/comparison/setup.py --venv "$gpu_env"
+gpu_python="$gpu_env/bin/python"
+"$gpu_python" -m pip install pyopencl==2026.1.5 nvidia-cuda-nvrtc==13.4.59
+nvrtc_dir=$("$gpu_python" - <<'PY'
+from importlib.metadata import distribution
+nvrtc = distribution("nvidia-cuda-nvrtc")
+library = next(p for p in nvrtc.files if p.name.startswith("libnvrtc.so"))
+print(nvrtc.locate_file(library).parent)
+PY
+)
+export LD_LIBRARY_PATH="$nvrtc_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export RUSTFLAGS='-C target-cpu=native'
+DIOPTRIN_REQUIRE_CUDA=1 cargo test --release --features cuda --lib \
+  integration::cuda::tests -- --nocapture
+"$gpu_python" -c 'import pyopencl as cl; print([(p.name, d.name) for p in cl.get_platforms() for d in p.get_devices() if d.type & cl.device_type.GPU])'
+```
+
+Continue if the allocated NVIDIA GPU is visible to both runtimes and the
+smoke test passes. The comparison expects a unique OpenCL GPU matching the
+requested model. If multiple matching devices are visible, request an
+isolated GPU allocation where both runtimes can select the same device.
+Set `gpu_model` in the allocated shell to the actual name substring.
+
+```bash
+gpu_model=A100
+"$gpu_python" -E -s -B benchmarks/comparison/gpu_compare.py \
+  --gpu-name "$gpu_model" --frames 16 --bins 2000 --repeats 5 --trials 3 \
+  --output "benchmark-results/maxwell-gpu-$SLURM_JOB_ID"
+```
+
+Keep `gpu-results.json` and the per-case logs. The Maxwell commands above
+measure prepared-input integration and startup. The Windows cold-file
+recipe uses Windows unbuffered copies and drive counters.
 
 ## Machine records and results
 
