@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -109,6 +110,41 @@ def digest_file(path):
     return digest.hexdigest()
 
 
+@contextmanager
+def trial_input(path, workspace, cache, sha256):
+    """Give normal buffered readers a new file whose copy bypassed the Windows cache."""
+    if cache == "warm":
+        yield path.resolve()
+        return
+    source = path.resolve()
+    with tempfile.TemporaryDirectory(prefix="uncached-scan-", dir=workspace) as directory:
+        destination = Path(directory) / source.name
+        copied = subprocess.run(
+            ["robocopy", str(source.parent), directory, source.name, "/J", "/NOOFFLOAD",
+             "/R:0", "/W:0", "/NDL", "/NFL", "/NJH", "/NJS", "/NP"],
+            capture_output=True, text=True, errors="replace",
+        )
+        if copied.returncode >= 8 or not destination.is_file() or destination.stat().st_size != source.stat().st_size:
+            raise RuntimeError(f"Unbuffered scan copy failed\n{copied.stdout}\n{copied.stderr}")
+        yield destination
+        # The integrity check reads the copy only after the timed workers exit.
+        if digest_file(destination) != sha256:
+            raise ValueError("Benchmark copy differs from the source Eiger scan")
+
+
+def disk_reads():
+    try:
+        import psutil
+    except ModuleNotFoundError:
+        return {}
+
+    return {device: row.read_bytes for device, row in (psutil.disk_io_counters(perdisk=True) or {}).items()}
+
+
+def disk_delta(before):
+    return {device: value - before[device] for device, value in disk_reads().items() if device in before}
+
+
 def run_readers(executable, env, workspace, frames, readers):
     import numpy as np
 
@@ -141,6 +177,7 @@ def main():
     parser.add_argument("--nvrtc", type=Path)
     parser.add_argument("--benchmark-exe", type=Path, help="Use a prebuilt HDF5 benchmark test executable")
     parser.add_argument("--extra-mask", type=Path, help="JSON list of extra masked flat pixel indices")
+    parser.add_argument("--cache", choices=("warm", "cold"), default="warm")
     parser.add_argument("--frames", type=int, default=64, help="Use 0 for all frames")
     parser.add_argument("--tile-sizes", nargs="+", type=int, default=[16])
     parser.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
@@ -154,6 +191,8 @@ def main():
         parser.error("tile sizes must be 1 to 64 and repeats cannot be negative")
     if args.readers and args.repeats != 0:
         parser.error("--readers measures fresh runs and requires --repeats 0")
+    if args.cache == "cold" and (os.name != "nt" or not args.readers):
+        parser.error("cold runs use Windows and --readers with --repeats 0")
     if not args.library and os.name != "nt":
         parser.error("pass --library outside Windows")
 
@@ -193,6 +232,11 @@ def main():
     # The full-scan comparisons start with the same cache conditions. Hash
     # the file as it is read to record the input without another full pass.
     full_digest = digest_file(args.hdf5) if args.readers else None
+    cache_label = "normal operating-system cache"
+    if args.cache == "cold":
+        cache_label = "first buffered read of an unbuffered copy"
+    elif args.readers:
+        cache_label = "normal OS cache after reading the whole file"
     sources = [Path(__file__), ROOT / "src/integration/cuda.rs",
                ROOT / "src/integration/cuda/kernels.cu",
                *ROOT.glob("src/integration/cuda/bench/hdf5*.rs"),
@@ -210,8 +254,7 @@ def main():
             file_sha256=full_digest, metadata_sha256=digest_file(args.metadata),
             dataset=args.dataset, shape=shape, frames=frames, compressed_bytes=compressed,
             hdf5_filter_ids=filters, geometry=geometry, cpu_workers=14,
-            cache=("normal OS cache after reading the whole file" if args.readers
-                   else "normal operating-system cache"), platform=platform.platform(),
+            cache=cache_label, platform=platform.platform(),
             cpu=cpu_model(), gpu_before=gpu_snapshot(),
         ),
         records=[],
@@ -234,7 +277,12 @@ def main():
                     DIOPTRIN_HDF5_TILE=str(tile), DIOPTRIN_HDF5_OUTPUT=str(temporary),
                 )
                 if readers:
-                    rows, patterns = run_readers(executable, trial_env, workspace, frames, readers)
+                    with trial_input(args.hdf5, workspace, args.cache, full_digest) as path:
+                        before = disk_reads()
+                        rows, patterns = run_readers(
+                            executable, dict(trial_env, DIOPTRIN_HDF5_FILE=str(path)), workspace, frames, readers,
+                        )
+                        rows[0]["disk_read_bytes"] = disk_delta(before)
                 else:
                     rows, patterns = trial(executable, trial_env), temporary
                 if index == 0:

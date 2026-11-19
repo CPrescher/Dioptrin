@@ -1,8 +1,9 @@
-"""Compare pyFAI OpenCL input buffers on the real Eiger HDF5 scan."""
+"""Compare pyFAI CPU and OpenCL pipelines on the real Eiger HDF5 scan."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from copy import copy
 import ctypes
 import hashlib
 import json
@@ -15,7 +16,7 @@ import sys
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from hdf5_batch import digest_file, scan_info
+from hdf5_batch import digest_file, disk_delta, disk_reads, scan_info, trial_input
 from pyfai_compare import BINS, select_gpu
 from run import ROOT, command, cpu_model
 
@@ -50,15 +51,19 @@ class NativeReader:
 def worker(config):
     import numpy as np
     import pyFAI
-    import pyopencl as cl
     from pyFAI.detectors import detector_factory
     from pyFAI.integrator.azimuthal import AzimuthalIntegrator
     from pyFAI.method_registry import IntegrationMethod
-    from pyopencl.array import Array
+    impl = "cython" if config["engine"] == "cpu" else "opencl"
+    target, device, opencl_version = None, None, None
+    if impl == "opencl":
+        import pyopencl as cl
+        from pyopencl.array import Array
 
-    target, device = select_gpu(config["gpu_name"])
+        target, device = select_gpu(config["gpu_name"])
+        opencl_version = cl.VERSION_TEXT
     method, = IntegrationMethod.select_method(
-        dim=1, split="full", algo="csr", impl="opencl", target=target, degradable=False,
+        dim=1, split="full", algo="csr", impl=impl, target=target, degradable=False,
     )
     g = config["geometry"]
     detector = detector_factory(g["detector"], {"orientation": 3})
@@ -81,15 +86,29 @@ def worker(config):
         mask.flat[indices] = 1
         detector.mask = mask
 
-    def integrate(frame, safe=False):
-        return ai.integrate1d(
+    def integrate(integrator, frame, safe=False):
+        return integrator.integrate1d(
             frame, BINS, unit="2th_deg", method=method, correctSolidAngle=True,
             error_model="poisson", safe=safe,
         )
 
-    first = integrate(np.zeros(frame_shape, dtype=dtype), safe=True)
-    if first.method != method or "opencl" not in first.compute_engine.lower():
-        raise RuntimeError("pyFAI fell back from the requested OpenCL engine")
+    def prepare(integrator, frame):
+        pattern = integrate(integrator, frame, safe=True)
+        is_opencl = "opencl" in pattern.compute_engine.lower()
+        if pattern.method != method or is_opencl != (impl == "opencl"):
+            raise RuntimeError(f"pyFAI requested {method} but used {pattern.compute_engine}")
+        return pattern
+
+    warmup = np.zeros(frame_shape, dtype=dtype)
+    first = prepare(ai, warmup)
+    frame_workers = min(config["frame_workers"], count)
+    integrators = [ai]
+    for _ in range(1, frame_workers):
+        replica = copy(ai)
+        replica.engines = {}
+        prepare(replica, warmup)
+        integrators.append(replica)
+    del warmup
     engine = ai.engines[method].engine
     mode = config["mode"]
     direct = mode.endswith("opencl-host")
@@ -103,7 +122,7 @@ def worker(config):
         )
         return array
 
-    for _ in range(2):
+    for _ in range(2 * frame_workers):
         if direct:
             flags = cl.mem_flags.READ_ONLY | cl.mem_flags.ALLOC_HOST_PTR
             buf = cl.Buffer(engine.ctx, flags, size=rows * columns * dtype.itemsize)
@@ -175,20 +194,33 @@ def worker(config):
 
     compute_s = 0.0
     pipeline_start = perf_counter()
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        reader = pool.submit(produce)
+    with ExitStack() as stack:
+        reader = stack.enter_context(ThreadPoolExecutor(max_workers=1)).submit(produce)
+        compute = stack.enter_context(ThreadPoolExecutor(frame_workers)) if frame_workers > 1 else None
         try:
-            for i in range(count):
-                slot = ready.get()
-                if slot is None:
+            for offset in range(0, count, frame_workers):
+                width = min(frame_workers, count - offset)
+                slots = []
+                # Stop at the EOF marker even if the producer failed mid-batch.
+                while len(slots) < width:
+                    slot = ready.get()
+                    if slot is None:
+                        break
+                    slots.append(slot)
+                if len(slots) != width:
                     reader.result()
                     raise RuntimeError("HDF5 reader stopped before completing the scan")
+                inputs = [slot if direct or fabio else slot[0] for slot in slots]
                 started = perf_counter()
-                result = integrate(slot if direct or fabio else slot[0])
-                patterns[i, :, 0] = result.intensity
-                patterns[i, :, 1] = result.sigma
+                results = compute.map(integrate, integrators[:width], inputs) if compute else (
+                    integrate(ai, inputs[0]),
+                )
+                for i, result in enumerate(results, offset):
+                    patterns[i, :, 0] = result.intensity
+                    patterns[i, :, 1] = result.sigma
                 compute_s += perf_counter() - started
-                free.put(True if fabio else slot)
+                for slot in slots:
+                    free.put(True if fabio else slot)
         finally:
             free.put(None)
         read_s = reader.result()
@@ -197,7 +229,9 @@ def worker(config):
         raise ValueError("invalid integration output")
     patterns.tofile(config["output"])
     stats = dict(
-        mode=config["mode"], pyfai=pyFAI.version, pyopencl=cl.VERSION_TEXT,
+        mode=config["mode"], pyfai=pyFAI.version, pyopencl=opencl_version,
+        engine=first.compute_engine, frame_workers=frame_workers, omp_threads=config["omp_threads"],
+        first_frame=first_frame, frames=count,
         device=device, read_and_handoff_s=read_s, integrate_and_collect_s=compute_s,
         prepared_pipeline_s=pipeline_s, masked_pixels=int(detector.mask.sum()),
         mask_sha256=hashlib.sha256(detector.mask.astype(np.uint8).tobytes()).hexdigest(),
@@ -212,6 +246,9 @@ def main():
     parser.add_argument("--metadata", type=Path)
     parser.add_argument("--dataset", default="/entry_0000/ESRF-ID11/eiger/data")
     parser.add_argument("--gpu-name", default="RTX 5070 Ti")
+    parser.add_argument("--engine", choices=("cpu", "opencl"), default="opencl")
+    parser.add_argument("--cpu-workers", type=int, default=14, help="Total CPU integration budget")
+    parser.add_argument("--cpu-parallelism", choices=("frames", "openmp"), default="frames")
     parser.add_argument("--frames", type=int, default=0, help="Use 0 for all frames")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--readers", nargs="+", type=int, choices=(1, 2, 4, 8), default=[1])
@@ -220,6 +257,7 @@ def main():
                         default=["ordinary", "opencl-host"])
     parser.add_argument("--io-bridge", type=Path)
     parser.add_argument("--extra-mask", type=Path, help="JSON list of extra masked flat pixel indices")
+    parser.add_argument("--cache", choices=("warm", "cold"), default="warm")
     parser.add_argument("--out", type=Path)
     parser.add_argument("--patterns-out", type=Path, help="Optional local f64 intensity and sigma pairs")
     parser.add_argument("--case", type=Path, help=argparse.SUPPRESS)
@@ -231,6 +269,11 @@ def main():
         parser.error("specify --hdf5, --metadata, --out, and a positive repeat count")
     if any(mode.startswith("io-") for mode in args.inputs) and not args.io_bridge:
         parser.error("dioptrin-io inputs require --io-bridge")
+    if args.engine == "cpu" and (args.cpu_workers < max(args.readers)
+                                  or any(mode.endswith("opencl-host") for mode in args.inputs)):
+        parser.error("CPU runs need at least one worker per reader and ordinary host inputs")
+    if args.cache == "cold" and os.name != "nt":
+        parser.error("cold runs use a Windows unbuffered copy")
 
     import h5py
     import hdf5plugin
@@ -251,9 +294,13 @@ def main():
         hdf5plugin=hdf5plugin.version, hdf5_filter_ids=filters, bins=BINS,
         io_bridge_sha256=digest_file(args.io_bridge) if args.io_bridge else None,
         extra_mask_sha256=digest_file(args.extra_mask) if args.extra_mask else None,
-        cache="normal OS cache after reading the whole file",
+        cache=("first buffered read of an unbuffered copy" if args.cache == "cold" else
+               "normal OS cache after reading the whole file"),
+        engine=args.engine, cpu_workers=args.cpu_workers if args.engine == "cpu" else None,
+        cpu_parallelism=args.cpu_parallelism if args.engine == "cpu" else None,
     ), records=[])
-    env = os.environ | {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"}
+    env = os.environ | {"OMP_DYNAMIC": "FALSE", "OPENBLAS_NUM_THREADS": "1",
+                        "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1"}
     env.setdefault("PYOPENCL_CACHE_DIR", str(ROOT / "target/paper-gpu-cache/opencl"))
     modes = [(mode, readers) for readers in args.readers for mode in args.inputs]
     with TemporaryDirectory(dir=args.out.parent) as directory:
@@ -264,23 +311,36 @@ def main():
                 def run_shard(i):
                     case, output, stats = (work / f"{name}-{i}" for name in ("case", "patterns", "stats"))
                     first_frame, end = i * count // readers, (i + 1) * count // readers
+                    threads, extra = divmod(args.cpu_workers, readers)
+                    budget = threads + int(i < extra)
+                    if args.engine == "cpu":
+                        prior = i * threads + min(i, extra)
+                        remaining = count - readers
+                        first_frame = i + remaining * prior // args.cpu_workers
+                        end = i + 1 + remaining * (prior + budget) // args.cpu_workers
+                    frame_workers = budget if args.engine == "cpu" and args.cpu_parallelism == "frames" else 1
+                    omp_threads = budget if args.engine == "cpu" and args.cpu_parallelism == "openmp" else 1
                     case.write_text(json.dumps(dict(
                         geometry=geometry, shape=shape, first_frame=first_frame,
                         frames=end - first_frame, gpu_name=args.gpu_name, mode=mode,
-                        hdf5=str(args.hdf5.resolve()), dataset=args.dataset, output=str(output), stats=str(stats),
+                        engine=args.engine, frame_workers=frame_workers, omp_threads=omp_threads,
+                        hdf5=str(path), dataset=args.dataset, output=str(output), stats=str(stats),
                         io_bridge=str(args.io_bridge.resolve()) if args.io_bridge else None,
                         extra_mask=str(args.extra_mask.resolve()) if args.extra_mask else None,
                     )), encoding="utf-8")
                     subprocess.run([sys.executable, "-E", "-s", "-B", __file__, "--case", str(case)],
-                                   cwd=ROOT, env=env, check=True)
+                                   cwd=ROOT, env=env | {"OMP_NUM_THREADS": str(omp_threads)}, check=True)
                     return output, stats
 
-                started = perf_counter()
-                with ThreadPoolExecutor(max_workers=readers) as pool:
-                    shards = list(pool.map(run_shard, range(readers)))
-                pattern = np.concatenate([np.fromfile(output, dtype="<f8") for output, _ in shards])
-                pattern = pattern.reshape(count, BINS, 2)
-                elapsed = perf_counter() - started
+                with trial_input(args.hdf5, work, args.cache, record["metadata"]["file_sha256"]) as path:
+                    before = disk_reads()
+                    started = perf_counter()
+                    with ThreadPoolExecutor(max_workers=readers) as pool:
+                        shards = list(pool.map(run_shard, range(readers)))
+                    pattern = np.concatenate([np.fromfile(output, dtype="<f8") for output, _ in shards])
+                    pattern = pattern.reshape(count, BINS, 2)
+                    elapsed = perf_counter() - started
+                    reads = disk_delta(before)
                 rows = [json.loads(stats.read_text(encoding="utf-8")) for _, stats in shards]
                 if reference is None:
                     reference = pattern
@@ -291,7 +351,7 @@ def main():
                 for row in rows:
                     np.testing.assert_array_equal(row.pop("axis_deg"), record["axis_deg"])
                 row = dict(mode=mode, readers=readers, shards=rows, process_to_patterns_s=elapsed,
-                           repeat=repeat, matches_ordinary=True)
+                           repeat=repeat, matches_ordinary=True, disk_read_bytes=reads)
                 record["records"].append(row)
                 args.out.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
                 print(f"{mode} x{readers}: {elapsed:.3f} s for {count} frames", flush=True)

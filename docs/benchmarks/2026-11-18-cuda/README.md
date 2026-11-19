@@ -563,6 +563,12 @@ reusable NumPy array or a mapped PyOpenCL buffer. The pyFAI runs use the stock
 alternates between two input slots, so HDF5 decoding can overlap integration.
 Mapping and unmapping the OpenCL slots are inside the timed pipeline.
 
+The pyFAI CPU run uses stock full-split Cython CSR with 14 concurrent frame
+workers across the four reader processes. Each frame worker has a prepared
+CSR engine and one OpenMP thread. Each reader receives a contiguous range
+proportional to its CPU worker budget. The caller collects the ranges in scan
+order. Plan setup, including the individual workers' CSR engines, is timed.
+
 The `dioptrin-io` benchmark uses its indexed Bitshuffle/LZ4 snapshot reader
 from `97f5ba73ca1f8b169ce3037ff79b0a51b40f6098` with the
 [caller-buffer patch](dioptrin_io_caller_buffer.patch). The decoder writes native
@@ -576,6 +582,15 @@ the scan. The indexed reader resolves chunk offsets once and performs the
 bounded Bitshuffle/LZ4 decode outside the HDF5 library's frame-read path.
 The [Windows benchmark summary](https://github.com/CPrescher/Dioptrin/pull/67)
 reports decode-only and file-to-pattern timings with the numerical checks.
+
+For a cold Windows file-cache run, each trial uses a new, byte-identical
+copy of the HDF5 scan written with `robocopy /J`. Readers open that copy
+normally, so the trial measures the first buffered read, including Windows
+read-ahead and storage I/O. Copying and the check of the destination's SHA-256
+are outside the timer. The runner records per-drive read-byte deltas when
+the Windows counters are accessible. These system-wide counters include any
+concurrent activity on the drive. Warm trials read the original file before
+timing to prime the cache.
 
 #### Reproduction
 
@@ -614,6 +629,12 @@ python -B docs/benchmarks/2026-11-18-cuda/pyfai_hdf5.py \
     --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
     --inputs fabio ordinary opencl-host io-ordinary io-opencl-host --repeats 2 \
     --out benchmark-results/cuda/eiger-io-pyfai.json
+python -B docs/benchmarks/2026-11-18-cuda/pyfai_hdf5.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --io-bridge path/to/eiger_io_bridge.dll --readers 4 \
+    --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
+    --engine cpu --cpu-workers 14 --cpu-parallelism frames --inputs io-ordinary --repeats 2 \
+    --out benchmark-results/cuda/eiger-io-pyfai-cpu.json
 python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
     --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
     --benchmark-exe path/to/dioptrin-io-test-executable \
@@ -621,6 +642,10 @@ python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
     --frames 0 --methods pyfai_full --tile-sizes 16 --backends cpu_csr cuda_native_block \
     --readers 4 4 --repeats 0 --out benchmark-results/cuda/eiger-io-dioptrin.json
 ~~~
+
+For the cold comparison, add `--cache cold` to each integration command and
+use distinct output paths on the drive being tested. Allow space for one
+temporary scan copy. SSD controller caching is outside the Windows file cache.
 
 ### Proposed automatic selection
 
