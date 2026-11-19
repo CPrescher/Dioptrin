@@ -33,6 +33,40 @@ def build_cuda(cargo):
     raise RuntimeError("Cargo did not provide the CUDA test executable")
 
 
+def profile_opencl(engine, integrate, frames, repeats):
+    """Sum the device execution intervals of the stock pyFAI kernels."""
+    phases = {name: [] for name in ("memset_ng", "corrections4a", "csr_integrate4")}
+    profile = []
+    engine.set_profiling(True)
+    try:
+        for i in range(repeats + 2):
+            engine.reset_log()
+            for frame in frames:
+                integrate(frame)
+            engine.queue.finish()
+            totals = dict.fromkeys(phases, 0.0)
+            count = dict.fromkeys(phases, 0)
+            for row in engine.events:
+                name = row[0].removesuffix("_single")
+                if name in phases:
+                    if len(row) == 3:
+                        _, start, end = row
+                    else:
+                        start, end = row[1].profile.start, row[1].profile.end
+                    totals[name] += (end - start) / 1e9
+                    count[name] += 1
+            if any(n != len(frames) for n in count.values()) or any(t <= 0 for t in totals.values()):
+                raise RuntimeError(f"Incomplete pyFAI device kernel profile: {count}")
+            if i >= 2:
+                profile.append(sum(totals.values()))
+                for name in phases:
+                    phases[name].append(totals[name])
+    finally:
+        engine.reset_log()
+        engine.set_profiling(False)
+    return profile, phases
+
+
 def measure_opencl(fixture, meta, frames, bins, errors, repeats, gpu_name):
     import numpy as np
     import pyFAI
@@ -96,11 +130,16 @@ def measure_opencl(fixture, meta, frames, bins, errors, repeats, gpu_name):
             result["sigma"], np.broadcast_to(pattern.sigma, result["sigma"].shape),
             rtol=1e-6, atol=1e-6,
         )
-    return dict(
+    host = dict(
         backend="pyfai-opencl", host_memory="pageable", layout="csr", device=device.name,
         driver=device.driver_version,
         engine=str(pattern.compute_engine), setup_first_s=setup, batch_seconds=timings,
-    ), result
+    )
+    device_seconds, phases = profile_opencl(ai.engines[method].engine, integrate, frames, repeats)
+    kernels = dict(backend="pyfai-opencl-kernels", layout="csr", device=device.name,
+                   driver=device.driver_version, engine=str(pattern.compute_engine),
+                   batch_seconds=device_seconds, kernel_seconds=phases)
+    return [host, kernels], result
 
 
 def measure_cuda(executable, config_path, config, nvrtc):
@@ -158,7 +197,7 @@ def main():
         harness_sha256=sha256(Path(__file__)),
         hardware=capture(), python=sys.version,
         pyfai=importlib.metadata.version("pyFAI"), pyopencl=importlib.metadata.version("pyopencl"),
-        input="Prepared uint32 frames, including upload and retrieval of patterns",
+        input="Prepared uint32 frames with separate host-to-pattern and device kernel timings",
         bins=args.bins, frames=args.frames, repeats=args.repeats, records=[],
     )
     for dataset in args.datasets:
@@ -186,7 +225,7 @@ def main():
             pyfai, patterns = measure_opencl(
                 fixture, meta, [native] * args.frames, args.bins, errors, args.repeats, args.gpu_name,
             )
-            for row in [*cuda["records"], pyfai]:
+            for row in [*cuda["records"], *pyfai]:
                 if args.gpu_name.lower() not in row["device"].lower():
                     raise RuntimeError(f"Benchmark selected {row['device']!r}")
                 row.update(dataset=dataset, shape=meta["shape"], errors=errors,

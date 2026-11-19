@@ -10,8 +10,10 @@ repeating measurements across machines.
 | Measurement | What is timed |
 | --- | --- |
 | CPU worker scaling | Integrate prepared host-memory frames and return patterns. Record setup, first result and peak process memory separately. |
-| GPU detector scaling | Upload prepared host-memory frames, integrate and return patterns to the host. Record CUDA with pinned and ordinary input buffers and pyFAI OpenCL with ordinary buffers. |
-| File to pattern | Read and decode image files or HDF5 datasets, apply the specified corrections and integrate the frames. Record the storage and file-cache conditions. |
+| GPU integration | Time GPU kernels for decoded frames. Include on-device preprocessing, reduction and normalization, with transfer and CPU dispatch outside the device time. |
+| GPU host to pattern | Upload prepared host-memory frames, integrate and return patterns to the host. Record CUDA with pinned and ordinary input buffers and pyFAI OpenCL with ordinary buffers. |
+| Decode only | Read and decompress detector data into native host arrays. Record the file-cache conditions and exclude integration. |
+| File to pattern | Start the processing workers, read and decode files or HDF5 datasets, integrate the frames and collect the patterns. Use a cold-cache first read for user-facing throughput and record the storage device. |
 
 The worker sweep uses a measured Pilatus 1M frame and generated 4M and 9M
 frames. The recipe below repeats one frame per detector, with the same mask,

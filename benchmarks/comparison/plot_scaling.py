@@ -26,6 +26,10 @@ GPU = {
     "dioptrin-cuda": ("Dioptrin CUDA, pinned", "#0072b2"),
     "pyfai-opencl": ("pyFAI OpenCL, ordinary", "#d55e00"),
 }
+GPU_KERNELS = {
+    "dioptrin-cuda-kernels": ("Dioptrin CUDA", "#0072b2"),
+    "pyfai-opencl-kernels": ("pyFAI OpenCL", "#d55e00"),
+}
 
 
 def save(fig, output, name):
@@ -81,14 +85,16 @@ def plot_cpu(directory, output, mode):
     save(fig, output, f"cpu-scaling-{mode}")
 
 
-def plot_gpu(records, output, mode):
+def plot_gpu(records, output, mode, series, metric, filename):
     rows = json.loads(records.read_text(encoding="utf-8"))
-    records = rows["records"]
     error_mode = mode == "poisson"
+    records = [r for r in rows["records"] if r["backend"] in series and r["errors"] == error_mode]
     datasets = [d for d in DATASETS if any(r["dataset"] == d for r in records)]
+    if not datasets:
+        return
     fig, ax = plt.subplots(figsize=(7.1, 3.6), layout="constrained")
     x = np.arange(len(datasets))
-    backends = {key: value for key, value in GPU.items()
+    backends = {key: value for key, value in series.items()
                 if any(r["backend"] == key for r in records)}
     width = .75 / len(backends)
     for i, (backend, (label, color)) in enumerate(backends.items()):
@@ -96,7 +102,7 @@ def plot_gpu(records, output, mode):
         errors = []
         for dataset in datasets:
             candidates = [r for r in records if r["dataset"] == dataset
-                          and r["backend"] == backend and r["errors"] == error_mode]
+                          and r["backend"] == backend]
             best = max(candidates, key=lambda r: r["frames_per_s"])
             fps = [rows["frames"] / s for s in best["batch_seconds"]]
             center = best["frames_per_s"]
@@ -107,12 +113,12 @@ def plot_gpu(records, output, mode):
                       capsize=3, label=label, color=color)
         ax.bar_label(bars, labels=[f"{x:,.0f}" for x in values], padding=3, fontsize=8)
     ax.set_xticks(x, [DATASETS[d] for d in datasets])
-    ax.set_ylabel("Throughput (frames/s)")
+    ax.set_ylabel(metric)
     ax.set_ylim(top=ax.get_ylim()[1] * 1.2)
     ax.grid(axis="y", alpha=.22)
     ax.spines[["right", "top"]].set_visible(False)
     ax.legend(frameon=False)
-    save(fig, output, f"gpu-detector-scaling-{mode}")
+    save(fig, output, f"{filename}-{mode}")
 
 
 def main():
@@ -128,7 +134,10 @@ def main():
     if args.cpu:
         plot_cpu(args.cpu, args.output, args.mode)
     if args.gpu:
-        plot_gpu(args.gpu, args.output, args.mode)
+        plot_gpu(args.gpu, args.output, args.mode, GPU,
+                 "Host-to-pattern throughput (frames/s)", "gpu-detector-scaling")
+        plot_gpu(args.gpu, args.output, args.mode, GPU_KERNELS,
+                 "GPU kernel throughput (frames/s)", "gpu-kernel-scaling")
 
 
 if __name__ == "__main__":

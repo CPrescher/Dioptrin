@@ -194,6 +194,10 @@ The script checks the exact OpenCL implementation and device and rejects
 fallbacks. The timed batch starts in host memory and ends with the
 patterns back on host memory. Plan preparation, allocation and input
 conversion into the already prepared buffers happen before warm timing.
+The runner records a separate GPU kernel series. CUDA events enclose the
+integration launch. OpenCL profiling sums pyFAI's buffer reset, pixel
+preprocessing and CSR reduction kernels. Both device measurements exclude
+the transfers and CPU dispatch in the host-to-pattern timings.
 
 ~~~text
 python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --output benchmark-results/paper-gpu
@@ -205,7 +209,8 @@ are outside the search path. The GPU results include intensity-only
 and Poisson modes, five timed batches after two warmups, both CUDA
 layouts, and cross-engine numerical differences. The GPU series is
 separate from CPU core scaling because it measures GPU work on a
-single device. Plotting requires Matplotlib and produces PDF and PNG.
+single device. Plotting requires Matplotlib and produces separate GPU kernel
+and host-to-pattern figures as PDF and PNG.
 
 This comparison uses prepared inputs. The separate
 [Eiger file benchmarks](../../docs/benchmarks/2026-11-18-cuda/README.md#native-integer-upload-and-hdf5)

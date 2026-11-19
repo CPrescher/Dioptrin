@@ -37,6 +37,30 @@ fn time_upload(
     Ok(timings.into_iter().map(|ms| ms / 1e3).collect())
 }
 
+fn time_device(
+    batch: &mut Batch<'_, f64, u32>,
+    kernel: &Kernel<f64, u32>,
+    input: &PinnedHostSlice<u32>,
+    repeats: usize,
+) -> Result<Vec<f64>> {
+    let mut samples = Vec::with_capacity(repeats);
+    for i in 0..repeats + 2 {
+        batch.upload(0, input)?;
+        let start = batch
+            .stream
+            .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
+        batch.run(kernel)?;
+        let end = batch
+            .stream
+            .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?;
+        end.synchronize()?;
+        if i >= 2 {
+            samples.push(f64::from(start.elapsed_ms(&end)?) / 1e3);
+        }
+    }
+    Ok(samples)
+}
+
 #[test]
 #[ignore = "paper fixture GPU benchmark; use benchmarks/comparison/gpu_compare.py"]
 fn paper_native_cuda() -> Result<()> {
@@ -144,6 +168,10 @@ fn paper_native_cuda() -> Result<()> {
                 "device": device, "setup_first_s": first_s, "batch_seconds": timings,
             }));
         }
+        records.push(json!({
+            "backend": "dioptrin-cuda-kernels", "layout": layout.name(),
+            "device": device, "batch_seconds": time_device(&mut batch, &kernel, &input, case.repeats)?,
+        }));
         assert!(first_output.iter().all(|x| x.is_finite()));
         if intensity.is_empty() {
             intensity.extend(first_output.iter().step_by(stride).copied());
