@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An optional `cuda` experiment for fixed-mask 1D integration, with an
+  internal GPU correctness test and a benchmark against the f64 CPU paths.
+
 ## [0.14.0] - 2026-11-15
 
 ### Added

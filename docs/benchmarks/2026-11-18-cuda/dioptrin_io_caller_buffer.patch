@@ -1,0 +1,47 @@
+diff --git a/src/hdf5/raw.rs b/src/hdf5/raw.rs
+index 523c112..c472e82 100644
+--- a/src/hdf5/raw.rs
++++ b/src/hdf5/raw.rs
+@@ -463,6 +463,42 @@ impl RawReader {
+             .saturating_mul(3)
+             .saturating_add(self.max_encoded)
+     }
++    /// Decode one native uint32 frame into an initialized caller-owned slice.
++    /// The destination may contain partial output on error.
++    pub fn read_frame_u32_into(
++        &self,
++        index: usize,
++        output: &mut [u32],
++        scratch: &mut FrameBuffer,
++    ) -> Result<(), Error> {
++        if self.pixel_type != PixelType::U32 || output.len() != self.shape[1] * self.shape[2] {
++            return Err(Error("expected a full-frame uint32 destination".into()));
++        }
++        self.snapshot.check_handle(&self.file).map_err(Error)?;
++        let chunk = self.chunks.get(index)
++            .ok_or_else(|| Error("HDF5 frame index outside snapshot".into()))?;
++        resize_bytes(&mut scratch.compressed, chunk.bytes)?;
++        read_exact_at(&self.file, &mut scratch.compressed, chunk.address)
++            .map_err(|e| Error(e.to_string()))?;
++        let bytes = bytemuck::cast_slice_mut(output);
++        if chunk.filtered {
++            decode_bitshuffle_lz4(
++                &scratch.compressed, bytes, 4, self.chunk_limit, self.configured_block,
++                &mut scratch.block_scratch, self.codec,
++            )?;
++        } else {
++            if scratch.compressed.len() != bytes.len() {
++                return Err(Error("unfiltered raw chunk size mismatch".into()));
++            }
++            bytes.copy_from_slice(&scratch.compressed);
++        }
++        if self.little_endian != cfg!(target_endian = "little") {
++            for sample in output {
++                *sample = sample.swap_bytes();
++            }
++        }
++        self.snapshot.check_handle(&self.file).map_err(Error)
++    }
+     /// Read into reusable native storage. No HDF5 calls occur here.
+     /// # Errors
+     /// Invalid frame, changed source, allocation, truncated/corrupt codec input.

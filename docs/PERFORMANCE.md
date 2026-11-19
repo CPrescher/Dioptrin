@@ -8,6 +8,9 @@ owns file-reading comparisons, sparse/dense image definitions, scalar/SSE2/AVX2/
 backends and the Windows read/decode measurements. Those reader rates exclude
 masking, normalization and integration.
 
+The [comparison benchmark guide](benchmarking.md) describes how to measure CPU
+worker scaling, GPU throughput and file-to-pattern performance.
+
 ## Fixed and dynamic masks
 
 Fast 1D integration defaults to CSC with float64 geometry weights and

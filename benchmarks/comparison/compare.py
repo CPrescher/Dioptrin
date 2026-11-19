@@ -12,13 +12,14 @@ import math
 import os
 from pathlib import Path
 import platform
-import resource
+import random
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fixtures import MANIFEST, manifest, prepare, sha256
+from hardware import capture
 from provenance import verify_build
 
 
@@ -28,6 +29,7 @@ VARIANTS = (
     "dioptrin-supersampled",
     "dioptrin-pyfai_full",
     "azint",
+    "azint-prepared-mask",
     "pyfai-full",
     "pyfai-bbox",
 )
@@ -39,8 +41,48 @@ def dump(path, value):
 
 def contiguous_chunks(frames, workers):
     indexed = list(enumerate(frames))
-    size = (len(frames) + workers - 1) // workers
-    return [indexed[i * size : (i + 1) * size] for i in range(workers)]
+    size, extra = divmod(len(frames), workers)
+    return [
+        indexed[i * size + min(i, extra) : (i + 1) * size + min(i + 1, extra)]
+        for i in range(workers)
+    ]
+
+
+def peak_rss_bytes():
+    if sys.platform != "win32":
+        import resource
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak if sys.platform == "darwin" else peak * 1024
+
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    current = ctypes.WinDLL("kernel32", use_last_error=True).GetCurrentProcess
+    current.argtypes = []
+    current.restype = wintypes.HANDLE
+    info = ctypes.WinDLL("psapi", use_last_error=True).GetProcessMemoryInfo
+    info.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    info.restype = wintypes.BOOL
+    counters = Counters()
+    counters.cb = ctypes.sizeof(counters)
+    if not info(current(), ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return counters.PeakWorkingSetSize
 
 
 def worker(case_path):
@@ -108,7 +150,7 @@ def worker(case_path):
         setup_first = time.perf_counter() - started
         baseline = [extract(r) for r in integrate_frames(unique)]
     else:
-        if variant == "azint":
+        if variant.startswith("azint"):
             import azint
             from azint.detector import Detector
 
@@ -125,6 +167,12 @@ def worker(case_path):
                 polarization_factor=0.965,
                 error_model="poisson" if errors else None,
             )
+            stock = None
+            if variant == "azint-prepared-mask":
+                # This pinned AZINT revision bakes the fixed mask into its
+                # matrix and has a cached normalization for that matrix.
+                stock = copy.copy(ai)
+                ai.mask = None
 
             def integrate(engine, frame):
                 return engine.integrate(frame)
@@ -176,6 +224,11 @@ def worker(case_path):
         extract(integrate(ai, image))
         setup_first = time.perf_counter() - started
         baseline = [extract(integrate(ai, frame)) for frame in unique]
+        if variant == "azint-prepared-mask":
+            for frame, prepared in zip(unique, baseline):
+                ordinary = extract(integrate(stock, frame))
+                for actual, expected in zip(prepared[:3 if errors else 2], ordinary):
+                    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
         engines = [ai]
         for _ in range(1, workers):
             engine = copy.copy(ai)
@@ -255,9 +308,7 @@ def worker(case_path):
     validate(run())
     if pool:
         pool.shutdown()
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    if sys.platform != "darwin":
-        peak *= 1024
+    peak = peak_rss_bytes()
     rates = [count / duration for count, duration in zip(counts, durations)]
     result_path = Path(case["result"])
     negative_sigma = np.argwhere(sample[2] < 0).tolist() if errors else []
@@ -336,13 +387,22 @@ def summarize(output):
     for row in rows:
         if row["workers"] != 1 or row["trial"] != 0:
             continue
+        variant = row["variant"]
+        if variant == "azint-prepared-mask":
+            reference_variant = "azint"
+        elif variant in ("azint", "dioptrin-supersampled"):
+            reference_variant = "dioptrin-supersampled"
+        elif variant in ("pyfai-full", "dioptrin-pyfai_full"):
+            reference_variant = "dioptrin-pyfai_full"
+        else:
+            reference_variant = "dioptrin-pixel_split"
         reference = next(
             (
                 r
                 for r in rows
                 if r["dataset"] == row["dataset"]
                 and r["workload"] == row["workload"]
-                and r["variant"] == "dioptrin-pixel_split"
+                and r["variant"] == reference_variant
                 and r["workers"] == 1
                 and r["trial"] == 0
                 and r["errors"] == row["errors"]
@@ -360,7 +420,7 @@ def summarize(output):
             workload=row["workload"],
             variant=row["variant"],
             error_mode=row["error_mode"],
-            reference="dioptrin-pixel_split",
+            reference=reference_variant,
             negative_sigma_bins=row.get("negative_sigma_bins", 0),
             max_axis_difference_deg=float(np.max(np.abs(a["radial"] - b["radial"]))),
         )
@@ -451,6 +511,8 @@ def main():
     parser.add_argument(
         "--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS)
     )
+    parser.add_argument("--modes", nargs="+", choices=("intensity", "poisson"),
+                        default=["intensity", "poisson"])
     parser.add_argument("--bins", type=int)
     parser.add_argument("--frames", type=int)
     parser.add_argument("--trials", type=int)
@@ -472,11 +534,8 @@ def main():
     for key in ("bins", "frames", "trials", "blocks", "seconds"):
         if getattr(args, key) <= 0 or not math.isfinite(getattr(args, key)):
             parser.error(f"--{key} must be positive and finite")
-    available = (
-        len(os.sched_getaffinity(0))
-        if hasattr(os, "sched_getaffinity")
-        else (os.cpu_count() or 1)
-    )
+    hardware = capture()
+    available = len(hardware["cpu_affinity"] or ()) or (os.cpu_count() or 1)
     try:
         workers = (
             sorted({int(w) for w in args.workers.split(",")})
@@ -490,10 +549,12 @@ def main():
             f"--workers must be within the process CPU allocation (1..{available})"
         )
     workers = sorted(set(workers) | {1})
+    if args.frames < workers[-1]:
+        parser.error("--frames must give each worker at least one frame")
     required = ["numpy", "pyFAI"]
     if any(v.startswith("dioptrin-") for v in args.variants):
         required.append("dioptrin")
-    if "azint" in args.variants:
+    if any(v.startswith("azint") for v in args.variants):
         required.append("azint")
     try:
         versions = {name: importlib.metadata.version(name) for name in required}
@@ -538,6 +599,7 @@ def main():
             platform=platform.platform(),
             node=platform.node(),
             available_logical_cpus=available,
+            hardware=hardware,
             cpu_budgets=workers,
             arguments={
                 k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -546,7 +608,7 @@ def main():
             manifest_sha256=sha256(MANIFEST),
             runner_sha256={
                 name: sha256(Path(__file__).with_name(name))
-                for name in ("compare.py", "fixtures.py", "provenance.py")
+                for name in ("compare.py", "fixtures.py", "hardware.py", "provenance.py")
             },
             installed_build=installed_build,
             build_verification_problems=build_problems,
@@ -561,82 +623,86 @@ def main():
             output / dataset, dataset, args.data_dir, args.cache_dir, args.offline
         )
     failures = []
+    order = random.Random(42019)
     for trial in range(args.trials):
-        variants = args.variants if trial % 2 == 0 else list(reversed(args.variants))
+        cases = [(count, mode, variant) for count in workers for mode in args.modes
+                 for variant in args.variants]
         for dataset in args.datasets:
             for workload in args.workloads:
                 if workload == "frames" and metadata[dataset]["distinct_frames"] < 2:
                     continue
-                for count in workers:
-                    for errors in (False, True):
-                        for variant in variants:
-                            suffix = f"{dataset}-{workload}-{variant}"
-                            mode = "poisson" if errors else "intensity"
-                            label = f"{suffix}-w{count}-{mode}-t{trial}"
-                            case_path = output / "cases" / f"{label}.json"
-                            case = dict(
-                                dataset=dataset,
-                                workload=workload,
-                                variant=variant,
-                                workers=count,
-                                errors=errors,
-                                error_mode=mode,
-                                trial=trial,
-                                fixture=str(output / dataset),
-                                frames=((max(args.frames, count) + count - 1) // count)
-                                * count,
-                                bins=args.bins,
-                                blocks=args.blocks,
-                                seconds=args.seconds,
-                                result=str(case_path.with_suffix(".result.json")),
-                            )
-                            if count > 1 or trial > 0:
-                                case["reference"] = str(
-                                    output
-                                    / "cases"
-                                    / f"{suffix}-w1-{mode}-t0.result.npz"
-                                )
-                            dump(case_path, case)
-                            env = os.environ | {
-                                "OMP_NUM_THREADS": "1",
-                                "RAYON_NUM_THREADS": str(count)
-                                if variant.startswith("dioptrin-")
-                                else "1",
-                                "OPENBLAS_NUM_THREADS": "1",
-                                "MKL_NUM_THREADS": "1",
-                                "NUMEXPR_NUM_THREADS": "1",
-                                "OMP_DYNAMIC": "FALSE",
-                                "OMP_PROC_BIND": "FALSE",
-                            }
-                            with case_path.with_suffix(".log").open("w") as log:
-                                result = subprocess.run(
-                                    [
-                                        sys.executable,
-                                        "-E",
-                                        "-s",
-                                        __file__,
-                                        "--case",
-                                        str(case_path),
-                                    ],
-                                    env=env,
-                                    stdout=log,
-                                    stderr=subprocess.STDOUT,
-                                )
-                            if result.returncode:
-                                failures.append(
-                                    dict(case=label, exit_code=result.returncode)
-                                )
-                                print(
-                                    f"FAILED: {label}; see {case_path.with_suffix('.log')}",
-                                    flush=True,
-                                )
-                            else:
-                                print(
-                                    case_path.with_suffix(".log").read_text().strip(),
-                                    flush=True,
-                                )
-                            summarize(output)
-                            dump(output / "failures.json", failures)
+                order.shuffle(cases)
+                # Establish the serial validation references before the first
+                # parallel trial, then shuffle all worker counts together.
+                if trial == 0:
+                    cases.sort(key=lambda case: case[0] != 1)
+                for count, mode, variant in cases:
+                    errors = mode == "poisson"
+                    suffix = f"{dataset}-{workload}-{variant}"
+                    label = f"{suffix}-w{count}-{mode}-t{trial}"
+                    case_path = output / "cases" / f"{label}.json"
+                    case = dict(
+                        dataset=dataset,
+                        workload=workload,
+                        variant=variant,
+                        workers=count,
+                        errors=errors,
+                        error_mode=mode,
+                        trial=trial,
+                        fixture=str(output / dataset),
+                        frames=args.frames,
+                        bins=args.bins,
+                        blocks=args.blocks,
+                        seconds=args.seconds,
+                        result=str(case_path.with_suffix(".result.json")),
+                    )
+                    if count > 1 or trial > 0:
+                        case["reference"] = str(
+                            output
+                            / "cases"
+                            / f"{suffix}-w1-{mode}-t0.result.npz"
+                        )
+                    dump(case_path, case)
+                    env = os.environ | {
+                        "OMP_NUM_THREADS": "1",
+                        "RAYON_NUM_THREADS": str(count)
+                        if variant.startswith("dioptrin-")
+                        else "1",
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "MKL_NUM_THREADS": "1",
+                        "NUMEXPR_NUM_THREADS": "1",
+                        "OMP_DYNAMIC": "FALSE",
+                        "OMP_PROC_BIND": "FALSE",
+                    }
+                    with case_path.with_suffix(".log").open("w") as log:
+                        result = subprocess.run(
+                            [
+                                sys.executable,
+                                "-E",
+                                "-s",
+                                __file__,
+                                "--case",
+                                str(case_path),
+                            ],
+                            env=env,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                        )
+                    if result.returncode:
+                        failures.append(
+                            dict(case=label, exit_code=result.returncode)
+                        )
+                        print(
+                            f"FAILED: {label}; see {case_path.with_suffix('.log')}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            case_path.with_suffix(".log").read_text().strip(),
+                            flush=True,
+                        )
+                    summarize(output)
+                    dump(output / "failures.json", failures)
     if failures:
         raise SystemExit(
             f"{len(failures)} cases failed; partial results and inputs retained in {output}"

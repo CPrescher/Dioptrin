@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import platform
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,13 @@ from setup import compiler_environment
 
 
 class RunnerTests(unittest.TestCase):
+    def test_uneven_worker_budgets_keep_the_same_batch(self):
+        frames = list(range(16))
+        for workers in (12, 14):
+            chunks = contiguous_chunks(frames, workers)
+            self.assertEqual(list(enumerate(frames)), [frame for chunk in chunks for frame in chunk])
+            self.assertEqual(sorted(map(len, chunks)), [1] * (workers * 2 - 16) + [2] * (16 - workers))
+
     def test_high_cpu_budgets_do_not_pin_each_worker_to_one_frame(self):
         frames = list(range(4)) * 8
         for workers in (4, 8):
@@ -55,9 +63,14 @@ class RunnerTests(unittest.TestCase):
         with patch.dict(os.environ, {"CC": "gcc", "CXX": "g++"}, clear=True):
             portable = compiler_environment(portable=True)
             native = compiler_environment()
-        for key in ("CFLAGS", "CXXFLAGS", "RUSTFLAGS"):
+        flags = ("RUSTFLAGS",) if sys.platform == "win32" else ("CFLAGS", "CXXFLAGS", "RUSTFLAGS")
+        windows_x64 = sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64")
+        for key in flags:
             self.assertNotIn("native", portable[key])
-            self.assertIn("native", native[key])
+            self.assertIn("x86-64-v3" if windows_x64 else "native", native[key])
+        if windows_x64:
+            self.assertEqual(native["CL"], "/arch:AVX2")
+            self.assertNotIn("CL", portable)
 
 
 if __name__ == "__main__":

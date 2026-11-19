@@ -1,4 +1,4 @@
-# Reproducible CPU integration benchmarks
+# Reproducible 1D integration benchmarks
 
 Compare Dioptrin, azint, and pyFAI from a normal Git clone. The **standard suite
 requires no private files, manual data copying, or dataset preparation**.
@@ -10,7 +10,8 @@ On Linux or macOS, install Python 3.11+, the stable Rust toolchain, Git, and a
 C++17 compiler with OpenMP. Linux distributions normally provide the latter in
 GCC (`g++`). On macOS, use `brew install gcc`; setup selects Homebrew's versioned
 compiler automatically. Set `CC` and `CXX` to override that selection. On Windows,
-use WSL2 for this benchmark tooling.
+use a Visual Studio Developer PowerShell with the MSVC C++ build tools and the
+Rust MSVC toolchain.
 
 ```bash
 git clone https://github.com/CPrescher/Dioptrin.git
@@ -19,9 +20,14 @@ python3 benchmarks/comparison/setup.py
 .venv-benchmark/bin/python benchmarks/comparison/compare.py
 ```
 
+On Windows, run `python benchmarks/comparison/setup.py`, then use
+`.venv-benchmark\Scripts\python.exe -E -s -B` in place of the interpreter in
+the examples. On Windows x64, setup pairs Dioptrin's `x86-64-v3` with
+AZINT's MSVC `/arch:AVX2`. The official pyFAI wheel keeps its upstream flags.
+
 Setup creates `.venv-benchmark`, builds the current Dioptrin source in release
-mode, builds the pinned upstream azint source, and installs pyFAI. Both source
-builds target the machine's CPU. Installation needs internet access; do it once
+mode, builds the pinned upstream azint source, and installs pyFAI. Linux and
+macOS source builds use native CPU flags. Installation needs internet access; do it once
 per machine/checkout, and rerun setup after changing the Dioptrin source. No
 Dioptrin runtime dependencies are changed. Setup records wheels, compiler flags,
 Rust versions, Cargo.lock, and resolved Python packages in the environment's
@@ -40,6 +46,10 @@ overrides the check and records a visible warning. Both parent and workers ignor
 Results go into a new, ignored `benchmark-results/<timestamp>/` directory:
 `summary.md`, `results.csv`, `numerical.json`, raw timing blocks, per-case logs
 and output arrays, hardware/thread settings, source revision, and input hashes.
+CPU runs save machine details in `environment.json` and GPU runs save them in
+`gpu-results.json`. Capture covers the OS, CPU model, physical and logical cores,
+RAM, and, where available, CPU affinity, Apple performance and efficiency cores,
+GPU inventory and driver, and relevant Slurm allocation settings.
 The standard run time depends on the CPU and setup costs; use the quick suite
 first to verify installation.
 
@@ -136,13 +146,16 @@ PyFAI owns an initialized CSR engine
 per worker. Native batch scheduling and result allocation are timed. Setup,
 first-result and all-workers-ready times, and process-lifetime peak RSS are
 separate columns. Setup includes backend import and lazy initialization.
-Frame workers receive contiguous slices of the logical input sequence, so the
-distinct-frame workload does not pin a worker to one image at 4/8 CPUs. Batch
-lengths are rounded up to a multiple of the CPU budget for balanced slices.
+Every worker budget receives the same logical frame sequence and batch size.
+Contiguous worker slices differ in length by at most one frame.
+`azint-prepared-mask` is a control for this pinned AZINT revision. It reuses
+the normalization baked into the masked sparse matrix. The runner checks
+it against stock AZINT on each input frame outside the timer.
 The fixed pyFAI mask is installed on its detector once, using its cached mask
 checksum rather than recalculating the checksum from a mask argument each call.
 
-Every case runs in a fresh process. Method order alternates between trials.
+Every case runs in a fresh process. A seeded shuffle varies method and
+worker order after establishing the one-worker references.
 Every output frame, including its order, is checked against the same backend's
 one-worker reference before and after timing. One-worker references are always
 included even if only higher worker counts are requested. Numerical quality
@@ -157,10 +170,67 @@ clone because the library does not track Cargo.lock; Python build/transitive
 dependencies also float within their constraints. For an exact environment
 replay, reuse the saved Cargo.lock and Python freeze alongside the same source
 and compiler. The default recipe fixes core versions and inputs, not every
-transitive dependency across future dates. This suite measures CPU 1D integration; it does not assess
-2D caking, GPU integration, decompression, or file-reading performance.
+transitive dependency across future dates. The CPU runner measures 1D integration
+on preloaded frames.
+
+## Detector-size and GPU comparison
+
+The CPU runner also accepts a native Windows environment with Dioptrin,
+pyFAI and AZINT installed. On Windows, peak RSS uses the peak process
+working set. To reproduce the paper's CPU worker sweep, use the saved
+build record with the exact Dioptrin wheel and the pinned AZINT commit.
+The Windows run used the official pyFAI wheel and compiled AZINT with
+MSVC and OpenMP from the upstream source.
+
+See the [paper benchmark recipes](../../docs/benchmarking.md#repeat-the-detector-size-comparison)
+for the fixed-work Windows and macOS sweeps.
+
+The GPU runner uses the same geometry, detector masks, radial range and
+bin count. It requires pyopencl in the comparison environment and native
+CUDA with NVRTC available to the Rust test executable. Each prepared
+uint32 frame is checked against the fixture for exact representation.
+Dioptrin measures both ordinary and pinned uploads and calculates
+products and sums in f64. pyFAI uses its full-split CSR OpenCL engine
+with ordinary NumPy buffers. A per-frame CUDA series uses the same
+one-frame-at-a-time workload. The CUDA batched series uses a single upload,
+launch, and download for the whole batch.
+The script checks the exact OpenCL implementation and device and rejects
+fallbacks. The timed batch starts in host memory and ends with the
+patterns back on host memory. Plan preparation, allocation and input
+conversion into the already prepared buffers happen before warm timing.
+The runner records a separate GPU kernel series. CUDA events enclose the
+integration launch. OpenCL profiling sums pyFAI's buffer reset, pixel
+preprocessing and CSR reduction kernels, plus any separate conversion kernel
+in the profiled trace. Both device measurements exclude
+the transfers and CPU dispatch in the host-to-pattern timings.
+
+~~~text
+python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --trials 3 --output benchmark-results/paper-gpu
+python -B benchmarks/comparison/plot_scaling.py --cpu benchmark-results/paper-cpu --gpu benchmark-results/paper-gpu/gpu-results.json --output benchmark-results/paper-figures
+~~~
+
+Pass --nvrtc with the directory containing the CUDA libraries if they
+are outside the search path. The GPU results include intensity-only
+and Poisson modes, five timed batches after two warmups, both CUDA
+layouts, and per-layout comparisons against strict CPU output on two distinct
+inputs. Cross-engine comparisons report absolute, relative L2 and positive-bin
+errors. Axis differences above 0.0001 degrees or a relative L2 above 1% fail
+fixture validation. First-pattern time starts with one decoded frame on the
+host, before loading geometry or preparing a plan, in a fresh process for
+each backend and layout. Driver and compiler caches keep their normal state.
+The standard figure uses the Block layout for all CUDA series. The GPU series is
+separate from CPU core scaling because it measures GPU work on a
+single device. Plotting requires Matplotlib and produces separate GPU kernel
+and host-to-pattern figures as PDF and PNG.
+
+This comparison uses prepared inputs. The separate
+[Eiger file benchmarks](../../docs/benchmarks/2026-11-18-cuda/README.md#native-integer-upload-and-hdf5)
+report the effect of real HDF5 and TIFF loading, including decoding,
+with their own calibration, file-cache settings and timing boundaries.
 
 ## Maxwell Slurm wrapper
+
+For the paper runs, follow the [EuXFEL node selection and replay commands](../../docs/benchmarking.md#run-on-desy-maxwell).
 
 From a terminal on Maxwell, clone the repository and submit from its root:
 

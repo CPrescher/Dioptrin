@@ -59,5 +59,9 @@ fi
 "${PYTHON_BIN:-python3}" benchmarks/comparison/environment.py "${cache_args[@]}"
 environment_python=$("${PYTHON_BIN:-python3}" -E -s -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["python"])' "$result_dir/environment.json")
-"$environment_python" -E -s -u benchmarks/comparison/compare.py \
+launch=()
+if [[ -n ${SLURM_CPUS_PER_TASK:-} ]]; then
+    launch=(srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK")
+fi
+"${launch[@]}" "$environment_python" -E -s -u benchmarks/comparison/compare.py \
     --output "$result_dir/comparison" --suite "${SUITE:-standard}" "$@"
