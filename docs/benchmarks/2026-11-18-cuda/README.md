@@ -647,6 +647,36 @@ For the cold comparison, add `--cache cold` to each integration command and
 use distinct output paths on the drive being tested. Allow space for one
 temporary scan copy. SSD controller caching is outside the Windows file cache.
 
+#### Shared CUDA plan
+
+The isolated `dioptrin-io` build also benchmarks one CUDA context and one
+prepared integration plan. A pool of decoder threads writes directly into
+disjoint frames of the reusable pinned input tiles. CUDA integrates one tile
+while the pool decodes the next. A new scan opens its own HDF5 snapshot and
+reuses the context, plan, streams, buffers, and decoder pool.
+
+Each cold trial reserves two independent unbuffered copies of the scan before
+starting the worker. The first pass includes launching the process and preparing
+the plan. The second begins when the caller submits a request to the same
+process, with the plan already loaded. Both passes include opening and indexing
+their own copy, reading and decoding, integration, and returning every pattern
+to the caller. Per-drive read counters and checksums verify both copies. The
+same full-scan result can be checked against a CPU run saved with
+`hdf5_batch.py --patterns-out` using only `--methods pyfai_full --backends cpu_csr`.
+
+~~~sh
+python -B docs/benchmarks/2026-11-18-cuda/hdf5_persistent.py \
+    --hdf5 path/to/scan0001/eiger_0000.h5 --metadata path/to/Diopside_g1.h5 \
+    --benchmark-exe path/to/dioptrin-io-test-executable \
+    --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
+    --reference benchmark-results/cuda/eiger-cpu-reference.f64 \
+    --threads 8 --tile-sizes 32 --cache cold --frames 0 --trials 3 \
+    --out benchmark-results/cuda/eiger-shared-plan-cold.json
+~~~
+
+Use `--threads 4 --tile-sizes 16` for the four-decoder control or `--cache warm`
+for the cache-primed control, with a separate output path for each.
+
 ### Proposed automatic selection
 
 Use the requested integration method and precision as requirements.

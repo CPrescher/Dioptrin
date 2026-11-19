@@ -50,9 +50,12 @@ def main():
     bench = source / "src" / "integration" / "cuda" / "bench"
     hdf5 = bench / "hdf5.rs"
     harness = hdf5.read_text(encoding="utf-8")
-    harness = harness.replace("mod reader;", '#[path = "hdf5/io_reader.rs"]\nmod reader;', 1)
+    harness = harness.replace(
+        "mod reader;", '#[path = "hdf5/io_reader.rs"]\nmod reader;\nmod persistent;', 1,
+    )
     hdf5.write_text(harness.replace("Dataset<'_>", "Dataset"), encoding="utf-8")
     shutil.copy2(HERE / "io_reader_adapter.rs", bench / "hdf5" / "io_reader.rs")
+    shutil.copy2(HERE / "io_reader_persistent.rs", bench / "hdf5" / "persistent.rs")
 
     bridge = work / "bridge"
     (bridge / "src").mkdir(parents=True)

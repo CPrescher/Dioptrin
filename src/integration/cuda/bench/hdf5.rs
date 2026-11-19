@@ -252,9 +252,12 @@ fn measure(
         stdout.flush()?;
         output = values;
     }
-    let mut file = BufWriter::new(File::create(
-        env::var_os("DIOPTRIN_HDF5_OUTPUT").ok_or("missing output path")?,
-    )?);
+    let destination = env::var_os("DIOPTRIN_HDF5_OUTPUT").ok_or("missing output path")?;
+    write_patterns(Path::new(&destination), &output)
+}
+
+fn write_patterns(path: &Path, output: &[f64]) -> Result<()> {
+    let mut file = BufWriter::new(File::create(path)?);
     for value in output {
         if !value.is_finite() {
             return Err("nonfinite HDF5 integration output".into());

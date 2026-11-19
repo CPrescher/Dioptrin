@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,6 +173,7 @@ def main():
     parser.add_argument("--hdf5", required=True, type=Path)
     parser.add_argument("--metadata", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--patterns-out", type=Path, help="Save the first configuration's f64 patterns for one method")
     parser.add_argument("--dataset", default="/entry_0000/ESRF-ID11/eiger/data")
     parser.add_argument("--library", type=Path, help="Path to native HDF5 library")
     parser.add_argument("--nvrtc", type=Path)
@@ -191,6 +193,8 @@ def main():
         parser.error("tile sizes must be 1 to 64 and repeats cannot be negative")
     if args.readers and args.repeats != 0:
         parser.error("--readers measures fresh runs and requires --repeats 0")
+    if args.patterns_out and len(args.methods) != 1:
+        parser.error("--patterns-out requires exactly one integration method")
     if args.cache == "cold" and (os.name != "nt" or not args.readers):
         parser.error("cold runs use Windows and --readers with --repeats 0")
     if not args.library and os.name != "nt":
@@ -287,6 +291,12 @@ def main():
                     rows, patterns = trial(executable, trial_env), temporary
                 if index == 0:
                     reference = patterns
+                    if args.patterns_out:
+                        args.patterns_out.parent.mkdir(parents=True, exist_ok=True)
+                        if isinstance(patterns, Path):
+                            shutil.copyfile(patterns, args.patterns_out)
+                        else:
+                            patterns.tofile(args.patterns_out)
                 errors = compare_output(patterns, reference, frames)
                 data["records"].append(dict(
                     method=method, backend=backend, tile=tile, readers=readers or 1,

@@ -3,6 +3,7 @@ use dioptrin_io::hdf5::{
     Limits,
     raw::{FrameBuffer, RawReader},
 };
+use rayon::prelude::*;
 use std::path::Path;
 
 pub(super) struct LibraryApi;
@@ -38,6 +39,52 @@ impl Dataset {
             self.reader
                 .read_frame_u32_into(first + i, frame, &mut self.scratch)?;
         }
+        Ok(())
+    }
+}
+
+pub(super) struct ParallelDecoder {
+    pool: rayon::ThreadPool,
+    scratch: Vec<FrameBuffer>,
+}
+
+impl ParallelDecoder {
+    pub(super) fn new(threads: usize) -> Result<Self> {
+        Ok(Self {
+            pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()?,
+            scratch: (0..threads).map(|_| FrameBuffer::default()).collect(),
+        })
+    }
+
+    pub(super) fn read(
+        &mut self,
+        source: &Dataset,
+        first: usize,
+        output: &mut [u32],
+    ) -> Result<()> {
+        let pixels = source.dims[1] * source.dims[2];
+        if output.is_empty() || !output.len().is_multiple_of(pixels) {
+            return Err("expected whole frames".into());
+        }
+        let frames_per_worker = (output.len() / pixels).div_ceil(self.scratch.len());
+        self.pool.install(|| {
+            output
+                .par_chunks_mut(frames_per_worker * pixels)
+                .zip(&mut self.scratch)
+                .enumerate()
+                .try_for_each(|(shard, (out, scratch))| {
+                    for (i, frame) in out.chunks_exact_mut(pixels).enumerate() {
+                        source.reader.read_frame_u32_into(
+                            first + shard * frames_per_worker + i,
+                            frame,
+                            scratch,
+                        )?;
+                    }
+                    Ok::<_, dioptrin_io::hdf5::Error>(())
+                })
+        })?;
         Ok(())
     }
 }
