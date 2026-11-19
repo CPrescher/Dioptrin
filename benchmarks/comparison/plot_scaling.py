@@ -20,8 +20,10 @@ CPU = {
     "pyfai-full": ("pyFAI full CSR", "#d55e00", "s"),
     "dioptrin-supersampled": ("Dioptrin supersampled", "#009e73", "^"),
     "azint": ("AZINT subpixel", "#9b5597", "D"),
+    "azint-prepared-mask": ("AZINT prepared mask", "#6e3b82", "s"),
 }
 GPU = {
+    "dioptrin-cuda-single": ("Dioptrin CUDA, per frame", "#009e73"),
     "dioptrin-cuda-pageable": ("Dioptrin CUDA, ordinary", "#56b4e9"),
     "dioptrin-cuda": ("Dioptrin CUDA, pinned", "#0072b2"),
     "pyfai-opencl": ("pyFAI OpenCL, ordinary", "#d55e00"),
@@ -40,10 +42,12 @@ def save(fig, output, name):
 
 def plot_cpu(directory, output, mode):
     rates = defaultdict(list)
+    frame_counts = defaultdict(set)
     for path in sorted((directory / "cases").glob("*.result.json")):
         row = json.loads(path.read_text(encoding="utf-8"))
         if row["error_mode"] == mode and row["workload"] == "repeated":
-            rates[row["dataset"], row["variant"], row["workers"]].extend(row["block_frames_per_s"])
+            rates[row["dataset"], row["variant"], row["workers"]].append(row["frames_per_s"])
+            frame_counts[row["dataset"]].add(row["frames"])
     datasets = [d for d in DATASETS if any(key[0] == d for key in rates)]
     if not datasets:
         raise ValueError(f"No CPU results in {directory} for {mode}")
@@ -69,7 +73,7 @@ def plot_cpu(directory, output, mode):
                 linewidth=1.5, markersize=4, capsize=2,
             )
             handles[label] = handle
-            if workers[0] == 1:
+            if workers[0] == 1 and len(frame_counts[dataset]) == 1:
                 speed.plot(workers, centers / centers[0], color=color, marker=marker,
                            linewidth=1.5, markersize=4)
         through.set_yscale("log")
@@ -88,7 +92,8 @@ def plot_cpu(directory, output, mode):
 def plot_gpu(records, output, mode, series, metric, filename):
     rows = json.loads(records.read_text(encoding="utf-8"))
     error_mode = mode == "poisson"
-    records = [r for r in rows["records"] if r["backend"] in series and r["errors"] == error_mode]
+    records = [r for r in rows["records"] if r["backend"] in series and r["errors"] == error_mode
+               and r["layout"] in ("block", "csr")]
     datasets = [d for d in DATASETS if any(r["dataset"] == d for r in records)]
     if not datasets:
         return
@@ -103,9 +108,8 @@ def plot_gpu(records, output, mode, series, metric, filename):
         for dataset in datasets:
             candidates = [r for r in records if r["dataset"] == dataset
                           and r["backend"] == backend]
-            best = max(candidates, key=lambda r: r["frames_per_s"])
-            fps = [rows["frames"] / s for s in best["batch_seconds"]]
-            center = best["frames_per_s"]
+            fps = [r["frames_per_s"] for r in candidates]
+            center = median(fps)
             values.append(center)
             errors.append([center - min(fps), max(fps) - center])
         bars = ax.bar(x + (i - (len(backends) - 1) / 2) * width, values, width,

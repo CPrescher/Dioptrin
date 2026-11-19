@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import random
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ VARIANTS = (
     "dioptrin-supersampled",
     "dioptrin-pyfai_full",
     "azint",
+    "azint-prepared-mask",
     "pyfai-full",
     "pyfai-bbox",
 )
@@ -39,8 +41,11 @@ def dump(path, value):
 
 def contiguous_chunks(frames, workers):
     indexed = list(enumerate(frames))
-    size = (len(frames) + workers - 1) // workers
-    return [indexed[i * size : (i + 1) * size] for i in range(workers)]
+    size, extra = divmod(len(frames), workers)
+    return [
+        indexed[i * size + min(i, extra) : (i + 1) * size + min(i + 1, extra)]
+        for i in range(workers)
+    ]
 
 
 def peak_rss_bytes():
@@ -145,7 +150,7 @@ def worker(case_path):
         setup_first = time.perf_counter() - started
         baseline = [extract(r) for r in integrate_frames(unique)]
     else:
-        if variant == "azint":
+        if variant.startswith("azint"):
             import azint
             from azint.detector import Detector
 
@@ -162,6 +167,12 @@ def worker(case_path):
                 polarization_factor=0.965,
                 error_model="poisson" if errors else None,
             )
+            stock = None
+            if variant == "azint-prepared-mask":
+                # This pinned AZINT revision bakes the fixed mask into its
+                # matrix and has a cached normalization for that matrix.
+                stock = copy.copy(ai)
+                ai.mask = None
 
             def integrate(engine, frame):
                 return engine.integrate(frame)
@@ -213,6 +224,11 @@ def worker(case_path):
         extract(integrate(ai, image))
         setup_first = time.perf_counter() - started
         baseline = [extract(integrate(ai, frame)) for frame in unique]
+        if variant == "azint-prepared-mask":
+            for frame, prepared in zip(unique, baseline):
+                ordinary = extract(integrate(stock, frame))
+                for actual, expected in zip(prepared[:3 if errors else 2], ordinary):
+                    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
         engines = [ai]
         for _ in range(1, workers):
             engine = copy.copy(ai)
@@ -372,7 +388,9 @@ def summarize(output):
         if row["workers"] != 1 or row["trial"] != 0:
             continue
         variant = row["variant"]
-        if variant in ("azint", "dioptrin-supersampled"):
+        if variant == "azint-prepared-mask":
+            reference_variant = "azint"
+        elif variant in ("azint", "dioptrin-supersampled"):
             reference_variant = "dioptrin-supersampled"
         elif variant in ("pyfai-full", "dioptrin-pyfai_full"):
             reference_variant = "dioptrin-pyfai_full"
@@ -531,10 +549,12 @@ def main():
             f"--workers must be within the process CPU allocation (1..{available})"
         )
     workers = sorted(set(workers) | {1})
+    if args.frames < workers[-1]:
+        parser.error("--frames must give each worker at least one frame")
     required = ["numpy", "pyFAI"]
     if any(v.startswith("dioptrin-") for v in args.variants):
         required.append("dioptrin")
-    if "azint" in args.variants:
+    if any(v.startswith("azint") for v in args.variants):
         required.append("azint")
     try:
         versions = {name: importlib.metadata.version(name) for name in required}
@@ -603,82 +623,86 @@ def main():
             output / dataset, dataset, args.data_dir, args.cache_dir, args.offline
         )
     failures = []
+    order = random.Random(42019)
     for trial in range(args.trials):
-        variants = args.variants if trial % 2 == 0 else list(reversed(args.variants))
+        cases = [(count, mode, variant) for count in workers for mode in args.modes
+                 for variant in args.variants]
         for dataset in args.datasets:
             for workload in args.workloads:
                 if workload == "frames" and metadata[dataset]["distinct_frames"] < 2:
                     continue
-                for count in workers:
-                    for mode in args.modes:
-                        errors = mode == "poisson"
-                        for variant in variants:
-                            suffix = f"{dataset}-{workload}-{variant}"
-                            label = f"{suffix}-w{count}-{mode}-t{trial}"
-                            case_path = output / "cases" / f"{label}.json"
-                            case = dict(
-                                dataset=dataset,
-                                workload=workload,
-                                variant=variant,
-                                workers=count,
-                                errors=errors,
-                                error_mode=mode,
-                                trial=trial,
-                                fixture=str(output / dataset),
-                                frames=((max(args.frames, count) + count - 1) // count)
-                                * count,
-                                bins=args.bins,
-                                blocks=args.blocks,
-                                seconds=args.seconds,
-                                result=str(case_path.with_suffix(".result.json")),
-                            )
-                            if count > 1 or trial > 0:
-                                case["reference"] = str(
-                                    output
-                                    / "cases"
-                                    / f"{suffix}-w1-{mode}-t0.result.npz"
-                                )
-                            dump(case_path, case)
-                            env = os.environ | {
-                                "OMP_NUM_THREADS": "1",
-                                "RAYON_NUM_THREADS": str(count)
-                                if variant.startswith("dioptrin-")
-                                else "1",
-                                "OPENBLAS_NUM_THREADS": "1",
-                                "MKL_NUM_THREADS": "1",
-                                "NUMEXPR_NUM_THREADS": "1",
-                                "OMP_DYNAMIC": "FALSE",
-                                "OMP_PROC_BIND": "FALSE",
-                            }
-                            with case_path.with_suffix(".log").open("w") as log:
-                                result = subprocess.run(
-                                    [
-                                        sys.executable,
-                                        "-E",
-                                        "-s",
-                                        __file__,
-                                        "--case",
-                                        str(case_path),
-                                    ],
-                                    env=env,
-                                    stdout=log,
-                                    stderr=subprocess.STDOUT,
-                                )
-                            if result.returncode:
-                                failures.append(
-                                    dict(case=label, exit_code=result.returncode)
-                                )
-                                print(
-                                    f"FAILED: {label}; see {case_path.with_suffix('.log')}",
-                                    flush=True,
-                                )
-                            else:
-                                print(
-                                    case_path.with_suffix(".log").read_text().strip(),
-                                    flush=True,
-                                )
-                            summarize(output)
-                            dump(output / "failures.json", failures)
+                order.shuffle(cases)
+                # Establish the serial validation references before the first
+                # parallel trial, then shuffle all worker counts together.
+                if trial == 0:
+                    cases.sort(key=lambda case: case[0] != 1)
+                for count, mode, variant in cases:
+                    errors = mode == "poisson"
+                    suffix = f"{dataset}-{workload}-{variant}"
+                    label = f"{suffix}-w{count}-{mode}-t{trial}"
+                    case_path = output / "cases" / f"{label}.json"
+                    case = dict(
+                        dataset=dataset,
+                        workload=workload,
+                        variant=variant,
+                        workers=count,
+                        errors=errors,
+                        error_mode=mode,
+                        trial=trial,
+                        fixture=str(output / dataset),
+                        frames=args.frames,
+                        bins=args.bins,
+                        blocks=args.blocks,
+                        seconds=args.seconds,
+                        result=str(case_path.with_suffix(".result.json")),
+                    )
+                    if count > 1 or trial > 0:
+                        case["reference"] = str(
+                            output
+                            / "cases"
+                            / f"{suffix}-w1-{mode}-t0.result.npz"
+                        )
+                    dump(case_path, case)
+                    env = os.environ | {
+                        "OMP_NUM_THREADS": "1",
+                        "RAYON_NUM_THREADS": str(count)
+                        if variant.startswith("dioptrin-")
+                        else "1",
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "MKL_NUM_THREADS": "1",
+                        "NUMEXPR_NUM_THREADS": "1",
+                        "OMP_DYNAMIC": "FALSE",
+                        "OMP_PROC_BIND": "FALSE",
+                    }
+                    with case_path.with_suffix(".log").open("w") as log:
+                        result = subprocess.run(
+                            [
+                                sys.executable,
+                                "-E",
+                                "-s",
+                                __file__,
+                                "--case",
+                                str(case_path),
+                            ],
+                            env=env,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                        )
+                    if result.returncode:
+                        failures.append(
+                            dict(case=label, exit_code=result.returncode)
+                        )
+                        print(
+                            f"FAILED: {label}; see {case_path.with_suffix('.log')}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            case_path.with_suffix(".log").read_text().strip(),
+                            flush=True,
+                        )
+                    summarize(output)
+                    dump(output / "failures.json", failures)
     if failures:
         raise SystemExit(
             f"{len(failures)} cases failed; partial results and inputs retained in {output}"

@@ -28,10 +28,16 @@ def run(command, **kwargs):
 
 def compiler_environment(portable=False):
     env = os.environ.copy()
+    windows_x64 = sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64")
+    # Use a common AVX2/FMA target for the two locally built Windows libraries.
+    # pyFAI is a distribution wheel and retains its upstream build settings.
+    target = "x86-64-v3" if windows_x64 else "native"
     env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + (
-        " -C target-cpu=native" if not portable else ""
+        f" -C target-cpu={target}" if not portable else ""
     )
     if sys.platform == "win32":
+        if windows_x64 and not portable:
+            env["CL"] = f"{env.get('CL', '')} /arch:AVX2".strip()
         return env
     if "CXX" not in env:
         if sys.platform == "darwin":
@@ -69,6 +75,7 @@ def compiler_environment(portable=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--venv", type=Path, default=ROOT / ".venv-benchmark")
+    parser.add_argument("--azint-source", type=Path, help="Local Git clone containing the pinned AZINT revision")
     parser.add_argument(
         "--portable",
         action="store_true",
@@ -167,20 +174,10 @@ def main():
         )
         with tempfile.TemporaryDirectory(prefix="dioptrin-azint-") as temporary:
             source = Path(temporary) / "azint"
-            run(
-                [
-                    "git",
-                    "clone",
-                    "--quiet",
-                    "https://github.com/maxiv-science/azint.git",
-                    source,
-                ],
-                env=env,
-            )
-            run(
-                ["git", "-C", source, "checkout", "--quiet", "--detach", AZINT_COMMIT],
-                env=env,
-            )
+            origin = args.azint_source.resolve().as_posix() if args.azint_source else "https://github.com/maxiv-science/azint.git"
+            local = ["--local", "--no-hardlinks"] if args.azint_source else []
+            run(["git", "clone", "--quiet", *local, origin, source], env=env)
+            run(["git", "-C", source, "checkout", "--quiet", "--detach", AZINT_COMMIT], env=env)
             run(
                 [
                     python,

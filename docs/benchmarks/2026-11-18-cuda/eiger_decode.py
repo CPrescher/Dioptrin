@@ -6,11 +6,14 @@ from contextlib import ExitStack
 import importlib.metadata
 import json
 from multiprocessing import get_context
+import os
 from pathlib import Path
 from statistics import median
+from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from hdf5_batch import digest_file, scan_info
+from hdf5_batch import cache_observation, digest_file, disk_delta, disk_reads, scan_info, storage_for, trial_input
+from prepare_io_benchmarks import executable_provenance
 from pyfai_hdf5 import NativeReader
 
 
@@ -85,12 +88,16 @@ def main():
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--readers", nargs="+", type=int, choices=(1, 2, 4, 8), default=[1, 4, 8])
     parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--cache", choices=("warm", "cold"), default="warm")
+    parser.add_argument("--allow-unverified-build", action="store_true")
     output = parser.add_mutually_exclusive_group(required=True)
     output.add_argument("--out", type=Path)
     output.add_argument("--extra-mask-out", type=Path, help="Write a fixed union of sentinel locations")
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
+    if args.cache == "cold" and os.name != "nt":
+        parser.error("cold runs use a Windows unbuffered copy")
     import h5py
     import hdf5plugin
     import numpy as np
@@ -101,6 +108,7 @@ def main():
         parser.error("each reader must have at least one frame")
     filename = str(args.hdf5.resolve())
     bridge = str(args.io_bridge.resolve())
+    build = executable_provenance(args.io_bridge, args.allow_unverified_build)
     if args.extra_mask_out:
         indices = scan_dummy_pixels(filename, bridge, args.dataset, frames, max(args.readers))
         args.extra_mask_out.parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +117,8 @@ def main():
         return
     record = dict(
         file_sha256=digest_file(args.hdf5), io_bridge_sha256=digest_file(args.io_bridge),
+        io_bridge_build=build, cache=args.cache, source_storage=storage_for(args.hdf5),
+        scratch_storage=storage_for(args.out.parent),
         dataset=args.dataset, frames=frames, shape=shape, compressed_bytes=compressed,
         fabio=importlib.metadata.version("fabio"), hdf5=h5py.version.hdf5_version,
         hdf5plugin=hdf5plugin.version, samples=[],
@@ -128,15 +138,21 @@ def main():
     ctx = get_context("spawn")
     for repeat in range(args.repeats):
         for reader, count in configs[::1 if repeat % 2 == 0 else -1]:
-            cases = [dict(file=filename, dataset=args.dataset, shape=shape, bridge=bridge,
-                          reader=reader, first=i * frames // count, stop=(i + 1) * frames // count)
-                     for i in range(count)]
-            barrier = ctx.Barrier(count, timeout=60)
-            with ProcessPoolExecutor(count, mp_context=ctx, initializer=initialize,
-                                     initargs=(barrier,)) as pool:
-                intervals = list(pool.map(worker, cases))
+            with TemporaryDirectory(dir=args.out.resolve().parent) as directory, trial_input(
+                    args.hdf5, Path(directory), args.cache, record["file_sha256"]) as path:
+                storage = storage_for(path)
+                before = disk_reads()
+                cases = [dict(file=str(path), dataset=args.dataset, shape=shape, bridge=bridge,
+                              reader=reader, first=i * frames // count, stop=(i + 1) * frames // count)
+                         for i in range(count)]
+                barrier = ctx.Barrier(count, timeout=60)
+                with ProcessPoolExecutor(count, mp_context=ctx, initializer=initialize,
+                                         initargs=(barrier,)) as pool:
+                    intervals = list(pool.map(worker, cases))
+                observation = cache_observation(storage, disk_delta(before), args.cache, compressed)
             seconds = max(end for _, end in intervals) - min(start for start, _ in intervals)
-            row = dict(reader=reader, processes=count, seconds=seconds, frames_per_s=frames / seconds)
+            row = dict(reader=reader, processes=count, seconds=seconds, frames_per_s=frames / seconds,
+                       **observation)
             record["samples"].append(row)
             args.out.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
             print(f'{reader} x{count}: {row["frames_per_s"]:.1f} frames/s', flush=True)

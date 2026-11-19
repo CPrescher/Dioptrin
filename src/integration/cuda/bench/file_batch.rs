@@ -375,11 +375,11 @@ fn eiger_files() -> Result<()> {
         let use_pinned = selection != "cuda_pageable";
         let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
         let plan = cuda.prepare_f64(&cpu, case.shape, BINS)?;
-        let layout = if use_pinned || matches!(method, IntegrationMethod::Counting) {
-            Layout::Block
-        } else {
-            Layout::Warp
-        };
+        let requested = env::var("DIOPTRIN_CUDA_DISK_LAYOUT").unwrap_or_else(|_| "block".into());
+        let layout = Layout::ALL
+            .into_iter()
+            .find(|layout| layout.name() == requested)
+            .ok_or("unknown disk benchmark CUDA layout")?;
         let pool = ThreadPoolBuilder::new().num_threads(TILE).build()?;
         if matches!(selection.as_str(), "cuda_native" | "cuda_native_direct") {
             let kernel = plan.kernel_i32(layout, true)?;

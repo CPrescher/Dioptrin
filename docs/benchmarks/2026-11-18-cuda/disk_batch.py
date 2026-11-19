@@ -73,6 +73,7 @@ def main():
     parser.add_argument("--direct-io", action="store_true", help="Bypass the Windows filesystem data cache")
     parser.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
     parser.add_argument("--backends", nargs="+", choices=BACKENDS, default=BACKENDS)
+    parser.add_argument("--layout", choices=("block", "warp"), default="block")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--cargo", default="cargo")
     args = parser.parse_args()
@@ -96,6 +97,7 @@ def main():
     env.update(
         DIOPTRIN_CUDA_EIGER_DIR=str(eiger_dir),
         DIOPTRIN_CUDA_DISK_DIR=str(copies),
+        DIOPTRIN_CUDA_DISK_LAYOUT=args.layout,
     )
     output = args.out.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +119,7 @@ def main():
             "filesystem_cache": ("Windows unbuffered data reads" if args.direct_io
                                  else "normal filesystem cache, fixture copies read before timing"),
             "repeats": args.repeats,
+            "cuda_layout": args.layout,
         },
         "trials": [],
     }

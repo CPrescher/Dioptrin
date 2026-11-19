@@ -11,7 +11,8 @@ repeating measurements across machines.
 | --- | --- |
 | CPU worker scaling | Integrate prepared host-memory frames and return patterns. Record setup, first result and peak process memory separately. |
 | GPU integration | Time GPU kernels for decoded frames. Include on-device preprocessing, reduction and normalization, with transfer and CPU dispatch outside the device time. |
-| GPU host to pattern | Upload prepared host-memory frames, integrate and return patterns to the host. Record CUDA with pinned and ordinary input buffers and pyFAI OpenCL with ordinary buffers. |
+| GPU host to pattern | Upload prepared host-memory frames, integrate and return patterns to the host. Compare CUDA and pyFAI OpenCL one frame at a time and record CUDA batches with pinned and ordinary inputs. |
+| GPU first pattern | Start with one decoded frame in host memory in a fresh process. Load the geometry and mask, initialize the backend and return one pattern. |
 | Decode only | Read and decompress detector data into native host arrays. Record the file-cache conditions and exclude integration. |
 | File to pattern | Start the processing workers, read and decode files or HDF5 datasets, integrate the frames and collect the patterns. Use a cold-cache first read for user-facing throughput and record the storage device. |
 
@@ -39,6 +40,8 @@ checkout provides their supporting modules, Rust harnesses, and fixtures.
 | {download}`eiger_decode.py <benchmarks/2026-11-18-cuda/eiger_decode.py>` | Decode a real Eiger HDF5 scan with FabIO or dioptrin-io. |
 | {download}`hdf5_batch.py <benchmarks/2026-11-18-cuda/hdf5_batch.py>` and {download}`pyfai_hdf5.py <benchmarks/2026-11-18-cuda/pyfai_hdf5.py>` | Measure the Dioptrin and pyFAI Eiger pipelines under recorded cache conditions. |
 | {download}`hdf5_persistent.py <benchmarks/2026-11-18-cuda/hdf5_persistent.py>` | Time new scans with a fresh or retained CUDA plan. |
+| {download}`disk_batch.py <benchmarks/2026-11-18-cuda/disk_batch.py>` | Compare buffered and unbuffered TIFF reads with a fixed CUDA layout. |
+| {download}`prepare_io_benchmarks.py <benchmarks/2026-11-18-cuda/prepare_io_benchmarks.py>` | Build the isolated dioptrin-io reader and record build provenance. |
 
 The [Eiger reproduction commands](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-18-cuda/README.md#reproduction)
 show how to build the isolated dioptrin-io variant and run the file benchmarks.
@@ -50,7 +53,7 @@ Activate the comparison environment and run the CPU sweep from the repository
 root. On Windows, use the workstation's worker budgets.
 
 ```text
-python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 1 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
+python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
 ```
 
 For macOS, run the same CPU workload with the common worker budgets through 12
@@ -60,10 +63,10 @@ core counts where macOS reports them.
 ```bash
 python3 benchmarks/comparison/setup.py
 .venv-benchmark/bin/python -E -s -B benchmarks/comparison/compare.py \
-  --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
+  --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
   --workers 1,2,4,8,12 \
-  --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full \
-  --modes poisson --bins 2000 --frames 16 --trials 1 --blocks 3 --seconds 0.25 \
+  --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full \
+  --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 \
   --output benchmark-results/paper-macos-cpu
 ```
 
@@ -75,13 +78,18 @@ python3 benchmarks/comparison/setup.py
   See the [Maxwell batch job documentation](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/).
 
 For GPU runs, install PyOpenCL and make CUDA NVRTC available to the benchmark
-executable. Specify the NVIDIA model present in the allocation. The runner
+executable. The CUDA 13 build needs compute capability 7.5 or newer and a
+driver compatible with the installed NVRTC release's PTX. Check the GPU and
+driver on a Maxwell allocation before submitting the GPU job. Specify the
+NVIDIA model present in the allocation. The runner
 checks that both backends use the requested model and that pyFAI selected its
 OpenCL engine. Use a single-GPU allocation where both runtimes can see the
 same device.
 
+[NVIDIA CUDA compatibility documentation](https://docs.nvidia.com/deploy/cuda-compatibility/latest/why-cuda-compatibility.html)
+
 ```text
-python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --output benchmark-results/paper-gpu
+python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --trials 3 --output benchmark-results/paper-gpu
 ```
 
 ## Machine records and results
@@ -93,6 +101,8 @@ records the device and driver used by OpenCL. On Maxwell, the suite records the
 Slurm allocation, and the wrapper saves the scheduler's job details and the
 loaded software modules. Keep the CPU worker budget with the results because a
 worker count can include simultaneous multithreading on one physical core.
+Workers follow the OS scheduler within the recorded allocation. Report these
+as worker budgets, since affinity does not identify which cores handled each batch.
 
 Add any relevant run conditions that require local knowledge, such as laptop
 power mode, whether it was plugged in, competing jobs, or which storage held

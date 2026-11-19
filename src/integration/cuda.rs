@@ -83,8 +83,14 @@ impl Cuda {
             return Ok(None);
         }
         let context = CudaContext::new(0)?;
-        let stream = context.new_stream()?;
         let (major, minor) = context.compute_capability()?;
+        if (major, minor) < (7, 5) {
+            eprintln!(
+                "CUDA 13 NVRTC requires compute capability 7.5 or later (found {major}.{minor})"
+            );
+            return Ok(None);
+        }
+        let stream = context.new_stream()?;
         let start = Instant::now();
         let ptx = compile_ptx_with_opts(
             include_str!("cuda/kernels.cu"),
@@ -99,7 +105,9 @@ impl Cuda {
         )?;
         let compile_ms = elapsed_ms(start);
         let start = Instant::now();
-        let module = context.load_module(ptx)?;
+        let module = context.load_module(ptx).map_err(|error| {
+            format!("loading NVRTC PTX for compute capability {major}.{minor} failed ({error}); check driver and NVRTC compatibility")
+        })?;
         let module_ms = elapsed_ms(start);
         Ok(Some(Self {
             context,

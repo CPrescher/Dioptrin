@@ -1,5 +1,5 @@
 use super::*;
-use cudarc::driver::CudaEvent;
+use cudarc::driver::{CudaEvent, SyncOnDrop};
 use std::{sync::mpsc::sync_channel, thread};
 
 mod reader;
@@ -129,10 +129,37 @@ fn cpu_batch_hdf5(
 
 struct Events {
     first: usize,
+    count: usize,
     start: CudaEvent,
     upload: CudaEvent,
     kernel: CudaEvent,
     download: CudaEvent,
+}
+
+// Passing a plain slice would drop the pinned allocation's event bookkeeping.
+// Delegate to HostSlice and shorten only the returned copy span.
+struct PinnedPrefix<'a, T>(&'a mut PinnedHostSlice<T>, usize);
+
+impl<T> HostSlice<T> for PinnedPrefix<'_, T> {
+    fn len(&self) -> usize {
+        self.1
+    }
+
+    unsafe fn stream_synced_slice<'a>(
+        &'a self,
+        stream: &'a CudaStream,
+    ) -> (&'a [T], SyncOnDrop<'a>) {
+        let (slice, event) = unsafe { self.0.stream_synced_slice(stream) };
+        (&slice[..self.1], event)
+    }
+
+    unsafe fn stream_synced_mut_slice<'a>(
+        &'a mut self,
+        stream: &'a CudaStream,
+    ) -> (&'a mut [T], SyncOnDrop<'a>) {
+        let (slice, event) = unsafe { self.0.stream_synced_mut_slice(stream) };
+        (&mut slice[..self.1], event)
+    }
 }
 
 struct Slot<'a, I> {
@@ -162,7 +189,7 @@ impl<'a, I: DeviceRepr + ValidAsZeroBits> Slot<'a, I> {
             phases.upload_ms += f64::from(events.start.elapsed_ms(&events.upload)?);
             phases.kernel_ms += f64::from(events.upload.elapsed_ms(&events.kernel)?);
             phases.download_ms += f64::from(events.kernel.elapsed_ms(&events.download)?);
-            let data = self.output.as_slice()?;
+            let data = &self.output.as_slice()?[..events.count * PATTERN];
             let first = events.first * PATTERN;
             output[first..first + data.len()].copy_from_slice(data);
         }
@@ -182,24 +209,30 @@ fn cuda_batch_hdf5<I: DeviceRepr + ValidAsZeroBits>(
     let result: Result<()> = (|| {
         for (i, first) in (0..work.frames).step_by(work.tile).enumerate() {
             let count = (work.frames - first).min(work.tile);
-            let slot = &mut slots[if count < work.tile { 2 } else { i % 2 }];
+            let slot = &mut slots[i % slots.len()];
             slot.finish(&mut output, &mut phases)?;
+            let pixels = count * work.pixels();
             fill(
                 source,
                 work.first + first,
-                slot.input.as_mut_slice()?,
+                &mut slot.input.as_mut_slice()?[..pixels],
                 &mut phases,
             )?;
             let stream = Arc::clone(&slot.batch.stream);
             let event = || stream.record_event(Some(CUevent_flags::CU_EVENT_DEFAULT));
             let start = event()?;
-            slot.batch.upload(0, &slot.input)?;
+            slot.batch
+                .upload(0, &PinnedPrefix(&mut slot.input, pixels))?;
             let upload = event()?;
-            slot.batch.run(kernel)?;
+            slot.batch.run_frames(count.try_into()?, kernel)?;
             let kernel = event()?;
-            slot.batch.download(&mut slot.output)?;
+            slot.batch.download_frames(
+                count.try_into()?,
+                &mut PinnedPrefix(&mut slot.output, count * PATTERN),
+            )?;
             slot.events = Some(Events {
                 first,
+                count,
                 start,
                 upload,
                 kernel,
@@ -224,10 +257,8 @@ fn slots<'a, I: DeviceRepr + ValidAsZeroBits>(
     plan: &'a Plan<'a, f64>,
     work: &Work,
 ) -> Result<Vec<Slot<'a, I>>> {
-    [work.tile, work.tile, work.frames % work.tile]
-        .into_iter()
-        .filter(|&n| n != 0)
-        .map(|n| Slot::new(plan, n, work.pixels()))
+    (0..work.frames.div_ceil(work.tile).min(2))
+        .map(|_| Slot::new(plan, work.tile, work.pixels()))
         .collect()
 }
 

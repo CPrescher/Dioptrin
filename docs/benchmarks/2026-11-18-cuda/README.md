@@ -590,7 +590,12 @@ read-ahead and storage I/O. Copying and the check of the destination's SHA-256
 are outside the timer. The runner records per-drive read-byte deltas when
 the Windows counters are accessible. These system-wide counters include any
 concurrent activity on the drive. Warm trials read the original file before
-timing to prime the cache.
+each trial to prime the cache. The updated harness identifies the physical
+input drive and records the observed bytes for each trial. It labels a cold
+trial as observed when the drive reads at least the compressed payload size.
+A primed run with reads above the larger of 32 MiB and 1% of the compressed
+payload is labeled as storage traffic. Keep those rows separate from the
+cache-resident comparison.
 
 #### Reproduction
 
@@ -602,17 +607,17 @@ Visual Studio Developer PowerShell and equivalent environment variables.
 
 ~~~sh
 python -B docs/benchmarks/2026-11-18-cuda/prepare_io_benchmarks.py \
-    --io-source path/to/dioptrin-io --work target/eiger-io-repro
-cargo build --release --manifest-path target/eiger-io-repro/bridge/Cargo.toml
-cargo test --release --features cuda --lib --no-run \
-    --manifest-path target/eiger-io-repro/dioptrin/Cargo.toml
+    --io-source path/to/dioptrin-io --work target/eiger-io-repro --build
 ~~~
 
 Use the bridge shared library built by Cargo as `--io-bridge` below. Pass
-the Rust test executable reported by Cargo as `--benchmark-exe` to
+the Rust test executable printed by staging as `--benchmark-exe` to
 `hdf5_batch.py` to select the `dioptrin-io` reader. Keep the same release CPU
-target on the two Rust builds. The measurements here use
-`RUSTFLAGS="-C target-cpu=native"` for the caller-buffer build.
+target on the two Rust builds. The original measurements below used
+`RUSTFLAGS="-C target-cpu=native"`. The Windows post-review replay uses
+`-C target-cpu=x86-64-v3` alongside the matched CPU builds. Keep each
+`.benchmark-build.json` by its artifact. The runners verify the source and
+artifact hashes before assigning build provenance to results.
 
 ~~~sh
 python -B docs/benchmarks/2026-11-18-cuda/eiger_decode.py \
@@ -640,7 +645,7 @@ python -B docs/benchmarks/2026-11-18-cuda/hdf5_batch.py \
     --benchmark-exe path/to/dioptrin-io-test-executable \
     --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
     --frames 0 --methods pyfai_full --tile-sizes 16 --backends cpu_csr cuda_native_block \
-    --readers 4 4 --repeats 0 --out benchmark-results/cuda/eiger-io-dioptrin.json
+    --readers 4 --repeats 0 --out benchmark-results/cuda/eiger-io-dioptrin.json
 ~~~
 
 For the cold comparison, add `--cache cold` to each integration command and
@@ -655,12 +660,12 @@ disjoint frames of the reusable pinned input tiles. CUDA integrates one tile
 while the pool decodes the next. A new scan opens its own HDF5 snapshot and
 reuses the context, plan, streams, buffers, and decoder pool.
 
-Each cold trial reserves two independent unbuffered copies of the scan before
-starting the worker. The first pass includes launching the process and preparing
-the plan. The second begins when the caller submits a request to the same
-process, with the plan already loaded. Both passes include opening and indexing
-their own copy, reading and decoding, integration, and returning every pattern
-to the caller. Per-drive read counters and checksums verify both copies. The
+The updated harness randomizes fresh and retained trial order. A fresh trial
+includes launching the process and preparing the plan. A retained trial
+prepares a separate worker with one frame of the original scan, outside
+the timer. Both measured passes open a new unbuffered copy, read and decode
+all requested frames, integrate them and return every pattern to the caller.
+Per-drive read counters and post-trial checksums verify the input conditions. The
 same full-scan result can be checked against a CPU run saved with
 `hdf5_batch.py --patterns-out` using only `--methods pyfai_full --backends cpu_csr`.
 
@@ -670,12 +675,14 @@ python -B docs/benchmarks/2026-11-18-cuda/hdf5_persistent.py \
     --benchmark-exe path/to/dioptrin-io-test-executable \
     --extra-mask benchmark-results/cuda/eiger-sentinel-mask.json \
     --reference benchmark-results/cuda/eiger-cpu-reference.f64 \
-    --threads 8 --tile-sizes 32 --cache cold --frames 0 --trials 3 \
+    --backends cuda cpu_csr --threads 8 --tile-sizes 32 --cache cold --frames 0 --trials 3 \
     --out benchmark-results/cuda/eiger-shared-plan-cold.json
 ~~~
 
 Use `--threads 4 --tile-sizes 16` for the four-decoder control or `--cache warm`
 for the cache-primed control, with a separate output path for each.
+Use `pyfai_hdf5.py --plans fresh retained` to run the corresponding pyFAI
+controls with the same reader, worker budget and cache protocol.
 
 ### Proposed automatic selection
 

@@ -82,12 +82,20 @@ def graphics_inventory():
 
 
 def capture():
-    import psutil
-
+    affinity, physical, memory = None, None, None
+    logical = os.cpu_count()
     try:
-        affinity = psutil.Process().cpu_affinity()
-    except (AttributeError, NotImplementedError, psutil.Error):
-        affinity = None
+        import psutil
+    except ModuleNotFoundError:
+        pass
+    else:
+        try:
+            affinity = psutil.Process().cpu_affinity()
+        except (AttributeError, NotImplementedError, psutil.Error):
+            pass
+        physical = psutil.cpu_count(logical=False)
+        logical = psutil.cpu_count(logical=True)
+        memory = psutil.virtual_memory().total
     core_types = []
     if sys.platform == "darwin":
         for level in range(2):
@@ -101,11 +109,11 @@ def capture():
         os=platform.platform(),
         architecture=platform.machine(),
         cpu=cpu_model(),
-        physical_cores=psutil.cpu_count(logical=False),
-        logical_cpus=psutil.cpu_count(logical=True),
+        physical_cores=physical,
+        logical_cpus=logical,
         core_types=core_types,
         cpu_affinity=affinity,
-        ram_bytes=psutil.virtual_memory().total,
+        ram_bytes=memory,
         gpu_inventory=graphics_inventory(),
         allocation={key: os.environ[key] for key in SLURM_FIELDS if key in os.environ},
     )

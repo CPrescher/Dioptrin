@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -102,12 +103,17 @@ def compare_output(actual, reference, frames):
     return dict(max_intensity_absolute_error=signal, max_std_absolute_error=sigma)
 
 
-def digest_file(path):
-    digest = hashlib.sha256()
+def read_file(path, digest=None):
     buffer = bytearray(8 << 20)
     with path.open("rb") as file:
         while size := file.readinto(buffer):
-            digest.update(memoryview(buffer)[:size])
+            if digest is not None:
+                digest.update(memoryview(buffer)[:size])
+
+
+def digest_file(path):
+    digest = hashlib.sha256()
+    read_file(path, digest)
     return digest.hexdigest()
 
 
@@ -115,6 +121,7 @@ def digest_file(path):
 def trial_input(path, workspace, cache, sha256):
     """Give normal buffered readers a new file whose copy bypassed the Windows cache."""
     if cache == "warm":
+        read_file(path)
         yield path.resolve()
         return
     source = path.resolve()
@@ -144,6 +151,54 @@ def disk_reads():
 
 def disk_delta(before):
     return {device: value - before[device] for device, value in disk_reads().items() if device in before}
+
+
+def peak_process_rss(pid):
+    try:
+        import psutil
+    except ModuleNotFoundError:
+        return None
+    try:
+        memory = psutil.Process(pid).memory_info()
+        return getattr(memory, "peak_wset", None)
+    except psutil.Error:
+        return None
+
+
+@lru_cache(maxsize=None)
+def volume_info(volume):
+    if os.name != "nt" or len(volume) != 2 or volume[1] != ":" or not volume[0].isalpha():
+        return {}
+    try:
+        info = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command",
+             f"$partition = Get-Partition -DriveLetter {volume[0]} -ErrorAction Stop; "
+             "$disk = Get-Disk -Number $partition.DiskNumber -ErrorAction SilentlyContinue; "
+             "@{number=$partition.DiskNumber; model=$disk.FriendlyName; bus=[string]$disk.BusType} | ConvertTo-Json -Compress"],
+            text=True, errors="replace", stderr=subprocess.DEVNULL, timeout=8,
+        )
+        disk = json.loads(info)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    return dict(device=f"PhysicalDrive{disk['number']}", model=disk["model"], bus=disk["bus"])
+
+
+def storage_for(path):
+    volume = path.resolve().drive
+    return dict(volume=volume or path.resolve().anchor, device=None) | volume_info(volume)
+
+
+def cache_observation(storage, reads, cache, compressed):
+    device = storage["device"]
+    observed = next((value for name, value in reads.items() if name.lower() == (device or "").lower()), None)
+    # These are drive counters, which include any concurrent system activity.
+    if observed is None or observed < 0:
+        status = "unverified"
+    elif cache == "cold":
+        status = "cold-observed" if observed >= compressed else "short-of-cold"
+    else:
+        status = "warm-observed" if observed <= max(32 << 20, compressed * 0.01) else "storage-traffic"
+    return dict(storage=storage, disk_read_bytes=reads, input_device_read_bytes=observed, cache_observation=status)
 
 
 def run_readers(executable, env, workspace, frames, readers):
@@ -178,6 +233,7 @@ def main():
     parser.add_argument("--library", type=Path, help="Path to native HDF5 library")
     parser.add_argument("--nvrtc", type=Path)
     parser.add_argument("--benchmark-exe", type=Path, help="Use a prebuilt HDF5 benchmark test executable")
+    parser.add_argument("--allow-unverified-build", action="store_true")
     parser.add_argument("--extra-mask", type=Path, help="JSON list of extra masked flat pixel indices")
     parser.add_argument("--cache", choices=("warm", "cold"), default="warm")
     parser.add_argument("--frames", type=int, default=64, help="Use 0 for all frames")
@@ -185,12 +241,13 @@ def main():
     parser.add_argument("--methods", nargs="+", choices=METHODS, default=METHODS)
     parser.add_argument("--backends", nargs="+", choices=BACKENDS, default=BACKENDS)
     parser.add_argument("--repeats", type=int, default=3, help="Prepared repeats after one fresh batch")
+    parser.add_argument("--trials", type=int, default=1, help="Independent fresh launches per configuration")
     parser.add_argument("--readers", nargs="+", type=int, choices=(1, 2, 4, 8),
                         help="Split the scan across independent processes and time output collection")
     parser.add_argument("--cargo", default="cargo")
     args = parser.parse_args()
-    if args.repeats < 0 or any(not 1 <= tile <= 64 for tile in args.tile_sizes):
-        parser.error("tile sizes must be 1 to 64 and repeats cannot be negative")
+    if args.trials < 1 or args.repeats < 0 or any(not 1 <= tile <= 64 for tile in args.tile_sizes):
+        parser.error("tile sizes must be 1 to 64, trials positive and repeats nonnegative")
     if args.readers and args.repeats != 0:
         parser.error("--readers measures fresh runs and requires --repeats 0")
     if args.patterns_out and len(args.methods) != 1:
@@ -233,14 +290,12 @@ def main():
         DIOPTRIN_HDF5_REPEATS=str(args.repeats),
     )
     executable = str(args.benchmark_exe.resolve(strict=True)) if args.benchmark_exe else build(args.cargo, env)
-    # The full-scan comparisons start with the same cache conditions. Hash
-    # the file as it is read to record the input without another full pass.
-    full_digest = digest_file(args.hdf5) if args.readers else None
-    cache_label = "normal operating-system cache"
-    if args.cache == "cold":
-        cache_label = "first buffered read of an unbuffered copy"
-    elif args.readers:
-        cache_label = "normal OS cache after reading the whole file"
+    from prepare_io_benchmarks import executable_provenance
+
+    executable_build = executable_provenance(Path(executable), args.allow_unverified_build) if args.benchmark_exe else {"built_from_checkout": True}
+    full_digest = digest_file(args.hdf5)
+    cache_label = ("first buffered read of an unbuffered copy" if args.cache == "cold"
+                   else "whole input streamed immediately before each fresh trial")
     sources = [Path(__file__), ROOT / "src/integration/cuda.rs",
                ROOT / "src/integration/cuda/kernels.cu",
                *ROOT.glob("src/integration/cuda/bench/hdf5*.rs"),
@@ -253,6 +308,8 @@ def main():
             hdf5_version=h5py.version.hdf5_version,
             hdf5plugin_version=hdf5plugin.version,
             executable_sha256=digest_file(Path(executable)),
+            executable_build=executable_build,
+            source_storage=storage_for(args.hdf5), scratch_storage=storage_for(output.parent),
             extra_mask_sha256=digest_file(args.extra_mask) if args.extra_mask else None,
             file_bytes=args.hdf5.stat().st_size,
             file_sha256=full_digest, metadata_sha256=digest_file(args.metadata),
@@ -270,25 +327,32 @@ def main():
             baseline, measurement = (workspace / name for name in ("baseline", "measurement"))
             variants = [(backend, tile, readers) for backend in args.backends
                         for tile in args.tile_sizes for readers in args.readers or [None]]
-            rng.shuffle(variants)
-            variants.sort(key=lambda x: not x[0].startswith("cpu"))
+            schedule = []
+            for repeat in range(args.trials):
+                rng.shuffle(variants)
+                schedule.extend((repeat, *variant) for variant in variants)
             reference = None
-            for index, (backend, tile, readers) in enumerate(variants):
+            for index, (repeat, backend, tile, readers) in enumerate(schedule):
                 temporary = baseline if index == 0 else measurement
                 print(f"{method} {backend} tile={tile} readers={readers or 1} ({frames} frames)", flush=True)
                 trial_env = dict(
                     env, DIOPTRIN_HDF5_BACKEND=backend, DIOPTRIN_HDF5_METHOD=method,
                     DIOPTRIN_HDF5_TILE=str(tile), DIOPTRIN_HDF5_OUTPUT=str(temporary),
                 )
-                if readers:
-                    with trial_input(args.hdf5, workspace, args.cache, full_digest) as path:
-                        before = disk_reads()
+                with trial_input(args.hdf5, workspace, args.cache, full_digest) as path:
+                    storage = storage_for(path)
+                    before = disk_reads()
+                    if readers:
                         rows, patterns = run_readers(
                             executable, dict(trial_env, DIOPTRIN_HDF5_FILE=str(path)), workspace, frames, readers,
                         )
-                        rows[0]["disk_read_bytes"] = disk_delta(before)
-                else:
-                    rows, patterns = trial(executable, trial_env), temporary
+                    else:
+                        rows, patterns = trial(executable, trial_env), temporary
+                    observations = cache_observation(storage, disk_delta(before), args.cache, compressed)
+                    # A process with prepared repeats has one aggregate counter sample.
+                    if args.repeats:
+                        observations["cache_observation"] = "aggregate-fresh-and-prepared"
+                    rows[0].update(observations)
                 if index == 0:
                     reference = patterns
                     if args.patterns_out:
@@ -299,7 +363,7 @@ def main():
                             patterns.tofile(args.patterns_out)
                 errors = compare_output(patterns, reference, frames)
                 data["records"].append(dict(
-                    method=method, backend=backend, tile=tile, readers=readers or 1,
+                    method=method, backend=backend, tile=tile, readers=readers or 1, trial=repeat,
                     samples=rows, **errors,
                 ))
                 output.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

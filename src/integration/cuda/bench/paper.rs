@@ -11,6 +11,7 @@ struct PaperCase {
     bins: u32,
     errors: bool,
     repeats: usize,
+    layout: String,
     result: PathBuf,
 }
 
@@ -70,6 +71,10 @@ fn paper_native_cuda() -> Result<()> {
         return Err("expected positive frames and bins and at least three repeats".into());
     }
     let (rows, columns) = case.shape;
+    let layout = Layout::ALL
+        .into_iter()
+        .find(|layout| layout.name() == case.layout)
+        .ok_or("invalid paper CUDA layout")?;
     let count = rows
         .checked_mul(columns)
         .ok_or("invalid frame dimensions")?;
@@ -84,25 +89,33 @@ fn paper_native_cuda() -> Result<()> {
         .map(|word| u32::from_le_bytes(*word))
         .collect();
     drop(input_bytes);
+    let setup = Instant::now();
     let mask = Mask::from_vec(fs::read(&case.mask)?, rows, columns)?;
     let poni = Poni::load(&case.poni)?;
-    let setup = Instant::now();
     let integrator = Integrator::new(Geometry::new(rows, columns, poni))
         .with_radial_unit(RadialUnit::TthDeg)
         .with_radial_range(case.radial_range.0, case.radial_range.1)
         .with_method(IntegrationMethod::PyfaiFull)
         .with_polarization_factor(0.965)
+        .with_fast_math(false)
         .with_mask(mask);
     let cuda = Cuda::open()?.ok_or("CUDA or NVRTC unavailable")?;
     let plan = cuda.prepare_f64(&integrator, case.shape, case.bins)?;
-    let plan_s = elapsed_ms(setup) / 1e3;
+    let kernel = plan.kernel_u32(layout, case.errors)?;
+    let stride = 1 + usize::from(case.errors);
+    let pattern = case.bins as usize * stride;
+    let mut first = plan.batch_with_input(1, case.errors, Arc::clone(&cuda.stream))?;
+    let mut first_output = vec![0.; pattern];
+    first.upload(0, &pixels)?;
+    first.run(&kernel)?;
+    first.download(&mut first_output)?;
+    cuda.stream.synchronize()?;
+    let first_s = setup.elapsed().as_secs_f64();
     let device = cuda.context.name()?;
     let (free, _) = cuda.context.mem_get_info()?;
     let pixels_total = count
         .checked_mul(case.frames as usize)
         .ok_or("batch size overflow")?;
-    let stride = 1 + usize::from(case.errors);
-    let pattern = case.bins as usize * stride;
     let output_len = pattern
         .checked_mul(case.frames as usize)
         .ok_or("output length overflow")?;
@@ -125,18 +138,7 @@ fn paper_native_cuda() -> Result<()> {
     let mut output = pinned::<f64>(&cuda.context, output_len)?;
     let mut batch = plan.batch_with_input(case.frames, case.errors, Arc::clone(&cuda.stream))?;
     let mut records = Vec::new();
-    let mut intensity = Vec::new();
-    let mut sigma = Vec::new();
-    for layout in Layout::ALL {
-        let started = Instant::now();
-        let kernel = plan.kernel_u32(layout, case.errors)?;
-        let mut first = plan.batch_with_input(1, case.errors, Arc::clone(&cuda.stream))?;
-        let mut first_output = vec![0.; pattern];
-        first.upload(0, &pixels)?;
-        first.run(&kernel)?;
-        first.download(&mut first_output)?;
-        cuda.stream.synchronize()?;
-        let first_s = plan_s + elapsed_ms(started) / 1e3;
+    {
         for (backend, host_memory, timings) in [
             (
                 "dioptrin-cuda",
@@ -165,20 +167,78 @@ fn paper_native_cuda() -> Result<()> {
         ] {
             records.push(json!({
                 "backend": backend, "host_memory": host_memory, "layout": layout.name(),
-                "device": device, "setup_first_s": first_s, "batch_seconds": timings,
+                "device": device, "batch_seconds": timings,
             }));
         }
         records.push(json!({
             "backend": "dioptrin-cuda-kernels", "layout": layout.name(),
             "device": device, "batch_seconds": time_device(&mut batch, &kernel, &input, case.repeats)?,
         }));
-        assert!(first_output.iter().all(|x| x.is_finite()));
-        if intensity.is_empty() {
-            intensity.extend(first_output.iter().step_by(stride).copied());
-            if case.errors {
-                sigma.extend(first_output[1..].iter().step_by(stride).copied());
+    }
+    let mut single_output = vec![0.; output_len];
+    let samples = sample(case.repeats, || {
+        for row in single_output.chunks_exact_mut(pattern) {
+            first.upload(0, &pixels)?;
+            first.run(&kernel)?;
+            first.download(row)?;
+            first.stream.synchronize()?;
+        }
+        Ok(())
+    })?;
+    assert!(
+        single_output
+            .chunks_exact(pattern)
+            .all(|row| row == first_output)
+    );
+    records.push(json!({
+        "backend": "dioptrin-cuda-single", "host_memory": "pageable", "layout": layout.name(),
+        "device": device, "setup_first_s": first_s,
+        "batch_seconds": samples.into_iter().map(|ms| ms / 1e3).collect::<Vec<_>>(),
+    }));
+
+    // Check both the measurement frame and a distinct frame with the same
+    // mask. A multi-frame launch verifies that output slots stay ordered.
+    let distinct: Vec<_> = pixels
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| value.saturating_add((i % 7) as u32))
+        .collect();
+    let mut validation = plan.batch_with_input(2, case.errors, Arc::clone(&cuda.stream))?;
+    validation.upload(0, &pixels)?;
+    validation.upload(1, &distinct)?;
+    validation.run(&kernel)?;
+    let mut checked = vec![0.; pattern * 2];
+    validation.download(&mut checked)?;
+    cuda.stream.synchronize()?;
+    assert_eq!(checked[..pattern], first_output);
+    let mut cpu_patterns = Vec::new();
+    for (image, actual) in [&pixels, &distinct]
+        .into_iter()
+        .zip(checked.chunks_exact(pattern))
+    {
+        let wide: Vec<_> = image.iter().copied().map(f64::from).collect();
+        let (radial, intensity, sigma) = if case.errors {
+            integrator.integrate1d_with_errors_from_slice(&wide, rows, columns, case.bins as usize)
+        } else {
+            let (radial, intensity) =
+                integrator.integrate1d_from_slice(&wide, rows, columns, case.bins as usize);
+            (radial, intensity, Vec::new())
+        };
+        for (bin, row) in actual.chunks_exact(stride).enumerate() {
+            for (&value, reference) in row
+                .iter()
+                .zip([intensity[bin]].into_iter().chain(sigma.get(bin).copied()))
+            {
+                assert!(
+                    value.is_finite()
+                        && (value - reference).abs() <= 1e-12 * reference.abs().max(1.0)
+                        && (reference != 0.0 || value == 0.0),
+                    "{} CUDA vs CPU bin {bin}: {value} vs {reference}",
+                    layout.name()
+                );
             }
         }
+        cpu_patterns.push(json!({"radial": radial, "intensity": intensity, "sigma": sigma}));
     }
     let view = integrator.for_shape(rows, columns);
     let lut = view.ensure_lut1d(
@@ -186,8 +246,12 @@ fn paper_native_cuda() -> Result<()> {
             .one_d_table_key(case.bins as usize)
             .ok_or("missing lookup key")?,
     );
+    let gpu_patterns: Vec<_> = checked.chunks_exact(pattern).map(|frame| json!({
+        "radial": lut.bins(), "intensity": frame.iter().step_by(stride).copied().collect::<Vec<_>>(),
+        "sigma": if case.errors { frame[1..].iter().step_by(stride).copied().collect::<Vec<_>>() } else { Vec::new() },
+    })).collect();
     let row =
-        json!({"radial": lut.bins(), "intensity": intensity, "sigma": sigma, "records": records});
+        json!({"gpu_patterns": gpu_patterns, "cpu_patterns": cpu_patterns, "records": records});
     serde_json::to_writer(BufWriter::new(File::create(case.result)?), &row)?;
     Ok(())
 }

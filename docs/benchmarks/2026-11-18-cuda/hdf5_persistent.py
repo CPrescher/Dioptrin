@@ -1,28 +1,31 @@
 """Compare fresh and retained shared CUDA plans on two reads of an Eiger scan."""
 
 import argparse
-from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import subprocess
 from tempfile import TemporaryDirectory
 from time import perf_counter_ns
 
-from hdf5_batch import MARKER, PATTERN, compare_output, digest_file, disk_delta, disk_reads, scan_info, trial_input
-from prepare_io_benchmarks import IO_COMMIT
+from hdf5_batch import MARKER, PATTERN, cache_observation, compare_output, digest_file, disk_delta, disk_reads, peak_process_rss, read_file, scan_info, storage_for, trial_input
+from prepare_io_benchmarks import executable_provenance
 from run import ROOT, command, cpu_model, gpu_snapshot
 
 
 TEST = "integration::cuda::bench::hdf5::persistent::eiger_hdf5_persistent"
 
 
-def run_pair(executable, env, paths, workspace, frames):
+def run_requests(executable, env, path, prime, workspace, frames, plan_key, cache, compressed):
     import numpy as np
 
-    outputs = [workspace / f"patterns-{i}.f64" for i in range(len(paths))]
-    requests = [json.dumps(dict(source=str(path), output=str(out))) + "\n"
-                for path, out in zip(paths, outputs)]
+    scans = [(path, frames)] if prime is None else [(prime, 1), (path, frames)]
+    outputs = [workspace / f"patterns-{i}.f64" for i in range(len(scans))]
+    requests = [json.dumps(dict(source=str(scan), output=str(out), plan_key=plan_key, frames=count)) + "\n"
+                for (scan, count), out in zip(scans, outputs)]
+    storage = storage_for(path)
     before = disk_reads()
     started = perf_counter_ns()
     args = [str(executable), TEST, "--exact", "--ignored", "--nocapture", "--test-threads=1"]
@@ -32,6 +35,8 @@ def run_pair(executable, env, paths, workspace, frames):
         try:
             for i, (request, output) in enumerate(zip(requests, outputs)):
                 if i:
+                    if cache == "warm":
+                        read_file(path)
                     before = disk_reads()
                     started = perf_counter_ns()
                 proc.stdin.write(request)
@@ -46,10 +51,11 @@ def run_pair(executable, env, paths, workspace, frames):
                     raise RuntimeError("Shared CUDA worker stopped before returning patterns\n" + "".join(log))
                 collected = np.fromfile(output, dtype="<f8")
                 elapsed_ms = (perf_counter_ns() - started) / 1e6
-                if row["iteration"] != i or row["pid"] != proc.pid or collected.size != frames * PATTERN:
+                if row["iteration"] != i or row["pid"] != proc.pid or collected.size != scans[i][1] * PATTERN:
                     raise RuntimeError("Shared CUDA worker returned the wrong scan or frame count")
-                row.update(request_to_patterns_ms=elapsed_ms, disk_read_bytes=disk_delta(before),
-                           plan="retained" if i else "fresh")
+                row.update(request_to_patterns_ms=elapsed_ms, plan="retained" if i else "fresh",
+                           **cache_observation(storage, disk_delta(before), cache, compressed))
+                row["peak_worker_rss_bytes"] = peak_process_rss(proc.pid)
                 if i and row["prepare_ms"] != 0.0:
                     raise RuntimeError("Shared CUDA worker prepared an additional plan")
                 rows.append(row)
@@ -62,7 +68,7 @@ def run_pair(executable, env, paths, workspace, frames):
             if proc.poll() is None:
                 proc.kill()
             raise
-    return rows, patterns
+    return rows[-1], patterns[-1]
 
 
 def main():
@@ -70,6 +76,8 @@ def main():
     parser.add_argument("--hdf5", required=True, type=Path)
     parser.add_argument("--metadata", required=True, type=Path)
     parser.add_argument("--benchmark-exe", required=True, type=Path, help="Isolated dioptrin-io benchmark executable")
+    parser.add_argument("--allow-unverified-build", action="store_true")
+    parser.add_argument("--backends", nargs="+", choices=("cuda", "cpu_csr"), default=["cuda"])
     parser.add_argument("--extra-mask", type=Path)
     parser.add_argument("--reference", type=Path, help="Optional frame-major f64 intensity/sigma pairs from the CPU")
     parser.add_argument("--dataset", default="/entry_0000/ESRF-ID11/eiger/data")
@@ -93,6 +101,7 @@ def main():
 
     frames, shape, geometry, compressed, filters = scan_info(args.hdf5, args.metadata, args.dataset, args.frames)
     executable = args.benchmark_exe.resolve(strict=True)
+    build = executable_provenance(executable, args.allow_unverified_build)
     env = os.environ | dict(
         DIOPTRIN_HDF5_DATASET=args.dataset, DIOPTRIN_HDF5_GEOMETRY=json.dumps(geometry),
         DIOPTRIN_HDF5_FRAMES=str(frames), DIOPTRIN_HDF5_LAYOUT=args.layout,
@@ -104,6 +113,12 @@ def main():
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
         env[var] = os.pathsep.join(filter(None, (str(args.nvrtc.resolve(strict=True)), env.get(var))))
     scan_digest = digest_file(args.hdf5)
+    extra_mask = digest_file(args.extra_mask) if args.extra_mask else None
+    plan_key = hashlib.sha256(json.dumps(dict(
+        geometry=geometry, shape=shape[1:], extra_mask_sha256=extra_mask,
+        method="pyfai_full", unit="2th_deg", bins=PATTERN // 2,
+        solid_angle=True, errors="poisson", precision="f64",
+    ), sort_keys=True).encode()).hexdigest()
     root = Path(__file__).resolve().parent
     provenance = [Path(__file__).resolve(), root / "io_reader_adapter.rs", root / "io_reader_persistent.rs",
                   root / "hdf5_batch.py", root / "dioptrin_io_caller_buffer.patch",
@@ -111,32 +126,44 @@ def main():
     data = dict(metadata=dict(
         commit=command("git", "rev-parse", "HEAD"), source_sha256={p.relative_to(ROOT).as_posix(): digest_file(p)
                                                                   for p in provenance},
-        executable_sha256=digest_file(executable), dioptrin_io_commit=IO_COMMIT,
+        executable_sha256=digest_file(executable), executable_build=build, plan_key=plan_key,
         frames=frames, shape=shape, geometry=geometry, compressed_bytes=compressed,
         hdf5_filter_ids=filters, dataset=args.dataset, file_sha256=scan_digest,
         metadata_sha256=digest_file(args.metadata), cache=args.cache, layout=args.layout,
-        extra_mask_sha256=digest_file(args.extra_mask) if args.extra_mask else None,
+        extra_mask_sha256=extra_mask,
+        source_storage=storage_for(args.hdf5), scratch_storage=storage_for(args.out.resolve().parent),
         reference_sha256=digest_file(args.reference) if args.reference else None,
         cpu=cpu_model(), gpu_before=gpu_snapshot(),
     ), records=[])
     reference = np.fromfile(args.reference, dtype="<f8", count=frames * PATTERN) if args.reference else None
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    configurations = [(threads, tile) for threads in args.threads for tile in args.tile_sizes]
+    configurations = [(backend, threads, tile) for backend in args.backends
+                      for threads in (args.threads if backend == "cuda" else [1]) for tile in args.tile_sizes]
+    rng = random.Random(42019)
     for trial in range(args.trials):
-        for threads, tile in configurations[::1 if trial % 2 == 0 else -1]:
-            print(f"{frames} frames, {threads} decoder threads, {tile}-frame tiles, trial {trial + 1}", flush=True)
-            with TemporaryDirectory(dir=args.out.resolve().parent) as directory, ExitStack() as clean:
-                workspace = Path(directory)
-                paths = [clean.enter_context(trial_input(args.hdf5, workspace, args.cache, scan_digest)) for _ in range(2)]
-                rows, patterns = run_pair(executable, env | dict(DIOPTRIN_HDF5_DECODERS=str(threads),
-                                                                 DIOPTRIN_HDF5_TILE=str(tile)),
-                                          paths, workspace, frames)
-            if reference is None:
-                reference = patterns[0]
-            for row, result in zip(rows, patterns):
+        rng.shuffle(configurations)
+        for backend, threads, tile in configurations:
+            print(f"{backend}: {frames} frames, {threads} decoder threads, {tile}-frame tiles, trial {trial + 1}", flush=True)
+            plans = ["fresh", "retained"]
+            rng.shuffle(plans)
+            rows = []
+            for plan in plans:
+                with TemporaryDirectory(dir=args.out.resolve().parent) as directory:
+                    workspace = Path(directory)
+                    with trial_input(args.hdf5, workspace, args.cache, scan_digest) as path:
+                        row, result = run_requests(executable, env | dict(
+                                DIOPTRIN_HDF5_DECODERS=str(threads), DIOPTRIN_HDF5_TILE=str(tile),
+                                DIOPTRIN_HDF5_BACKEND=backend), path,
+                            args.hdf5.resolve() if plan == "retained" else None,
+                            workspace, frames, plan_key, args.cache, compressed)
+                if reference is None:
+                    reference = result
                 row.update(compare_output(result, reference, frames))
-                print(f"  {row['plan']}: {row['request_to_patterns_ms'] / 1000:.3f} s", flush=True)
-            data["records"].append(dict(trial=trial, decoder_threads=threads, tile=tile, samples=rows))
+                rows.append(row)
+                print(f"  {row['plan']}: {row['request_to_patterns_ms'] / 1000:.3f} s ({row['cache_observation']})", flush=True)
+            pinned_bytes = min(2, (frames + tile - 1) // tile) * min(tile, frames) * (4 * shape[1] * shape[2] + 8 * PATTERN)
+            data["records"].append(dict(trial=trial, backend=backend, decoder_threads=threads, tile=tile,
+                                        pinned_bytes=pinned_bytes if backend == "cuda" else 0, samples=rows))
             args.out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     data["metadata"]["gpu_after"] = gpu_snapshot()
     args.out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

@@ -22,12 +22,12 @@ python3 benchmarks/comparison/setup.py
 
 On Windows, run `python benchmarks/comparison/setup.py`, then use
 `.venv-benchmark\Scripts\python.exe -E -s -B` in place of the interpreter in
-the examples. To reproduce the Ryzen 7 9800X3D build, set `$env:CL = '/arch:AVX2'`
-before setup.
+the examples. On Windows x64, setup pairs Dioptrin's `x86-64-v3` with
+AZINT's MSVC `/arch:AVX2`. The official pyFAI wheel keeps its upstream flags.
 
 Setup creates `.venv-benchmark`, builds the current Dioptrin source in release
-mode, builds the pinned upstream azint source, and installs pyFAI. Both source
-builds target the machine's CPU. Installation needs internet access; do it once
+mode, builds the pinned upstream azint source, and installs pyFAI. Linux and
+macOS source builds use native CPU flags. Installation needs internet access; do it once
 per machine/checkout, and rerun setup after changing the Dioptrin source. No
 Dioptrin runtime dependencies are changed. Setup records wheels, compiler flags,
 Rust versions, Cargo.lock, and resolved Python packages in the environment's
@@ -146,13 +146,16 @@ PyFAI owns an initialized CSR engine
 per worker. Native batch scheduling and result allocation are timed. Setup,
 first-result and all-workers-ready times, and process-lifetime peak RSS are
 separate columns. Setup includes backend import and lazy initialization.
-Frame workers receive contiguous slices of the logical input sequence, so the
-distinct-frame workload does not pin a worker to one image at 4/8 CPUs. Batch
-lengths are rounded up to a multiple of the CPU budget for balanced slices.
+Every worker budget receives the same logical frame sequence and batch size.
+Contiguous worker slices differ in length by at most one frame.
+`azint-prepared-mask` is a control for this pinned AZINT revision. It reuses
+the normalization baked into the masked sparse matrix. The runner checks
+it against stock AZINT on each input frame outside the timer.
 The fixed pyFAI mask is installed on its detector once, using its cached mask
 checksum rather than recalculating the checksum from a mask argument each call.
 
-Every case runs in a fresh process. Method order alternates between trials.
+Every case runs in a fresh process. A seeded shuffle varies method and
+worker order after establishing the one-worker references.
 Every output frame, including its order, is checked against the same backend's
 one-worker reference before and after timing. One-worker references are always
 included even if only higher worker counts are requested. Numerical quality
@@ -179,9 +182,8 @@ build record with the exact Dioptrin wheel and the pinned AZINT commit.
 The Windows run used the official pyFAI wheel and compiled AZINT with
 MSVC and OpenMP from the upstream source.
 
-~~~text
-python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full --modes poisson --frames 16 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
-~~~
+See the [paper benchmark recipes](../../docs/benchmarking.md#repeat-the-detector-size-comparison)
+for the fixed-work Windows and macOS sweeps.
 
 The GPU runner uses the same geometry, detector masks, radial range and
 bin count. It requires pyopencl in the comparison environment and native
@@ -189,25 +191,34 @@ CUDA with NVRTC available to the Rust test executable. Each prepared
 uint32 frame is checked against the fixture for exact representation.
 Dioptrin measures both ordinary and pinned uploads and calculates
 products and sums in f64. pyFAI uses its full-split CSR OpenCL engine
-with ordinary NumPy buffers.
+with ordinary NumPy buffers. A per-frame CUDA series uses the same
+one-frame-at-a-time workload. The CUDA batched series uses a single upload,
+launch, and download for the whole batch.
 The script checks the exact OpenCL implementation and device and rejects
 fallbacks. The timed batch starts in host memory and ends with the
 patterns back on host memory. Plan preparation, allocation and input
 conversion into the already prepared buffers happen before warm timing.
 The runner records a separate GPU kernel series. CUDA events enclose the
 integration launch. OpenCL profiling sums pyFAI's buffer reset, pixel
-preprocessing and CSR reduction kernels. Both device measurements exclude
+preprocessing and CSR reduction kernels, plus any separate conversion kernel
+in the profiled trace. Both device measurements exclude
 the transfers and CPU dispatch in the host-to-pattern timings.
 
 ~~~text
-python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --output benchmark-results/paper-gpu
+python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --trials 3 --output benchmark-results/paper-gpu
 python -B benchmarks/comparison/plot_scaling.py --cpu benchmark-results/paper-cpu --gpu benchmark-results/paper-gpu/gpu-results.json --output benchmark-results/paper-figures
 ~~~
 
 Pass --nvrtc with the directory containing the CUDA libraries if they
 are outside the search path. The GPU results include intensity-only
 and Poisson modes, five timed batches after two warmups, both CUDA
-layouts, and cross-engine numerical differences. The GPU series is
+layouts, and per-layout comparisons against strict CPU output on two distinct
+inputs. Cross-engine comparisons report absolute, relative L2 and positive-bin
+errors. Axis differences above 0.0001 degrees or a relative L2 above 1% fail
+fixture validation. First-pattern time starts with one decoded frame on the
+host, before loading geometry or preparing a plan, in a fresh process for
+each backend and layout. Driver and compiler caches keep their normal state.
+The standard figure uses the Block layout for all CUDA series. The GPU series is
 separate from CPU core scaling because it measures GPU work on a
 single device. Plotting requires Matplotlib and produces separate GPU kernel
 and host-to-pattern figures as PDF and PNG.

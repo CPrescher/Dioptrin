@@ -20,7 +20,8 @@ def measurements(result, method, first, cpu_only):
         for row in result["records"]:
             if row["method"] != method or (cpu_only and not row["backend"].startswith("cpu")):
                 continue
-            frames = (r for r in row["samples"] if (r["iteration"] == 0) == first)
+            frames = (r for r in row["samples"] if (r["iteration"] == 0) == first
+                      and r.get("cache_observation") not in {"short-of-cold", "storage-traffic", "unverified"})
             key = "process_to_patterns_ms" if first else "batch_ms"
             timings[row["backend"], row["tile"], row.get("readers", 1)].extend(r[key] for r in frames)
     return [
