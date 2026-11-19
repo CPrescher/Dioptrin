@@ -26,21 +26,47 @@ include file loading and decoding.
 The [FabIO and dioptrin-io comparison](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-18-cuda/README.md#eiger-hdf5-with-fabio-and-dioptrin-io)
 includes decoding into ordinary host memory and directly into GPU upload buffers.
 
+## Benchmark scripts
+
+Run these scripts from a repository checkout at the revision under test. The
+checkout provides their supporting modules, Rust harnesses, and fixtures.
+
+| Script | Measurement |
+| --- | --- |
+| {download}`compare.py <../benchmarks/comparison/compare.py>` | Prepared-input CPU worker scaling for Dioptrin, pyFAI, and AZINT. |
+| {download}`gpu_compare.py <../benchmarks/comparison/gpu_compare.py>` | CUDA and OpenCL kernel and host-to-pattern timings. |
+| {download}`plot_scaling.py <../benchmarks/comparison/plot_scaling.py>` | Generate the CPU and GPU figures from recorded timings. |
+| {download}`eiger_decode.py <benchmarks/2026-11-18-cuda/eiger_decode.py>` | Decode a real Eiger HDF5 scan with FabIO or dioptrin-io. |
+| {download}`hdf5_batch.py <benchmarks/2026-11-18-cuda/hdf5_batch.py>` and {download}`pyfai_hdf5.py <benchmarks/2026-11-18-cuda/pyfai_hdf5.py>` | Measure the Dioptrin and pyFAI Eiger pipelines under recorded cache conditions. |
+| {download}`hdf5_persistent.py <benchmarks/2026-11-18-cuda/hdf5_persistent.py>` | Time new scans with a fresh or retained CUDA plan. |
+
+The [Eiger reproduction commands](https://github.com/CPrescher/Dioptrin/blob/main/docs/benchmarks/2026-11-18-cuda/README.md#reproduction)
+show how to build the isolated dioptrin-io variant and run the file benchmarks.
+
 ## Repeat the detector-size comparison
 
 Follow the [environment setup and validation instructions](https://github.com/CPrescher/Dioptrin/tree/main/benchmarks/comparison#clone-install-and-run).
 Activate the comparison environment and run the CPU sweep from the repository
-root. This example uses the Windows workstation's worker budgets.
+root. On Windows, use the workstation's worker budgets.
 
 ```text
 python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,8,12,14 --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 1 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
 ```
 
-- On Windows, run natively. Install the GPU dependencies for the CUDA and
-  OpenCL comparison on the NVIDIA card.
-- On the MacBook, sweep through 12 workers where the system supports that
-  budget. The suite records performance and efficiency core counts where
-  macOS reports them.
+For macOS, run the same CPU workload with the common worker budgets through 12
+where the machine supports them. The runner records performance and efficiency
+core counts where macOS reports them.
+
+```bash
+python3 benchmarks/comparison/setup.py
+.venv-benchmark/bin/python -E -s -B benchmarks/comparison/compare.py \
+  --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
+  --workers 1,2,4,8,12 \
+  --variants dioptrin-supersampled azint dioptrin-pyfai_full pyfai-full \
+  --modes poisson --bins 2000 --frames 16 --trials 1 --blocks 3 --seconds 0.25 \
+  --output benchmark-results/paper-macos-cpu
+```
+
 - On DESY Maxwell, pass the same detector and algorithm arguments to
   `sbatch benchmarks/comparison/maxwell.sbatch`. Leave out `--output` so the
   wrapper can name the run by Slurm job. Choose worker budgets within the
