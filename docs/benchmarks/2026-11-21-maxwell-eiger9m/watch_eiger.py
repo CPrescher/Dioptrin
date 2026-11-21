@@ -46,6 +46,9 @@ def read_geometry(path):
             fields[key.strip().lower()] = value.strip()
     geometry = {k: float(fields[k]) for k in ("distance", "poni1", "poni2", "rot1", "rot2", "rot3", "wavelength")}
     detector = json.loads(fields.get("detector_config", "{}"))
+    if detector.get("orientation") != 2:
+        raise ValueError("The fused Eiger watcher requires PONI Detector_config.orientation = 2 "
+                         "(vertical row flip).")
     pixels = [fields.get(f"pixelsize{i}", detector.get(f"pixel{i}")) for i in (1, 2)]
     if None in pixels:
         import pyFAI
@@ -177,7 +180,8 @@ class PreparedReaders:
             buffer = Path(temp)/"patterns"
             shape = (1+frames*(1+errors), bins)
             with buffer.open("wb") as file:
-                file.truncate(8*shape[0]*shape[1])
+                # Reserve backing space before workers start writing through their mmap.
+                os.posix_fallocate(file.fileno(), 0, 8 * shape[0] * shape[1])
             for p in self.processes:
                 self.send(p, dict(path=str(path), frames=frames, errors=errors, buffer=str(buffer)))
             self.receive("ok")

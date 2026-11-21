@@ -40,7 +40,7 @@ The CPU sweeps started with all 625 decoded float64 frames in RAM and warmed int
 
 A separate seven-repeat **Dioptrin-only** placement experiment used full splitting. With plan and frame storage local to each socket, going from one to two 24-core processes raised the 3,000-bin rates from 446 to 850 frames/s for intensity and from 398 to 754 with Poisson errors. In the subsequent hardware-thread test, four socket-local processes using all 96 threads reached 1,105 / 1,015 frames/s at 3,000 bins and 1,398 / 1,229 at 2,000 bins. The other libraries were measured in the original sweep. The four-process results quantify Dioptrin tuning and do not establish a like-for-like tuned library speedup.
 
-The RAM library comparison used 951,372 excluded pixels, solid-angle correction, no polarization correction and a shared radial interval of 0–44.232582° in two-theta. The file watcher used the archived Mac protocol's 887,588-pixel mask, polarization factor 0.965 and full splitting. Its dioptrin-io 0.4.1 fused adapter links Dioptrin 0.10.0. Timing differences between the RAM and file protocols do not isolate decompression cost. [Native adapter revision](https://github.com/CPrescher/dioptrin-io/tree/97f5ba73ca1f8b169ce3037ff79b0a51b40f6098/python-fused)
+The RAM library comparison used 951,372 excluded pixels, solid-angle correction, no polarization correction and a shared radial interval of 0–44.232582° in two-theta. The file watcher used the archived Mac protocol's 887,588-pixel mask, polarization factor 0.965 and full splitting. The measured standalone Python wheel was `dioptrin-io-fused` 0.1.0, built with the `dioptrin-io` Rust crate 0.4.1 and Dioptrin 0.10.0. Timing differences between the RAM and file protocols do not isolate decompression cost. [Native adapter revision](https://github.com/CPrescher/dioptrin-io/tree/97f5ba73ca1f8b169ce3037ff79b0a51b40f6098/python-fused)
 
 ### Numerical agreement
 
@@ -52,7 +52,7 @@ A separate 625-frame file harness streamed the input before each fresh trial and
 
 ## Running the watcher
 
-The measured watcher is included with this record. On a Linux allocation with two NUMA sockets, install the native adapter at the revision above, NumPy, h5py and FabIO, and make `numactl` available. The following example uses the calibration and mask from the repository. Set the three paths to a completed matching template scan, an inbox and a dedicated output directory.
+The [measured watcher revision](https://github.com/CPrescher/Dioptrin/blob/4c17b2536af42edecd2eb86327fb30abdcbd3bd9/docs/benchmarks/2026-11-21-maxwell-eiger9m/watch_eiger.py) produced the historical timings above. The current example checks the PONI orientation and reserves scratch space before dispatch. On a Linux allocation with two NUMA sockets, install the native adapter at the revision above, NumPy, h5py and FabIO, and make `numactl` available. The following example uses the calibration and mask from the repository. Set the three paths to a completed matching template scan, an inbox and a dedicated output directory.
 
 ```sh
 python docs/benchmarks/2026-11-21-maxwell-eiger9m/watch_eiger.py \
@@ -62,4 +62,32 @@ python docs/benchmarks/2026-11-21-maxwell-eiger9m/watch_eiger.py \
   --bins 3000 --poisson --processes 4 --readers 16 --policy local
 ```
 
-Publish closed files under unique final `.h5` names. A new calibration, mask or binning configuration needs fresh LUTs and its own output directory. The template must use compatible detector geometry and stored row orientation. The measured source scan's SHA-256 was `2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3`. [Watcher source](watch_eiger.py) · [Calibration](../2026-11-05-bslz4/calibration.poni) · [Mask](../../../test_data/eiger_0000.mask)
+Publish closed files under unique final `.h5` names. A new calibration, mask or binning configuration needs fresh LUTs and its own output directory. The template and incoming files must have matching detector geometry and the PONI must explicitly specify `Detector_config.orientation = 2`. The native reader flips stored rows vertically. Use a Linux scratch filesystem supporting `posix_fallocate` with at least `8 × bins × (1 + frames × (1 + poisson))` free bytes, where `poisson` is zero or one. The measured source scan's SHA-256 was `2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3`. [Watcher source](watch_eiger.py) · [Calibration](../2026-11-05-bslz4/calibration.poni) · [Mask](../../../test_data/eiger_0000.mask)
+
+## Reproducing the 168 watcher arrivals
+
+Obtain the original completed `eiger_0000.h5` scan from the data owner and set `EIGER_SCAN` to its path. The harness checks the SHA-256 above. The PONI and mask used for the independent reference are included in this repository. The harness builds both the one-frame template and the reversed-frame test file from the scan's compressed chunks.
+
+The run used CPython 3.13.18 and a release build of the standalone adapter. Set `BUILD_DIR` to an existing writable build directory. Run the following commands from the repository root in a fresh Python environment with Rust and the HDF5 build prerequisites available.
+
+```sh
+python -m pip install maturin 'numpy==2.4.2' 'h5py==3.15.1' 'hdf5plugin==6.0.0' 'fabio==2026.6.0' 'dioptrin==0.7.0'
+git clone https://github.com/CPrescher/dioptrin-io.git "$BUILD_DIR/dioptrin-io"
+git -C "$BUILD_DIR/dioptrin-io" checkout --detach 97f5ba73ca1f8b169ce3037ff79b0a51b40f6098
+RUSTFLAGS='-C target-cpu=znver2' maturin build --locked --release \
+  --manifest-path "$BUILD_DIR/dioptrin-io/python-fused/Cargo.toml" \
+  --interpreter "$(command -v python)" --out "$BUILD_DIR/wheels"
+python -m pip install --no-deps "$BUILD_DIR"/wheels/dioptrin_io_fused-0.1.0-*.whl
+```
+
+The separate Dioptrin 0.7.0 Python package generates the reference. It integrates each independently HDF5-decoded, vertically flipped float64 image with the fixed mask, pixel splitting, polarization 0.965 and Poisson errors at both bin counts. Reference generation runs before the first timed arrival.
+
+Run the harness from a checkout of this repository on an exclusive dual EPYC 7402 node with all 96 hardware threads available, `numactl`, GPFS client libraries, readable InfiniBand receive counters and scratch space on `/dev/shm`. Set `EIGER_RUN` to a new directory on GPFS with room for two temporary copies of the 5.69 GB scan and results. For the historical timings use a disposable checkout and place the measured revision of `watch_eiger.py` linked above beside the harness. Leaving the current example in place exercises the reviewed scratch allocation.
+
+```sh
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python docs/benchmarks/2026-11-21-maxwell-eiger9m/benchmark_watcher.py \
+    --scan "$EIGER_SCAN" --out "$EIGER_RUN"
+```
+
+The harness evicts each staged input from the GPFS client cache, checks page residency and InfiniBand traffic, publishes by atomic rename, and validates each saved archive against the reference in the corresponding frame order. It writes `trials.jsonl` for individual arrivals and `summary.csv` for the six-arrival medians and ranges. [Benchmark harness](benchmark_watcher.py)
