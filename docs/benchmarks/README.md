@@ -5,6 +5,10 @@ describes the criterion benches in `benches/`, what each one times, and how to
 compare two revisions with them. It is not part of the Sphinx manual
 (`benchmarks/**` is excluded in `docs/conf.py`).
 
+The [Maxwell Eiger 9M measurements](2026-11-21-maxwell-eiger9m/README.md) cover
+completed-file latency with prepared LUTs, CPU socket placement and in-memory
+comparisons with pyFAI and azint.
+
 For comparisons against azint and pyFAI, see
 [`benchmarks/comparison/`](../../benchmarks/comparison/README.md); for the
 Python batch and stream methods, `python_examples/bench_batch_streams.py`
