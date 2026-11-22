@@ -378,3 +378,35 @@ fn default_radial_axis_matches_the_default_edges() {
     let ai = integrator(IntegrationMethod::Histogram);
     assert!(ai.radial_centers_2d(ROWS, COLS, 20).is_err());
 }
+
+/// `prepare2d` (used by Python `batch2d` over arrays) builds exactly the table
+/// the following integration uses, with and without radial and azimuthal
+/// ranges, so parallel workers share it instead of each building one.
+#[test]
+fn prepare2d_builds_the_table_the_call_uses() {
+    let data = image();
+    for method in methods() {
+        for range in [None, Some(SUB)] {
+            for azimuthal in [None, Some((0.3, 0.3 + PI))] {
+                let mut ai = integrator(method);
+                ai.set_radial_range(range);
+                ai.prepare2d(ROWS, COLS, N_SUB, NA, azimuthal);
+                let table = |ai: &Integrator| {
+                    let cache = ai.cache_2d.read().unwrap();
+                    std::sync::Arc::as_ptr(cache.lut.as_ref().unwrap())
+                };
+                let prepared = table(&ai);
+                match azimuthal {
+                    None => drop(ai.integrate2d_from_slice(&data, ROWS, COLS, N_SUB, NA)),
+                    Some(r) => drop(
+                        ai.integrate2d_on_azimuthal_range_from_slice(
+                            &data, ROWS, COLS, N_SUB, NA, r, false,
+                        )
+                        .unwrap(),
+                    ),
+                }
+                assert_eq!(prepared, table(&ai), "{method:?} {range:?} {azimuthal:?}");
+            }
+        }
+    }
+}

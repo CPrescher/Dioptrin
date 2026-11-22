@@ -24,11 +24,11 @@ use super::results::{
     BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult, StreamError, panic_message,
 };
 use super::utils::{
-    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, batch_images, check_mask_shape,
-    check_method_radial_range, check_polarization_factor, check_positive, check_unit_wavelength,
-    classify_batch_input, extract_array_dims, extract_frame_from_pyany, extract_item_dims,
-    mask_shape, parse_method, parse_unit, poni_from_dict, resolve_workers_threads, tiff_path_list,
-    validate_integrator_options,
+    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, batch_images, batch2d_images,
+    check_mask_shape, check_method_radial_range, check_polarization_factor, check_positive,
+    check_unit_wavelength, classify_batch_input, extract_array_dims, extract_frame_from_pyany,
+    extract_item_dims, mask_shape, parse_method, parse_unit, poni_from_dict,
+    resolve_workers_threads, validate_integrator_options,
 };
 
 /// Raise ValueError for an invalid `azimuthal_range=(min, max)` before a batch
@@ -495,6 +495,65 @@ impl PyIntegrator {
             stream_error,
             control,
         })
+    }
+
+    /// `batch2d` over a list of arrays, like `batch1d`'s array branch: every
+    /// array is checked first (dtype, shape, contiguity, mask), then the
+    /// frames are integrated in parallel on Rayon without copying and with the
+    /// GIL released. The read-only borrow guards in `arrays` outlive the
+    /// workers; only plain slices cross into them. An invalid azimuthal range
+    /// fails each entry, as for TIFF paths.
+    fn batch2d_arrays(
+        &self,
+        py: Python<'_>,
+        arrays: &[PyReadonlyArray2<'_, f64>],
+        bins: Bins2d,
+        radial: Option<Vec<f64>>,
+    ) -> PyResult<Vec<PyBatchResult>> {
+        let frames = arrays
+            .iter()
+            .enumerate()
+            .map(|(i, array)| {
+                let (dim1, dim2) = extract_item_dims(array, i)?;
+                let slice = array.as_slice().map_err(|err| {
+                    PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                })?;
+                self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
+                Ok((slice, dim1, dim2))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        use rayon::prelude::*;
+        let integrator = &*self.integrator;
+        let integrate = |(i, &(data, dim1, dim2)): (usize, &(&[f64], usize, usize))| {
+            let filename = format!("array[{}]", i);
+            match integrate2d_slice(integrator, data, dim1, dim2, bins, radial.clone()) {
+                Ok(result) => PyBatchResult {
+                    filename,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => PyBatchResult {
+                    filename,
+                    result: None,
+                    error: Some(error),
+                },
+            }
+        };
+        Ok(py.detach(|| {
+            if let Some(&(_, dim1, dim2)) = frames.first()
+                && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+            {
+                integrator.prepare2d(
+                    dim1,
+                    dim2,
+                    bins.n_radial,
+                    bins.n_azimuthal,
+                    bins.azimuthal_range,
+                );
+            }
+            frames.par_iter().enumerate().map(integrate).collect()
+        }))
     }
 
     /// Integrate `paths` on the cached file workers and wait for all results.
@@ -1541,7 +1600,8 @@ impl PyIntegrator {
     ///
     /// # Arguments
     ///
-    /// * `tiff_paths` - List of TIFF file paths to process
+    /// * `tiff_paths` - List of TIFF file paths or list of NumPy arrays (2D float64). The
+    ///   parameter keeps its historical name; it accepts arrays like `batch1d`'s `images`.
     /// * `n_radial` - Number of radial bins
     /// * `n_azimuthal` - Number of azimuthal bins. Give either this or `azimuthal_bracket`.
     /// * `errors` - Whether to compute error estimates (default: False)
@@ -1571,18 +1631,33 @@ impl PyIntegrator {
     ///
     /// # Returns
     ///
-    /// List of BatchResult objects, each containing filename and IntegrationResult.
+    /// List of BatchResult objects, each containing filename (`array[i]` for arrays)
+    /// and IntegrationResult, in input order. With the Integrator's `radial_range`,
+    /// results carry its radial bin centres in `radial`.
+    /// NumPy inputs are borrowed for this synchronous call without copying image
+    /// pixels. Their read-only borrow guards remain held until all native workers
+    /// finish; input arrays must not be mutated concurrently. The GIL is released
+    /// while the workers run. Arrays are integrated in parallel on the global Rayon
+    /// pool, as in `batch1d`; `num_workers` and `num_threads` are validated but
+    /// only shape TIFF batches.
     ///
     /// # Errors
     ///
     /// Raises `ValueError` if the integrator uses the Histogram method, which has
-    /// no azimuthal binning.
+    /// no azimuthal binning, or for an array that is not 2D float64, not
+    /// C-contiguous, or does not match the mask; `TypeError` for a single path or a
+    /// list mixing paths and arrays (use `batch2d_iter` for those).
     ///
     /// # Example
     ///
     /// ```python
     /// # Full 2D integration
     /// results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
+    ///
+    /// # From HDF5 via NumPy arrays
+    /// with h5py.File('data.h5', 'r') as f:
+    ///     frames = [f['/entry/data/data'][i].astype(np.float64) for i in range(100)]
+    /// results = integrator.batch2d(frames, n_radial=100, n_azimuthal=360)
     ///
     /// # With azimuthal range and errors
     /// results = integrator.batch2d(
@@ -1593,10 +1668,10 @@ impl PyIntegrator {
     /// ```
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (tiff_paths, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, num_workers=None, num_threads=None, *, azimuthal_bracket=None))]
-    fn batch2d(
+    fn batch2d<'py>(
         &self,
-        py: Python<'_>,
-        #[pyo3(from_py_with = tiff_path_list)] tiff_paths: Vec<String>,
+        py: Python<'py>,
+        #[pyo3(from_py_with = batch2d_images)] tiff_paths: BatchImageInput<'py>,
         n_radial: usize,
         n_azimuthal: Option<usize>,
         errors: bool,
@@ -1613,6 +1688,18 @@ impl PyIntegrator {
         let radial = self.radial_axis_2d(n_radial)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
+        let tiff_paths = match tiff_paths {
+            BatchImageInput::Paths(paths) => paths,
+            BatchImageInput::Arrays(arrays) => {
+                let bins = Bins2d {
+                    n_radial,
+                    n_azimuthal,
+                    errors,
+                    azimuthal_range,
+                };
+                return self.batch2d_arrays(py, &arrays, bins, radial);
+            }
+        };
 
         match (errors, azimuthal_range) {
             (false, None) => {
