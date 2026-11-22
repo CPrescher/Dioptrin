@@ -36,7 +36,7 @@ python test_examples.py            # Test all Python examples
 - `detector.rs`, `detector/` - Detector models (bundled catalog, binning, orientation, Fit2D spline distortion) used optionally by `Geometry`
 - `mask.rs` - Binary pixel masking
 - `integration.rs`, `integration/` - Main `Integrator` API with builder pattern, thread-safe LUT caching (`RwLock`, `cache.rs`), corrections, fixed/dynamic mask modes, shared 2D grids (`grid.rs`)
-  - `Integrator` supports optional `radial_range` for explicit bin grids (required for MultiIntegrator)
+  - `Integrator` supports optional `radial_range` for explicit bin grids in 1D and 2D (required for MultiIntegrator); in 2D, counting/pixel_split/supersampled then use the shared-grid tables
   - `integrate1d_raw` methods return intermediate sums (sum_signal, sum_norm, sum_variance) before division
 - `lut/` - CSR lookup table builders (counting, pixel-split, supersampled, `pyfai_1d`/`pyfai_split` for `pyfai_full`) and integration functions; `prepared.rs`/`csc.rs` hold the execution layouts, `shared_grid.rs` the fractional splitting on explicit shared 2D edges
   - `_with_range` variants of 1D builders accept explicit radial min/max
@@ -47,7 +47,8 @@ python test_examples.py            # Test all Python examples
 - `math/` - Sparse matrix implementations (CSR, COO), histogram utilities
 - `python/` - PyO3 bindings (enabled with `--features python`)
   - Accepts both file paths and NumPy arrays for integration
-  - `batch1d`/`batch1d_iter` accept lists of TIFF paths or NumPy arrays; `batch2d` takes TIFF paths only, arrays go through `batch2d_iter`
+  - `batch1d`/`batch2d` accept lists of TIFF paths or NumPy arrays (arrays borrowed, GIL released, global Rayon pool); `batch*_iter` also take generators
+  - `integrate2d` releases the GIL while loading and integrating; `integrate1d` still holds it
   - `MultiIntegrator` class for multi-detector merging from Python
 
 **Key patterns:**

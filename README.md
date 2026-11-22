@@ -198,7 +198,8 @@ above, the bins cover `[-step/2, 2π - step/2)`.
 To integrate a true `(min, max)` azimuthal range, such as a sector, use
 `Integrator::integrate2d_on_azimuthal_range`. The range edges are in radians and
 split into `n_azimuthal` equal bins; pixels outside the range are left out, and
-the radial bins are those of the default 2D path:
+the radial bins are those of `integrate2d` (the default path's, or the
+integrator's explicit radial range):
 
 ```rust
 // Same integrator and frame as above: a 90° sector in 90 one-degree bins.
@@ -403,6 +404,11 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
+`integrate2d` releases the GIL while it loads a TIFF and while it integrates,
+so other Python threads keep running; a NumPy input is borrowed for the call and
+must not be mutated concurrently. An `Integrator` cannot be shared between
+threads: give each thread its own.
+
 TIFF images and masks must be single-channel (grayscale), with 8- to 64-bit
 integer or float32/float64 samples; only the first page of a multi-page TIFF
 is read. Colour TIFFs (RGB, RGBA, CMYK, palette) and files with extra samples
@@ -417,7 +423,7 @@ pass it as an array, e.g. `np.ascontiguousarray(rgb[::-1, :, 0], dtype=np.float6
 (the `[::-1]` matches the up-down flip applied to TIFF paths; `tifffile`
 returns planar files as `(3, rows, cols)`, so use `rgb[0, ::-1]` there).
 
-An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the 1D bin grid and drops values outside it; in ordinary single-detector 2D integration only `pyfai_full` uses it, while the other methods keep a detector-local radial grid.
+An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the radial bin grid and drops values outside it, in 1D and in 2D: every 2D method then bins onto `n_radial` equal bins between `min` and `max` (2D needs `min >= 0`), and 2D results report the bin centres in `result.radial` (Rust: `Integrator::radial_centers_2d`). In 2D, `counting`, `pixel_split` and `supersampled` use the shared-grid tables of `MultiIntegrator` on an explicit range (exact fractional polygon areas for `pixel_split`, slightly different from its default 2D table) and keep the default azimuthal bins; without a range they keep their automatic, detector-local radial grid and results.
 The legacy `histogram` method always uses the automatic radial range and does not honour `radial_range`; Python raises `ValueError` if both are given.
 
 ### Fast accumulation (default)
@@ -490,7 +496,7 @@ whether a supplied mask will change on the next image.
 
 For processing multiple files, use the batch methods which efficiently share geometry and LUT cache:
 
-For synchronous `batch1d` calls with C-contiguous float64 NumPy arrays, image
+For synchronous `batch1d` and `batch2d` calls with C-contiguous float64 NumPy arrays, image
 pixels are borrowed directly until all native workers finish. This avoids an
 additional full copy of the input batch. Inputs must remain unchanged during the
 call and must not be mutated concurrently. Array batches use the global Rayon
@@ -527,7 +533,7 @@ for r in results:
         # r.result.errors is now populated
         print(f"{r.filename}: {r.result.errors[:5]}")
 
-# Batch 2D integration (TIFF paths only; for NumPy arrays use batch2d_iter below)
+# Batch 2D integration (a list of TIFF paths or of float64 NumPy arrays)
 results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
 for r in results:
     if r.is_ok():
@@ -537,7 +543,7 @@ for r in results:
 
 # Batch 2D on an azimuthal sector: (min, max) edges in radians, split into
 # n_azimuthal equal bins; pixels outside are left out and r.result.azimuthal
-# holds the bin centres. Radial bins are the same as without a range.
+# holds the bin centres. Radial bins are the same as without an azimuthal range.
 results = integrator.batch2d(
     files,
     n_radial=100,
@@ -597,9 +603,10 @@ for r in integrator.batch2d_iter(
 ### Result Types
 
 - **`IntegrationResult`**: Unified result with optional fields
-  - `radial`: Radial bin centers (1D and `MultiIntegrator` 2D; otherwise `None`)
+  - `radial`: Radial bin centers (1D, `MultiIntegrator` 2D, and `Integrator` 2D
+    with a `radial_range` or an `azimuthal_range`; otherwise `None`)
   - `azimuthal`: Azimuthal bin centers in radians (`MultiIntegrator` 2D, and
-    `Integrator` 2D with `azimuthal_range`, where `radial` stays `None`)
+    `Integrator` 2D with `azimuthal_range`)
   - `intensity`: Integrated intensities
   - `errors`: Error estimates (if `errors=True`)
   - `azimuthal_std`: Weighted population spread (1D, if `azimuthal_std=True`)
