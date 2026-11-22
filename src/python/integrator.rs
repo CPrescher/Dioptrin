@@ -314,6 +314,20 @@ impl PyIntegrator {
         })
     }
 
+    /// Radial bin centres of a 2D call with an explicit radial range (None
+    /// without one, where 2D results keep `radial = None`). Raises ValueError
+    /// when the range cannot serve as 2D radial edges (e.g. a negative
+    /// minimum), before any work starts.
+    fn radial_axis_2d(&self, n_radial: usize) -> PyResult<Option<Vec<f64>>> {
+        if self.integrator.radial_range().is_none() {
+            return Ok(None);
+        }
+        self.integrator
+            .radial_centers_2d(0, 0, n_radial)
+            .map(Some)
+            .map_err(PyValueError::new_err)
+    }
+
     /// Raise ValueError when an image does not match the stored mask.
     fn check_mask(&self, image: (usize, usize), label: &str) -> PyResult<()> {
         check_mask_shape(mask_shape(&self.integrator), image, label)
@@ -755,7 +769,7 @@ impl PyIntegrator {
     ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
-    ///   centres. Radial bins are the same as without a range.
+    ///   centres. Radial bins are the same as without an azimuthal range.
     ///   With `method="pyfai_full"`, individual bins depend on how the range is
     ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
     ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
@@ -764,12 +778,17 @@ impl PyIntegrator {
     /// # Returns
     ///
     /// IntegrationResult with flat intensity (and optional errors) sized
-    /// `n_radial * n_azimuthal`; with `azimuthal_range`, also the azimuthal bin centres
+    /// `n_radial * n_azimuthal`; with `azimuthal_range`, also the radial and azimuthal
+    /// bin centres. With the Integrator's `radial_range`, every method bins onto
+    /// `n_radial` equal bins between its edges (pixels outside are left out) and
+    /// `result.radial` holds their centres; otherwise `radial` is None without
+    /// `azimuthal_range`.
     ///
     /// # Errors
     ///
     /// Raises `ValueError` if the integrator uses the Histogram method, which has
-    /// no azimuthal binning.
+    /// no azimuthal binning, or if its `radial_range` has a negative minimum
+    /// (2D radial edges must be nonnegative).
     ///
     /// # Example
     ///
@@ -795,6 +814,7 @@ impl PyIntegrator {
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         check_positive("n_azimuthal", n_azimuthal)?;
+        let radial = self.radial_axis_2d(n_radial)?;
         match image {
             ImageInput::Path(tiff_path) => {
                 let frame = Frame::from_tiff(tiff_path).map_err(|err| {
@@ -806,6 +826,7 @@ impl PyIntegrator {
                     (false, None) => {
                         let intensity = self.integrator.integrate2d(&frame, n_radial, n_azimuthal);
                         PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+                            .with_radial(radial.clone())
                     }
                     (true, None) => {
                         let (intensity, errs) =
@@ -817,6 +838,7 @@ impl PyIntegrator {
                             n_radial,
                             n_azimuthal,
                         )
+                        .with_radial(radial.clone())
                     }
                     (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
                         self.integrator
@@ -850,6 +872,7 @@ impl PyIntegrator {
                             n_azimuthal,
                         );
                         PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+                            .with_radial(radial.clone())
                     }
                     (true, None) => {
                         let (intensity, errs) = self.integrator.integrate2d_with_errors_from_slice(
@@ -865,6 +888,7 @@ impl PyIntegrator {
                             n_radial,
                             n_azimuthal,
                         )
+                        .with_radial(radial.clone())
                     }
                     (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
                         self.integrator
@@ -1521,7 +1545,7 @@ impl PyIntegrator {
     ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
-    ///   centres. Radial bins are the same as without a range.
+    ///   centres. Radial bins are the same as without an azimuthal range.
     ///   With `method="pyfai_full"`, individual bins depend on how the range is
     ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
     ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
@@ -1570,6 +1594,7 @@ impl PyIntegrator {
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         check_positive("n_azimuthal", n_azimuthal)?;
+        let radial = self.radial_axis_2d(n_radial)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
@@ -1592,11 +1617,10 @@ impl PyIntegrator {
                     .map(|(filename, result)| match result {
                         Ok(intensity) => PyBatchResult {
                             filename,
-                            result: Some(PyIntegrationResult::from_2d(
-                                intensity,
-                                n_radial,
-                                n_azimuthal,
-                            )),
+                            result: Some(
+                                PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
+                                    .with_radial(radial.clone()),
+                            ),
                             error: None,
                         },
                         Err(err) => PyBatchResult {
@@ -1625,12 +1649,15 @@ impl PyIntegrator {
                     .map(|(filename, result)| match result {
                         Ok((intensity, errs)) => PyBatchResult {
                             filename,
-                            result: Some(PyIntegrationResult::from_2d_with_errors(
-                                intensity,
-                                errs,
-                                n_radial,
-                                n_azimuthal,
-                            )),
+                            result: Some(
+                                PyIntegrationResult::from_2d_with_errors(
+                                    intensity,
+                                    errs,
+                                    n_radial,
+                                    n_azimuthal,
+                                )
+                                .with_radial(radial.clone()),
+                            ),
                             error: None,
                         },
                         Err(err) => PyBatchResult {
@@ -1700,7 +1727,7 @@ impl PyIntegrator {
     ///   [-pi, pi), including the returned axis. The `n_azimuthal` bins split it evenly
     ///   (bin i covers [min + i*step, min + (i+1)*step)) and pixels outside are left out,
     ///   so sectors work, also across the +-pi cut. `result.azimuthal` holds the bin
-    ///   centres. Radial bins are the same as without a range.
+    ///   centres. Radial bins are the same as without an azimuthal range.
     ///   With `method="pyfai_full"`, individual bins depend on how the range is
     ///   written (a range shifted by 2*pi, or a sector vs the same rows of a full
     ///   circle, can differ, as in pyFAI itself); prefer `"pixel_split"` for
@@ -1749,6 +1776,7 @@ impl PyIntegrator {
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         check_positive("n_azimuthal", n_azimuthal)?;
+        let radial = self.radial_axis_2d(n_radial)?;
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
 
@@ -1776,6 +1804,7 @@ impl PyIntegrator {
                             receiver: Mutex::new(batch.into_receiver()),
                             n_radial,
                             n_azimuthal,
+                            radial: radial.clone(),
                         },
                         total,
                     ))
@@ -1797,6 +1826,7 @@ impl PyIntegrator {
                             receiver: Mutex::new(batch.into_receiver()),
                             n_radial,
                             n_azimuthal,
+                            radial: radial.clone(),
                         },
                         total,
                     ))
@@ -1852,6 +1882,7 @@ impl PyIntegrator {
                         receiver: Mutex::new(batch.into_receiver()),
                         n_radial,
                         n_azimuthal,
+                        radial: radial.clone(),
                     },
                     total,
                     stream_error.clone(),
@@ -1870,6 +1901,7 @@ impl PyIntegrator {
                         receiver: Mutex::new(batch.into_receiver()),
                         n_radial,
                         n_azimuthal,
+                        radial: radial.clone(),
                     },
                     total,
                     stream_error.clone(),

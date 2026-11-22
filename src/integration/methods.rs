@@ -573,6 +573,79 @@ impl Integrator {
         }
     }
 
+    /// Cache key of the 2D table for `integrate2d*` and
+    /// `integrate2d_with_azimuthal_range*` (`azimuthal` = first-bin centre and
+    /// step). Without an explicit radial range these are the default tables;
+    /// with one, `Counting`, `PixelSplit` and `Supersampled` use the shared
+    /// grid of [`Self::explicit_radial_grid_2d`] (`PyfaiFull` takes the range
+    /// in its own key).
+    pub(super) fn try_lut2d_key(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal: Option<AzimuthalRangeKey>,
+    ) -> Result<TwoDKey, String> {
+        let unit = self.radial_unit;
+        Ok(match (self.method, self.radial_range, azimuthal) {
+            (IntegrationMethod::Histogram, _, _) => {
+                return Err("2D integration is not supported for Histogram method".into());
+            }
+            (IntegrationMethod::PyfaiFull, _, _) | (IntegrationMethod::PixelSplit, None, _) => {
+                self.pixel_split2d_key(n_radial, n_azimuthal, azimuthal)
+            }
+            (_, Some(range), _) => self.shared_grid_key(self.explicit_radial_grid_2d(
+                view,
+                n_radial,
+                n_azimuthal,
+                azimuthal,
+                range,
+            )?),
+            (IntegrationMethod::Counting, None, None) => TwoDKey::Counting {
+                n_radial,
+                n_azimuthal,
+                unit,
+            },
+            (IntegrationMethod::Counting, None, Some(azimuthal)) => TwoDKey::CountingAzimuthal {
+                n_radial,
+                n_azimuthal,
+                azimuthal,
+                unit,
+            },
+            (IntegrationMethod::Supersampled { n_ss }, None, None) => TwoDKey::Supersampled {
+                n_radial,
+                n_azimuthal,
+                n_ss,
+                unit,
+            },
+            (IntegrationMethod::Supersampled { n_ss }, None, Some(azimuthal)) => {
+                TwoDKey::SupersampledAzimuthal {
+                    n_radial,
+                    n_azimuthal,
+                    n_ss,
+                    azimuthal,
+                    unit,
+                }
+            }
+        })
+    }
+
+    /// [`Self::try_lut2d_key`] for the panicking entry point `caller`.
+    pub(super) fn lut2d_key(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal: Option<AzimuthalRangeKey>,
+        caller: &str,
+    ) -> TwoDKey {
+        if matches!(self.method, IntegrationMethod::Histogram) {
+            panic!("{caller} is not supported for Histogram method");
+        }
+        self.try_lut2d_key(view, n_radial, n_azimuthal, azimuthal)
+            .unwrap_or_else(|e| panic!("{caller}: {e}"))
+    }
+
     /// Integrate a frame to 2D using the configured integration method.
     /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
     ///
@@ -610,33 +683,9 @@ impl Integrator {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
         });
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!("integrate2d is not supported for Histogram method")
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
-                self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    unit,
-                });
-                self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d =
+            view.ensure_lut2d(self.lut2d_key(&view, n_radial, n_azimuthal, None, "integrate2d"));
+        self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Like [`Self::integrate2d`], for a row-major `dim1 x dim2` slice.
@@ -658,33 +707,14 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
         });
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!("integrate2d_from_slice is not supported for Histogram method")
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
-                self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    unit,
-                });
-                self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            None,
+            "integrate2d_from_slice",
+        ));
+        self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Integrate a frame to 2D using an explicit azimuthal start and step.
@@ -721,39 +751,14 @@ impl Integrator {
             mask.data.as_slice()
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!("integrate2d_with_azimuthal_range is not supported for Histogram method")
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
-                    n_radial,
-                    n_azimuthal,
-                    Some(azimuthal),
-                ));
-                self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            Some(azimuthal),
+            "integrate2d_with_azimuthal_range",
+        ));
+        self.lut_integrate2d(&frame.data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Like [`Self::integrate2d_with_azimuthal_range`], for a row-major `dim1 x dim2` slice.
@@ -787,41 +792,14 @@ impl Integrator {
             mask.data.as_slice()
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!(
-                    "integrate2d_with_azimuthal_range_from_slice is not supported for Histogram method"
-                )
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
-                    n_radial,
-                    n_azimuthal,
-                    Some(azimuthal),
-                ));
-                self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            Some(azimuthal),
+            "integrate2d_with_azimuthal_range_from_slice",
+        ));
+        self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Integrate a frame to 2D and return per-bin errors (standard deviations).
@@ -841,33 +819,14 @@ impl Integrator {
             mask.assert_compatible(frame.dim1, frame.dim2);
             mask.data.as_slice()
         });
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!("integrate2d_with_errors is not supported for Histogram method")
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
-                self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            None,
+            "integrate2d_with_errors",
+        ));
+        self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Like [`Self::integrate2d_with_errors`], for a row-major `dim1 x dim2` slice.
@@ -889,33 +848,14 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
             mask.data.as_slice()
         });
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!("integrate2d_with_errors_from_slice is not supported for Histogram method")
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Counting {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(n_radial, n_azimuthal, None));
-                self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::Supersampled {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            None,
+            "integrate2d_with_errors_from_slice",
+        ));
+        self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Integrate a frame to 2D with errors using an explicit azimuthal binning definition.
@@ -950,41 +890,14 @@ impl Integrator {
             mask.data.as_slice()
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!(
-                    "integrate2d_with_azimuthal_range_and_errors is not supported for Histogram method"
-                )
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
-                    n_radial,
-                    n_azimuthal,
-                    Some(azimuthal),
-                ));
-                self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            Some(azimuthal),
+            "integrate2d_with_azimuthal_range_and_errors",
+        ));
+        self.lut_integrate2d_with_errors(&frame.data, &lut2d, mask_data, &normalization[..])
     }
 
     /// Like [`Self::integrate2d_with_azimuthal_range_and_errors`], for a row-major
@@ -1019,40 +932,13 @@ impl Integrator {
             mask.data.as_slice()
         });
         let azimuthal = AzimuthalRangeKey::new(azimuthal_start, azimuthal_step);
-        let unit = self.radial_unit;
-        match self.method {
-            IntegrationMethod::Histogram => {
-                panic!(
-                    "integrate2d_with_azimuthal_range_and_errors_from_slice is not supported for Histogram method"
-                )
-            }
-            IntegrationMethod::Counting => {
-                let lut2d = view.ensure_lut2d(TwoDKey::CountingAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
-                let lut2d = view.ensure_lut2d(self.pixel_split2d_key(
-                    n_radial,
-                    n_azimuthal,
-                    Some(azimuthal),
-                ));
-                self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
-            }
-            IntegrationMethod::Supersampled { n_ss } => {
-                let lut2d = view.ensure_lut2d(TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal,
-                    unit,
-                });
-                self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
-            }
-        }
+        let lut2d = view.ensure_lut2d(self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            Some(azimuthal),
+            "integrate2d_with_azimuthal_range_and_errors_from_slice",
+        ));
+        self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
     }
 }
