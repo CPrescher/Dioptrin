@@ -87,14 +87,30 @@ pub trait IntegrationTask: Send + Sync {
     fn integrate2d_method(&self) -> Option<&'static str> {
         None
     }
+
+    /// Checks the integrator's 2D configuration for this task before any
+    /// file is read: an explicit radial range the 2D grid cannot use, or a
+    /// first-bin-centre/step sector wider than 2π with such a range, would
+    /// make every integration call panic. The batch helpers then answer each
+    /// input with this error instead.
+    #[doc(hidden)]
+    fn check_2d(&self, _integrator: &Integrator) -> Result<(), String> {
+        Ok(())
+    }
 }
 
-/// Error message for a task the integrator's method cannot run: a 2D task
-/// with the Histogram method. Matches the `integrate2d*` panic message.
+/// Error message for a task the integrator cannot run: a 2D task with the
+/// Histogram method (matching the `integrate2d*` panic message), or a 2D task
+/// whose explicit radial range or sector the 2D grid cannot use (see
+/// [`IntegrationTask::check_2d`]).
 fn rejection<T: IntegrationTask>(integrator: &Integrator, task: &T) -> Option<String> {
     let method = task.integrate2d_method()?;
-    matches!(integrator.method(), IntegrationMethod::Histogram)
-        .then(|| format!("{method} is not supported for Histogram method"))
+    if matches!(integrator.method(), IntegrationMethod::Histogram) {
+        return Some(format!("{method} is not supported for Histogram method"));
+    }
+    task.check_2d(integrator)
+        .err()
+        .map(|e| format!("{method}: {e}"))
 }
 
 /// Runs `task` on `frame`, or returns the error for an image shape the
@@ -186,6 +202,9 @@ impl IntegrationTask for Integration2D {
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d")
     }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(self.n_radial, self.n_azimuthal, None)
+    }
 }
 
 /// 2D integration task with per-bin error estimation.
@@ -208,6 +227,9 @@ impl IntegrationTask for Integration2DWithErrors {
     }
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_errors")
+    }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(self.n_radial, self.n_azimuthal, None)
     }
 }
 
@@ -250,6 +272,13 @@ impl IntegrationTask for Integration2DWithAzimuthalRange {
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_azimuthal_range")
     }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(
+            self.n_radial,
+            self.n_azimuthal,
+            Some((self.azimuthal_min, self.azimuthal_max)),
+        )
+    }
 }
 
 /// 2D integration with azimuthal range restriction and error estimation.
@@ -288,6 +317,13 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
     }
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_azimuthal_range_and_errors")
+    }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(
+            self.n_radial,
+            self.n_azimuthal,
+            Some((self.azimuthal_min, self.azimuthal_max)),
+        )
     }
 }
 
@@ -343,7 +379,9 @@ impl IntegrationTask for Integration2DOnAzimuthalRange {
 ///
 /// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
 /// integrator using `IntegrationMethod::Histogram` is not run: every input gets
-/// `Err("<integrate2d method> is not supported for Histogram method")`.
+/// `Err("<integrate2d method> is not supported for Histogram method")`. The same
+/// holds, with the grid error, for an explicit radial range the 2D grid cannot
+/// use (see [`IntegrationTask::check_2d`]).
 ///
 /// # Notes
 ///
@@ -467,7 +505,9 @@ where
 ///
 /// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
 /// integrator using `IntegrationMethod::Histogram` is not run: every input gets
-/// `Err("<integrate2d method> is not supported for Histogram method")`.
+/// `Err("<integrate2d method> is not supported for Histogram method")`. The same
+/// holds, with the grid error, for an explicit radial range the 2D grid cannot
+/// use (see [`IntegrationTask::check_2d`]).
 ///
 /// # Examples
 ///
@@ -685,11 +725,20 @@ mod tests {
         T: IntegrationTask + Clone + 'static,
         T::Output: 'static,
     {
-        let files = write_tiffs(expected, 4);
-        let integrator = Arc::new(
-            Integrator::new(Geometry::new(3, 3, test_poni()))
-                .with_method(IntegrationMethod::Histogram),
-        );
+        let integrator = Integrator::new(Geometry::new(3, 3, test_poni()))
+            .with_method(IntegrationMethod::Histogram);
+        check_every_input_rejected(task, integrator, expected);
+    }
+
+    /// `process_files`, `process_files_sequential` and `process_streaming`
+    /// answer every input with `expected` (and run no worker that panics).
+    fn check_every_input_rejected<T>(task: T, integrator: Integrator, expected: &str)
+    where
+        T: IntegrationTask + Clone + 'static,
+        T::Output: 'static,
+    {
+        let files = write_tiffs(&format!("{:x}", fxhash(expected)), 4);
+        let integrator = Arc::new(integrator);
         let check = |helper: &str, mut results: Vec<(usize, String, Result<T::Output, String>)>| {
             assert_eq!(results.len(), files.len(), "{helper}");
             results.sort_by_key(|r| r.0);
@@ -712,6 +761,84 @@ mod tests {
         let options = StreamOptions::new(2, 1);
         let stream = process_streaming(files.clone(), integrator, task, options).unwrap();
         check("process_streaming", stream.collect());
+        for file in files {
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+
+    /// Stable short tag for temporary file names.
+    fn fxhash(text: &str) -> u64 {
+        text.bytes().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+        })
+    }
+
+    /// A 2D task on an explicit radial range the 2D grid cannot use (negative
+    /// minimum), or a first-bin-centre/step sector wider than 2π with a range,
+    /// gets one error per input. Before, every worker panicked in the
+    /// integration call and `process_files` returned no results at all.
+    #[test]
+    fn batch_helpers_reject_unusable_2d_radial_ranges() {
+        let methods = [
+            IntegrationMethod::Counting,
+            IntegrationMethod::PixelSplit,
+            IntegrationMethod::Supersampled { n_ss: 2 },
+            IntegrationMethod::PyfaiFull,
+        ];
+        let (n_radial, n_azimuthal) = (5, 4);
+        for method in methods {
+            let negative = || {
+                Integrator::new(Geometry::new(3, 3, test_poni()))
+                    .with_method(method)
+                    .with_radial_range(-1.0, 30.0)
+            };
+            let grid = "2D grid for radial_range (-1, 30): radial range must be nonnegative";
+            check_every_input_rejected(
+                Integration2D {
+                    n_radial,
+                    n_azimuthal,
+                },
+                negative(),
+                &format!("integrate2d: {grid}"),
+            );
+            check_every_input_rejected(
+                Integration2DWithErrors {
+                    n_radial,
+                    n_azimuthal,
+                },
+                negative(),
+                &format!("integrate2d_with_errors: {grid}"),
+            );
+            // A valid range, but 4 bins of 2 rad span more than one turn.
+            let wide = Integrator::new(Geometry::new(3, 3, test_poni()))
+                .with_method(method)
+                .with_radial_range(0.0, 30.0);
+            check_every_input_rejected(
+                Integration2DWithAzimuthalRangeAndErrors {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal_min: 0.0,
+                    azimuthal_max: 2.0,
+                },
+                wide,
+                "integrate2d_with_azimuthal_range_and_errors: 2D grid for radial_range \
+                 (0, 30): azimuthal span must be at most 2π (one full turn)",
+            );
+        }
+        // A usable range still integrates every file.
+        let files = write_tiffs("usable-range", 2);
+        let integrator = Arc::new(
+            Integrator::new(Geometry::new(3, 3, test_poni()))
+                .with_method(IntegrationMethod::Counting)
+                .with_radial_range(0.0, 30.0),
+        );
+        let task = Integration2D {
+            n_radial,
+            n_azimuthal,
+        };
+        let results = process_files(&files, integrator, task, 2, 1);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|(_, r)| r.is_ok()));
         for file in files {
             std::fs::remove_file(file).unwrap();
         }

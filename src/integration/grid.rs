@@ -745,6 +745,31 @@ impl Integrator {
         ))
     }
 
+    /// `Err` when `integrate2d*` (azimuthal `None`) or
+    /// `integrate2d_with_azimuthal_range*` (`Some((start, step))`) would panic
+    /// because the explicit radial range, or the sector with it, cannot form
+    /// a 2D grid. Needs no image; `Ok` without an explicit range.
+    pub(crate) fn check_2d_bins(
+        &self,
+        n_radial: usize,
+        n_azimuthal: usize,
+        start_step: Option<(f64, f64)>,
+    ) -> Result<(), String> {
+        let Some((lo, hi)) = self.radial_range else {
+            return Ok(());
+        };
+        let azimuthal_range = match start_step {
+            Some((start, step)) => (
+                start - 0.5 * step,
+                start + (n_azimuthal as f64 - 0.5) * step,
+            ),
+            None => (0.0, 1.0),
+        };
+        IntegrationGrid2d::new(n_radial, n_azimuthal, (lo, hi), azimuthal_range)
+            .map(|_| ())
+            .map_err(|e| format!("2D grid for radial_range ({lo}, {hi}): {e}"))
+    }
+
     /// Build the 2D table that integrating a `dim1 x dim2` image with these
     /// arguments needs, so parallel batch workers share one table instead of
     /// each building it. Invalid arguments are left for the integration call
