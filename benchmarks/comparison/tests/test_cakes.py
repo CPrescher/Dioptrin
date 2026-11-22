@@ -183,6 +183,8 @@ class CakeRunTests(unittest.TestCase):
             self.assertTrue(rows)
             self.assertTrue(all(r["dimension"] == "2d" for r in rows))
             self.assertTrue(all(r["self_check"] == "passed" for r in rows))
+            # The batch2d split column exists but is empty outside the batch path.
+            self.assertTrue(all(r["dioptrin_2d_batch_split"] == "" for r in rows))
             self.assertEqual(
                 {r["subpixels"] for r in rows if r["variant"] == "azint"}, {"3"}
             )
@@ -232,6 +234,92 @@ class CakeRunTests(unittest.TestCase):
             # Full reference stacks are removed; first cakes stay for numerical.json.
             self.assertFalse(list((output / "cases").glob("*.result.npz")))
             self.assertTrue(list((output / "cases").glob("*.cake0.npz")))
+
+    def test_dioptrin_batch2d_path_runs_or_is_skipped(self):
+        """--dioptrin-2d-path batch: checked cakes, or a recorded skip on builds
+        whose batch2d takes TIFF paths only; never another path in its place."""
+        import dioptrin
+
+        image = np.ones((4, 4))
+        engine = dioptrin.Integrator(
+            str(HERE.parent.parent / "test_data" / "v1.poni"),
+            method="pixel_split",
+            unit="2th_deg",
+        )
+        try:
+            engine.batch2d([image], 4, 4)
+            arrays = True
+        except TypeError:
+            arrays = False
+        except ValueError:  # accepted arrays, rejected the toy frame/mask
+            arrays = True
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "run"
+            self.run_compare(
+                output,
+                "--variants",
+                "dioptrin-pixel_split",
+                "--cakes",
+                "32x8",
+                "--workers",
+                "1,2",
+                "--dioptrin-2d-path",
+                "batch",
+                "--dioptrin-2d-batch-split",
+                "frames",
+                "nested",
+            )
+            environment = json.loads((output / "environment.json").read_text())
+            self.assertEqual(environment["arguments"]["dioptrin_2d_path"], "batch")
+            self.assertEqual(
+                environment["arguments"]["dioptrin_2d_batch_split"],
+                ["frames", "nested"],
+            )
+            skipped = json.loads((output / "skipped.json").read_text())
+            failures = json.loads((output / "failures.json").read_text())
+            self.assertEqual(failures, [])
+            cases = output / "cases"
+            if arrays:
+                with (output / "results.csv").open() as stream:
+                    rows = list(csv.DictReader(stream))
+                # w1, w2 x intensity, Poisson x frames, nested: no collisions.
+                self.assertEqual(len(rows), 8)
+                self.assertTrue(all(r["dioptrin_2d_path"] == "batch" for r in rows))
+                self.assertTrue(all(r["self_check"] == "passed" for r in rows))
+                self.assertEqual(
+                    sorted(r["dioptrin_2d_batch_split"] for r in rows),
+                    ["frames"] * 4 + ["nested"] * 4,
+                )
+                self.assertEqual(skipped, [])
+                for split in ("frames", "nested"):
+                    records = list(cases.glob(f"*-batch-{split}-w*.result.json"))
+                    self.assertEqual(len(records), 4)
+                    for path in records:
+                        record = json.loads(path.read_text())
+                        self.assertEqual(record["dioptrin_2d_batch_split"], split)
+                        self.assertGreater(record["cpu_per_wall"], 0)
+                # Both splits integrate the same frames to the same bits.
+                for mode in ("intensity", "poisson"):
+                    a, b = (
+                        np.load(
+                            next(cases.glob(f"*-batch-{s}-w1-{mode}-t0.result.cake0.npz"))
+                        )
+                        for s in ("frames", "nested")
+                    )
+                    for key in a.files:
+                        self.assertEqual(a[key].tobytes(), b[key].tobytes(), key)
+                self.assertIn(
+                    "dioptrin-pixel_split (batch, frames)",
+                    (output / "summary.md").read_text(),
+                )
+            else:
+                self.assertFalse(list(cases.glob("*.result.json")))
+                self.assertEqual(len(skipped), 8)
+                first = [s for s in skipped if "-w1-" in s["case"]]
+                self.assertEqual(len(first), 4)
+                self.assertTrue(
+                    all("accepts TIFF paths only" in s["reason"] for s in first)
+                )
 
     def test_memory_gate_skips_instead_of_running(self):
         with tempfile.TemporaryDirectory() as temporary:

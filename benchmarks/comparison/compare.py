@@ -69,7 +69,13 @@ AZIMUTH_RANGE_DEG = (-180.0, 180.0)
 # Variants whose 2D subpixel count comes from --subpixels (per side).
 SUBPIXEL_VARIANTS = ("dioptrin-supersampled", "azint", "azint-cached")
 DEFAULT_SUBPIXELS_2D = (10,)
-DIOPTRIN_2D_PATHS = ("sequential", "stream")
+DIOPTRIN_2D_PATHS = ("sequential", "stream", "batch")
+# How --dioptrin-2d-path batch splits the CPU budget B in batch2d over arrays:
+# frames = num_workers=B, num_threads=1 (B frames side by side, one thread
+# each, no nested parallelism; the arrangement of the azint/pyFAI frame
+# threads); nested = neither argument (all frames on the global Rayon pool of
+# RAYON_NUM_THREADS = B threads, parallel inside frames too).
+DIOPTRIN_2D_BATCH_SPLITS = ("frames", "nested")
 # Cross-library pairs in numerical.json besides the dioptrin-pixel_split reference.
 COUNTERPARTS_2D = (
     ("pyfai-full", "dioptrin-pyfai_full"),
@@ -1056,7 +1062,52 @@ def setup_case_2d(case, rank=None):
             def run():
                 return [integrate(ai, frame) for frame in frames]
 
-        else:
+        elif case["dioptrin_2d_path"] == "batch":
+            # One synchronous batch2d call over the array list (Dioptrin builds
+            # whose batch2d accepts arrays); the arrays are borrowed, not
+            # copied. "frames": `workers` frames at a time, each in a Rayon pool
+            # of one thread built by the call (needs a build that honours
+            # num_workers/num_threads for arrays; older array builds ignored
+            # them). "nested": neither argument, so all frames run on the global
+            # pool (RAYON_NUM_THREADS = CPU budget, checked above). Either way
+            # the process computes on `workers` threads.
+            split = case["dioptrin_2d_batch_split"]
+            if split == "frames":
+                shape = dict(num_workers=workers, num_threads=1)
+            elif split == "nested":
+                shape = {}
+            else:
+                raise ValueError(f"Unknown Dioptrin 2D batch split {split!r}")
+
+            def batch(images):
+                return ai.batch2d(
+                    images, nr, na, errors=errors, azimuthal_range=span, **shape
+                )
+
+            def check_path():
+                try:
+                    batch([image])
+                except TypeError as error:
+                    raise Unsupported(
+                        "--dioptrin-2d-path batch needs Integrator.batch2d over "
+                        "NumPy arrays; the installed Dioptrin "
+                        f"{importlib.metadata.version('dioptrin')} accepts TIFF "
+                        f"paths only ({error})"
+                    ) from None
+
+            def run():
+                results = []
+                for index, item in enumerate(batch(frames)):
+                    if item.filename != f"array[{index}]":
+                        raise RuntimeError(
+                            f"batch2d result {index} is {item.filename!r}"
+                        )
+                    if not item.is_ok():
+                        raise RuntimeError(item.error)
+                    results.append(item.result)
+                return results
+
+        elif case["dioptrin_2d_path"] == "stream":
             # Frame-parallel stream: num_workers frames at once, one thread
             # each. The stream copies every array once before integrating it.
             def run():
@@ -1077,6 +1128,9 @@ def setup_case_2d(case, rank=None):
                     )
                 return results
 
+        else:
+            raise ValueError(f"Unknown Dioptrin 2D path {case['dioptrin_2d_path']!r}")
+
         def extract(result):
             sigma = None
             if errors:
@@ -1092,6 +1146,8 @@ def setup_case_2d(case, rank=None):
 
         first = integrate(ai, image)
         setup_first = time.perf_counter() - started
+        if case["dioptrin_2d_path"] == "batch":
+            check_path()  # unsupported builds are skipped, never substituted
         engines = [ai]
         info["table_nnz_source"] = "not exposed by the Dioptrin Python API"
     else:
@@ -1359,6 +1415,12 @@ def peak_rss():
     return peak * (1 if sys.platform == "darwin" else 1024) / 2**20
 
 
+def cpu_time():
+    """User + system CPU seconds of this process (all threads)."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
+
+
 def case_record(case, state):
     return dict(
         **{k: v for k, v in case.items() if k != "dioptrin_radial_axis"},
@@ -1389,6 +1451,8 @@ def summary_line(case, meta, rate):
         variant = f"2d {case['cake']} {variant}" + (
             f" ss{case['subpixels']}" if case.get("subpixels") else ""
         )
+        if case.get("dioptrin_2d_batch_split"):
+            variant += f" batch/{case['dioptrin_2d_batch_split']}"
     return (
         f"{meta['dataset']:14} {case['workload']:8} {variant:25} workers={case['workers']:3} "
         + (f"processes={processes} " if processes > 1 else "")
@@ -1417,14 +1481,17 @@ def worker(case_path, rank=None):
     # scheduling and result allocation are included in every measured call.
     durations = []
     counts = []
+    cpu_seconds = []  # process user + system time per block, all threads
     for _ in range(case["blocks"]):
         count = 0
+        c0 = cpu_time()
         t0 = time.perf_counter()
         while time.perf_counter() - t0 < case["seconds"]:
             result = run()
             count += len(result)
             del result
         durations.append(time.perf_counter() - t0)
+        cpu_seconds.append(cpu_time() - c0)
         counts.append(count)
     validate(run())
     if state["pool"]:
@@ -1450,6 +1517,10 @@ def worker(case_path, rank=None):
             block_frames_per_s=rates,
             block_seconds=durations,
             block_frames=counts,
+            block_cpu_seconds=cpu_seconds,
+            # Busy CPUs during the timed blocks (CPU time / wall time); about
+            # the CPU budget when every compute thread stays busy.
+            cpu_per_wall=sum(cpu_seconds) / sum(durations),
             peak_rss_mib=peak_rss(),
             **numerical_fields(negative),
         ),
@@ -1777,6 +1848,8 @@ CSV_2D_FIELDS = (
     "rss_inputs_mib",
     "peak_rss_ready_mib",
     "setup_rss_growth_mib",
+    # Appended: batch2d split of --dioptrin-2d-path batch; empty otherwise.
+    "dioptrin_2d_batch_split",
 )
 CAKE_KEYS = ("dataset", "workload", "n_radial", "n_azimuthal", "errors")
 
@@ -1857,6 +1930,10 @@ def numerical_2d(rows):
             if r["variant"] == variant and all(r[k] == row[k] for k in CAKE_KEYS)
         ]
         same = [r for r in candidates if r.get("subpixels") == row.get("subpixels")]
+        candidates = same or candidates
+        # With several batch splits in one run, compare within the same split.
+        split = row.get("dioptrin_2d_batch_split")
+        same = [r for r in candidates if r.get("dioptrin_2d_batch_split") == split]
         return (same or candidates or [None])[0]
 
     entries = []
@@ -1886,6 +1963,10 @@ def numerical_2d(rows):
                     error_mode=row["error_mode"],
                     reference=ref_variant,
                     reference_subpixels=other.get("subpixels"),
+                    dioptrin_2d_batch_split=row.get("dioptrin_2d_batch_split"),
+                    reference_dioptrin_2d_batch_split=other.get(
+                        "dioptrin_2d_batch_split"
+                    ),
                     comparison=role,
                     grid=grid,
                     frame="first distinct frame",
@@ -1977,6 +2058,7 @@ def summary_2d(rows):
         "workers",
         "processes",
         "error_mode",
+        "dioptrin_2d_batch_split",  # shown with the method, not as a column
     )
     groups = sorted(
         {tuple(r.get(f) for f in keys) for r in rows},
@@ -1984,6 +2066,9 @@ def summary_2d(rows):
     )
     for key in groups:
         members = [r for r in rows if tuple(r.get(f) for f in keys) == key]
+        *key, split = key
+        if split:
+            key[3] = f"{key[3]} (batch, {split})"
         median = lambda field: float(np.median([r[field] for r in members]))  # noqa: E731
         nnz = members[0].get("table_nnz")
         nnz = f"{nnz:,}" if nnz else f"~{members[0].get('estimated_table_nnz', 0):,.0f}"
@@ -2332,7 +2417,21 @@ def main():
         help="Dioptrin 2D multi-core path: sequential (default) integrates one "
         "frame at a time with Integrator.integrate2d, whose sparse product is "
         "row-parallel over the Rayon pool; stream uses batch2d_iter over the "
-        "array list (frame-parallel, copies each frame)",
+        "array list (frame-parallel, copies each frame); batch is one "
+        "Integrator.batch2d call over the array list (no copies; split of the "
+        "CPU budget set by --dioptrin-2d-batch-split; needs a Dioptrin whose "
+        "batch2d accepts arrays, otherwise the cases are skipped as unsupported)",
+    )
+    parser.add_argument(
+        "--dioptrin-2d-batch-split",
+        nargs="+",
+        choices=DIOPTRIN_2D_BATCH_SPLITS,
+        default=["frames"],
+        help="With --dioptrin-2d-path batch: how batch2d splits the CPU budget B. "
+        "frames (default): num_workers=B, num_threads=1, one frame per thread "
+        "as the azint/pyFAI frame threads; nested: neither argument, all frames "
+        "on the global Rayon pool of B threads, parallel inside frames too. "
+        "Several values give one case each",
     )
     parser.add_argument(
         "--max-memory-fraction",
@@ -2381,6 +2480,7 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     args.cakes = [f"{r}x{a}" for r, a in cakes]
+    args.dioptrin_2d_batch_split = list(dict.fromkeys(args.dioptrin_2d_batch_split))
     if min(args.subpixels) < 1:
         parser.error("--subpixels must be positive")
     if not 0 < args.max_memory_fraction <= 1:
@@ -2764,9 +2864,29 @@ def main():
                                         if variant in SUBPIXEL_VARIANTS
                                         else [None]
                                     )
-                                    for subpixels in counts:
+                                    dioptrin = variant.startswith("dioptrin-")
+                                    path_2d = (
+                                        args.dioptrin_2d_path if dioptrin else None
+                                    )
+                                    splits = (
+                                        args.dioptrin_2d_batch_split
+                                        if path_2d == "batch"
+                                        else [None]
+                                    )
+                                    for subpixels, batch_split in (
+                                        (s, b) for s in counts for b in splits
+                                    ):
                                         ss = f"-ss{subpixels}" if subpixels else ""
-                                        suffix = f"{dataset}-{workload}-2d-{cake}-{variant}{ss}"
+                                        # Non-default Dioptrin paths and batch
+                                        # splits are part of the case name, so
+                                        # several splits in one run never share
+                                        # files or one-worker references.
+                                        how = (
+                                            f"-{path_2d}"
+                                            if path_2d not in (None, "sequential")
+                                            else ""
+                                        ) + (f"-{batch_split}" if batch_split else "")
+                                        suffix = f"{dataset}-{workload}-2d-{cake}-{variant}{ss}{how}"
                                         mode = "poisson" if errors else "intensity"
                                         split = (
                                             f"-p{processes}" if processes > 1 else ""
@@ -2796,9 +2916,8 @@ def main():
                                             radial_range_2d=preflight[
                                                 "radial_range_2d"
                                             ],
-                                            dioptrin_2d_path=args.dioptrin_2d_path
-                                            if variant.startswith("dioptrin-")
-                                            else None,
+                                            dioptrin_2d_path=path_2d,
+                                            dioptrin_2d_batch_split=batch_split,
                                             result=str(
                                                 case_path.with_suffix(".result.json")
                                             ),

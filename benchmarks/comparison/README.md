@@ -368,6 +368,39 @@ is chosen with `--dioptrin-2d-path`:
   `num_threads=1` (frame-parallel). The stream copies every frame once, in one
   producer thread, before integrating it; on large detectors this copy limits
   throughput at higher budgets.
+- `batch`: one `Integrator.batch2d(frames, n_radial, n_azimuthal, errors,
+  azimuthal_range=(-pi, pi), ...)` call over the list of arrays per timed call.
+  The arrays are borrowed, not copied. `--dioptrin-2d-batch-split` sets how the
+  call splits the CPU budget B (several values give one case each):
+  - `frames` (default): `num_workers=B, num_threads=1`. B frames at a time,
+    each in a Rayon pool of one thread that the call builds (and drops) itself,
+    with no parallelism inside a frame: the arrangement of the azint and pyFAI
+    frame threads. The idle global pool (`RAYON_NUM_THREADS` = B, used for the
+    first cake) is not used by the timed calls.
+  - `nested`: neither argument. All frames run on the global Rayon pool of B
+    threads (`RAYON_NUM_THREADS`), which also parallelises inside each frame.
+
+  Either way the process computes on B threads; `cpu_per_wall` in each
+  `*.result.json` (CPU time over wall time of the timed blocks) records it.
+  Needs a Dioptrin whose `batch2d` accepts NumPy arrays (after 0.14.0, which
+  takes TIFF paths only): with an older build the cases are listed in
+  `skipped.json` as unsupported, never run through another path. `frames` also
+  needs a build whose array `batch2d` honours `num_workers`/`num_threads`
+  (fix branch `a50915b` or later); earlier array builds ignored both and ran
+  `nested`, which cannot be told apart from Python, so check the installed
+  build record. Same bins, range, error mode, corrections, mask and
+  self-checks as `sequential`.
+
+The path is recorded per case in the `dioptrin_2d_path` column and the batch
+split in `dioptrin_2d_batch_split` (empty for other paths and libraries). Case
+files of non-default paths carry the path and split in their names
+(`...-dioptrin-pixel_split-batch-frames-w8-...`), and `summary.md` lists the
+split with the method. To time a
+Dioptrin build from another branch, install it into a separate environment and
+pass `--allow-unverified-build`: the source check compares the installed build
+record with this checkout, so it reports the mismatch, and `environment.json`
+keeps the installed record (`installed_build.source.commit`) and the problems
+(`build_verification_problems`).
 
 pyFAI builds one CSR engine per frame thread, sequentially during set-up, as in
 1D; its "ready" time therefore grows with the budget. azint frame threads share
@@ -420,8 +453,8 @@ this. A library that returned no 2D sigma would be recorded as `unsupported` in
 **Columns and outputs.** `results.csv` appends `dimension`, `n_radial`,
 `n_azimuthal`, `subpixels`, `dioptrin_2d_path`, `uncertainty_support`,
 `table_nnz`, `table_nnz_total`, `table_nnz_source`, `estimated_table_nnz`,
-`estimated_memory_mib`, `rss_inputs_mib`, `peak_rss_ready_mib` and
-`setup_rss_growth_mib` (empty for 1D rows; 1D columns and variant names are
+`estimated_memory_mib`, `rss_inputs_mib`, `peak_rss_ready_mib`,
+`setup_rss_growth_mib` and `dioptrin_2d_batch_split` (empty for 1D rows; 1D columns and variant names are
 unchanged). `setup_first_s` is the time to the first cake (import, set-up and
 table construction) and `setup_ready_s` the time until every worker is built
 and warmed. `peak_rss_ready_mib` is the peak RSS when all workers are ready,
