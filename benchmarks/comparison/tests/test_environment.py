@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from environment import (
+    build_options,
+    setup_arguments,
     cache_key,
     cpu_identity,
     ensure_cached,
@@ -337,6 +339,23 @@ class EnvironmentTests(unittest.TestCase):
                 (root / "src/lib.rs").write_text("library")
                 (recipe / "requirements.txt").write_text("changed dependency")
                 self.assertNotEqual(original, cache_key(fingerprint(root, "stable")))
+                (recipe / "requirements.txt").write_text("requirements.txt")
+                self.assertEqual(original, cache_key(fingerprint(root, "stable")))
+                # azint fast-math and OpenCL environments are separate entries.
+                for options in (
+                    build_options(azint_fast_math=True),
+                    build_options(with_opencl=True),
+                ):
+                    self.assertNotEqual(
+                        original, cache_key(fingerprint(root, "stable", options))
+                    )
+
+    def test_build_options_reach_setup(self):
+        self.assertEqual(setup_arguments(build_options()), [])
+        self.assertEqual(
+            setup_arguments(build_options(True, True)),
+            ["--azint-fast-math", "--with-opencl"],
+        )
 
 
 if __name__ == "__main__":

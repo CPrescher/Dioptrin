@@ -19,6 +19,8 @@ from provenance import digest, source_hashes
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 AZINT_COMMIT = "4f78cc3b1d8cab67128c9679f55de6340c68f191"
+# Optional, for pyfai-full-opencl; installed only from a binary wheel.
+OPENCL_REQUIREMENT = "pyopencl==2026.1.5"
 
 
 def run(command, **kwargs):
@@ -141,6 +143,12 @@ def main():
         "matching Dioptrin's default fast_math=True reassociated accumulation",
     )
     parser.add_argument(
+        "--with-opencl",
+        action="store_true",
+        help=f"Also install {OPENCL_REQUIREMENT} (binary wheel only) for the "
+        "pyfai-full-opencl variant",
+    )
+    parser.add_argument(
         "--azint-only",
         action="store_true",
         help="Rebuild only azint in an existing environment; keep the installed "
@@ -218,6 +226,19 @@ def main():
                 ],
                 env=env,
             )
+            if args.with_opencl:
+                # No source build: it would need system OpenCL headers/loaders.
+                run(
+                    [
+                        python,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--only-binary=:all:",
+                        OPENCL_REQUIREMENT,
+                    ],
+                    env=env,
+                )
             locked = ["--locked"] if (ROOT / "Cargo.lock").is_file() else []
             run(
                 [
@@ -383,6 +404,7 @@ def main():
                     source=source,
                     installed_dioptrin=installed,
                     portable=args.portable,
+                    opencl=OPENCL_REQUIREMENT if args.with_opencl else None,
                     flags={
                         k: env[k]
                         for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "RUSTFLAGS")

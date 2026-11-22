@@ -144,6 +144,69 @@ benchmark distribution. Add future public datasets through a versioned manifest
 entry with immutable source URL and checksum, after establishing its source
 and redistribution terms. Large experimental data do not belong in Git history.
 
+### Archivable Eiger subsets
+
+Measured-data rows for the paper run from small subsets that can be archived
+publicly, not from the full scans. `prepare_subset.py` copies N evenly spaced
+frames (default 32, first and last included) of a Bitshuffle/LZ4 HDF5 scan as
+their **original compressed chunks** (`read_direct_chunk`/`write_direct_chunk`,
+same dataset path, dtype, one frame per chunk, same Bitshuffle block size and
+LZ4; nothing is recompressed). It records the scan's SHA-256, the source frame
+indices, the dataset attributes, the filter settings and the SHA-256 of every
+decoded frame inside the file (`/benchmark_subset`), decodes every copied frame
+again and compares it with the decoded scan frame. The HDF5 file holds no
+timestamp: the same scan and hdf5plugin version give identical bytes. Beside it
+go the PONI, the mask and a JSON manifest, so the directory is a self-contained
+bundle:
+
+```bash
+OUT=/path/outside/the/clone/subsets   # do not put scan data into Git
+.venv-benchmark/bin/python benchmarks/comparison/prepare_subset.py subset \
+  --scan /data/eiger9m/eiger_0000.h5 --dataset entry_0000/instrument/eiger/data \
+  --poni /data/eiger9m/eiger_0000.poni --mask /data/eiger9m/eiger_0000.mask \
+  --name eiger9m --out-dir "$OUT"
+.venv-benchmark/bin/python benchmarks/comparison/prepare_subset.py subset \
+  --scan /data/diopside/scan0001/eiger_0000.h5 --dataset /entry_0000/ESRF-ID11/eiger/data \
+  --poni /data/diopside/CeO2_tmp.poni --catalog-detector Eiger2_4M \
+  --name eiger4m --out-dir "$OUT"
+# Re-check later, with or without the original scan:
+.venv-benchmark/bin/python benchmarks/comparison/prepare_subset.py verify \
+  --subset "$OUT/eiger9m-subset32.h5" [--scan /data/eiger9m/eiger_0000.h5]
+```
+
+The mask file is written in the orientation of the HDF5 frames. A supplied mask
+may be stored in another orientation (the Eiger 9M mask is flipped vertically
+relative to the HDF5 frames); `--mask-transform auto` chooses the flip under
+which it covers at least 99.9% of the subset's invalid pixels (value >= 2^31 - 1)
+while every other flip covers less than 99%, and refuses otherwise. Without
+`--mask`, a mask is generated: pixels that are 0 in every subset frame (module
+gaps and dead pixels) or invalid in any subset frame. `--catalog-detector`
+records how much of a pyFAI catalogue detector's gap mask it covers.
+
+`tile` builds a scan-sized file from a subset only, again from its compressed
+chunks (frame i is subset frame i mod N), for file-reading pipelines:
+
+```bash
+.venv-benchmark/bin/python benchmarks/comparison/prepare_subset.py tile \
+  --subset "$OUT/eiger9m-subset32.h5" --frames 625 --output "$OUT/eiger9m-tiled625.h5"
+```
+
+The `eiger9m-subset` and `eiger4m-subset` datasets read such bundles from
+`--subset-dir` (default `--data-dir`); no suite selects them, so the standard
+suite still needs no private data. The loader checks that the subset was cut
+from the scan named in `datasets.json` (`source_sha256`) and that every decoded
+frame matches its recorded hash. The mask is the union of the bundle's mask, the
+calibration detector's mask and pixels invalid in any subset frame. With the
+suite's 32 frames each `frames` pass integrates every subset frame once:
+
+```bash
+.venv-benchmark/bin/python benchmarks/comparison/compare.py \
+  --datasets eiger9m-subset eiger4m-subset --subset-dir "$OUT" --workloads frames
+```
+
+Each frame is decoded to float64 in RAM before timing (32 Eiger 9M frames:
+2.6 GB); decoding stays outside every timing block.
+
 ## What is measured and checked
 
 All methods use the same float64 input arrays, masks, physical geometry,
@@ -152,9 +215,32 @@ standard suite uses 2,000 bins and reports intensity-only and Poisson modes.
 
 Methods are Dioptrin `pixel_split`, `supersampled`, and `pyfai_full`; azint
 subpixel integration in two rows, `azint` and `azint-cached`; pyFAI full CSR and
-bbox CSR using Cython. Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
+bbox CSR using Cython on Python frame threads (`pyfai-full`, `pyfai-bbox`);
+`pyfai-full-omp`, pyFAI's recommended CPU mode, one full CSR Cython engine
+integrating frames in sequence with `OMP_NUM_THREADS` = CPU budget; and
+`pyfai-full-opencl`, method `("full", "csr", "opencl")` on one OpenCL device. Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
 generated detectors, and 3 x 3 for quick.
 The runner requires pyFAI to use the requested method and rejects fallbacks.
+
+`pyfai-full-omp` runs only where pyFAI's CSR extension contains OpenMP. pyFAI
+has no runtime flag for this, so a probe looks for the OpenMP runtime entry
+points (`GOMP_*`, `__kmpc_*`) in `pyFAI/ext/splitPixelFullCSR` and, on Linux,
+for the runtime in the process maps. The macOS wheels have none; there the
+variant is skipped with a `SKIPPED` line in the log and `summary.md` and an entry
+in `skipped.json`, instead of reporting a number that OpenMP settings cannot
+affect. Linux wheels link GCC's OpenMP.
+
+`pyfai-full-opencl` needs `pyopencl` (`setup.py --with-opencl` installs a binary
+wheel; no source build) and a device; otherwise it is skipped the same way.
+`--opencl-device` selects `gpu` (default), `cpu`, `acc`, `any` or explicit
+`PLATFORM:DEVICE` ids. `environment.json` (`variant_probes.opencl`) and each
+case record the platform, device, versions and whether the device has fp64.
+pyFAI's OpenCL CSR kernels compute in single precision whatever the device:
+float32 input, coefficients and arithmetic, with double-word (float2,
+compensated) accumulators (`single_precision_accumulation: true`). The frames
+are converted from the shared float64 inputs to float32 on the host inside the
+timed call. It runs at a CPU budget of 1 in one process (one host thread, one
+engine); rows for higher budgets or process counts are not scheduled.
 
 The two azint rows use the same build and sparse matrix:
 
@@ -184,7 +270,9 @@ threads. Thread settings per case:
 | --- | ---: | ---: | ---: |
 | `dioptrin-*` | (Rayon pool) | 1 | budget |
 | `azint`, `azint-cached` | budget | budget | 1 |
-| `pyfai-*` | budget | 1 | 1 |
+| `pyfai-full`, `pyfai-bbox` | budget | 1 | 1 |
+| `pyfai-full-omp` | 1 | budget | 1 |
+| `pyfai-full-opencl` | 1 | 1 | 1 |
 
 `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` are 1, and
 `OMP_DYNAMIC`/`OMP_PROC_BIND` are `FALSE` everywhere. In the pinned azint source
@@ -194,8 +282,9 @@ the only OpenMP region is the sparse-matrix construction (`generate_matrix`);
 time comparable with Dioptrin's budget-sized Rayon pool. The static OpenMP
 schedule assigns contiguous detector rows in thread order, so the matrix,
 and therefore the output, is identical for any OpenMP thread count. pyFAI
-stays at 1: its macOS wheel has no OpenMP, and on Linux more threads would
-change what is measured. Each case's settings are in `cases/*.json`
+stays at 1 in its Python-thread rows: its macOS wheel has no OpenMP, and on
+Linux more threads would change what those rows measure; `pyfai-full-omp` is
+the OpenMP row. Each case's settings are in `cases/*.json`
 (`threads`), its result JSON (`thread_environment`), `results.csv`
 (`omp_num_threads`, `rayon_num_threads`), and `environment.json` (`case_threads`).
 
@@ -213,6 +302,45 @@ lengths are rounded up to a multiple of the CPU budget for balanced slices.
 The fixed pyFAI mask is installed on its detector once, using its cached mask
 checksum rather than recalculating the checksum from a mask argument each call.
 
+### Several processes per case
+
+`--processes 1,2,4` runs every library additionally as P cooperating processes
+for each CPU budget divisible by P (budget 1 and P = 1 are always included).
+Each process gets budget/P workers (Rayon threads, Python frame threads, or
+OpenMP threads for `pyfai-full-omp`), a contiguous 1/P share of the logical
+frame sequence, copies of only its own distinct frames, allocated in that
+process, and its own tables. The parent releases all processes at a common
+start time (100 ms after the command, spin-waited); each integrates the same
+number of passes over its frames and reports its finish time. Throughput is
+all frames divided by the wall time from the common start to the last process
+finishing. Two untimed calibration blocks set the passes per block so that a
+block lasts about `--seconds`. The result records passes per block, the start
+lag, per-process peak RSS (and their sum as `peak_rss_mib`), affinity and the
+command prefix of each rank; `results.csv` has the added columns `processes`,
+`workers_per_process` and `binding`. Every process validates its outputs
+against the one-process, one-worker reference before and after timing, and
+`azint-cached` repeats its stock bit-identity check in each process.
+
+`--bind numa` starts rank r under `numactl --cpunodebind=N --membind=N`,
+round-robin over the NUMA nodes in the allocation (frames and tables are then
+first touched on that node). It needs Linux and `numactl`; `--bind none`
+(default) works everywhere, including macOS. This replaces the earlier
+Dioptrin-only socket-local experiment: every library gets the same layouts.
+P = 1 rows keep the single-process measurement described above.
+
+### Masking the beam pixel
+
+`--mask-beam-pixel` adds, for all libraries, the pixel(s) whose area contains or
+touches the point of normal incidence (the PONI, default) to the mask and zeroes
+them in every frame. `--mask-beam-pixel direct` uses the direct-beam position
+(2theta = 0, pyFAI's Fit2D centre) instead; with detector tilts the two differ
+by several pixels. `fixture.json` (`beam_pixel_mask`), the log and `summary.md`
+record the point, the pixels, which were already masked, and the minimum-2theta
+pixel; `results.csv` adds `mask_beam_pixel` and `beam_pixels_added`. Compare
+`negative_sigma_bins` with and without the option. For the Eiger 9M subset,
+pyFAI full CSR (Cython) returns negative sigma in the second bin of every frame;
+masking the PONI pixel leaves it, masking the direct-beam pixel removes it.
+
 Every case runs in a fresh process. Method order alternates between trials.
 Every output frame, including its order, is checked against the same backend's
 one-worker reference before and after timing. One-worker references are always
@@ -228,8 +356,9 @@ clone because the library does not track Cargo.lock; Python build/transitive
 dependencies also float within their constraints. For an exact environment
 replay, reuse the saved Cargo.lock and Python freeze alongside the same source
 and compiler. The default recipe fixes core versions and inputs, not every
-transitive dependency across future dates. This suite measures CPU 1D integration; it does not assess
-2D caking, GPU integration, decompression, or file-reading performance.
+transitive dependency across future dates. This suite measures in-memory 1D integration
+(CPU, plus pyFAI's OpenCL CSR where available); it does not assess 2D caking,
+decompression, or file-reading performance.
 
 ## Maxwell Slurm wrapper
 
@@ -321,11 +450,44 @@ squeue -u "$USER"
 tail -f dioptrin-JOBID.out
 ```
 
+The wrapper builds azint with `--azint-fast-math` by default (`AZINT_FAST_MATH=1`;
+set `AZINT_FAST_MATH=0` for the default azint build). Copy the subset bundles to
+Maxwell storage (they are small) and pass `--subset-dir`. A CPU-node run of
+both subsets with Python threads, OpenMP pyFAI, and 1/2/4 processes, with and
+without the beam pixel:
+
+```bash
+SUBSETS=/your/storage/subsets
+sbatch benchmarks/comparison/maxwell.sbatch --datasets eiger9m-subset eiger4m-subset \
+  --subset-dir "$SUBSETS" --workloads frames --workers 1,2,4,8,12,24,48,96 \
+  --processes 1,2,4 --bind numa \
+  --variants dioptrin-pixel_split dioptrin-supersampled dioptrin-pyfai_full \
+             azint azint-cached pyfai-full pyfai-bbox pyfai-full-omp
+sbatch benchmarks/comparison/maxwell.sbatch --datasets eiger9m-subset eiger4m-subset \
+  --subset-dir "$SUBSETS" --workloads frames --workers 1,2,4,8,12,24,48,96 \
+  --processes 1,2,4 --bind numa --mask-beam-pixel direct \
+  --variants dioptrin-pixel_split dioptrin-supersampled dioptrin-pyfai_full \
+             azint azint-cached pyfai-full pyfai-bbox pyfai-full-omp
+```
+
+A GPU node needs `WITH_OPENCL=1` (pyopencl in a separate cached environment),
+your GPU partition, and any site modules the OpenCL driver needs in
+`EXTRA_MODULES`; the wrapper saves `nvidia-smi` and `/etc/OpenCL/vendors`:
+
+```bash
+WITH_OPENCL=1 EXTRA_MODULES="<modules, if needed>" sbatch --partition=<gpu-partition> \
+  benchmarks/comparison/maxwell.sbatch --datasets eiger9m-subset eiger4m-subset \
+  --subset-dir "$SUBSETS" --workloads frames --workers 1 \
+  --variants dioptrin-pyfai_full pyfai-full pyfai-full-opencl --opencl-device gpu
+```
+
 `allcpu` can be preempted/requeued; every restart writes a new results directory.
 Higher worker counts can require substantial memory for pyFAI full CSR. Optional
-wrapper environment settings are `BUILD_MODULES`, `PYTHON_BIN`, `BUILD_JOBS`
-(default 8), `RUST_TOOLCHAIN` (stable), `RESULT_ROOT`, `SUITE` (standard), `CC`,
-`CXX`, `ENV_CACHE_ROOT`, `REBUILD_ENV=1`, and `KEEP_BUILD=1` (node-local build tools).
+wrapper environment settings are `BUILD_MODULES`, `EXTRA_MODULES`, `PYTHON_BIN`,
+`BUILD_JOBS` (default 8), `RUST_TOOLCHAIN` (stable), `RESULT_ROOT`, `SUITE`
+(standard), `CC`, `CXX`, `ENV_CACHE_ROOT`, `REBUILD_ENV=1`, `KEEP_BUILD=1`
+(node-local build tools), `AZINT_FAST_MATH` (default 1) and `WITH_OPENCL` (default 0).
+Both build switches are part of the environment cache key.
 
 References: [Maxwell batch jobs](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/),
 [Python modules](https://docs.desy.de/maxwell/development/python/),
