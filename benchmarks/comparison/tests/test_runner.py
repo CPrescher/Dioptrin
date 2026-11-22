@@ -8,9 +8,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare import contiguous_chunks
-from provenance import source_hashes, verify_build
-from setup import compiler_environment
+from compare import VARIANTS, case_threads, contiguous_chunks, same_bits
+from provenance import source_hashes, verify_azint_build, verify_build
+from setup import azint_environment, compiler_environment
 
 
 class RunnerTests(unittest.TestCase):
@@ -58,6 +58,67 @@ class RunnerTests(unittest.TestCase):
         for key in ("CFLAGS", "CXXFLAGS", "RUSTFLAGS"):
             self.assertNotIn("native", portable[key])
             self.assertIn("native", native[key])
+
+    def test_default_variants_measure_both_azint_rows(self):
+        self.assertIn("azint", VARIANTS)
+        self.assertEqual(VARIANTS[VARIANTS.index("azint") + 1], "azint-cached")
+
+    def test_thread_budget_per_library(self):
+        for count in (1, 4):
+            for variant in ("azint", "azint-cached"):
+                threads = case_threads(variant, count)
+                self.assertEqual(threads["OMP_NUM_THREADS"], str(count))
+                self.assertEqual(threads["RAYON_NUM_THREADS"], "1")
+            for variant in ("pyfai-full", "pyfai-bbox"):
+                threads = case_threads(variant, count)
+                self.assertEqual(threads["OMP_NUM_THREADS"], "1")
+                self.assertEqual(threads["RAYON_NUM_THREADS"], "1")
+            threads = case_threads("dioptrin-pixel_split", count)
+            self.assertEqual(threads["OMP_NUM_THREADS"], "1")
+            self.assertEqual(threads["RAYON_NUM_THREADS"], str(count))
+            for variant in VARIANTS:
+                threads = case_threads(variant, count)
+                for key in ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+                    self.assertEqual(threads[key], "1")
+
+    def test_azint_fast_math_flags(self):
+        base = {"CC": "gcc", "CXX": "g++", "CFLAGS": " -O3", "CXXFLAGS": " -O3"}
+        env, record = azint_environment(base, probe=lambda env, flag: True)
+        self.assertEqual(env["CXXFLAGS"], " -O3")
+        self.assertEqual(record["variant"], "default")
+        self.assertFalse(record["fast_math"])
+        self.assertIsNone(record["lto"])
+
+        env, record = azint_environment(base, True, probe=lambda env, flag: False)
+        self.assertEqual(env["CXXFLAGS"].split(), ["-O3", "-ffast-math"])
+        self.assertEqual(env["CFLAGS"].split(), ["-O3", "-ffast-math"])
+        self.assertNotIn("lto", env.get("LDFLAGS", ""))
+        self.assertTrue(record["lto"].startswith("omitted"))
+        self.assertEqual(record["flags"]["CXXFLAGS"], env["CXXFLAGS"])
+
+        env, record = azint_environment(base, True, probe=lambda env, flag: True)
+        self.assertEqual(env["CXXFLAGS"].split(), ["-O3", "-ffast-math", "-flto=thin"])
+        self.assertIn("-flto=thin", env["LDFLAGS"])
+        self.assertEqual(record["variant"], "fast-math")
+        self.assertEqual(base["CXXFLAGS"], " -O3")  # caller's env is untouched
+
+    def test_azint_extension_must_match_record(self):
+        signature = {"module": "_azint.so", "sha256": "a"}
+        record = {"azint_build": {"installed_extension": signature}}
+        self.assertEqual(verify_azint_build(record, signature), [])
+        self.assertIn(
+            "azint extension",
+            verify_azint_build(record, {"module": "_azint.so", "sha256": "b"})[0],
+        )
+        # Records written before azint provenance existed are not rejected.
+        self.assertEqual(verify_azint_build({"flags": {}}, signature), [])
+        self.assertEqual(verify_azint_build(None, signature), [])
+
+    def test_bit_identity_helper(self):
+        self.assertTrue(same_bits([1.0, 2.0], [1.0, 2.0]))
+        self.assertFalse(same_bits([1.0, 2.0], [1.0, 2.0 + 1e-15]))
+        self.assertTrue(same_bits(None, None))
+        self.assertFalse(same_bits(None, [1.0]))
 
 
 if __name__ == "__main__":

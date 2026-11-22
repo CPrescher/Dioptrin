@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fixtures import MANIFEST, manifest, prepare, sha256
-from provenance import verify_build
+from provenance import azint_signature, verify_azint_build, verify_build
 
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -28,9 +28,50 @@ VARIANTS = (
     "dioptrin-supersampled",
     "dioptrin-pyfai_full",
     "azint",
+    "azint-cached",
     "pyfai-full",
     "pyfai-bbox",
 )
+
+
+THREAD_VARIABLES = (
+    "OMP_NUM_THREADS",
+    "RAYON_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "OMP_DYNAMIC",
+    "OMP_PROC_BIND",
+)
+
+
+def case_threads(variant, count):
+    """Per-case thread budget.
+
+    Dioptrin gets a Rayon pool of `count`. azint's sparse-matrix construction
+    (generate_matrix) is its only OpenMP region; its SpMV is serial and runs on
+    `count` Python frame threads, so OMP_NUM_THREADS=count parallelises only
+    set-up. pyFAI stays at 1: its macOS wheel has no OpenMP, and on Linux more
+    OpenMP threads would change what is measured.
+    """
+    return {
+        "OMP_NUM_THREADS": str(count) if variant.startswith("azint") else "1",
+        "RAYON_NUM_THREADS": str(count) if variant.startswith("dioptrin-") else "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_PROC_BIND": "FALSE",
+    }
+
+
+def same_bits(a, b):
+    import numpy as np
+
+    if a is None or b is None:
+        return a is b
+    a, b = np.asarray(a), np.asarray(b)
+    return a.dtype == b.dtype and a.shape == b.shape and a.tobytes() == b.tobytes()
 
 
 def dump(path, value):
@@ -64,6 +105,7 @@ def worker(case_path):
     variant = case["variant"]
     bounds = meta["radial_range"]
     pool = None
+    stock_check = None
     started = time.perf_counter()
 
     if variant.startswith("dioptrin-"):
@@ -108,7 +150,7 @@ def worker(case_path):
         setup_first = time.perf_counter() - started
         baseline = [extract(r) for r in integrate_frames(unique)]
     else:
-        if variant == "azint":
+        if variant in ("azint", "azint-cached"):
             import azint
             from azint.detector import Detector
 
@@ -125,6 +167,26 @@ def worker(case_path):
                 polarization_factor=0.965,
                 error_model="poisson" if errors else None,
             )
+            if variant == "azint-cached":
+                # Masked pixels are already excluded from the sparse matrix, and
+                # the constructor cached norm = A @ 1. With mask=None, integrate()
+                # reuses that norm instead of multiplying the frame by the
+                # inverted mask and recomputing A @ (1 - mask) on every call.
+                # Shallow per-thread copies below inherit mask=None and only
+                # read the shared norm array.
+                ai.mask = None
+
+                def stock_check(images, cached):
+                    stock = copy.copy(ai)
+                    stock.mask = mask
+                    for frame, value in zip(images, cached):
+                        reference = stock.integrate(frame)
+                        for index in (0, 1):
+                            if not same_bits(reference[index], value[index]):
+                                raise AssertionError(
+                                    "azint-cached differs from stock azint output"
+                                )
+                    return True
 
             def integrate(engine, frame):
                 return engine.integrate(frame)
@@ -238,6 +300,11 @@ def worker(case_path):
     warm_result = run()
     setup_ready = time.perf_counter() - started
     validate(warm_result)
+    if stock_check is not None:
+        # Outside setup and timing: the cached-normalisation results must be
+        # bit-identical (intensity and sigma) to stock masked azint.
+        checked = min(len(unique), len(frames))
+        stock_check(unique[:checked], warm_result[:checked])
     del warm_result
     # Warmup and validation are outside warmed timing blocks. Native batch API
     # scheduling and result allocation are included in every measured call.
@@ -273,15 +340,10 @@ def worker(case_path):
             **case,
             setup_first_s=setup_first,
             setup_ready_s=setup_ready,
-            thread_environment={
-                k: os.environ.get(k)
-                for k in (
-                    "OMP_NUM_THREADS",
-                    "RAYON_NUM_THREADS",
-                    "OPENBLAS_NUM_THREADS",
-                    "MKL_NUM_THREADS",
-                )
-            },
+            thread_environment={k: os.environ.get(k) for k in THREAD_VARIABLES},
+            omp_num_threads=os.environ.get("OMP_NUM_THREADS"),
+            rayon_num_threads=os.environ.get("RAYON_NUM_THREADS"),
+            stock_azint_bit_identical=True if stock_check is not None else None,
             frames_per_s=float(np.median(rates)),
             block_frames_per_s=rates,
             block_seconds=durations,
@@ -306,6 +368,29 @@ def worker(case_path):
         )
 
 
+def azint_build_lines(output):
+    try:
+        environment = json.loads((output / "environment.json").read_text())
+    except (OSError, ValueError):
+        return []
+    build = environment.get("azint_build")
+    if not build:
+        return []
+    flags = (
+        (build.get("recorded") or {}).get("flags") or build.get("legacy_flags") or {}
+    )
+    return [
+        f"azint build: {build.get('variant', 'unrecorded')}; "
+        f"CXXFLAGS `{flags.get('CXXFLAGS', '').strip()}`"
+        + (
+            f", LDFLAGS `{flags['LDFLAGS'].strip()}`"
+            if flags.get("LDFLAGS", "").strip()
+            else ""
+        )
+        + ("" if not build.get("problems") else " (UNVERIFIED)")
+    ]
+
+
 def summarize(output):
     import numpy as np
 
@@ -324,6 +409,8 @@ def summarize(output):
         "setup_first_s",
         "setup_ready_s",
         "peak_rss_mib",
+        "omp_num_threads",
+        "rayon_num_threads",
         "self_check",
         "numerical_status",
         "negative_sigma_bins",
@@ -371,13 +458,55 @@ def summarize(output):
                     np.linalg.norm(a[key] - b[key])
                 ) / max(denominator, 1e-300)
         numerical.append(metrics)
+    # azint-cached must reproduce stock azint exactly; compare every matching case.
+    identity = []
+    for row in rows:
+        if row["variant"] != "azint-cached":
+            continue
+        stock = next(
+            (
+                r
+                for r in rows
+                if r["variant"] == "azint"
+                and all(
+                    r[k] == row[k]
+                    for k in ("dataset", "workload", "workers", "errors", "trial")
+                )
+            ),
+            None,
+        )
+        if stock is None:
+            continue
+        with np.load(Path(row["result"]).with_suffix(".npz")) as saved:
+            a = {key: saved[key] for key in ("radial", "intensity", "sigma")}
+        with np.load(Path(stock["result"]).with_suffix(".npz")) as saved:
+            b = {key: saved[key] for key in ("radial", "intensity", "sigma")}
+        identity.append(
+            dict(
+                **{
+                    k: row[k]
+                    for k in ("dataset", "workload", "workers", "error_mode", "trial")
+                },
+                **{
+                    key + "_bit_identical": same_bits(a[key], b[key])
+                    for key in ("intensity", "sigma")
+                    if row["errors"] or key == "intensity"
+                },
+                in_process_stock_check=row.get("stock_azint_bit_identical"),
+            )
+        )
     dump(output / "numerical.json", numerical)
+    dump(output / "azint_cached_identity.json", identity)
     lines = [
         "# CPU integration benchmark",
         "",
         "1D, preloaded float64 inputs; generation, decoding, and output writing excluded.",
         "Repeated reuses one image; frames cycles through distinct generated images.",
         "Cross-library algorithms, precision, and normalization differ; see numerical.json.",
+        "azint reuses its constructor normalisation in azint-cached; azint_cached_identity.json",
+        "records its bit-identity with stock azint. azint uses OMP_NUM_THREADS = CPU budget",
+        "(matrix construction only); pyFAI uses 1; Dioptrin uses a Rayon pool of the budget.",
+        *azint_build_lines(output),
         "",
         "| Dataset | Workload | Method | CPU budget | Errors | Median frames/s | Trials | Numerical status |",
         "| --- | --- | --- | ---: | --- | ---: | ---: | --- |",
@@ -493,7 +622,7 @@ def main():
     required = ["numpy", "pyFAI"]
     if any(v.startswith("dioptrin-") for v in args.variants):
         required.append("dioptrin")
-    if "azint" in args.variants:
+    if any(v.startswith("azint") for v in args.variants):
         required.append("azint")
     try:
         versions = {name: importlib.metadata.version(name) for name in required}
@@ -508,6 +637,20 @@ def main():
     build_problems = (
         verify_build(ROOT, installed_build) if "dioptrin" in required else []
     )
+    azint_build = None
+    if "azint" in required:
+        installed_azint = azint_signature()
+        recorded = (installed_build or {}).get("azint_build")
+        azint_problems = verify_azint_build(installed_build, installed_azint)
+        build_problems += azint_problems
+        azint_build = dict(
+            variant=(recorded or {}).get("variant", "unrecorded"),
+            recorded=recorded,
+            # Records written before azint_build existed share one flag set.
+            legacy_flags=None if recorded else (installed_build or {}).get("flags"),
+            installed_extension=installed_azint,
+            problems=azint_problems,
+        )
     if build_problems:
         message = "; ".join(build_problems)
         if not args.allow_unverified_build:
@@ -549,6 +692,11 @@ def main():
                 for name in ("compare.py", "fixtures.py", "provenance.py")
             },
             installed_build=installed_build,
+            azint_build=azint_build,
+            case_threads={
+                variant: {count: case_threads(variant, count) for count in workers}
+                for variant in args.variants
+            },
             build_verification_problems=build_problems,
             module_paths=module_paths,
         ),
@@ -596,18 +744,9 @@ def main():
                                     / "cases"
                                     / f"{suffix}-w1-{mode}-t0.result.npz"
                                 )
+                            case["threads"] = case_threads(variant, count)
                             dump(case_path, case)
-                            env = os.environ | {
-                                "OMP_NUM_THREADS": "1",
-                                "RAYON_NUM_THREADS": str(count)
-                                if variant.startswith("dioptrin-")
-                                else "1",
-                                "OPENBLAS_NUM_THREADS": "1",
-                                "MKL_NUM_THREADS": "1",
-                                "NUMEXPR_NUM_THREADS": "1",
-                                "OMP_DYNAMIC": "FALSE",
-                                "OMP_PROC_BIND": "FALSE",
-                            }
+                            env = os.environ | case["threads"]
                             with case_path.with_suffix(".log").open("w") as log:
                                 result = subprocess.run(
                                     [

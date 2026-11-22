@@ -30,6 +30,40 @@ CI uses `setup.py --portable` to omit native CPU flags, making shared Cargo
 caches safe across runner CPU models. This mode checks functionality rather
 than native CPU performance.
 
+### azint build flags
+
+By default azint is compiled with `-O3` plus the native CPU flag
+(`-mcpu=native` on ARM, `-march=native` on x86), without `-ffast-math`.
+Dioptrin, by contrast, runs with its default `fast_math=True`, which lets it
+reassociate its CSR accumulation; azint's `_spmv` is a sequential double
+reduction that the compiler only reorders with fast-math. For a like-for-like
+build use `--azint-fast-math`. It appends `-ffast-math` to azint's `CFLAGS` and
+`CXXFLAGS` and, only if the compiler accepts it (clang), `-flto=thin` to
+`CFLAGS`/`CXXFLAGS`/`LDFLAGS`. This follows the "CPU/LTO/fast-math" azint
+build of the 2026-10-24 comparison. GCC rejects `-flto=thin`; azint is one
+translation unit, so no other LTO flag is substituted and the record says so.
+The flags apply to azint only, not to Dioptrin or pyFAI.
+
+`--azint-only` rebuilds just azint, at the same pinned commit, in an existing
+environment. It does not upgrade pip, reinstall requirements, or rebuild
+Dioptrin, and it keeps the existing Dioptrin build record:
+
+```bash
+python3 benchmarks/comparison/setup.py --azint-only --azint-fast-math  # fast-math azint
+python3 benchmarks/comparison/setup.py --azint-only                    # back to the default build
+```
+
+`build.json` (and `<venv>/benchmark-build.json`) records an `azint_build` entry:
+variant (`default` or `fast-math`), the exact `CC`/`CXX`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS`,
+the LTO decision, the wheel and installed extension SHA-256, and a check that
+importing the extension did not turn on flush-to-zero. Each flavour's wheel is
+kept under `build-record/wheels/azint-<variant>/`. `compare.py` copies this entry
+into `environment.json` (`azint_build`), prints the azint flags in `summary.md`,
+and treats a loaded `_azint` extension that differs from the recorded one like
+a stale Dioptrin build (rejected unless `--allow-unverified-build`). Records
+written before this entry existed show `variant: unrecorded` and their shared
+flags under `legacy_flags`.
+
 The runner rejects stale or missing Dioptrin build records by default. It checks
 Rust source, Cargo/Python build configuration, and the installed module's bytes,
 and records actual module paths. Rerun setup after changing source. For deliberate
@@ -117,9 +151,25 @@ All methods use the same float64 input arrays, masks, physical geometry,
 standard suite uses 2,000 bins and reports intensity-only and Poisson modes.
 
 Methods are Dioptrin `pixel_split`, `supersampled`, and `pyfai_full`; azint
-subpixel integration; pyFAI full CSR and bbox CSR using Cython. Supersampling is
-15 x 15 for Pilatus, 5 x 5 for the larger generated detectors, and 3 x 3 for quick.
+subpixel integration in two rows, `azint` and `azint-cached`; pyFAI full CSR and
+bbox CSR using Cython. Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
+generated detectors, and 3 x 3 for quick.
 The runner requires pyFAI to use the requested method and rejects fallbacks.
+
+The two azint rows use the same build and sparse matrix:
+
+- `azint` is azint as documented: `AzimuthalIntegrator(..., mask=mask)` and
+  `integrate(frame)`. Because `mask` is set, every call multiplies the frame by
+  the inverted mask and recomputes the normalisation with an extra SpMV,
+  although masked pixels are already excluded from the matrix.
+- `azint-cached` sets the public attribute `ai.mask = None` after construction,
+  so `integrate()` reuses the normalisation the constructor cached
+  (`norm = A @ 1`). With masked pixels absent from `A` and zeroed in every
+  input, this is the same arithmetic in the same order. After its warm-up the
+  case integrates every distinct frame with a stock masked copy and fails
+  unless intensity and Poisson sigma are bit-identical; the parent also
+  compares each `azint-cached` output with the matching `azint` case and writes
+  `azint_cached_identity.json`. Both rows are in the default variant list.
 
 These algorithms, internal precision, and correction estimators differ.
 Cross-library differences are reported without asserting identical answers.
@@ -128,10 +178,31 @@ counts. pyFAI can slightly expand the upper bin bound; axis offsets are reported
 
 The CPU-budget column is the total global Rayon pool size for Dioptrin's native
 array batch API. For competitors it is the number of persistent Python frame
-threads, each with one OpenMP/BLAS thread. Azint shares its sparse matrix through
-shallow copies: geometry, mask, and sparse arrays are shared without modification;
-the per-call `norm_1d`/`norm_2d` attributes are assigned on each copy, and scratch
-arrays are newly allocated per call. Its pinned native SpMV releases the GIL.
+threads. Thread settings per case:
+
+| Variant | Frame threads | `OMP_NUM_THREADS` | `RAYON_NUM_THREADS` |
+| --- | ---: | ---: | ---: |
+| `dioptrin-*` | (Rayon pool) | 1 | budget |
+| `azint`, `azint-cached` | budget | budget | 1 |
+| `pyfai-*` | budget | 1 | 1 |
+
+`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` are 1, and
+`OMP_DYNAMIC`/`OMP_PROC_BIND` are `FALSE` everywhere. In the pinned azint source
+the only OpenMP region is the sparse-matrix construction (`generate_matrix`);
+`spmv`, `set_correction`, and the Python wrapper (NumPy only) have none. So
+`OMP_NUM_THREADS = budget` only parallelises azint set-up, making its "ready"
+time comparable with Dioptrin's budget-sized Rayon pool. The static OpenMP
+schedule assigns contiguous detector rows in thread order, so the matrix,
+and therefore the output, is identical for any OpenMP thread count. pyFAI
+stays at 1: its macOS wheel has no OpenMP, and on Linux more threads would
+change what is measured. Each case's settings are in `cases/*.json`
+(`threads`), its result JSON (`thread_environment`), `results.csv`
+(`omp_num_threads`, `rayon_num_threads`), and `environment.json` (`case_threads`).
+
+Azint shares its sparse matrix through shallow copies: geometry, mask, sparse
+arrays, and (for `azint-cached`) the cached `norm` are shared and only read;
+the per-call `norm_1d`/`norm_2d` attributes are assigned on each copy, and
+scratch arrays are newly allocated per call. Its pinned native SpMV releases the GIL.
 PyFAI owns an initialized CSR engine
 per worker. Native batch scheduling and result allocation are timed. Setup,
 first-result and all-workers-ready times, and process-lifetime peak RSS are

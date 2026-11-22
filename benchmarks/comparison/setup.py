@@ -14,7 +14,7 @@ import sys
 import tempfile
 import venv
 
-from provenance import source_hashes
+from provenance import digest, source_hashes
 
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -64,6 +64,63 @@ def compiler_environment(portable=False):
     return env
 
 
+def accepts_flag(env, flag):
+    """True when the C++ compiler compiles and links a trivial program with flag."""
+    with tempfile.TemporaryDirectory(prefix="dioptrin-flag-") as temporary:
+        source = Path(temporary) / "check.cpp"
+        source.write_text("int main() { return 0; }\n")
+        result = subprocess.run(
+            [
+                *shlex.split(env["CXX"]),
+                flag,
+                source,
+                "-o",
+                Path(temporary) / "check",
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+
+
+def azint_environment(env, fast_math=False, portable=False, probe=accepts_flag):
+    """Compiler environment and provenance for the azint extension only.
+
+    The default keeps the historical -O3 (+ native CPU) build. fast_math follows
+    the 2026-10-24 "CPU/LTO/fast-math" azint variant: -ffast-math lets the
+    compiler reassociate the sequential double reduction in azint's _spmv, which
+    is what Dioptrin's default fast_math=True does for its CSR accumulation.
+    -flto=thin is added only when the compiler accepts it (clang); GCC rejects
+    it, and azint is a single translation unit, so nothing else is substituted.
+    """
+    env = env.copy()
+    added = []
+    lto = None
+    if fast_math:
+        added.append("-ffast-math")
+        if probe(env, "-flto=thin"):
+            added.append("-flto=thin")
+            lto = "-flto=thin"
+            env["LDFLAGS"] = f"{env.get('LDFLAGS', '')} -flto=thin"
+        else:
+            lto = "omitted: compiler rejects -flto=thin (single translation unit)"
+    for key in ("CFLAGS", "CXXFLAGS"):
+        env[key] = " ".join([env.get(key, ""), *added]).rstrip()
+    record = dict(
+        commit=AZINT_COMMIT,
+        variant="fast-math" if fast_math else "default",
+        fast_math=fast_math,
+        native_cpu=not portable,
+        lto=lto,
+        added_flags=added,
+        flags={
+            k: env.get(k, "") for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")
+        },
+    )
+    return env, record
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--venv", type=Path, default=ROOT / ".venv-benchmark")
@@ -76,6 +133,18 @@ def main():
         "--artifacts",
         type=Path,
         help="Build metadata/wheels; default: <venv>/build-record",
+    )
+    parser.add_argument(
+        "--azint-fast-math",
+        action="store_true",
+        help="Build azint with -ffast-math (and -flto=thin where supported), "
+        "matching Dioptrin's default fast_math=True reassociated accumulation",
+    )
+    parser.add_argument(
+        "--azint-only",
+        action="store_true",
+        help="Rebuild only azint in an existing environment; keep the installed "
+        "Dioptrin, pyFAI, and their build record unchanged",
     )
     args = parser.parse_args()
     if sys.platform not in ("linux", "darwin"):
@@ -97,6 +166,14 @@ def main():
     ):
         parser.error(f"Refusing to replace a non-venv directory: {target}")
     artifacts = (args.artifacts or target / "build-record").resolve()
+    previous = None
+    if args.azint_only:
+        try:
+            previous = json.loads((target / "benchmark-build.json").read_text())
+        except (OSError, ValueError):
+            parser.error(
+                f"--azint-only needs an existing environment with a build record: {target}"
+            )
     try:
         env = compiler_environment(args.portable)
         with tempfile.TemporaryDirectory(prefix="dioptrin-openmp-") as temporary:
@@ -128,42 +205,59 @@ def main():
         artifacts.mkdir(parents=True, exist_ok=True)
         wheels = artifacts / "wheels"
         wheels.mkdir(exist_ok=True)
-        run([python, "-m", "pip", "install", "--upgrade", "pip"], env=env)
-        run(
-            [
-                python,
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                Path(__file__).with_name("requirements.txt"),
-            ],
-            env=env,
+        if not args.azint_only:
+            run([python, "-m", "pip", "install", "--upgrade", "pip"], env=env)
+            run(
+                [
+                    python,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    Path(__file__).with_name("requirements.txt"),
+                ],
+                env=env,
+            )
+            locked = ["--locked"] if (ROOT / "Cargo.lock").is_file() else []
+            run(
+                [
+                    python,
+                    "-m",
+                    "maturin",
+                    "build",
+                    "--release",
+                    "--features",
+                    "python",
+                    *locked,
+                    "--interpreter",
+                    python,
+                    "--out",
+                    wheels,
+                ],
+                cwd=ROOT,
+                env=env,
+            )
+            wheel = max(
+                wheels.glob("dioptrin-*.whl"), key=lambda p: p.stat().st_mtime_ns
+            )
+            run(
+                [
+                    python,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-deps",
+                    "--force-reinstall",
+                    wheel,
+                ],
+                env=env,
+            )
+        azint_env, azint_build = azint_environment(
+            env, args.azint_fast_math, args.portable
         )
-        locked = ["--locked"] if (ROOT / "Cargo.lock").is_file() else []
-        run(
-            [
-                python,
-                "-m",
-                "maturin",
-                "build",
-                "--release",
-                "--features",
-                "python",
-                *locked,
-                "--interpreter",
-                python,
-                "--out",
-                wheels,
-            ],
-            cwd=ROOT,
-            env=env,
-        )
-        wheel = max(wheels.glob("dioptrin-*.whl"), key=lambda p: p.stat().st_mtime_ns)
-        run(
-            [python, "-m", "pip", "install", "--no-deps", "--force-reinstall", wheel],
-            env=env,
-        )
+        # Keep each azint flavour's wheel: both carry the same version/file name.
+        azint_wheels = wheels / f"azint-{azint_build['variant']}"
+        azint_wheels.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="dioptrin-azint-") as temporary:
             source = Path(temporary) / "azint"
             run(
@@ -188,17 +282,49 @@ def main():
                     "wheel",
                     "--no-deps",
                     "--no-build-isolation",
+                    "--no-cache-dir",
                     source,
                     "--wheel-dir",
-                    wheels,
+                    azint_wheels,
                 ],
-                env=env,
+                env=azint_env,
             )
-        wheel = max(wheels.glob("azint-*.whl"), key=lambda p: p.stat().st_mtime_ns)
+        wheel = max(
+            azint_wheels.glob("azint-*.whl"), key=lambda p: p.stat().st_mtime_ns
+        )
         run(
             [python, "-m", "pip", "install", "--no-deps", "--force-reinstall", wheel],
             env=env,
         )
+        azint_build["wheel"] = dict(name=wheel.name, sha256=digest(wheel))
+        # The installed extension identifies the binary that compare.py loads, and
+        # -ffast-math must not have switched the process to flush-to-zero.
+        azint_build.update(
+            json.loads(
+                subprocess.check_output(
+                    [
+                        str(python),
+                        "-E",
+                        "-s",
+                        "-c",
+                        "import sys,json;sys.path.insert(0,sys.argv[1]);"
+                        "from provenance import azint_signature;import numpy as np;"
+                        "import _azint;"
+                        "tiny=[np.finfo(t).tiny for t in (np.float32,np.float64)];"
+                        "print(json.dumps(dict(installed_extension=azint_signature(),"
+                        "subnormals_preserved=all(np.array([x])[0]/2!=0 for x in tiny))))",
+                        str(Path(__file__).parent),
+                    ],
+                    env=env,
+                    text=True,
+                )
+            )
+        )
+        if not azint_build["subnormals_preserved"]:
+            print(
+                "WARNING: importing azint enabled flush-to-zero in this process",
+                flush=True,
+            )
         run([python, "-m", "pip", "check"], env=env)
         for filename, command in (
             ("python-packages.txt", [python, "-m", "pip", "freeze", "--all"]),
@@ -208,6 +334,18 @@ def main():
             (artifacts / filename).write_text(
                 subprocess.check_output(list(map(str, command)), env=env, text=True)
             )
+        if args.azint_only:
+            # Dioptrin, pyFAI, and their source/binary record are left as built.
+            record = dict(previous)
+            record.update(azint_commit=AZINT_COMMIT, azint_build=azint_build)
+            record.setdefault("history", []).append(
+                dict(action="azint-only rebuild", azint_variant=azint_build["variant"])
+            )
+            record = json.dumps(record, indent=2) + "\n"
+            (artifacts / "build.json").write_text(record)
+            (target / "benchmark-build.json").write_text(record)
+            print(f"\nRebuilt azint ({azint_build['variant']}): {azint_build['flags']}")
+            return
         shutil.copy2(ROOT / "Cargo.lock", artifacts / "Cargo.lock")
         source = {}
         if (ROOT / ".git").exists():
@@ -239,6 +377,7 @@ def main():
             json.dumps(
                 dict(
                     azint_commit=AZINT_COMMIT,
+                    azint_build=azint_build,
                     python=str(python),
                     platform=platform.platform(),
                     source=source,

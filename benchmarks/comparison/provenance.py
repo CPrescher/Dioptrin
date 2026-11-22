@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib
+import importlib.util
 from pathlib import Path
 
 
@@ -23,6 +24,25 @@ def installed_signature():
         files.update(path.parent.glob("dioptrin*.so"))
         files.update(path.parent.glob("dioptrin*.pyd"))
     return {"module": str(path), "sha256": {p.name: digest(p) for p in sorted(files)}}
+
+
+def azint_signature():
+    """Path and hash of azint's native extension, located without importing it."""
+    spec = importlib.util.find_spec("_azint")
+    if spec is None or spec.origin is None:
+        return None
+    path = Path(spec.origin).resolve()
+    return {"module": str(path), "sha256": digest(path)}
+
+
+def verify_azint_build(record, installed):
+    """Compare the loaded azint extension with the one setup.py recorded."""
+    recorded = ((record or {}).get("azint_build") or {}).get("installed_extension")
+    if recorded is None:
+        return []
+    if installed != recorded:
+        return ["The installed azint extension differs from the recorded build"]
+    return []
 
 
 def verify_build(root, record):
