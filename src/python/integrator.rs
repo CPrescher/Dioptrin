@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::batch::{
     FileWorkers, Integration1D, Integration1DWithAzimuthalStd, Integration1DWithErrors,
     Integration2D, Integration2DOnAzimuthalRange, Integration2DWithErrors, IntegrationTask,
-    StreamControl, StreamingBatch, WorkItem, process_files_streaming_with_pool,
+    StreamControl, StreamingBatch, WorkItem, map_in_pools, process_files_streaming_with_pool,
     process_files_with_pool, process_queue_with_pool,
 };
 use crate::frame::{Frame, TiffFrame};
@@ -497,18 +497,26 @@ impl PyIntegrator {
         })
     }
 
-    /// `batch2d` over a list of arrays, like `batch1d`'s array branch: every
-    /// array is checked first (dtype, shape, contiguity, mask), then the
-    /// frames are integrated in parallel on Rayon without copying and with the
-    /// GIL released. The read-only borrow guards in `arrays` outlive the
-    /// workers; only plain slices cross into them. An invalid azimuthal range
-    /// fails each entry, as for TIFF paths.
+    /// `batch2d` over a list of arrays: every array is checked first (dtype,
+    /// shape, contiguity, mask), then the frames are integrated without
+    /// copying and with the GIL released. The read-only borrow guards in
+    /// `arrays` outlive the workers; only plain slices cross into them. An
+    /// invalid azimuthal range fails each entry, as for TIFF paths.
+    ///
+    /// `split` is `None` when the caller gave neither `num_workers` nor
+    /// `num_threads`: the frames then run as in `batch1d`'s array branch, a
+    /// `par_iter` on the global Rayon pool. Otherwise `Some((workers,
+    /// threads))`: at most `workers` frames at a time, each in its own Rayon
+    /// pool of `threads` threads ([`map_in_pools`]); a panic in one frame is
+    /// raised after all frames finished. Only the per-frame closure is 2D
+    /// specific, so 1D could use the same structure.
     fn batch2d_arrays(
         &self,
         py: Python<'_>,
         arrays: &[PyReadonlyArray2<'_, f64>],
         bins: Bins2d,
         radial: Option<Vec<f64>>,
+        split: Option<(usize, usize)>,
     ) -> PyResult<Vec<PyBatchResult>> {
         let frames = arrays
             .iter()
@@ -525,7 +533,8 @@ impl PyIntegrator {
 
         use rayon::prelude::*;
         let integrator = &*self.integrator;
-        let integrate = |(i, &(data, dim1, dim2)): (usize, &(&[f64], usize, usize))| {
+        let integrate = |i: usize| {
+            let (data, dim1, dim2) = frames[i];
             let filename = format!("array[{}]", i);
             match integrate2d_slice(integrator, data, dim1, dim2, bins, radial.clone()) {
                 Ok(result) => PyBatchResult {
@@ -540,7 +549,8 @@ impl PyIntegrator {
                 },
             }
         };
-        Ok(py.detach(|| {
+        // Build the table once before the frames run, when they share a shape.
+        let prepare = || {
             if let Some(&(_, dim1, dim2)) = frames.first()
                 && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
             {
@@ -552,8 +562,21 @@ impl PyIntegrator {
                     bins.azimuthal_range,
                 );
             }
-            frames.par_iter().enumerate().map(integrate).collect()
-        }))
+        };
+        let Some((workers, threads)) = split else {
+            return Ok(py.detach(|| {
+                prepare();
+                (0..frames.len()).into_par_iter().map(integrate).collect()
+            }));
+        };
+        let outcomes = py
+            .detach(|| map_in_pools(frames.len(), workers, threads, prepare, integrate))
+            .map_err(PyValueError::new_err)?;
+        // Re-raise the first panic in input order, as the default path would.
+        Ok(outcomes
+            .into_iter()
+            .map(|outcome| outcome.unwrap_or_else(|payload| std::panic::resume_unwind(payload)))
+            .collect())
     }
 
     /// Integrate `paths` on the cached file workers and wait for all results.
@@ -1231,8 +1254,10 @@ impl PyIntegrator {
     /// * `n_points` - Number of bins for the 1D integration output
     /// * `errors` - Whether to compute Poisson errors (default: False)
     /// * `azimuthal_std` - Also return weighted population spread (default: False)
-    /// * `num_workers` - Number of parallel workers (optional)
-    /// * `num_threads` - Threads per worker (optional)
+    /// * `num_workers` - Number of parallel workers (optional; TIFF paths only, ignored
+    ///   for arrays, which always run on the global Rayon pool)
+    /// * `num_threads` - Threads per worker (optional; TIFF paths only, ignored for
+    ///   arrays)
     ///
     /// # Returns
     ///
@@ -1637,9 +1662,16 @@ impl PyIntegrator {
     /// NumPy inputs are borrowed for this synchronous call without copying image
     /// pixels. Their read-only borrow guards remain held until all native workers
     /// finish; input arrays must not be mutated concurrently. The GIL is released
-    /// while the workers run. Arrays are integrated in parallel on the global Rayon
-    /// pool, as in `batch1d`; `num_workers` and `num_threads` are validated but
-    /// only shape TIFF batches.
+    /// while the workers run. For arrays, `num_workers` is the number of frames
+    /// integrated at a time and `num_threads` the Rayon threads each of them
+    /// uses, in a pool of its own (built for the call), as for TIFF paths: with
+    /// `num_workers=8, num_threads=1` eight frames run side by side on one
+    /// thread each; with `num_workers=1, num_threads=8` one frame after another
+    /// on eight threads. A missing one of the two is resolved as for TIFF paths
+    /// (`num_threads` defaults to 2, `num_workers` to cores / num_threads - 1,
+    /// at least 1). With neither given, arrays run on the global Rayon pool (all
+    /// frames in parallel, as in `batch1d`), configured with `set_rayon_threads`
+    /// or `RAYON_NUM_THREADS`.
     ///
     /// # Errors
     ///
@@ -1686,6 +1718,8 @@ impl PyIntegrator {
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         check_positive("n_azimuthal", n_azimuthal)?;
         let radial = self.radial_axis_2d(n_radial)?;
+        // Arrays keep the global pool unless a split was asked for.
+        let split_requested = num_workers.is_some() || num_threads.is_some();
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
         validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
         let tiff_paths = match tiff_paths {
@@ -1697,7 +1731,8 @@ impl PyIntegrator {
                     errors,
                     azimuthal_range,
                 };
-                return self.batch2d_arrays(py, &arrays, bins, radial);
+                let split = split_requested.then_some((num_workers, num_threads));
+                return self.batch2d_arrays(py, &arrays, bins, radial, split);
             }
         };
 

@@ -39,6 +39,7 @@
 //! // let results = process_files(&files, integrator, task, 4, 2);
 //! ```
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -568,6 +569,76 @@ pub(crate) enum WorkItem {
     },
 }
 
+/// Run `job(i)` for every `i` in `0..n` with at most `workers` items in
+/// flight, each inside a Rayon pool of `threads` threads, and return the
+/// outcomes in input order. Used by Python `batch2d` over borrowed arrays when
+/// `num_workers`/`num_threads` are given; the items may borrow from the caller.
+///
+/// `min(workers, n)` scoped OS threads pull indices from a shared counter;
+/// each owns a pool built for this call (a few hundred microseconds per pool),
+/// and Rayon work started inside `job` stays in that pool. `prepare` runs once
+/// first, in the first worker's pool, so a one-off table build uses `threads`
+/// threads too. A panicking item does not stop the others: its outcome holds
+/// the panic payload for the caller to report. `Err` when a pool cannot be
+/// built.
+#[cfg_attr(not(feature = "python"), allow(dead_code))]
+pub(crate) fn map_in_pools<R, P, F>(
+    n: usize,
+    workers: usize,
+    threads: usize,
+    prepare: P,
+    job: F,
+) -> Result<Vec<thread::Result<R>>, String>
+where
+    R: Send,
+    P: FnOnce() + Send,
+    F: Fn(usize) -> R + Sync,
+{
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let pools = (0..workers.clamp(1, n))
+        .map(|_| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads.max(1))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if let Err(payload) = pools[0].install(|| catch_unwind(AssertUnwindSafe(prepare))) {
+        // Leave the failure to the items, which hit it again with context.
+        drop(payload);
+    }
+    let next = AtomicUsize::new(0);
+    let mut outcomes: Vec<(usize, thread::Result<R>)> = thread::scope(|scope| {
+        let handles: Vec<_> = pools
+            .iter()
+            .map(|pool| {
+                let (next, job) = (&next, &job);
+                scope.spawn(move || {
+                    pool.install(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i >= n {
+                                break done;
+                            }
+                            done.push((i, catch_unwind(AssertUnwindSafe(|| job(i)))));
+                        }
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("batch worker thread panicked"))
+            .collect()
+    });
+    outcomes.sort_unstable_by_key(|o| o.0);
+    assert_eq!(outcomes.len(), n, "a batch worker lost an item");
+    Ok(outcomes.into_iter().map(|o| o.1).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,6 +835,75 @@ mod tests {
         for file in files {
             std::fs::remove_file(file).unwrap();
         }
+    }
+
+    /// `map_in_pools` runs at most `workers` items at a time, each inside a
+    /// pool of exactly `threads` threads (not the global pool), keeps input
+    /// order, and contains a panicking item.
+    #[test]
+    fn map_in_pools_applies_the_requested_split() {
+        use rayon::prelude::*;
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        use std::time::Duration;
+        for (workers, threads, n) in [(1, 3, 6), (3, 1, 9), (2, 2, 8), (8, 1, 3), (4, 2, 1)] {
+            let in_flight = AtomicUsize::new(0);
+            let peak = AtomicUsize::new(0);
+            let seen = Mutex::new(HashSet::new());
+            let prepared = Mutex::new(None);
+            let outcomes = map_in_pools(
+                n,
+                workers,
+                threads,
+                || *prepared.lock().unwrap() = Some(rayon::current_num_threads()),
+                |i| {
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    // Inside a pool of `threads` threads, on one of its threads;
+                    // nested Rayon work stays there too.
+                    assert!(rayon::current_thread_index().is_some());
+                    let nested: Vec<usize> = (0..64)
+                        .into_par_iter()
+                        .map(|_| rayon::current_num_threads())
+                        .collect();
+                    seen.lock().unwrap().insert(std::thread::current().id());
+                    std::thread::sleep(Duration::from_millis(30));
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    if i == n / 2 && n > 2 {
+                        panic!("item {i} failed");
+                    }
+                    (i, rayon::current_num_threads(), nested)
+                },
+            )
+            .unwrap();
+            assert_eq!(*prepared.lock().unwrap(), Some(threads));
+            assert_eq!(outcomes.len(), n);
+            for (i, outcome) in outcomes.into_iter().enumerate() {
+                match outcome {
+                    Ok((index, pool, nested)) => {
+                        assert_eq!(index, i);
+                        assert_eq!(pool, threads, "{workers}x{threads}");
+                        assert!(nested.iter().all(|&t| t == threads));
+                    }
+                    Err(payload) => {
+                        assert!(i == n / 2 && n > 2);
+                        assert_eq!(
+                            payload.downcast_ref::<String>().unwrap(),
+                            &format!("item {i} failed")
+                        );
+                    }
+                }
+            }
+            let expected_peak = workers.min(n);
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                expected_peak,
+                "{workers}x{threads} n={n}"
+            );
+            // Items ran on pool threads, at most workers * threads of them.
+            assert!(seen.lock().unwrap().len() <= expected_peak * threads);
+        }
+        assert!(map_in_pools(0, 2, 2, || (), |i| i).unwrap().is_empty());
     }
 
     /// Stable short tag for temporary file names.

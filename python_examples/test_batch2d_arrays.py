@@ -103,6 +103,34 @@ class Batch2dArrayTests(unittest.TestCase):
             self.assertFalse(images.flags.writeable)
         self.assertEqual(ai.batch2d([], 20, 16), [])
 
+    def test_worker_splits_match_integrate2d(self):
+        """num_workers frames at a time, each on a pool of num_threads threads
+        (the split itself is checked in Rust by
+        batch::tests::map_in_pools_applies_the_requested_split); every split,
+        including the default global pool, gives per-frame integrate2d bits."""
+        images = frames(5)
+        splits = [(None, None), (1, 1), (1, 4), (4, 1), (2, 2), (16, 1), (3, None), (None, 3)]
+        for method in ("counting", "pixel_split", "supersampled"):
+            for radial_range in (None, (0.02, 0.08)):
+                ai = integrator(method, radial_range=radial_range)
+                for name in ("plain", "errors", "azimuthal_range"):
+                    kw = CALLS[name]
+                    expected = [ai.integrate2d(image, 20, **kw) for image in images]
+                    for workers, threads in splits:
+                        label = f"{method} {radial_range} {name} {workers}x{threads}"
+                        with self.subTest(label):
+                            batch = ai.batch2d(images, 20, num_workers=workers,
+                                               num_threads=threads, **kw)
+                            self.assertEqual(len(batch), len(images))
+                            for i, (item, wanted) in enumerate(zip(batch, expected)):
+                                self.assertEqual(item.filename, f"array[{i}]")
+                                self.assertTrue(item.is_ok(), item.error)
+                                self.same(item.result, wanted, label)
+        with self.assertRaises(ValueError):
+            integrator().batch2d(images, 20, 16, num_workers=0)
+        with self.assertRaises(ValueError):
+            integrator().batch2d(images, 20, 16, num_threads=0)
+
     def test_invalid_inputs_raise_like_batch1d(self):
         image = np.ones(SHAPE)
         ai = integrator()

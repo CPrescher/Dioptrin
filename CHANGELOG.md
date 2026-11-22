@@ -11,8 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Integrator.batch2d` accepts a list of 2D float64 NumPy arrays as well as a
   list of TIFF paths, like `batch1d`: the arrays are borrowed without copying
-  and integrated in parallel on the global Rayon pool with the GIL released,
-  on every branch (plain, `errors`, `azimuthal_range`, `azimuthal_bracket`).
+  and integrated with the GIL released, on every branch (plain, `errors`,
+  `azimuthal_range`, `azimuthal_bracket`). Without `num_workers` and
+  `num_threads` they run on the global Rayon pool, all frames in parallel; with
+  either, `num_workers` frames run at a time, each on its own pool of
+  `num_threads` threads, as for TIFF paths (the missing one resolved the same
+  way). `batch1d` over arrays still ignores both arguments, now documented.
   Input errors match `batch1d` (dtype, shape, contiguity, mask shape; mixed
   lists raise `TypeError`, use `batch2d_iter` for them). The first parameter
   keeps its name `tiff_paths`. A list of arrays no longer needs

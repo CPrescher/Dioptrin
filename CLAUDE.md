@@ -47,7 +47,7 @@ python test_examples.py            # Test all Python examples
 - `math/` - Sparse matrix implementations (CSR, COO), histogram utilities
 - `python/` - PyO3 bindings (enabled with `--features python`)
   - Accepts both file paths and NumPy arrays for integration
-  - `batch1d`/`batch2d` accept lists of TIFF paths or NumPy arrays (arrays borrowed, GIL released, global Rayon pool); `batch*_iter` also take generators
+  - `batch1d`/`batch2d` accept lists of TIFF paths or NumPy arrays (arrays borrowed, GIL released; 1D arrays on the global Rayon pool, 2D arrays too unless num_workers/num_threads are given); `batch*_iter` also take generators
   - `integrate2d` releases the GIL while loading and integrating; `integrate1d` still holds it
   - `MultiIntegrator` class for multi-detector merging from Python
 

@@ -653,8 +653,10 @@ class Integrator:
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute Poisson error estimates (default: False)
             azimuthal_std: Also compute weighted population spread (default: False)
-            num_workers: Number of parallel workers (optional)
-            num_threads: Threads per worker (optional)
+            num_workers: Number of parallel workers (optional; TIFF paths only,
+                ignored for arrays, which run on the global Rayon pool)
+            num_threads: Threads per worker (optional; TIFF paths only, ignored
+                for arrays)
 
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
@@ -800,9 +802,15 @@ class Integrator:
             NumPy inputs are borrowed for this synchronous call without copying
             image pixels; their read-only borrow guards are held until all native
             workers finish, and the arrays must not be mutated concurrently. The
-            GIL is released while the workers run. Arrays are integrated in
-            parallel on the global Rayon pool, as in batch1d; num_workers and
-            num_threads only shape TIFF batches.
+            GIL is released while the workers run. For arrays, num_workers is
+            the number of frames integrated at a time and num_threads the Rayon
+            threads each uses, in a pool of its own, as for TIFF paths
+            (num_workers=8, num_threads=1: eight frames side by side on one
+            thread each; num_workers=1, num_threads=8: one frame after another
+            on eight threads). A missing one is resolved as for TIFF paths
+            (num_threads defaults to 2, num_workers to cores / num_threads - 1).
+            With neither given, arrays run on the global Rayon pool, all frames
+            in parallel, as in batch1d.
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has

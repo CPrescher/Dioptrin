@@ -99,7 +99,8 @@ match, two integrators run concurrently, Python threads keep running
 **`batch_api_smoke_test.py`** - Quick smoke test for batch API
 
 **`test_batch2d_arrays.py`** - `batch2d` over lists of NumPy arrays: matches
-`integrate2d`, TIFF paths and `batch2d_iter`; input errors as in `batch1d`
+`integrate2d`, TIFF paths and `batch2d_iter` for every `num_workers`/`num_threads`
+split; input errors as in `batch1d`
 
 **`batch_api_speed_test.py`** - Performance benchmarks for batch processing
 
