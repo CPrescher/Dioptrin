@@ -62,6 +62,146 @@ CONTROL = "@@"
 START_LEAD_SECONDS = 0.1
 SPIN_SECONDS = 0.03
 
+# 2D ("cake") cases. Every library integrates onto chi in [-180, 180) degrees
+# (pyFAI's convention, seam at +-180) and the fixture's 2theta range.
+DEFAULT_CAKES = ("2000x360", "1000x72")
+AZIMUTH_RANGE_DEG = (-180.0, 180.0)
+# Variants whose 2D subpixel count comes from --subpixels (per side).
+SUBPIXEL_VARIANTS = ("dioptrin-supersampled", "azint", "azint-cached")
+DEFAULT_SUBPIXELS_2D = (10,)
+DIOPTRIN_2D_PATHS = ("sequential", "stream")
+# Cross-library pairs in numerical.json besides the dioptrin-pixel_split reference.
+COUNTERPARTS_2D = (
+    ("pyfai-full", "dioptrin-pyfai_full"),
+    ("pyfai-full-omp", "pyfai-full"),
+    ("pyfai-full-opencl", "pyfai-full"),
+    ("azint", "dioptrin-supersampled"),
+    ("azint-cached", "dioptrin-supersampled"),
+)
+# What each library does when 2D Poisson uncertainties are requested.
+UNCERTAINTY_2D = {
+    "dioptrin": "native",
+    "pyfai": "native (error_model='poisson')",
+    # azint.py (pinned commit) divides errors by norm before the 1D/2D branch
+    # and errors_2d by norm again: sigma_2d = sqrt(sum w^2 I) / norm**2.
+    "azint": "native; azint.py divides the 2D Poisson sigma by the normalisation "
+    "twice (sqrt(var)/norm/norm), so it is not comparable with the other libraries",
+}
+# Memory model for --max-memory-fraction (bytes unless noted). Per process:
+# interpreter and libraries, frames, per-pixel geometry arrays (including
+# table-construction temporaries), one sparse table per engine, one batch of
+# results (per output layer: intensity, and sigma with errors) and the
+# validation sample plus reference. Calibrated on the Pilatus 1M and Eiger 4M
+# smoke runs (README): it overestimates the measured peak RSS by roughly
+# 1.1-1.6x, deliberately.
+MEMORY_MODEL = {
+    "base_mib": 200,
+    "geometry_bytes_per_pixel": {"dioptrin": 300, "pyfai": 150, "azint": 300},
+    "table_bytes_per_nnz": {"dioptrin": 32, "pyfai": 40, "azint": 16},
+    "output_bytes_per_bin": {"dioptrin": 8, "pyfai": 40, "azint": 16},
+}
+
+
+UNSUPPORTED_EXIT = 3
+
+
+class Unsupported(Exception):
+    """The library cannot produce what the case asks for (recorded, not faked)."""
+
+
+def library(variant):
+    """dioptrin, pyfai or azint."""
+    return variant.split("-", 1)[0]
+
+
+def parse_cake(text):
+    """'2000x360' -> (2000, 360)."""
+    try:
+        radial, azimuthal = (int(v) for v in text.lower().split("x"))
+    except ValueError:
+        raise ValueError(
+            f"Cake sizes are RADIALxAZIMUTHAL, e.g. 2000x360, not {text!r}"
+        )
+    if radial < 1 or azimuthal < 1:
+        raise ValueError(f"Cake bin counts must be positive: {text!r}")
+    return radial, azimuthal
+
+
+def roll_azint(array, n_azimuthal):
+    """azint bins azimuth on [0, 360); move its rows onto [-180, 180).
+
+    With n_azimuthal even, azint row j covers [j*s, (j+1)*s) and the harness
+    row i covers [-180 + i*s, ...); they are the same angles for
+    j = (i + n/2) mod n, i.e. a roll by n/2. Subpixel sampling has no seam, so
+    this is an exact relabelling, not a resampling.
+    """
+    import numpy as np
+
+    if n_azimuthal % 2:
+        raise Unsupported(
+            "azint rows can be mapped onto [-180, 180) only for even n_azimuthal"
+        )
+    return np.roll(array, n_azimuthal // 2, axis=0)
+
+
+def azint_azimuth_axis(axis, n_azimuthal):
+    import numpy as np
+
+    rolled = roll_azint(np.asarray(axis), n_azimuthal)
+    return np.where(rolled >= 180.0, rolled - 360.0, rolled)
+
+
+def total_memory_bytes():
+    """Physical RAM, or a smaller cgroup (Slurm) limit when one is readable."""
+    total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    for path in (
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ):
+        try:
+            value = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if value.isdigit() and 0 < int(value) < total:
+            total = int(value)
+    return total
+
+
+def estimate_memory_mib(case, meta, estimates):
+    """Expected peak RSS (MiB, summed over processes) of a 2D case."""
+    lib = library(case["variant"])
+    pixels = meta["shape"][0] * meta["shape"][1]
+    processes = case.get("processes", 1)
+    per_process = case["workers"] // processes
+    distinct = 1 if case["workload"] == "repeated" else meta["distinct_frames"]
+    frames = case["frames"] // processes
+    held = min(distinct, frames) if processes > 1 else distinct
+    bins = case["n_radial"] * case["n_azimuthal"]
+    layers = 2 if case["errors"] else 1
+    cake = estimates[case["cake"]]
+    if case["variant"] in SUBPIXEL_VARIANTS:
+        nnz = cake["subpixel_nnz"][str(case["subpixels"])]
+    else:
+        nnz = cake["polygon_nnz"]
+    if lib == "pyfai":
+        engines = 1 if case["variant"] in SEQUENTIAL_VARIANTS else per_process
+    else:
+        engines = 1
+    model = MEMORY_MODEL
+    one = (
+        model["base_mib"] * 2**20
+        + held * pixels * 8
+        + pixels * model["geometry_bytes_per_pixel"][lib]
+        + engines * nnz * model["table_bytes_per_nnz"][lib]
+        + frames * bins * model["output_bytes_per_bin"][lib] * layers
+        + 2 * distinct * bins * 8 * layers
+    )
+    return dict(
+        estimated_memory_mib=round(processes * one / 2**20, 1),
+        estimated_table_nnz=int(nnz),
+        estimated_engines=engines * processes,
+    )
+
 
 def case_threads(variant, count, processes=1):
     """Per-case thread budget; with processes > 1 it is per process.
@@ -162,12 +302,12 @@ def opencl_target(device):
     return {} if device == "any" else dict(target_type=device)
 
 
-def opencl_method(device):
+def opencl_method(device, dim=1):
     from pyFAI.integrator.azimuthal import AzimuthalIntegrator  # noqa: F401  (registry)
     from pyFAI.method_registry import IntegrationMethod
 
     found = IntegrationMethod.select_method(
-        dim=1,
+        dim=dim,
         split="full",
         algo="csr",
         impl="opencl",
@@ -224,10 +364,285 @@ def probe(device):
                     ocl.platforms[platform_id].devices[device_id]._device
                 )
                 opencl.update(available=True, target=list(method.target), **info)
+                opencl["available_2d"] = opencl_method(device, dim=2) is not None
         except Exception as error:
             opencl["reason"] = repr(error)
     result["opencl"] = opencl
     print(json.dumps(result))
+
+
+CONVENTION_CAKE = (100, 36)
+# Asymmetric azimuthal test pattern (pyFAI chi, degrees): no rotation, mirror
+# or flip of chi maps it onto itself.
+CONVENTION_BANDS = ((20.0, 80.0, 100.0), (-150.0, -120.0, 30.0))
+
+
+def convention_rows(n_azimuthal):
+    """Rows expected bright, medium and dark for CONVENTION_BANDS."""
+    step = 360.0 / n_azimuthal
+    lower = [AZIMUTH_RANGE_DEG[0] + step * i for i in range(n_azimuthal)]
+    inside = [
+        [i for i, a in enumerate(lower) if lo <= a and a + step <= hi]
+        for lo, hi, _ in CONVENTION_BANDS
+    ]
+    touching = {
+        i
+        for lo, hi, _ in CONVENTION_BANDS
+        for i, a in enumerate(lower)
+        if a < hi and a + step > lo
+    }
+    dark = [i for i in range(n_azimuthal) if i not in touching]
+    return inside[0], inside[1], dark
+
+
+def check_convention(cakes, flats, n_azimuthal):
+    """Row medians of image/flat cakes per library against the pattern.
+
+    Dividing by the cake of a flat (all-ones) image removes each library's
+    corrections and estimator, leaving ~100, ~31 and ~1 in the band rows.
+    """
+    import numpy as np
+
+    bright, medium, dark = convention_rows(n_azimuthal)
+    report = {}
+    for name, cake in cakes.items():
+        flat = flats[name]
+        ratio = np.where(flat > 0, cake / np.where(flat > 0, flat, 1.0), np.nan)
+        rows = np.array(
+            [np.nanmedian(r) if np.isfinite(r).any() else np.nan for r in ratio]
+        )
+        ok = bool(
+            np.all(rows[bright] > 60)
+            and np.all((rows[medium] > 15) & (rows[medium] < 50))
+            and np.nanmax(rows[dark]) < 5
+        )
+        report[name] = dict(
+            passed=ok,
+            row_medians=[None if not np.isfinite(v) else float(v) for v in rows],
+        )
+    return report
+
+
+def preflight_2d(fixture, cakes, subpixels, variants, output):
+    """Per-dataset 2D checks, run in a fresh process before any 2D case.
+
+    1. Azimuth convention: an asymmetric chi pattern is integrated by every
+       requested library onto the harness grid; all must put it in the same rows.
+    2. Dioptrin's radial axes: Integrator 2D results have no radial axis and
+       only pyfai_full honours radial_range in 2D. pixel_split/supersampled use
+       their default (data-derived) edges, which are the edges of the 1D
+       default grid of the same method, read here from integrate1d.
+    3. Table-size estimates for the memory model, from pixel-corner spans.
+    """
+    import numpy as np
+    import pyFAI
+
+    fixture = Path(fixture)
+    meta = json.loads((fixture / "fixture.json").read_text())
+    mask = np.load(fixture / "mask.npy")
+    image0 = np.load(fixture / "frames.npy", mmap_mode="r")[0]
+    shape = tuple(meta["shape"])
+    poni = str(fixture / "geometry.poni")
+    ai = pyFAI.load(poni)
+    ai.detector.mask = mask
+    libraries = {library(v) for v in variants}
+    # Common 2D radial edges. Dioptrin's Integrator ignores radial_range in 2D
+    # for pixel_split and supersampled; pixel_split uses the extremes of the
+    # pixel-corner 2theta (plus 10 ulp), read here from its 1D default grid,
+    # which follows the same rule. Every other 2D case is given these edges.
+    corners = ai.array_from_unit(shape, typ="corner", unit="2th_deg")
+    if "dioptrin" in libraries:
+        import dioptrin
+
+        engine = dioptrin.Integrator(poni, method="pixel_split", unit="2th_deg")
+        engine.set_mask(mask)
+        axis = np.asarray(engine.integrate1d(np.ascontiguousarray(image0), 1000).radial)
+        step = (axis[-1] - axis[0]) / (len(axis) - 1)
+        lo, hi = float(axis[0] - step / 2), float(axis[-1] + step / 2)
+        range_source = (
+            "Dioptrin pixel_split default edges (pixel-corner 2theta extremes)"
+        )
+        del engine
+    else:
+        lo, hi = float(corners[..., 0].min()), float(corners[..., 0].max())
+        range_source = "pyFAI pixel-corner 2theta extremes (float32)"
+    # Per-pixel 2theta and chi spans (from the corners) for the table estimates.
+    valid = mask == 0
+    tth = corners[..., 0][valid].astype(np.float64)
+    angle = corners[..., 1][valid].astype(np.float64)
+    del corners
+    d_tth = tth.max(axis=1) - tth.min(axis=1)
+    d_chi = angle.max(axis=1) - angle.min(axis=1)
+    wrapped = np.mod(angle, 2 * np.pi)
+    d_chi = np.minimum(d_chi, wrapped.max(axis=1) - wrapped.min(axis=1))
+    del tth, angle, wrapped
+    chi = np.degrees(ai.center_array(shape, unit="chi_rad"))
+    pattern = np.ones(shape)
+    for low, high, value in CONVENTION_BANDS:
+        pattern[(chi > low) & (chi < high)] = value
+    pattern[mask != 0] = 0
+    flat = np.where(mask != 0, 0.0, 1.0)
+    del chi
+    nr, na = CONVENTION_CAKE
+    cakes_out, flats, axes = {}, {}, {}
+    for name, image, store in (("pattern", pattern, cakes_out), ("flat", flat, flats)):
+        result = ai.integrate2d(
+            image,
+            nr,
+            na,
+            unit="2th_deg",
+            method=("full", "csr", "cython"),
+            radial_range=(lo, hi),
+            azimuth_range=AZIMUTH_RANGE_DEG,
+            correctSolidAngle=True,
+            polarization_factor=0.965,
+        )
+        store["pyfai"] = np.asarray(result.intensity)
+        axes["pyfai"] = np.asarray(result.azimuthal)
+    if "dioptrin" in libraries:
+        import dioptrin
+
+        for method in ("pixel_split", "pyfai_full", "supersampled"):
+            engine = dioptrin.Integrator(
+                poni,
+                method=method,
+                unit="2th_deg",
+                n_ss=2,
+                polarization_factor=0.965,
+                radial_range=(lo, hi),
+            )
+            engine.set_mask(mask)
+            for image, store in ((pattern, cakes_out), (flat, flats)):
+                result = engine.integrate2d(
+                    image, nr, na, azimuthal_range=(-math.pi, math.pi)
+                )
+                store[f"dioptrin-{method}"] = np.asarray(result.intensity).reshape(
+                    na, nr
+                )
+            axes[f"dioptrin-{method}"] = np.degrees(np.asarray(result.azimuthal))
+    if "azint" in libraries:
+        import azint
+        from azint.detector import Detector
+
+        geometry = meta["geometry"].copy()
+        pixel1, pixel2 = geometry.pop("pixel1"), geometry.pop("pixel2")
+        engine = azint.AzimuthalIntegrator(
+            azint.Poni(det=Detector(pixel1, pixel2, shape), **geometry),
+            n_splitting=2,
+            radial_bins=np.linspace(lo, hi, nr + 1),
+            azimuth_bins=np.linspace(0.0, 360.0, na + 1),
+            unit="2th",
+            mask=mask,
+            solid_angle=True,
+            polarization_factor=0.965,
+        )
+        cakes_out["azint"] = roll_azint(engine.integrate(pattern)[2], na)
+        flats["azint"] = roll_azint(engine.integrate(flat)[2], na)
+        axes["azint"] = azint_azimuth_axis(engine.azimuth_axis, na)
+    report = check_convention(cakes_out, flats, na)
+    for name, axis in axes.items():
+        report[name]["max_azimuth_axis_difference_deg"] = float(
+            np.max(np.abs(axis - axes["pyfai"]))
+        )
+        if report[name]["max_azimuth_axis_difference_deg"] > 1e-4:
+            report[name]["passed"] = False
+    convention = dict(
+        cake=list(CONVENTION_CAKE),
+        azimuth_range_deg=list(AZIMUTH_RANGE_DEG),
+        bands_deg=[list(b) for b in CONVENTION_BANDS],
+        reference="pyFAI chi (center_array chi_rad), seam at +-180 degrees",
+        azint_mapping="azint azimuth bins [0, 360), rows rolled by n_azimuthal/2",
+        libraries=report,
+        passed=all(r["passed"] for r in report.values()),
+    )
+    del pattern, flat, cakes_out, flats
+
+    # dioptrin-supersampled's numerical companion cake uses MultiIntegrator
+    # (explicit edges). Check that MultiIntegrator reproduces
+    # Integrator.integrate2d where both use the same edges (pixel_split).
+    multi_check = None
+    if "dioptrin-supersampled" in variants:
+        import dioptrin
+
+        engine = dioptrin.Integrator(
+            poni,
+            method="pixel_split",
+            unit="2th_deg",
+            polarization_factor=0.965,
+            radial_range=(lo, hi),
+        )
+        engine.set_mask(mask)
+        frame = np.ascontiguousarray(image0)
+        span = (-math.pi, math.pi)
+        a = np.asarray(
+            engine.integrate2d(frame, nr, na, azimuthal_range=span).intensity
+        )
+        b = np.asarray(
+            dioptrin.MultiIntegrator([engine])
+            .integrate2d([frame], nr, na, azimuthal_range=span)
+            .intensity
+        )
+        scale = np.maximum(np.abs(b), 1e-300)
+        multi_check = dict(
+            cake=list(CONVENTION_CAKE),
+            method="pixel_split",
+            max_relative_difference=float(np.max(np.abs(a - b) / scale)),
+            relative_l2=float(np.linalg.norm(a - b) / max(np.linalg.norm(b), 1e-300)),
+        )
+        del engine
+
+    radial_axes = {}
+    methods = {
+        v.removeprefix("dioptrin-") for v in variants if v.startswith("dioptrin-")
+    }
+    radial_counts = sorted({parse_cake(c)[0] for c in cakes})
+    if methods:
+        import dioptrin
+
+        for method in sorted(methods):
+            counts = subpixels if method == "supersampled" else [None]
+            for n_ss in counts:
+                engine = dioptrin.Integrator(
+                    poni,
+                    method=method,
+                    unit="2th_deg",
+                    n_ss=n_ss or meta["n_splitting"],
+                    # Same rule as the 2D grid: only pyfai_full takes the range.
+                    radial_range=(lo, hi) if method == "pyfai_full" else None,
+                )
+                engine.set_mask(mask)
+                for n in radial_counts:
+                    axis = list(
+                        engine.integrate1d(np.ascontiguousarray(image0), n).radial
+                    )
+                    key = method if n_ss is None else f"{method}-ss{n_ss}"
+                    radial_axes.setdefault(key, {})[str(n)] = axis
+
+    estimates = {}
+    for text in cakes:
+        n_rad, n_azi = parse_cake(text)
+        cells = (d_tth / ((hi - lo) / n_rad) + 1.0) * (
+            d_chi / (2 * np.pi / n_azi) + 1.0
+        )
+        estimates[text] = dict(
+            polygon_nnz=float(cells.sum()),
+            subpixel_nnz={
+                str(n): float(np.minimum(cells, n * n).sum()) for n in subpixels
+            },
+        )
+    dump(
+        output,
+        dict(
+            radial_range_2d=[lo, hi],
+            radial_range_2d_source=range_source,
+            radial_range_1d=meta["radial_range"],
+            convention=convention,
+            multiintegrator_check=multi_check,
+            dioptrin_radial_axes=radial_axes,
+            table_estimates=estimates,
+            unmasked_pixels=int(valid.sum()),
+        ),
+    )
 
 
 def setup_case(case, rank=None):
@@ -240,6 +655,8 @@ def setup_case(case, rank=None):
     """
     import numpy as np
 
+    if case.get("dimension") == "2d":
+        return setup_case_2d(case, rank)
     fixture = Path(case["fixture"])
     meta = json.loads((fixture / "fixture.json").read_text())
     stack = np.load(fixture / "frames.npy", mmap_mode="r")
@@ -519,6 +936,424 @@ def setup_case(case, rank=None):
     )
 
 
+def load_inputs(case, rank):
+    """Fixture, frames and mask of a case, as in the 1D setup (pages faulted in)."""
+    import numpy as np
+
+    fixture = Path(case["fixture"])
+    meta = json.loads((fixture / "fixture.json").read_text())
+    stack = np.load(fixture / "frames.npy", mmap_mode="r")
+    processes = case.get("processes", 1)
+    distinct = 1 if case["workload"] == "repeated" else len(stack)
+    logical = process_share(case["frames"], processes, rank)
+    if rank is None:
+        needed = list(range(distinct))
+        unique = {u: stack[u] for u in needed}
+    else:
+        needed = sorted({i % distinct for i in logical})
+        unique = {u: np.array(stack[u]) for u in needed}
+    del stack
+    mask = np.load(fixture / "mask.npy")
+    frames = [unique[i % distinct] for i in logical]
+    for frame in unique.values():
+        float(np.sum(frame))
+    return fixture, meta, mask, unique, needed, frames, logical, distinct
+
+
+def pyfai_engines(engine):
+    """The integration engines a pyFAI AzimuthalIntegrator has built."""
+    return [e.engine for e in engine.engines.values()]
+
+
+def threaded_runner(ai, integrate, image, frames, threads, variant):
+    """Per-thread engines (shallow copies) and a pool over contiguous chunks.
+
+    pyFAI copies get their own engine dictionary, so every frame thread builds
+    and owns its CSR engine and scratch buffers; azint copies share the sparse
+    matrix (read only), as in the 1D cases.
+    """
+    engines = [ai]
+    for _ in range(1, threads):
+        engine = copy.copy(ai)
+        if variant.startswith("pyfai-"):
+            engine.engines = {}
+        integrate(engine, image)
+        engines.append(engine)
+    pool = ThreadPoolExecutor(max_workers=threads)
+    chunks = contiguous_chunks(frames, threads)
+
+    def chunk(task):
+        engine, images = task
+        return [(index, integrate(engine, frame)) for index, frame in images]
+
+    def run():
+        results = [None] * len(frames)
+        for group in pool.map(chunk, zip(engines, chunks)):
+            for index, result in group:
+                results[index] = result
+        return results
+
+    return engines, pool, run
+
+
+def setup_case_2d(case, rank=None):
+    """Build and warm a 2D (cake) case; same contract as the 1D setup_case.
+
+    Every library gets the fixture's 2theta range with n_radial bins, chi in
+    [-180, 180) degrees with n_azimuthal bins, the same mask, solid angle and
+    polarization 0.965. Peak RSS is also sampled after the inputs are loaded
+    and when all workers are ready, before any validation reference is read.
+    """
+    import numpy as np
+
+    fixture, meta, mask, unique, needed, frames, logical, distinct = load_inputs(
+        case, rank
+    )
+    image = unique[needed[0]]
+    nr, na = case["n_radial"], case["n_azimuthal"]
+    processes = case.get("processes", 1)
+    workers = case["workers"] // processes
+    errors = case["errors"]
+    variant = case["variant"]
+    lib = library(variant)
+    bounds = case["radial_range_2d"]
+    subpixels = case.get("subpixels")
+    pool = None
+    stock_check = None
+    info = dict(rss_inputs_mib=peak_rss(), uncertainty_support=UNCERTAINTY_2D[lib])
+    started = time.perf_counter()
+
+    if lib == "dioptrin":
+        import dioptrin
+
+        method = variant.removeprefix("dioptrin-")
+        ai = dioptrin.Integrator(
+            str(fixture / "geometry.poni"),
+            method=method,
+            unit="2th_deg",
+            n_ss=subpixels or meta["n_splitting"],
+            polarization_factor=0.965,
+            radial_range=tuple(bounds),
+        )
+        ai.set_mask(mask)
+        if dioptrin.rayon_num_threads() != workers:
+            raise RuntimeError(
+                "Dioptrin Rayon pool does not match requested CPU budget"
+            )
+        span = tuple(math.radians(v) for v in AZIMUTH_RANGE_DEG)
+        # Integrator 2D results carry no radial axis; the preflight measured
+        # Dioptrin's actual edges (radial_range is honoured by pyfai_full only).
+        radial_axis = np.asarray(case["dioptrin_radial_axis"])
+
+        def integrate(engine, frame):
+            return engine.integrate2d(
+                frame, nr, na, errors=errors, azimuthal_range=span
+            )
+
+        if case["dioptrin_2d_path"] == "sequential":
+            # One frame at a time; each integrate2d runs its row-parallel SpMV
+            # on the Rayon pool (RAYON_NUM_THREADS = CPU budget), no copies.
+            def run():
+                return [integrate(ai, frame) for frame in frames]
+
+        else:
+            # Frame-parallel stream: num_workers frames at once, one thread
+            # each. The stream copies every array once before integrating it.
+            def run():
+                results = [None] * len(frames)
+                for item in ai.batch2d_iter(
+                    frames,
+                    nr,
+                    na,
+                    errors=errors,
+                    azimuthal_range=span,
+                    num_workers=workers,
+                    num_threads=1,
+                ):
+                    if not item.is_ok():
+                        raise RuntimeError(item.error)
+                    results[int(item.filename.removeprefix("array[")[:-1])] = (
+                        item.result
+                    )
+                return results
+
+        def extract(result):
+            sigma = None
+            if errors:
+                if result.errors is None:
+                    raise Unsupported("Dioptrin returned no 2D errors")
+                sigma = np.asarray(result.errors).reshape(na, nr)
+            return (
+                radial_axis,
+                np.degrees(np.asarray(result.azimuthal)),
+                np.asarray(result.intensity).reshape(na, nr),
+                sigma,
+            )
+
+        first = integrate(ai, image)
+        setup_first = time.perf_counter() - started
+        engines = [ai]
+        info["table_nnz_source"] = "not exposed by the Dioptrin Python API"
+    else:
+        if lib == "azint":
+            import azint
+            from azint.detector import Detector
+
+            geometry = meta["geometry"].copy()
+            pixel1, pixel2 = geometry.pop("pixel1"), geometry.pop("pixel2")
+            poni = azint.Poni(det=Detector(pixel1, pixel2, image.shape), **geometry)
+            ai = azint.AzimuthalIntegrator(
+                poni,
+                n_splitting=subpixels,
+                radial_bins=np.linspace(*bounds, nr + 1),
+                # azint measures azimuth on [0, 360); rows are rolled below.
+                azimuth_bins=np.linspace(0.0, 360.0, na + 1),
+                unit="2th",
+                mask=mask,
+                solid_angle=True,
+                polarization_factor=0.965,
+                error_model="poisson" if errors else None,
+            )
+            azimuth_axis = azint_azimuth_axis(ai.azimuth_axis, na)
+            if variant == "azint-cached":
+                ai.mask = None  # reuse the constructor's norm; see the 1D notes
+
+                def stock_check(images, cached):
+                    stock = copy.copy(ai)
+                    stock.mask = mask
+                    for frame, value in zip(images, cached):
+                        reference = stock.integrate(frame)
+                        for index in (2, 3):
+                            if not same_bits(reference[index], value[index]):
+                                raise AssertionError(
+                                    "azint-cached differs from stock azint output"
+                                )
+                    return True
+
+            def integrate(engine, frame):
+                return engine.integrate(frame)
+
+            def extract(result):
+                sigma = None
+                if errors:
+                    if result[3] is None:
+                        raise Unsupported("azint returned no 2D errors")
+                    sigma = roll_azint(np.asarray(result[3]), na)
+                return (
+                    np.asarray(ai.radial_axis),
+                    azimuth_axis,
+                    roll_azint(np.asarray(result[2]), na),
+                    sigma,
+                )
+
+            info["table_nnz_source"] = "not exposed by azint (_azint.Sparse)"
+        else:
+            import pyFAI
+            from pyFAI.method_registry import IntegrationMethod
+
+            ai = pyFAI.load(str(fixture / "geometry.poni"))
+            ai.detector.mask = mask
+            method = PYFAI_METHODS[variant]
+            if variant != "pyfai-full-opencl":
+                info["pyfai_openmp"] = pyfai_openmp()
+                if variant == "pyfai-full-omp" and not info["pyfai_openmp"]["openmp"]:
+                    raise RuntimeError(
+                        "pyFAI's CSR extension has no OpenMP; pyfai-full-omp is meaningless here"
+                    )
+                selected, target = method, None
+                if not IntegrationMethod.select_method(
+                    dim=2, split=method[0], algo="csr", impl=method[2], degradable=False
+                ):
+                    raise RuntimeError(
+                        f"Requested exact pyFAI 2D method unavailable: {method}"
+                    )
+            else:
+                selected = opencl_method(case["opencl_device"], dim=2)
+                if selected is None:
+                    raise RuntimeError(
+                        f"No pyFAI 2D OpenCL device for {case['opencl_device']!r}"
+                    )
+                target = tuple(selected.target)
+
+            def integrate(engine, frame):
+                return engine.integrate2d(
+                    frame,
+                    nr,
+                    na,
+                    unit="2th_deg",
+                    method=selected,
+                    radial_range=tuple(bounds),
+                    azimuth_range=AZIMUTH_RANGE_DEG,
+                    correctSolidAngle=True,
+                    polarization_factor=0.965,
+                    error_model="poisson" if errors else None,
+                    safe=True,
+                )
+
+            def extract(result):
+                used = result.method.method
+                if (used.split, used.algo, used.impl) != method or (
+                    target is not None and tuple(used.target) != target
+                ):
+                    raise RuntimeError(f"pyFAI fell back from {selected} to {used}")
+                sigma = None
+                if errors:
+                    if result.sigma is None:
+                        raise Unsupported("pyFAI returned no 2D sigma")
+                    sigma = np.asarray(result.sigma)
+                return (
+                    np.asarray(result.radial),
+                    np.asarray(result.azimuthal),
+                    np.asarray(result.intensity),
+                    sigma,
+                )
+
+        first = integrate(ai, image)
+        setup_first = time.perf_counter() - started
+        if variant == "pyfai-full-opencl":
+            engine = next(e for e in pyfai_engines(ai) if hasattr(e, "ctx"))
+            info["opencl"] = dict(
+                target=list(target), **opencl_device_info(engine.ctx.devices[0])
+            )
+        threads = 1 if variant in SEQUENTIAL_VARIANTS else workers
+        engines, pool, run = threaded_runner(
+            ai, integrate, image, frames, threads, variant
+        )
+
+    first = extract(first)
+    warm_result = run()
+    setup_ready = time.perf_counter() - started
+    info["peak_rss_ready_mib"] = peak_rss()
+    info["setup_rss_growth_mib"] = info["peak_rss_ready_mib"] - info["rss_inputs_mib"]
+    if lib == "pyfai":
+        counts = [getattr(e, "nnz", None) for a in engines for e in pyfai_engines(a)]
+        if counts and all(c is not None for c in counts):
+            info.update(
+                table_nnz=int(counts[0]),
+                table_nnz_total=int(sum(counts)),
+                table_nnz_source=f"pyFAI engine.nnz, {len(counts)} engine(s)",
+            )
+        else:
+            info["table_nnz_source"] = "not exposed by this pyFAI engine"
+
+    # One output per distinct frame: the first time it appears in the warm
+    # run, and (single process) any distinct frame the run did not reach.
+    outputs = {}
+    for index, result in enumerate(warm_result):
+        outputs.setdefault(logical[index] % distinct, extract(result))
+    for u in needed:
+        if u not in outputs:
+            outputs[u] = extract(integrate(ai, unique[u]))
+    for got, expected in zip(outputs[needed[0]][1:], first[1:]):
+        if expected is not None:
+            np.testing.assert_allclose(got, expected, rtol=1e-6, atol=1e-6)
+    keys = ("radial", "azimuthal", "intensity", "sigma")
+    sample = {
+        "radial": outputs[needed[0]][0],
+        "azimuthal": outputs[needed[0]][1],
+        "intensity": np.stack([outputs[u][2] for u in needed]),
+        "sigma": np.stack([outputs[u][3] for u in needed]) if errors else np.array([]),
+    }
+    del outputs
+    row = {u: position for position, u in enumerate(needed)}.__getitem__
+    baseline = sample
+    if case.get("reference"):
+        if not Path(case["reference"]).is_file():
+            raise RuntimeError(f"Missing one-worker reference {case['reference']}")
+        with np.load(case["reference"]) as reference:
+            baseline = {key: reference[key].copy() for key in keys}
+        row = int  # the reference holds every distinct frame in order
+    elif rank is not None:
+        raise RuntimeError("Multi-process cases need a one-worker reference")
+
+    def validate(results):
+        if len(results) != len(frames):
+            raise AssertionError("Wrong output frame count")
+        for index, result in enumerate(results):
+            radial, azimuthal, intensity, sigma = extract(result)
+            expected = row(logical[index] % distinct)
+            if intensity.shape != (na, nr) or not np.isfinite(intensity).all():
+                raise AssertionError("Invalid integration output")
+            if not np.any(intensity > 0):
+                raise AssertionError("Empty integration output")
+            np.testing.assert_allclose(radial, baseline["radial"], rtol=1e-6, atol=1e-7)
+            np.testing.assert_allclose(
+                azimuthal, baseline["azimuthal"], rtol=1e-6, atol=1e-6
+            )
+            np.testing.assert_allclose(
+                intensity, baseline["intensity"][expected], rtol=1e-6, atol=1e-6
+            )
+            if errors:
+                if sigma is None or not np.isfinite(sigma).all():
+                    raise AssertionError("Invalid Poisson errors")
+                np.testing.assert_allclose(
+                    sigma, baseline["sigma"][expected], rtol=1e-6, atol=1e-6
+                )
+
+    validate(warm_result)
+    if stock_check is not None:
+        checked = min(len(needed), len(frames))
+        stock_check(frames[:checked], warm_result[:checked])
+    del warm_result
+    negative = np.argwhere(sample["sigma"] < 0).tolist() if errors else []
+
+    def save(result_path):
+        """The one-worker reference case (w1, t0, one process) keeps every
+        distinct cake for the other cases' self-checks (removed after a
+        successful run unless --keep-inputs) and its first cake, compressed,
+        for numerical.json."""
+        if case.get("reference"):
+            return
+        result_path = Path(result_path)
+        first_cake = {
+            key: (value[0] if key in ("intensity", "sigma") and value.size else value)
+            for key, value in sample.items()
+        }
+        np.savez_compressed(result_path.with_suffix(".cake0.npz"), **first_cake)
+        np.savez(result_path.with_suffix(".npz"), **sample)
+        if variant == "dioptrin-supersampled":
+            # Untimed, for numerical.json only: Integrator.integrate2d ignores
+            # radial_range for supersampled, so its cakes sit on their own
+            # radial grid. MultiIntegrator with this one integrator bins the
+            # same subpixels onto the common explicit edges (for pixel_split it
+            # reproduces Integrator.integrate2d; see preflight2d.json).
+            import dioptrin
+
+            common = dioptrin.MultiIntegrator([ai]).integrate2d(
+                [np.ascontiguousarray(image)],
+                nr,
+                na,
+                errors=errors,
+                azimuthal_range=tuple(math.radians(v) for v in AZIMUTH_RANGE_DEG),
+            )
+            np.savez_compressed(
+                result_path.with_suffix(".cake0common.npz"),
+                radial=np.asarray(common.radial),
+                azimuthal=np.degrees(np.asarray(common.azimuthal)),
+                intensity=np.asarray(common.intensity).reshape(na, nr),
+                sigma=np.asarray(common.errors).reshape(na, nr)
+                if errors
+                else np.array([]),
+            )
+
+    return dict(
+        meta=meta,
+        run=run,
+        validate=validate,
+        pool=pool,
+        sample=sample,
+        needed=needed,
+        frames=len(frames),
+        distinct=distinct,
+        setup_first=setup_first,
+        setup_ready=setup_ready,
+        stock_checked=stock_check is not None,
+        negative_sigma=[[needed[i], a, r] for i, a, r in negative],
+        info=info,
+        save=save,
+    )
+
+
 def peak_rss():
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak * (1 if sys.platform == "darwin" else 1024) / 2**20
@@ -526,7 +1361,7 @@ def peak_rss():
 
 def case_record(case, state):
     return dict(
-        **case,
+        **{k: v for k, v in case.items() if k != "dioptrin_radial_axis"},
         setup_first_s=state["setup_first"],
         setup_ready_s=state["setup_ready"],
         thread_environment={k: os.environ.get(k) for k in THREAD_VARIABLES},
@@ -549,8 +1384,13 @@ def numerical_fields(negative):
 
 def summary_line(case, meta, rate):
     processes = case.get("processes", 1)
+    variant = case["variant"]
+    if case.get("dimension") == "2d":
+        variant = f"2d {case['cake']} {variant}" + (
+            f" ss{case['subpixels']}" if case.get("subpixels") else ""
+        )
     return (
-        f"{meta['dataset']:14} {case['workload']:8} {case['variant']:25} workers={case['workers']:3} "
+        f"{meta['dataset']:14} {case['workload']:8} {variant:25} workers={case['workers']:3} "
         + (f"processes={processes} " if processes > 1 else "")
         + f"{case['error_mode']:9} {rate:10.1f} frames/s"
     )
@@ -560,10 +1400,18 @@ def worker(case_path, rank=None):
     import numpy as np
 
     case = json.loads(Path(case_path).read_text())
-    if rank is not None:
-        serve_rank(case, rank)
-        return
-    state = setup_case(case)
+    try:
+        if rank is not None:
+            serve_rank(case, rank)
+            return
+        state = setup_case(case)
+    except Unsupported as error:
+        dump(
+            Path(case["result"]).with_suffix(".unsupported.json"),
+            dict(variant=case["variant"], reason=str(error)),
+        )
+        print(f"UNSUPPORTED: {error}", flush=True)
+        raise SystemExit(UNSUPPORTED_EXIT)
     run, validate = state["run"], state["validate"]
     # Warmup and validation are outside warmed timing blocks. Native batch API
     # scheduling and result allocation are included in every measured call.
@@ -584,12 +1432,15 @@ def worker(case_path, rank=None):
     rates = [count / duration for count, duration in zip(counts, durations)]
     result_path = Path(case["result"])
     sample = state["sample"]
-    np.savez_compressed(
-        result_path.with_suffix(".npz"),
-        radial=sample[0],
-        intensity=sample[1],
-        sigma=sample[2] if case["errors"] else np.array([]),
-    )
+    if "save" in state:
+        state["save"](result_path)
+    else:
+        np.savez_compressed(
+            result_path.with_suffix(".npz"),
+            radial=sample[0],
+            intensity=sample[1],
+            sigma=sample[2] if case["errors"] else np.array([]),
+        )
     negative = state["negative_sigma"]
     dump(
         result_path,
@@ -712,7 +1563,8 @@ def extra_lines(output):
     except (OSError, ValueError):
         skipped = []
     for entry in skipped:
-        lines.append(f"SKIPPED {entry['variant']}: {entry['reason']}")
+        name = entry.get("case", entry["variant"])
+        lines.append(f"SKIPPED {name}: {entry['reason']}")
     try:
         environment = json.loads((output / "environment.json").read_text())
     except (OSError, ValueError):
@@ -766,15 +1618,20 @@ def summarize(output):
         "binding",
         "mask_beam_pixel",
         "beam_pixels_added",
+        # 2D (cake) columns; empty for 1D rows.
+        *CSV_2D_FIELDS,
     ]
     for row in rows:
         row.setdefault("processes", 1)
         row.setdefault("workers_per_process", row["workers"])
         row.setdefault("binding", "none")
+        row.setdefault("dimension", "1d")
     with (output / "results.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+    rows_2d = [r for r in rows if r["dimension"] == "2d"]
+    rows = [r for r in rows if r["dimension"] == "1d"]
     numerical = []
     for row in rows:
         if row["workers"] != 1 or row["trial"] != 0:
@@ -859,6 +1716,8 @@ def summarize(output):
                 in_process_stock_check=row.get("stock_azint_bit_identical"),
             )
         )
+    numerical += numerical_2d(rows_2d)
+    identity += azint_identity_2d(rows_2d)
     dump(output / "numerical.json", numerical)
     dump(output / "azint_cached_identity.json", identity)
     lines = [
@@ -875,10 +1734,13 @@ def summarize(output):
         "from a common start to the last process finishing.",
         *azint_build_lines(output),
         *extra_lines(output),
-        "",
-        "| Dataset | Workload | Method | CPU budget | Processes | Errors | Median frames/s | Trials | Numerical status |",
-        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | --- |",
     ]
+    if rows or not rows_2d:
+        lines += [
+            "",
+            "| Dataset | Workload | Method | CPU budget | Processes | Errors | Median frames/s | Trials | Numerical status |",
+            "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | --- |",
+        ]
     keys = ("dataset", "workload", "variant", "workers", "processes", "error_mode")
     groups = sorted({tuple(r[f] for f in keys) for r in rows})
     for key in groups:
@@ -896,7 +1758,250 @@ def summarize(output):
             )
             + " |"
         )
+    lines += summary_2d(rows_2d)
     (output / "summary.md").write_text("\n".join(lines) + "\n")
+
+
+CSV_2D_FIELDS = (
+    "dimension",
+    "n_radial",
+    "n_azimuthal",
+    "subpixels",
+    "dioptrin_2d_path",
+    "uncertainty_support",
+    "table_nnz",
+    "table_nnz_total",
+    "table_nnz_source",
+    "estimated_table_nnz",
+    "estimated_memory_mib",
+    "rss_inputs_mib",
+    "peak_rss_ready_mib",
+    "setup_rss_growth_mib",
+)
+CAKE_KEYS = ("dataset", "workload", "n_radial", "n_azimuthal", "errors")
+
+
+def cake_metrics(a, b):
+    """Compare two cakes (n_azimuthal, n_radial) over bins populated in both.
+
+    Rows 0 and n-1 are the bins on either side of the +-180 degree seam; they
+    are reported separately and excluded from the interior figures.
+    """
+    import numpy as np
+
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    populated_a = np.isfinite(a) & (a != 0)
+    populated_b = np.isfinite(b) & (b != 0)
+    both = populated_a & populated_b
+    seam = np.zeros(a.shape, dtype=bool)
+    seam[[0, -1], :] = True
+
+    def figures(selection):
+        x, y = a[selection], b[selection]
+        if not x.size:
+            return dict(bins=0)
+        relative = np.abs(x - y) / np.abs(y)
+        return dict(
+            bins=int(x.size),
+            relative_l2=float(np.linalg.norm(x - y) / max(np.linalg.norm(y), 1e-300)),
+            bins_over_1pct=int(np.count_nonzero(relative > 0.01)),
+            fraction_over_1pct=float(np.count_nonzero(relative > 0.01) / x.size),
+            max_relative_difference=float(relative.max()),
+            median_ratio=float(np.median(x / y)),
+        )
+
+    return dict(
+        populated_in_both=int(both.sum()),
+        populated_only_in_variant=int((populated_a & ~populated_b).sum()),
+        populated_only_in_reference=int((populated_b & ~populated_a).sum()),
+        all=figures(both),
+        interior=figures(both & ~seam),
+        seam_rows=figures(both & seam),
+    )
+
+
+def numerical_2d(rows):
+    """Cross-library comparison of the first cake of every w1/t0 case.
+
+    Each case is compared with dioptrin-pixel_split (polygon clipping) of the
+    same dataset, workload, cake and error mode, and with its counterpart in
+    COUNTERPARTS_2D (same subpixel count where both have one). Every pair is
+    compared as integrated ("grid": "native"). dioptrin-supersampled cakes sit
+    on their own radial grid; where one side is dioptrin-supersampled, a second
+    entry ("grid": "common") uses its MultiIntegrator cake on the common edges.
+    """
+    import numpy as np
+
+    references = [
+        r for r in rows if r["workers"] == 1 and r["trial"] == 0 and r["processes"] == 1
+    ]
+
+    def load(path):
+        if not path.is_file():
+            return None
+        with np.load(path) as saved:
+            return {key: saved[key] for key in saved.files}
+
+    def cake(row, grid):
+        base = Path(row["result"])
+        if grid == "common":
+            common = load(base.with_suffix(".cake0common.npz"))
+            if common is not None:
+                return common
+        return load(base.with_suffix(".cake0.npz"))
+
+    def find(row, variant):
+        candidates = [
+            r
+            for r in references
+            if r["variant"] == variant and all(r[k] == row[k] for k in CAKE_KEYS)
+        ]
+        same = [r for r in candidates if r.get("subpixels") == row.get("subpixels")]
+        return (same or candidates or [None])[0]
+
+    entries = []
+    for row in references:
+        pairs = [("dioptrin-pixel_split", "reference")]
+        pairs += [
+            (ref, "counterpart") for v, ref in COUNTERPARTS_2D if v == row["variant"]
+        ]
+        for ref_variant, role in pairs:
+            other = find(row, ref_variant)
+            if other is None or other is row:
+                continue
+            grids = ["native"]
+            if "dioptrin-supersampled" in (row["variant"], other["variant"]):
+                grids.append("common")
+            for grid in grids:
+                a, b = cake(row, grid), cake(other, grid)
+                if a is None or b is None:
+                    continue
+                entry = dict(
+                    dimension="2d",
+                    dataset=row["dataset"],
+                    workload=row["workload"],
+                    cake=row["cake"],
+                    variant=row["variant"],
+                    subpixels=row.get("subpixels"),
+                    error_mode=row["error_mode"],
+                    reference=ref_variant,
+                    reference_subpixels=other.get("subpixels"),
+                    comparison=role,
+                    grid=grid,
+                    frame="first distinct frame",
+                    negative_sigma_bins=row.get("negative_sigma_bins", 0),
+                    max_radial_axis_difference_deg=float(
+                        np.max(np.abs(a["radial"] - b["radial"]))
+                    ),
+                    max_azimuth_axis_difference_deg=float(
+                        np.max(np.abs(a["azimuthal"] - b["azimuthal"]))
+                    ),
+                    intensity=cake_metrics(a["intensity"], b["intensity"]),
+                )
+                if a["sigma"].size and b["sigma"].size:
+                    entry["sigma"] = cake_metrics(a["sigma"], b["sigma"])
+                entries.append(entry)
+    return entries
+
+
+def azint_identity_2d(rows):
+    """azint-cached against stock azint for the 2D reference cases (all cakes)."""
+    import numpy as np
+
+    identity = []
+    for row in rows:
+        if row["variant"] != "azint-cached" or row["workers"] != 1 or row["trial"]:
+            continue
+        stock = next(
+            (
+                r
+                for r in rows
+                if r["variant"] == "azint"
+                and r["workers"] == 1
+                and r["trial"] == 0
+                and r.get("subpixels") == row.get("subpixels")
+                and all(r[k] == row[k] for k in CAKE_KEYS)
+            ),
+            None,
+        )
+        paths = [Path(r["result"]).with_suffix(".npz") for r in (row, stock or row)]
+        if stock is None or not all(p.is_file() for p in paths):
+            continue
+        with np.load(paths[0]) as a, np.load(paths[1]) as b:
+            bits = {
+                key + "_bit_identical": same_bits(a[key], b[key])
+                for key in ("intensity", "sigma")
+                if row["errors"] or key == "intensity"
+            }
+        identity.append(
+            dict(
+                dimension="2d",
+                cake=row["cake"],
+                subpixels=row.get("subpixels"),
+                **{
+                    k: row[k]
+                    for k in ("dataset", "workload", "workers", "error_mode", "trial")
+                },
+                **bits,
+                in_process_stock_check=row.get("stock_azint_bit_identical"),
+            )
+        )
+    return identity
+
+
+def summary_2d(rows):
+    import numpy as np
+
+    if not rows:
+        return []
+    lines = [
+        "",
+        "## 2D cakes",
+        "",
+        "chi in [-180, 180) degrees, the fixture's 2theta range, same mask and",
+        "corrections for every library. First = time to the first cake (setup,",
+        "table construction); ready = all workers built and warmed. Peak RSS at ready",
+        "is sampled before validation references are read. nnz: stored table weights",
+        "per engine where the library exposes them (pyFAI), else the estimate (~).",
+        "",
+        "| Dataset | Workload | Cake | Method | Subpixels | CPU budget | Processes | Errors | "
+        "Median frames/s | First s | Ready s | Peak RSS ready MiB | nnz | Trials | Numerical status |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    keys = (
+        "dataset",
+        "workload",
+        "cake",
+        "variant",
+        "subpixels",
+        "workers",
+        "processes",
+        "error_mode",
+    )
+    groups = sorted(
+        {tuple(r.get(f) for f in keys) for r in rows},
+        key=lambda k: tuple("" if v is None else str(v).zfill(8) for v in k),
+    )
+    for key in groups:
+        members = [r for r in rows if tuple(r.get(f) for f in keys) == key]
+        median = lambda field: float(np.median([r[field] for r in members]))  # noqa: E731
+        nnz = members[0].get("table_nnz")
+        nnz = f"{nnz:,}" if nnz else f"~{members[0].get('estimated_table_nnz', 0):,.0f}"
+        status = ", ".join(
+            sorted({r.get("numerical_status", "unchecked") for r in members})
+        )
+        values = (
+            *("-" if v is None else v for v in key),
+            round(median("frames_per_s"), 2),
+            round(median("setup_first_s"), 2),
+            round(median("setup_ready_s"), 2),
+            round(median("peak_rss_ready_mib")),
+            nnz,
+            len(members),
+            status,
+        )
+        lines.append("| " + " | ".join(map(str, values)) + " |")
+    return lines
 
 
 def numa_nodes():
@@ -1047,6 +2152,16 @@ def run_processes(case, case_path, env, prefixes):
     )
     for key in ("local_frames", "local_distinct_frames", "cpu_affinity"):
         record.pop(key, None)
+    # 2D memory and table sizes: every process holds its own frames and tables.
+    for key in (
+        "rss_inputs_mib",
+        "peak_rss_ready_mib",
+        "setup_rss_growth_mib",
+        "table_nnz_total",
+    ):
+        if all(r.get(key) is not None for r in ranks):
+            record[key] = sum(r[key] for r in ranks)
+            record[key + "_per_process"] = [r[key] for r in ranks]
     dump(case["result"], record)
     return summary_line(
         case,
@@ -1186,16 +2301,66 @@ def main():
     parser.add_argument("--trials", type=int)
     parser.add_argument("--blocks", type=int)
     parser.add_argument("--seconds", type=float)
+    parser.add_argument(
+        "--dimensions",
+        nargs="+",
+        choices=("1d", "2d"),
+        default=["1d"],
+        help="1d (default): azimuthal integration to 1D patterns; 2d: cakes "
+        "(radial x azimuthal); both may be given",
+    )
+    parser.add_argument(
+        "--cakes",
+        nargs="+",
+        default=list(DEFAULT_CAKES),
+        help="2D cake sizes RADIALxAZIMUTHAL (chi -180..180 deg). Default: "
+        + " ".join(DEFAULT_CAKES),
+    )
+    parser.add_argument(
+        "--subpixels",
+        nargs="+",
+        type=int,
+        default=list(DEFAULT_SUBPIXELS_2D),
+        help="2D subpixels per side for dioptrin-supersampled, azint and "
+        "azint-cached; several values give one case each. Default: 10. "
+        "1D cases keep the per-dataset n_splitting",
+    )
+    parser.add_argument(
+        "--dioptrin-2d-path",
+        choices=DIOPTRIN_2D_PATHS,
+        default="sequential",
+        help="Dioptrin 2D multi-core path: sequential (default) integrates one "
+        "frame at a time with Integrator.integrate2d, whose sparse product is "
+        "row-parallel over the Rayon pool; stream uses batch2d_iter over the "
+        "array list (frame-parallel, copies each frame)",
+    )
+    parser.add_argument(
+        "--max-memory-fraction",
+        type=float,
+        default=0.7,
+        help="Skip 2D cases whose estimated peak memory exceeds this fraction of "
+        "RAM (or of the cgroup limit). Default: 0.7",
+    )
     parser.add_argument("--list-datasets", action="store_true")
     parser.add_argument("--case", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--probe", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--preflight-2d", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.case:
         worker(args.case, args.rank)
         return
     if args.probe:
         probe(args.opencl_device)
+        return
+    if args.preflight_2d:
+        preflight_2d(
+            args.preflight_2d,
+            args.cakes,
+            args.subpixels,
+            args.variants,
+            args.preflight_2d / "preflight2d.json",
+        )
         return
     if args.list_datasets:
         print(json.dumps(definition, indent=2))
@@ -1211,6 +2376,15 @@ def main():
     for key in ("bins", "frames", "trials", "blocks", "seconds"):
         if getattr(args, key) <= 0 or not math.isfinite(getattr(args, key)):
             parser.error(f"--{key} must be positive and finite")
+    try:
+        cakes = [parse_cake(c) for c in args.cakes]
+    except ValueError as error:
+        parser.error(str(error))
+    args.cakes = [f"{r}x{a}" for r, a in cakes]
+    if min(args.subpixels) < 1:
+        parser.error("--subpixels must be positive")
+    if not 0 < args.max_memory_fraction <= 1:
+        parser.error("--max-memory-fraction must be in (0, 1]")
     available = (
         len(os.sched_getaffinity(0))
         if hasattr(os, "sched_getaffinity")
@@ -1364,6 +2538,9 @@ def main():
             },
             build_verification_problems=build_problems,
             module_paths=module_paths,
+            total_memory_mib=round(total_memory_bytes() / 2**20, 1),
+            memory_model_2d=MEMORY_MODEL,
+            uncertainty_support_2d=UNCERTAINTY_2D,
         ),
     )
     (output / "datasets.json").write_bytes(MANIFEST.read_bytes())
@@ -1388,102 +2565,314 @@ def main():
                 flush=True,
             )
     failures = []
+    memory_limit = args.max_memory_fraction * total_memory_bytes() / 2**20
+    preflights = {}
+    if "2d" in args.dimensions:
+        for dataset in args.datasets:
+            print(
+                f"2D preflight for {dataset} (azimuth convention, axes, estimates)...",
+                flush=True,
+            )
+            budget = str(max(workers))
+            log_path = output / dataset / "preflight2d.log"
+            with log_path.open("w") as log:
+                code = subprocess.run(
+                    [
+                        sys.executable,
+                        "-E",
+                        "-s",
+                        __file__,
+                        "--preflight-2d",
+                        str(output / dataset),
+                        "--cakes",
+                        *args.cakes,
+                        "--subpixels",
+                        *map(str, args.subpixels),
+                        "--variants",
+                        *variants_run,
+                    ],
+                    env=os.environ
+                    | case_threads("dioptrin-pixel_split", 1)
+                    | {"RAYON_NUM_THREADS": budget, "OMP_NUM_THREADS": budget},
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                ).returncode
+            if code:
+                failures.append(dict(case=f"{dataset}-2d-preflight", exit_code=code))
+                print(f"FAILED: 2D preflight for {dataset}; see {log_path}", flush=True)
+                continue
+            preflight = json.loads((output / dataset / "preflight2d.json").read_text())
+            convention = preflight["convention"]
+            print(
+                f"{dataset}: azimuth convention "
+                + ("agrees" if convention["passed"] else "DISAGREES")
+                + " ("
+                + ", ".join(
+                    f"{k} {'ok' if v['passed'] else 'FAILED'}"
+                    for k, v in convention["libraries"].items()
+                )
+                + ")",
+                flush=True,
+            )
+            if not convention["passed"]:
+                failures.append(
+                    dict(
+                        case=f"{dataset}-2d-convention",
+                        reason="azimuth convention check failed; see preflight2d.json",
+                    )
+                )
+                continue
+            preflights[dataset] = preflight
+        dump(output / "failures.json", failures)
+
+    def skip(label, variant, reason, **extra):
+        skipped.append(dict(case=label, variant=variant, reason=reason, **extra))
+        dump(output / "skipped.json", skipped)
+        print(f"SKIPPED {label}: {reason}", flush=True)
+
+    def execute(label, case, case_path):
+        """Run one case (fresh process, or coordinated processes) and record it."""
+        processes = case["processes"]
+        dump(case_path, case)
+        env = os.environ | case["threads"]
+        log_path = case_path.with_suffix(".log")
+        if processes > 1:
+            try:
+                line = run_processes(case, case_path, env, bindings[processes])
+                log_path.write_text(line + "\n")
+                code = 0
+            except Exception as error:
+                log_path.write_text(f"{error!r}\n")
+                code = 1
+        else:
+            with log_path.open("w") as log:
+                code = subprocess.run(
+                    [
+                        sys.executable,
+                        "-E",
+                        "-s",
+                        __file__,
+                        "--case",
+                        str(case_path),
+                    ],
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                ).returncode
+        unsupported = Path(case["result"]).with_suffix(".unsupported.json")
+        if code == UNSUPPORTED_EXIT and unsupported.is_file():
+            reason = json.loads(unsupported.read_text())["reason"]
+            skip(label, case["variant"], f"unsupported: {reason}")
+        elif code:
+            failures.append(dict(case=label, exit_code=code))
+            print(
+                f"FAILED: {label}; see {log_path}",
+                flush=True,
+            )
+        else:
+            print(log_path.read_text().strip(), flush=True)
+        summarize(output)
+        dump(output / "failures.json", failures)
+
+    def base_case(dataset, workload, variant, count, processes, errors, trial):
+        beam = metadata[dataset].get("beam_pixel_mask")
+        return dict(
+            dataset=dataset,
+            workload=workload,
+            variant=variant,
+            workers=count,
+            errors=errors,
+            error_mode="poisson" if errors else "intensity",
+            trial=trial,
+            fixture=str(output / dataset),
+            frames=((max(args.frames, count) + count - 1) // count) * count,
+            bins=args.bins,
+            blocks=args.blocks,
+            seconds=args.seconds,
+            processes=processes,
+            workers_per_process=count // processes,
+            binding=args.bind if processes > 1 else "none",
+            mask_beam_pixel=args.mask_beam_pixel,
+            beam_pixels_added=len(beam["pixels"]) - len(beam["already_masked"])
+            if beam
+            else 0,
+            opencl_device=args.opencl_device,
+        )
+
+    opencl_2d = (probes.get("opencl") or {}).get("available_2d", False)
     for trial in range(args.trials):
         variants = variants_run if trial % 2 == 0 else list(reversed(variants_run))
         for dataset in args.datasets:
-            beam = metadata[dataset].get("beam_pixel_mask")
             for workload in args.workloads:
                 if workload == "frames" and metadata[dataset]["distinct_frames"] < 2:
                     continue
-                for count in workers:
-                    for processes in process_counts:
-                        if processes > count or count % processes:
-                            continue
-                        for errors in (False, True):
-                            for variant in variants:
-                                if variant in GPU_VARIANTS and (
-                                    count > 1 or processes > 1
-                                ):
-                                    continue  # one host thread drives the device
-                                suffix = f"{dataset}-{workload}-{variant}"
-                                mode = "poisson" if errors else "intensity"
-                                split = f"-p{processes}" if processes > 1 else ""
-                                label = f"{suffix}-w{count}{split}-{mode}-t{trial}"
-                                case_path = output / "cases" / f"{label}.json"
-                                case = dict(
-                                    dataset=dataset,
-                                    workload=workload,
-                                    variant=variant,
-                                    workers=count,
-                                    errors=errors,
-                                    error_mode=mode,
-                                    trial=trial,
-                                    fixture=str(output / dataset),
-                                    frames=(
-                                        (max(args.frames, count) + count - 1) // count
+                if "1d" in args.dimensions:
+                    for count in workers:
+                        for processes in process_counts:
+                            if processes > count or count % processes:
+                                continue
+                            for errors in (False, True):
+                                for variant in variants:
+                                    if variant in GPU_VARIANTS and (
+                                        count > 1 or processes > 1
+                                    ):
+                                        continue  # one host thread drives the device
+                                    suffix = f"{dataset}-{workload}-{variant}"
+                                    mode = "poisson" if errors else "intensity"
+                                    split = f"-p{processes}" if processes > 1 else ""
+                                    label = f"{suffix}-w{count}{split}-{mode}-t{trial}"
+                                    case_path = output / "cases" / f"{label}.json"
+                                    case = base_case(
+                                        dataset,
+                                        workload,
+                                        variant,
+                                        count,
+                                        processes,
+                                        errors,
+                                        trial,
                                     )
-                                    * count,
-                                    bins=args.bins,
-                                    blocks=args.blocks,
-                                    seconds=args.seconds,
-                                    result=str(case_path.with_suffix(".result.json")),
-                                    processes=processes,
-                                    workers_per_process=count // processes,
-                                    binding=args.bind if processes > 1 else "none",
-                                    mask_beam_pixel=args.mask_beam_pixel,
-                                    beam_pixels_added=len(beam["pixels"])
-                                    - len(beam["already_masked"])
-                                    if beam
-                                    else 0,
-                                    opencl_device=args.opencl_device,
-                                )
-                                if count > 1 or trial > 0:
-                                    case["reference"] = str(
-                                        output
-                                        / "cases"
-                                        / f"{suffix}-w1-{mode}-t0.result.npz"
+                                    case["result"] = str(
+                                        case_path.with_suffix(".result.json")
                                     )
-                                case["threads"] = case_threads(
-                                    variant, count, processes
-                                )
-                                dump(case_path, case)
-                                env = os.environ | case["threads"]
-                                log_path = case_path.with_suffix(".log")
-                                if processes > 1:
-                                    try:
-                                        line = run_processes(
-                                            case, case_path, env, bindings[processes]
+                                    if count > 1 or trial > 0:
+                                        case["reference"] = str(
+                                            output
+                                            / "cases"
+                                            / f"{suffix}-w1-{mode}-t0.result.npz"
                                         )
-                                        log_path.write_text(line + "\n")
-                                        code = 0
-                                    except Exception as error:
-                                        log_path.write_text(f"{error!r}\n")
-                                        code = 1
-                                else:
-                                    with log_path.open("w") as log:
-                                        code = subprocess.run(
-                                            [
-                                                sys.executable,
-                                                "-E",
-                                                "-s",
-                                                __file__,
-                                                "--case",
-                                                str(case_path),
-                                            ],
-                                            env=env,
-                                            stdout=log,
-                                            stderr=subprocess.STDOUT,
-                                        ).returncode
-                                if code:
-                                    failures.append(dict(case=label, exit_code=code))
-                                    print(
-                                        f"FAILED: {label}; see {log_path}",
-                                        flush=True,
+                                    case["threads"] = case_threads(
+                                        variant, count, processes
                                     )
-                                else:
-                                    print(log_path.read_text().strip(), flush=True)
-                                summarize(output)
-                                dump(output / "failures.json", failures)
+                                    execute(label, case, case_path)
+                if "2d" not in args.dimensions or dataset not in preflights:
+                    continue
+                preflight = preflights[dataset]
+                for cake in args.cakes:
+                    n_radial, n_azimuthal = parse_cake(cake)
+                    for count in workers:
+                        for processes in process_counts:
+                            if processes > count or count % processes:
+                                continue
+                            for errors in (False, True):
+                                for variant in variants:
+                                    if variant in GPU_VARIANTS and (
+                                        count > 1 or processes > 1
+                                    ):
+                                        continue
+                                    counts = (
+                                        args.subpixels
+                                        if variant in SUBPIXEL_VARIANTS
+                                        else [None]
+                                    )
+                                    for subpixels in counts:
+                                        ss = f"-ss{subpixels}" if subpixels else ""
+                                        suffix = f"{dataset}-{workload}-2d-{cake}-{variant}{ss}"
+                                        mode = "poisson" if errors else "intensity"
+                                        split = (
+                                            f"-p{processes}" if processes > 1 else ""
+                                        )
+                                        label = (
+                                            f"{suffix}-w{count}{split}-{mode}-t{trial}"
+                                        )
+                                        case_path = output / "cases" / f"{label}.json"
+                                        case = base_case(
+                                            dataset,
+                                            workload,
+                                            variant,
+                                            count,
+                                            processes,
+                                            errors,
+                                            trial,
+                                        )
+                                        method = variant.removeprefix("dioptrin-")
+                                        case.update(
+                                            dimension="2d",
+                                            bins=n_radial * n_azimuthal,
+                                            cake=cake,
+                                            n_radial=n_radial,
+                                            n_azimuthal=n_azimuthal,
+                                            subpixels=subpixels,
+                                            azimuth_range_deg=list(AZIMUTH_RANGE_DEG),
+                                            radial_range_2d=preflight[
+                                                "radial_range_2d"
+                                            ],
+                                            dioptrin_2d_path=args.dioptrin_2d_path
+                                            if variant.startswith("dioptrin-")
+                                            else None,
+                                            result=str(
+                                                case_path.with_suffix(".result.json")
+                                            ),
+                                        )
+                                        if variant.startswith("dioptrin-"):
+                                            key = method + (
+                                                f"-ss{subpixels}" if subpixels else ""
+                                            )
+                                            case["dioptrin_radial_axis"] = preflight[
+                                                "dioptrin_radial_axes"
+                                            ][key][str(n_radial)]
+                                        case.update(
+                                            estimate_memory_mib(
+                                                case,
+                                                metadata[dataset],
+                                                preflight["table_estimates"],
+                                            ),
+                                            memory_limit_mib=round(memory_limit, 1),
+                                        )
+                                        if count > 1 or trial > 0 or processes > 1:
+                                            case["reference"] = str(
+                                                output
+                                                / "cases"
+                                                / f"{suffix}-w1-{mode}-t0.result.npz"
+                                            )
+                                        if (
+                                            variant.startswith("azint")
+                                            and n_azimuthal % 2
+                                        ):
+                                            skip(
+                                                label,
+                                                variant,
+                                                "azint bins azimuth on [0, 360); mapping its rows "
+                                                "onto [-180, 180) needs an even n_azimuthal",
+                                            )
+                                            continue
+                                        if (
+                                            variant == "pyfai-full-opencl"
+                                            and not opencl_2d
+                                        ):
+                                            skip(
+                                                label,
+                                                variant,
+                                                "no pyFAI 2D OpenCL CSR method",
+                                            )
+                                            continue
+                                        if case["estimated_memory_mib"] > memory_limit:
+                                            skip(
+                                                label,
+                                                variant,
+                                                f"estimated peak memory {case['estimated_memory_mib']:.0f} MiB "
+                                                f"exceeds {args.max_memory_fraction:g} of RAM "
+                                                f"({memory_limit:.0f} MiB)",
+                                                estimated_memory_mib=case[
+                                                    "estimated_memory_mib"
+                                                ],
+                                                memory_limit_mib=round(memory_limit, 1),
+                                            )
+                                            continue
+                                        if (
+                                            case.get("reference")
+                                            and not Path(case["reference"]).is_file()
+                                        ):
+                                            skip(
+                                                label,
+                                                variant,
+                                                "its one-worker reference case did not run "
+                                                "(skipped, unsupported or failed)",
+                                            )
+                                            continue
+                                        case["threads"] = case_threads(
+                                            variant, count, processes
+                                        )
+                                        execute(label, case, case_path)
     if failures:
         raise SystemExit(
             f"{len(failures)} cases failed; partial results and inputs retained in {output}"
@@ -1492,6 +2881,10 @@ def main():
         for dataset in args.datasets:
             for filename in ("frames.npy", "mask.npy"):
                 (output / dataset / filename).unlink()
+        # Full 2D reference stacks (every distinct cake) only serve the
+        # self-checks; numerical.json uses the *.cake0.npz files, which stay.
+        for path in (output / "cases").glob("*-2d-*.result.npz"):
+            path.unlink()
     print(f"Results: {output / 'summary.md'}", flush=True)
 
 

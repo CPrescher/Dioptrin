@@ -341,6 +341,149 @@ pixel; `results.csv` adds `mask_beam_pixel` and `beam_pixels_added`. Compare
 pyFAI full CSR (Cython) returns negative sigma in the second bin of every frame;
 masking the PONI pixel leaves it, masking the direct-beam pixel removes it.
 
+### 2D cakes
+
+`--dimensions 2d` (or `1d 2d`; the default is `1d`) measures azimuthally
+resolved integration ("cakes") with the same fresh-process runner, workloads,
+CPU budgets, `--processes`/`--bind`, `--mask-beam-pixel`, trials and
+self-checks. Each case integrates onto `n_radial` x `n_azimuthal` bins;
+`--cakes` selects the sizes (default `2000x360 1000x72`), always over the full
+azimuth, chi in [-180, 180) degrees (pyFAI's convention, seam at +-180).
+
+| Variant | 2D call | Uncertainties |
+| --- | --- | --- |
+| `dioptrin-pixel_split`, `-pyfai_full`, `-supersampled` | `Integrator.integrate2d(frame, n_radial, n_azimuthal, errors, azimuthal_range=(-pi, pi))` | native |
+| `pyfai-full`, `pyfai-bbox`, `pyfai-full-omp`, `pyfai-full-opencl` | `integrate2d(..., radial_range, azimuth_range=(-180, 180), method=(split, "csr", impl))`, exact method, no fallback | native (`error_model="poisson"`) |
+| `azint`, `azint-cached` | `AzimuthalIntegrator(..., azimuth_bins=linspace(0, 360, n+1))`, rows relabelled onto [-180, 180) | computed, but see below |
+
+Threads per variant are those of the 1D table. Dioptrin's in-memory 2D path
+is chosen with `--dioptrin-2d-path`:
+
+- `sequential` (default): one frame at a time through `integrate2d`, whose
+  sparse product runs row-parallel on the Rayon pool (`RAYON_NUM_THREADS` =
+  CPU budget), like `pyfai-full-omp` but without copies. `integrate2d` holds
+  the GIL, so Python frame threads would serialise; `batch2d` takes TIFF paths
+  only.
+- `stream`: `batch2d_iter` over the list of arrays with `num_workers` = budget,
+  `num_threads=1` (frame-parallel). The stream copies every frame once, in one
+  producer thread, before integrating it; on large detectors this copy limits
+  throughput at higher budgets.
+
+pyFAI builds one CSR engine per frame thread, sequentially during set-up, as in
+1D; its "ready" time therefore grows with the budget. azint frame threads share
+one sparse matrix.
+
+**Same grid for every library.** Radial edges are `n_radial` equal bins between
+the extremes of the pixel-corner 2theta (`preflight2d.json`, `radial_range_2d`).
+Dioptrin's `Integrator` honours `radial_range` in 2D only for `pyfai_full`;
+`pixel_split` always uses these corner extremes, so they are the common grid
+(pyFAI and azint get them explicitly; the 1D cases keep their own range, which
+starts at 0). `supersampled` also ignores `radial_range` in 2D and uses its own
+default edges (the extremes of the subpixel hull and pixel centres), which are
+different (on Pilatus the lower edge differs by 0.013 degrees, most of a
+2000-bin width). Its timed cakes are therefore on their own radial grid,
+reported in `numerical.json` as `max_radial_axis_difference_deg`. For the
+numerical comparison only, its one-worker reference case also integrates the
+first frame, after timing, with `MultiIntegrator([integrator])`, which takes
+explicit edges, onto the common grid (`*.cake0common.npz`, entries with
+`"grid": "common"`). The preflight checks that `MultiIntegrator` reproduces
+`Integrator.integrate2d` where both use the same edges (`pixel_split`;
+`multiintegrator_check` in `preflight2d.json`; to within 4e-11 relative on
+the smoke datasets). Dioptrin 2D results carry no radial axis; the preflight reads each
+method's actual edges from its 1D default grid, which follows the same rule.
+
+**Subpixels.** `--subpixels` sets the subpixels per side for
+`dioptrin-supersampled`, `azint` and `azint-cached` in 2D (default 10; several
+values give one case each, e.g. `--subpixels 5 10 20`). The value is in every
+case record and in the `subpixels` column; 1D cases keep the per-dataset
+`n_splitting`.
+
+**Azimuth convention.** Before any 2D case, a fresh preflight process per
+dataset integrates an asymmetric chi pattern (100 counts for 20 < chi < 80
+degrees, 30 for -150 < chi < -120, 1 elsewhere; pyFAI's chi) with every
+requested library onto a 100 x 36 cake, divides by the cake of a flat image and
+requires the bright, medium and dark rows of every library to be where pyFAI
+puts them, with matching azimuthal bin centres. A mirrored, rotated or flipped
+cake fails, and then no 2D case of that dataset runs. azint measures azimuth on
+[0, 360) with the same sign as pyFAI's chi; the harness gives it 0..360 edges
+and rolls its rows by `n_azimuthal / 2`, which is exact for subpixel sampling
+(no seam) but needs an even `n_azimuthal` (odd sizes are skipped for azint).
+The result is in `<dataset>/preflight2d.json` (`convention`).
+
+**Uncertainties.** All three libraries return 2D Poisson uncertainties. azint's
+pinned `azint.py` divides the 2D sigma by the normalisation twice
+(`errors = sqrt(var)/norm`, then `errors_2d = errors/norm`), so its 2D sigma is
+timed as azint computes it but is not comparable; `uncertainty_support` records
+this. A library that returned no 2D sigma would be recorded as `unsupported` in
+`skipped.json`, not run without errors.
+
+**Columns and outputs.** `results.csv` appends `dimension`, `n_radial`,
+`n_azimuthal`, `subpixels`, `dioptrin_2d_path`, `uncertainty_support`,
+`table_nnz`, `table_nnz_total`, `table_nnz_source`, `estimated_table_nnz`,
+`estimated_memory_mib`, `rss_inputs_mib`, `peak_rss_ready_mib` and
+`setup_rss_growth_mib` (empty for 1D rows; 1D columns and variant names are
+unchanged). `setup_first_s` is the time to the first cake (import, set-up and
+table construction) and `setup_ready_s` the time until every worker is built
+and warmed. `peak_rss_ready_mib` is the peak RSS when all workers are ready,
+before any validation reference is read; `peak_rss_mib` is the process-lifetime
+peak; `setup_rss_growth_mib` is the peak growth from the loaded inputs to ready.
+`table_nnz` is the number of stored weights per engine where the library exposes
+it (pyFAI `engine.nnz`; `table_nnz_total` sums all engines); Dioptrin and azint
+do not expose it, and `estimated_table_nnz` is then the estimate below.
+`summary.md` has a "2D cakes" table.
+
+**Numerical checks.** Every output cake, in order, is checked against the
+same variant's one-worker reference before and after timing, as in 1D
+(`azint-cached` is also checked bit for bit against stock azint). The first
+cake of every one-worker case goes to `cases/*.cake0.npz`, and `numerical.json`
+gets one entry (`"dimension": "2d"`) per case and reference: against
+`dioptrin-pixel_split` (polygon clipping), and against a counterpart
+(`pyfai-full` vs `dioptrin-pyfai_full`, `azint` vs `dioptrin-supersampled`,
+OpenMP/OpenCL pyFAI vs `pyfai-full`). Each reports the axis differences, the
+bins populated in both or only one, and for intensity and sigma the relative L2
+difference, the number and fraction of bins differing by more than 1 %, the
+maximum relative difference and the median ratio, separately for all bins, the
+interior rows and the two rows next to the +-180 degree seam. Differences
+between splitting rules are reported, not corrected: pyFAI full splitting
+differs from polygon clipping at azimuthal bin edges and at the seam, and azint
+averages corrected pixels (about 1-2 % different with polarization). The full
+per-frame reference stacks are deleted after a successful run unless
+`--keep-inputs`; the `cake0` files stay.
+
+**Memory gate.** 2D tables are large, and pyFAI holds one per frame thread.
+Before launching a 2D case the runner estimates its peak memory (per process:
+interpreter and libraries, frames, per-pixel geometry arrays, one table per
+engine including construction temporaries, two batches of results, the
+validation reference) and skips it, with the estimate and limit in
+`skipped.json` and `summary.md`, if it exceeds `--max-memory-fraction` (default
+0.7) of physical RAM, or of a smaller cgroup limit. Table sizes are estimated
+from the pixel-corner spans in 2theta and chi (`preflight2d.json`,
+`table_estimates`): per pixel, (span/bin width + 1) radially times azimuthally,
+capped at subpixels^2 for subpixel sampling; on Pilatus 1M and Eiger 4M this
+matched pyFAI's `engine.nnz` to within 0.1 %. Model constants are in
+`MEMORY_MODEL` (compare.py) and `environment.json`, calibrated on the Pilatus
+and Eiger 4M smoke runs so that the estimate exceeds the measured peak RSS by
+roughly 1.1-1.6x; each case records `estimated_memory_mib` next to its measured
+peak. On the Eiger 9M subset the largest estimate at the laptop budgets is
+pyFAI full CSR, 2000 x 360 with Poisson errors and the 32-frame workload: about
+13 GiB at 8 frame threads (one 2D table per thread), against 7 GiB for Dioptrin
+and azint at any budget, so nothing is skipped on a 48 GB machine at the
+default 0.7. The per-dataset preflight itself is not gated; on the Eiger 9M
+subset it peaks at about 7.5 GB. Cases whose one-worker reference did not run
+are skipped with that reason.
+
+Laptop run, 2D, pilatus and both subsets, five trials:
+
+```bash
+SUBSETS=/path/to/subsets
+.venv-benchmark/bin/python benchmarks/comparison/compare.py \
+  --datasets pilatus eiger9m-subset eiger4m-subset --subset-dir "$SUBSETS" \
+  --dimensions 2d --cakes 2000x360 1000x72 --subpixels 10 --trials 5
+```
+
+(`--workloads` defaults to both; pilatus has only `repeated`. Add
+`--allow-unverified-build` only for a deliberately stale build.)
+
 Every case runs in a fresh process. Method order alternates between trials.
 Every output frame, including its order, is checked against the same backend's
 one-worker reference before and after timing. One-worker references are always
@@ -356,9 +499,9 @@ clone because the library does not track Cargo.lock; Python build/transitive
 dependencies also float within their constraints. For an exact environment
 replay, reuse the saved Cargo.lock and Python freeze alongside the same source
 and compiler. The default recipe fixes core versions and inputs, not every
-transitive dependency across future dates. This suite measures in-memory 1D integration
-(CPU, plus pyFAI's OpenCL CSR where available); it does not assess 2D caking,
-decompression, or file-reading performance.
+transitive dependency across future dates. This suite measures in-memory 1D
+integration and, with `--dimensions 2d`, 2D cakes (CPU, plus pyFAI's OpenCL CSR
+where available); it does not assess decompression or file-reading performance.
 
 ## Maxwell Slurm wrapper
 
@@ -468,6 +611,23 @@ sbatch benchmarks/comparison/maxwell.sbatch --datasets eiger9m-subset eiger4m-su
   --processes 1,2,4 --bind numa --mask-beam-pixel direct \
   --variants dioptrin-pixel_split dioptrin-supersampled dioptrin-pyfai_full \
              azint azint-cached pyfai-full pyfai-bbox pyfai-full-omp
+```
+
+The 2D equivalent on a CPU node passes the same options through. One job per
+dataset keeps each job's wall time bounded. 2D set-up is long, and pyFAI
+builds one 2D table per frame thread in sequence (a few seconds each for the
+Eiger 9M subset, so minutes per case at 96 threads, for every error mode, cake
+and trial), so raise the time limit, or run the `pyfai-full`/`pyfai-bbox`
+Python-thread rows in a separate job with fewer budgets:
+
+```bash
+for DATASET in pilatus eiger9m-subset eiger4m-subset; do
+  sbatch --time=24:00:00 benchmarks/comparison/maxwell.sbatch --datasets "$DATASET" \
+    --subset-dir "$SUBSETS" --dimensions 2d --cakes 2000x360 1000x72 --subpixels 10 \
+    --trials 5 --workers 1,2,4,8,12,24,48,96 --processes 1,2,4 --bind numa \
+    --variants dioptrin-pixel_split dioptrin-supersampled dioptrin-pyfai_full \
+               azint azint-cached pyfai-full pyfai-bbox pyfai-full-omp
+done
 ```
 
 A GPU node needs `WITH_OPENCL=1` (pyopencl in a separate cached environment),
