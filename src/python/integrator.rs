@@ -215,6 +215,67 @@ pub(super) fn resolve_azimuthal_bins(
     }
 }
 
+/// Binning of one Python 2D call, after its arguments were resolved.
+#[derive(Clone, Copy)]
+struct Bins2d {
+    n_radial: usize,
+    n_azimuthal: usize,
+    errors: bool,
+    azimuthal_range: Option<(f64, f64)>,
+}
+
+/// Integrate one image to 2D as `Integrator.integrate2d` does, without
+/// touching Python: callers run it detached from the interpreter. `radial`
+/// is the radial axis to report for an explicit radial range. Invalid input
+/// on an azimuthal range is returned as `Err`.
+fn integrate2d_slice(
+    integrator: &Integrator,
+    data: &[f64],
+    dim1: usize,
+    dim2: usize,
+    bins: Bins2d,
+    radial: Option<Vec<f64>>,
+) -> Result<PyIntegrationResult, String> {
+    let Bins2d {
+        n_radial,
+        n_azimuthal,
+        errors,
+        azimuthal_range,
+    } = bins;
+    Ok(match (errors, azimuthal_range) {
+        (false, None) => PyIntegrationResult::from_2d(
+            integrator.integrate2d_from_slice(data, dim1, dim2, n_radial, n_azimuthal),
+            n_radial,
+            n_azimuthal,
+        )
+        .with_radial(radial),
+        (true, None) => {
+            let (intensity, errs) = integrator.integrate2d_with_errors_from_slice(
+                data,
+                dim1,
+                dim2,
+                n_radial,
+                n_azimuthal,
+            );
+            PyIntegrationResult::from_2d_with_errors(intensity, errs, n_radial, n_azimuthal)
+                .with_radial(radial)
+        }
+        (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
+            integrator.integrate2d_on_azimuthal_range_from_slice(
+                data,
+                dim1,
+                dim2,
+                n_radial,
+                n_azimuthal,
+                range,
+                errors,
+            )?,
+            n_radial,
+            n_azimuthal,
+        ),
+    })
+}
+
 fn parse_mask_mode(value: &str) -> PyResult<MaskMode> {
     match value {
         "fixed" => Ok(MaskMode::Fixed),
@@ -784,6 +845,12 @@ impl PyIntegrator {
     /// `result.radial` holds their centres; otherwise `radial` is None without
     /// `azimuthal_range`.
     ///
+    /// The GIL is released while a TIFF loads and while the image is integrated,
+    /// so other Python threads run meanwhile (one Integrator per thread: an
+    /// Integrator cannot be shared between threads). A NumPy input is borrowed
+    /// read-only, without copying, for the duration of the call and must not be
+    /// mutated concurrently.
+    ///
     /// # Errors
     ///
     /// Raises `ValueError` if the integrator uses the Histogram method, which has
@@ -799,9 +866,11 @@ impl PyIntegrator {
     ///     "pattern.tif", n_radial=100, n_azimuthal=90, azimuthal_range=(0, 1.57), errors=True
     /// )
     /// ```
+    #[allow(clippy::too_many_arguments)] // Python keyword options plus the GIL token.
     #[pyo3(signature = (image, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, *, azimuthal_bracket=None))]
     fn integrate2d(
         &self,
+        py: Python<'_>,
         image: ImageInput,
         n_radial: usize,
         n_azimuthal: Option<usize>,
@@ -815,46 +884,34 @@ impl PyIntegrator {
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
         check_positive("n_azimuthal", n_azimuthal)?;
         let radial = self.radial_axis_2d(n_radial)?;
+        let integrator = &*self.integrator;
+        let bins = Bins2d {
+            n_radial,
+            n_azimuthal,
+            errors,
+            azimuthal_range,
+        };
+        // The GIL is released while the TIFF loads and while the image is
+        // integrated; only plain Rust data crosses into the detached regions.
         match image {
             ImageInput::Path(tiff_path) => {
-                let frame = Frame::from_tiff(tiff_path).map_err(|err| {
-                    PyValueError::new_err(format!("Failed to load TIFF: {}", err))
-                })?;
+                let frame = py
+                    .detach(|| Frame::from_tiff(tiff_path).map_err(|err| err.to_string()))
+                    .map_err(|err| {
+                        PyValueError::new_err(format!("Failed to load TIFF: {}", err))
+                    })?;
                 self.check_mask((frame.dim1, frame.dim2), "image")?;
-
-                let result = match (errors, azimuthal_range) {
-                    (false, None) => {
-                        let intensity = self.integrator.integrate2d(&frame, n_radial, n_azimuthal);
-                        PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
-                            .with_radial(radial.clone())
-                    }
-                    (true, None) => {
-                        let (intensity, errs) =
-                            self.integrator
-                                .integrate2d_with_errors(&frame, n_radial, n_azimuthal);
-                        PyIntegrationResult::from_2d_with_errors(
-                            intensity,
-                            errs,
-                            n_radial,
-                            n_azimuthal,
-                        )
-                        .with_radial(radial.clone())
-                    }
-                    (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
-                        self.integrator
-                            .integrate2d_on_azimuthal_range(
-                                &frame,
-                                n_radial,
-                                n_azimuthal,
-                                range,
-                                errors,
-                            )
-                            .map_err(PyValueError::new_err)?,
-                        n_radial,
-                        n_azimuthal,
-                    ),
-                };
-                Ok(result)
+                py.detach(|| {
+                    integrate2d_slice(
+                        integrator,
+                        &frame.data,
+                        frame.dim1,
+                        frame.dim2,
+                        bins,
+                        radial,
+                    )
+                })
+                .map_err(PyValueError::new_err)
             }
             ImageInput::Array(array) => {
                 let (dim1, dim2) = extract_array_dims(&array, "float64")?;
@@ -862,51 +919,10 @@ impl PyIntegrator {
                     PyValueError::new_err(format!("Array must be contiguous: {}", err))
                 })?;
                 self.check_mask((dim1, dim2), "image")?;
-                let result = match (errors, azimuthal_range) {
-                    (false, None) => {
-                        let intensity = self.integrator.integrate2d_from_slice(
-                            slice,
-                            dim1,
-                            dim2,
-                            n_radial,
-                            n_azimuthal,
-                        );
-                        PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
-                            .with_radial(radial.clone())
-                    }
-                    (true, None) => {
-                        let (intensity, errs) = self.integrator.integrate2d_with_errors_from_slice(
-                            slice,
-                            dim1,
-                            dim2,
-                            n_radial,
-                            n_azimuthal,
-                        );
-                        PyIntegrationResult::from_2d_with_errors(
-                            intensity,
-                            errs,
-                            n_radial,
-                            n_azimuthal,
-                        )
-                        .with_radial(radial.clone())
-                    }
-                    (errors, Some(range)) => PyIntegrationResult::from_azimuthal_range_2d(
-                        self.integrator
-                            .integrate2d_on_azimuthal_range_from_slice(
-                                slice,
-                                dim1,
-                                dim2,
-                                n_radial,
-                                n_azimuthal,
-                                range,
-                                errors,
-                            )
-                            .map_err(PyValueError::new_err)?,
-                        n_radial,
-                        n_azimuthal,
-                    ),
-                };
-                Ok(result)
+                // `array` keeps its read-only borrow guard until this call
+                // returns; the array must not be mutated concurrently.
+                py.detach(|| integrate2d_slice(integrator, slice, dim1, dim2, bins, radial))
+                    .map_err(PyValueError::new_err)
             }
         }
     }
