@@ -287,7 +287,10 @@ class Integrator:
                 Not supported with method="histogram", which always uses the
                 automatic radial range ("counting", "pixel_split", "pyfai_full"
                 and "supersampled" honour it in 1D and 2D; 2D integration needs
-                min >= 0 and reports the bin centres in result.radial).
+                min >= 0 and reports the bin centres in result.radial). 2D bins
+                are half-open [min, max), so a value exactly at max is dropped;
+                1D includes both limits (step from max + 10 eps), so 1D and 2D
+                centres for the same range are not bit-equal.
 
         Raises:
             ValueError: If an option is invalid: unknown method/unit, n_ss = 0,

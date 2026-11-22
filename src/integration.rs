@@ -380,11 +380,18 @@ impl Integrator {
     ///   `PixelSplit` and `Supersampled` then use the shared-grid tables of
     ///   `MultiIntegrator` (exact fractional polygon areas for `PixelSplit`,
     ///   which differ slightly from its default 2D table) with the default
-    ///   path's azimuthal bins; `integrate2d_with_azimuthal_range*` bins onto
-    ///   the sector `[start - step/2, start + (n - 0.5)*step)`, which must span
-    ///   at most 2π, without folding angles outside it (as `PyfaiFull` always
-    ///   does). The 2D grid needs `0 <= min < max`: other ranges make the
-    ///   `Result` entry points return `Err` and the others panic.
+    ///   path's azimuthal bins (on CeO2 Pilatus 1M, 1000 x 360 bins on matching
+    ///   edges, `PixelSplit` differs from its default cake by a median 3.5e-5
+    ///   relative per bin). With a range, `integrate2d_with_azimuthal_range*`
+    ///   bins onto the sector `[start - step/2, start + (n - 0.5)*step)` without
+    ///   folding angles outside it (as `PyfaiFull` always does); `n * step > 2π`
+    ///   is refused. The 2D grid needs `0 <= min < max`: other ranges make the
+    ///   `Result` entry points return `Err` and the others panic;
+    ///   [`Integrator::radial_centers_2d`] returns that `Err` and can serve as
+    ///   a pre-check. 2D bins are half-open, `[min, max)`: a value exactly at
+    ///   `max` is dropped, while 1D includes both limits and computes its step
+    ///   from `max + 10 ε`, so 1D and 2D bin centres for the same range are not
+    ///   bit-equal.
     ///   `Histogram` has no 2D integration.
     /// - `integrate2d_raw_on_grid*` takes its edges from the grid argument, not
     ///   from this range.

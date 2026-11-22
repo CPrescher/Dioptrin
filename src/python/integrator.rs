@@ -1644,9 +1644,9 @@ impl PyIntegrator {
     /// # Errors
     ///
     /// Raises `ValueError` if the integrator uses the Histogram method, which has
-    /// no azimuthal binning, or for an array that is not 2D float64, not
-    /// C-contiguous, or does not match the mask; `TypeError` for a single path or a
-    /// list mixing paths and arrays (use `batch2d_iter` for those).
+    /// no azimuthal binning, or for an array that is not C-contiguous or does not
+    /// match the mask; `TypeError` for an array that is not 2D float64, a single
+    /// path, or a list mixing paths and arrays (use `batch2d_iter` for those).
     ///
     /// # Example
     ///

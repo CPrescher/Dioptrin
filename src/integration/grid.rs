@@ -720,6 +720,10 @@ impl Integrator {
     ///
     /// These are the radial centres of every 2D entry point except
     /// `integrate2d_raw_on_grid*`, whose edges come from the grid argument.
+    ///
+    /// Returns `Err` for an explicit range the 2D grid cannot use (e.g. a
+    /// negative minimum), so it can serve as a pre-check before the
+    /// `Vec`-returning 2D methods, which panic on such a range.
     pub fn radial_centers_2d(
         &self,
         dim1: usize,

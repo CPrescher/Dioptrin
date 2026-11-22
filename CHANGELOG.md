@@ -31,12 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   batch tasks; Python `integrate2d`, `batch2d`, `batch2d_iter`), in fixed and
   dynamic mask modes. They use the shared-grid tables of `MultiIntegrator`
   (exact fractional polygon areas for `pixel_split`, slightly different from
-  its default 2D table) with the default azimuthal bins; the Rust
+  its default 2D table: median 3.5e-5 relative per bin, at most 1.7e-3 of the
+  cake maximum, total ratio 1.000056 on the CeO2 Pilatus 1M test image at
+  1000 x 360 bins) with the default azimuthal bins; the Rust
   first-bin-centre/step methods bin onto the sector `[start - step/2,
   start + (n - 0.5)*step)` (at most 2π) without folding, as `pyfai_full`
-  already did. 2D calls without a `radial_range` are unchanged, bit for bit.
+  already did, and refuse `n * step > 2π`. 2D bins are half-open,
+  `[min, max)` (a value exactly at `max` is dropped), while 1D includes both
+  limits with a step computed from `max + 10 eps`, so 1D and 2D bin centres
+  for the same range are not bit-equal. 2D calls without a `radial_range` are
+  unchanged, bit for bit. The Rust batch helpers answer every input with an
+  error for a 2D task on an unusable range instead of losing the inputs to
+  worker panics.
   A 2D call on a range with a negative minimum is an error (`ValueError` in
-  Python, `Err` or a panic in Rust) instead of being ignored; 1D is unchanged.
+  Python, `Err` or a panic in Rust, where `Integrator::radial_centers_2d`
+  serves as a pre-check) instead of being ignored; 1D is unchanged.
 - Python 2D results carry the radial bin centres in `radial` when the
   Integrator has a `radial_range`, and on an `azimuthal_range` (where they
   were computed but dropped); otherwise `radial` stays `None`.
