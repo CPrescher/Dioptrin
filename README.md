@@ -692,11 +692,6 @@ Install a pre-built wheel with `python -m pip install dioptrin`, or build the
 Python extension from this repository with `maturin develop --release`.
 Source archives are also included in new releases.
 
-The Python names `LicenseError`, `LicenseNotFoundError`, `LicenseExpiredError`,
-and `validate_license()` remain available for compatibility with existing
-applications. `validate_license()` is a no-op; integration never raises these
-legacy exceptions. Versions before 0.7.0 retain their original activation behavior.
-
 ## Benchmarks
 
 Run integration benchmarks:

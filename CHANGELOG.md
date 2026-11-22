@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** the Python license-compatibility names are removed:
+  `dioptrin.validate_license()` and the exceptions `dioptrin.LicenseError`,
+  `dioptrin.LicenseNotFoundError` and `dioptrin.LicenseExpiredError`. They
+  were kept in 0.7.0, when activation was dropped, only so that code written
+  for license-activated wheels kept importing. `validate_license()` was a
+  no-op that took no arguments and returned `None`, and nothing in the
+  package raised the exceptions. Migration: delete calls to
+  `validate_license()`, and delete `except` clauses (or the names in an
+  `except (...)` tuple) that catch the `License*` exceptions; they could
+  never trigger. The type stubs, the README note and the release check's
+  `DIOPTRIN_LICENSE` probe are removed with them. Integration is unchanged.
+
 ## [0.14.0] - 2026-11-15
 
 ### Added
