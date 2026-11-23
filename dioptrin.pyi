@@ -93,7 +93,8 @@ class IntegrationResult:
     coordinates and error estimates, depending on the integration type performed.
 
     Attributes:
-        radial: Radial bin centers (1D and MultiIntegrator 2D; otherwise None)
+        radial: Radial bin centers (1D, MultiIntegrator 2D, and Integrator 2D with a
+            radial_range or an azimuthal_range; otherwise None)
         azimuthal: Azimuthal bin centers in radians (MultiIntegrator 2D and Integrator
             2D with azimuthal_range; otherwise None)
         intensity: Integrated intensity values
@@ -105,7 +106,8 @@ class IntegrationResult:
 
     @property
     def radial(self) -> Optional[list[float]]:
-        """Radial bin centers (1D and MultiIntegrator 2D; otherwise None)."""
+        """Radial bin centers (1D, MultiIntegrator 2D, and Integrator 2D with a
+        radial_range or an azimuthal_range; otherwise None)."""
         ...
 
     @property
@@ -284,7 +286,11 @@ class Integrator:
                 share the same bin grid. Units must match the selected unit.
                 Not supported with method="histogram", which always uses the
                 automatic radial range ("counting", "pixel_split", "pyfai_full"
-                and "supersampled" honour it).
+                and "supersampled" honour it in 1D and 2D; 2D integration needs
+                min >= 0 and reports the bin centres in result.radial). 2D bins
+                are half-open [min, max), so a value exactly at max is dropped;
+                1D includes both limits (step from max + 10 eps), so 1D and 2D
+                centres for the same range are not bit-equal.
 
         Raises:
             ValueError: If an option is invalid: unknown method/unit, n_ss = 0,
@@ -471,7 +477,7 @@ class Integrator:
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
-                without a range. Invalid ranges raise ValueError.
+                without an azimuthal range. Invalid ranges raise ValueError.
                 With method="pyfai_full", individual bins depend on how the range
                 is written (a range shifted by 2*pi, or a sector vs the same rows
                 of a full circle, can differ, as in pyFAI itself); prefer
@@ -479,13 +485,23 @@ class Integrator:
 
         Returns:
             IntegrationResult with flat intensity (and optional errors) sized
-            n_radial * n_azimuthal
+            n_radial * n_azimuthal. With the Integrator's radial_range, every
+            method bins onto n_radial equal bins between its edges (pixels
+            outside are left out) and result.radial holds their centres; with
+            azimuthal_range, result.radial and result.azimuthal hold the bin
+            centres; otherwise result.radial is None.
+
+        The GIL is released while a TIFF loads and while the image is integrated,
+        so other Python threads run meanwhile. An Integrator cannot be shared
+        between threads; give each thread its own. A NumPy input is borrowed
+        read-only for the call and must not be mutated concurrently.
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
                 no azimuthal binning; if n_radial or n_azimuthal is 0; if the
-                TIFF cannot be loaded or is not single-channel (e.g. RGB); or if
-                the image is empty or its shape does not match the mask
+                TIFF cannot be loaded or is not single-channel (e.g. RGB); if
+                the image is empty or its shape does not match the mask; or if
+                the Integrator's radial_range has a negative minimum
 
         Example:
             >>> integrator = dioptrin.Integrator("calibration.poni")
@@ -637,8 +653,10 @@ class Integrator:
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute Poisson error estimates (default: False)
             azimuthal_std: Also compute weighted population spread (default: False)
-            num_workers: Number of parallel workers (optional)
-            num_threads: Threads per worker (optional)
+            num_workers: Number of parallel workers (optional; TIFF paths only,
+                ignored for arrays, which run on the global Rayon pool)
+            num_threads: Threads per worker (optional; TIFF paths only, ignored
+                for arrays)
 
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
@@ -725,7 +743,7 @@ class Integrator:
 
     def batch2d(
         self,
-        tiff_paths: list[str],
+        tiff_paths: Union[list[str], list[np.ndarray]],
         n_radial: int,
         n_azimuthal: Optional[int] = None,
         errors: bool = False,
@@ -742,7 +760,8 @@ class Integrator:
         optional error estimates.
 
         Args:
-            tiff_paths: List of TIFF file paths to process
+            tiff_paths: List of TIFF file paths or list of 2D float64 NumPy arrays
+                (the parameter keeps its historical name)
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins. Give either this or
                 azimuthal_bracket.
@@ -768,7 +787,7 @@ class Integrator:
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
-                without a range. Invalid ranges raise ValueError.
+                without an azimuthal range. Invalid ranges raise ValueError.
                 With method="pyfai_full", individual bins depend on how the range
                 is written (a range shifted by 2*pi, or a sector vs the same rows
                 of a full circle, can differ, as in pyFAI itself); prefer
@@ -777,16 +796,34 @@ class Integrator:
             num_threads: Threads per worker (optional)
 
         Returns:
-            List of BatchResult objects, each containing filename and IntegrationResult.
+            List of BatchResult objects, each containing filename ("array[i]" for
+            arrays) and IntegrationResult. With the Integrator's radial_range,
+            results carry its radial bin centres in result.radial.
+            NumPy inputs are borrowed for this synchronous call without copying
+            image pixels; their read-only borrow guards are held until all native
+            workers finish, and the arrays must not be mutated concurrently. The
+            GIL is released while the workers run. For arrays, num_workers is
+            the number of frames integrated at a time and num_threads the Rayon
+            threads each uses, in a pool of its own, as for TIFF paths
+            (num_workers=8, num_threads=1: eight frames side by side on one
+            thread each; num_workers=1, num_threads=8: one frame after another
+            on eight threads). A missing one is resolved as for TIFF paths
+            (num_threads defaults to 2, num_workers to cores / num_threads - 1).
+            With neither given, arrays run on the global Rayon pool, all frames
+            in parallel, as in batch1d.
 
         Raises:
             ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning, or if n_radial or n_azimuthal is 0. File
+                no azimuthal binning, if n_radial or n_azimuthal is 0, if the
+                Integrator's radial_range has a negative minimum, or for an
+                array that is not C-contiguous or does not match the mask. File
                 errors, including a TIFF that is not single-channel (e.g. RGB)
                 or whose shape does not match the mask,
                 go to that file's BatchResult.error
-            TypeError: If tiff_paths is not a list of str paths, including a
-                single path (str, bytes, bytearray or os.PathLike): wrap one path in a list
+            TypeError: If tiff_paths is neither a list of str paths nor a list of
+                2D float64 arrays (e.g. a mixed list: use batch2d_iter), including
+                a single path (str, bytes, bytearray or os.PathLike): wrap one path
+                in a list
 
         Example:
             >>> # Full 2D integration
@@ -847,7 +884,7 @@ class Integrator:
                 it evenly (bin i covers [min + i*step, min + (i+1)*step)) and pixels
                 outside are left out, so sectors work, also across the +-pi cut.
                 result.azimuthal holds the bin centres. Radial bins are the same as
-                without a range. Invalid ranges raise ValueError.
+                without an azimuthal range. Invalid ranges raise ValueError.
                 With method="pyfai_full", individual bins depend on how the range
                 is written (a range shifted by 2*pi, or a sector vs the same rows
                 of a full circle, can differ, as in pyFAI itself); prefer

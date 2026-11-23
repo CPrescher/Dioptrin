@@ -97,7 +97,7 @@ def items(kind, arrays, paths, n_frames):
 
 def supported(api, kind):
     if api == "batch2d":
-        return kind == "list-paths"  # arrays go through batch2d_iter
+        return kind == "list-paths"  # this bench times batch2d with TIFF paths only
     if api == "batch1d":
         return kind.startswith("list")
     return True

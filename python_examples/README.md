@@ -86,11 +86,21 @@ Demonstrates:
 
 **`integration_test_check_2d.py`** - Test 2D integration methods
 
+**`test_radial_range_2d.py`** - 2D integration on an explicit `radial_range`
+for every method: radial axis, sub-ranges against a full range, dropped pixels
+
+**`test_integrate2d_gil.py`** - `integrate2d` releases the GIL: threaded results
+match, two integrators run concurrently, Python threads keep running
+
 **`mask_example.py`** - Demonstration of pixel masking
 
 ### Batch Processing
 
 **`batch_api_smoke_test.py`** - Quick smoke test for batch API
+
+**`test_batch2d_arrays.py`** - `batch2d` over lists of NumPy arrays: matches
+`integrate2d`, TIFF paths and `batch2d_iter` for every `num_workers`/`num_threads`
+split; input errors as in `batch1d`
 
 **`batch_api_speed_test.py`** - Performance benchmarks for batch processing
 

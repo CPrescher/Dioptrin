@@ -13,7 +13,8 @@ use crate::batch::StreamControl;
 ///
 /// # Attributes
 ///
-/// * `radial` - Radial bin centers (1D and MultiIntegrator 2D; otherwise None)
+/// * `radial` - Radial bin centers (1D, MultiIntegrator 2D, and Integrator 2D with a
+///   `radial_range` or an `azimuthal_range`; otherwise None)
 /// * `azimuthal` - Azimuthal bin centers in radians (MultiIntegrator 2D and Integrator 2D
 ///   with `azimuthal_range`; otherwise None)
 /// * `intensity` - Integrated intensity values
@@ -103,6 +104,15 @@ impl PyIntegrationResult {
         }
     }
 
+    /// Attach radial bin centres (2D results carry them only with an explicit
+    /// radial or azimuthal range).
+    pub(crate) fn with_radial(mut self, radial: Option<Vec<f64>>) -> Self {
+        if radial.is_some() {
+            self.radial = radial;
+        }
+        self
+    }
+
     pub(crate) fn from_2d(intensity: Vec<f64>, n_radial: usize, n_azimuthal: usize) -> Self {
         Self {
             radial: None,
@@ -115,15 +125,15 @@ impl PyIntegrationResult {
         }
     }
 
-    /// 2D result on an explicit azimuthal range: fills the azimuthal bin
-    /// centres; `radial` stays None as for the default 2D path.
+    /// 2D result on an explicit azimuthal range: fills the radial and
+    /// azimuthal bin centres, which this path computes anyway.
     pub(crate) fn from_azimuthal_range_2d(
         result: crate::integration::AzimuthalRange2dResult,
         n_radial: usize,
         n_azimuthal: usize,
     ) -> Self {
         Self {
-            radial: None,
+            radial: Some(result.radial),
             azimuthal: Some(result.azimuthal),
             intensity: result.intensity,
             errors: result.errors,
@@ -238,11 +248,15 @@ pub(crate) enum BatchReceiver {
         receiver: Mutex<Receiver<(usize, String, Result<Vec<f64>, String>)>>,
         n_radial: usize,
         n_azimuthal: usize,
+        /// Radial bin centres for an explicit radial range.
+        radial: Option<Vec<f64>>,
     },
     Integration2DWithErrors {
         receiver: Mutex<Receiver<(usize, String, Result<(Vec<f64>, Vec<f64>), String>)>>,
         n_radial: usize,
         n_azimuthal: usize,
+        /// Radial bin centres for an explicit radial range.
+        radial: Option<Vec<f64>>,
     },
     /// 2D on an explicit `(min, max)` azimuthal range; carries bin centres.
     Integration2DOnAzimuthalRange {
@@ -529,9 +543,11 @@ impl PyBatchIterator {
                     receiver,
                     n_radial,
                     n_azimuthal,
+                    radial,
                 } => recv(py, receiver).map(|(index, filename, result)| {
                     let result = result.map(|intensity| {
                         PyIntegrationResult::from_2d(intensity, *n_radial, *n_azimuthal)
+                            .with_radial(radial.clone())
                     });
                     (index, PyBatchResult::from_result(filename, result))
                 }),
@@ -539,6 +555,7 @@ impl PyBatchIterator {
                     receiver,
                     n_radial,
                     n_azimuthal,
+                    radial,
                 } => recv(py, receiver).map(|(index, filename, result)| {
                     let result = result.map(|(intensity, errors)| {
                         PyIntegrationResult::from_2d_with_errors(
@@ -547,6 +564,7 @@ impl PyBatchIterator {
                             *n_radial,
                             *n_azimuthal,
                         )
+                        .with_radial(radial.clone())
                     });
                     (index, PyBatchResult::from_result(filename, result))
                 }),
