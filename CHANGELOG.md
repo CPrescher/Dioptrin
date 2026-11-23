@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `num_threads` they run on the global Rayon pool, all frames in parallel; with
   either, `num_workers` frames run at a time, each on its own pool of
   `num_threads` threads, as for TIFF paths (the missing one resolved the same
-  way). `batch1d` over arrays still ignores both arguments, now documented.
+  way). `batch1d` over arrays does the same on every branch (plain, `errors`,
+  `azimuthal_std`); it used to ignore both arguments and always run on the
+  global pool, which is still what happens when neither is given.
   Input errors match `batch1d` (dtype, shape, contiguity, mask shape; mixed
   lists raise `TypeError`, use `batch2d_iter` for them). The first parameter
   keeps its name `tiff_paths`. A list of arrays no longer needs

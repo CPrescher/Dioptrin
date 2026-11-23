@@ -571,7 +571,7 @@ pub(crate) enum WorkItem {
 
 /// Run `job(i)` for every `i` in `0..n` with at most `workers` items in
 /// flight, each inside a Rayon pool of `threads` threads, and return the
-/// outcomes in input order. Used by Python `batch2d` over borrowed arrays when
+/// outcomes in input order. Used by Python `batch1d`/`batch2d` over borrowed arrays when
 /// `num_workers`/`num_threads` are given; the items may borrow from the caller.
 ///
 /// `min(workers, n)` scoped OS threads pull indices from a shared counter;

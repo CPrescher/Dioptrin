@@ -1291,10 +1291,8 @@ impl PyIntegrator {
     /// * `n_points` - Number of bins for the 1D integration output
     /// * `errors` - Whether to compute Poisson errors (default: False)
     /// * `azimuthal_std` - Also return weighted population spread (default: False)
-    /// * `num_workers` - Number of parallel workers (optional; TIFF paths only, ignored
-    ///   for arrays, which always run on the global Rayon pool)
-    /// * `num_threads` - Threads per worker (optional; TIFF paths only, ignored for
-    ///   arrays)
+    /// * `num_workers` - Number of parallel workers (optional)
+    /// * `num_threads` - Threads per worker (optional)
     ///
     /// # Returns
     ///
@@ -1302,7 +1300,13 @@ impl PyIntegrator {
     /// NumPy inputs are borrowed for this synchronous call without copying image
     /// pixels. Their read-only borrow guards remain held until all native workers
     /// finish; input arrays must not be mutated concurrently. The GIL is released
-    /// while the workers run.
+    /// while the workers run. For arrays, `num_workers` is the number of frames
+    /// integrated at a time and `num_threads` the Rayon threads each of them
+    /// uses, in a pool of its own (built for the call), as for TIFF paths; a
+    /// missing one of the two is resolved as for TIFF paths (`num_threads`
+    /// defaults to 2, `num_workers` to cores / num_threads - 1, at least 1).
+    /// With neither given, arrays run on the global Rayon pool (all frames in
+    /// parallel), configured with `set_rayon_threads` or `RAYON_NUM_THREADS`.
     ///
     /// # Example
     ///
@@ -1333,6 +1337,8 @@ impl PyIntegrator {
         azimuthal_std: bool,
     ) -> PyResult<Vec<PyBatchResult>> {
         check_positive("n_points", n_points)?;
+        // Arrays keep the global pool unless a split was asked for.
+        let split_requested = num_workers.is_some() || num_threads.is_some();
         let (num_workers, num_threads) = resolve_workers_threads(num_workers, num_threads)?;
 
         match images {
@@ -1470,6 +1476,48 @@ impl PyIntegrator {
                         error: None,
                     }
                 };
+                if split_requested {
+                    use rayon::prelude::*;
+                    // At most `num_workers` frames at a time, each on its own
+                    // pool of `num_threads` threads, as for TIFF paths; the
+                    // table is built first in the first worker's pool.
+                    //
+                    // Each frame runs through the very same parallel iterator
+                    // as the global-pool path below (one frame long), not a
+                    // new call into the integrator: with fat LTO, an extra
+                    // call site measurably changed how the shared 1D kernels
+                    // were optimised (pixel_split/pyfai_full up to 20% slower
+                    // on every 1D path, default ones included).
+                    let prepare = || {
+                        if let Some(&(_, dim1, dim2)) = frames.first()
+                            && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                        {
+                            self.integrator.prepare1d(dim1, dim2, n_points);
+                        }
+                    };
+                    let outcomes = py
+                        .detach(|| {
+                            map_in_pools(frames.len(), num_workers, num_threads, prepare, |i| {
+                                let mut one: Vec<PyBatchResult> = frames[i..=i]
+                                    .par_iter()
+                                    .enumerate()
+                                    .map(integrate)
+                                    .collect();
+                                let mut result = one.pop().expect("one frame, one result");
+                                result.filename = format!("array[{}]", i);
+                                result
+                            })
+                        })
+                        .map_err(PyValueError::new_err)?;
+                    // Re-raise the first panic in input order, as the global
+                    // pool path would.
+                    return Ok(outcomes
+                        .into_iter()
+                        .map(|outcome| {
+                            outcome.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+                        })
+                        .collect());
+                }
                 // Release the GIL while the workers run (see `process_files`).
                 // `frames` holds only plain slices whose borrow guards live in
                 // `arrays`, which outlives this region.

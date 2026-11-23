@@ -104,6 +104,9 @@ match, two integrators run concurrently, Python threads keep running
 `integrate2d`, TIFF paths and `batch2d_iter` for every `num_workers`/`num_threads`
 split; input errors as in `batch1d`
 
+**`test_batch1d_array_workers.py`** - `batch1d` over arrays for every
+`num_workers`/`num_threads` split matches per-frame `integrate1d`
+
 **`batch_api_speed_test.py`** - Performance benchmarks for batch processing
 
 ### Multi-Detector Integration

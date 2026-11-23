@@ -658,10 +658,13 @@ class Integrator:
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute Poisson error estimates (default: False)
             azimuthal_std: Also compute weighted population spread (default: False)
-            num_workers: Number of parallel workers (optional; TIFF paths only,
-                ignored for arrays, which run on the global Rayon pool)
-            num_threads: Threads per worker (optional; TIFF paths only, ignored
-                for arrays)
+            num_workers: Number of parallel workers (optional). For arrays, the
+                number of frames integrated at a time; see below.
+            num_threads: Threads per worker (optional). For arrays, the Rayon
+                threads each frame uses, in a pool of its own. A missing one of
+                the two is resolved as for TIFF paths (num_threads defaults to
+                2, num_workers to cores / num_threads - 1). With neither given,
+                arrays run on the global Rayon pool, all frames in parallel.
 
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
