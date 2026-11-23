@@ -288,6 +288,16 @@ pub struct AzimuthalRange2dResult {
     pub azimuthal: Vec<f64>,
 }
 
+/// Inputs that determine [`Integrator`]'s default 2D azimuthal edges for
+/// counting, pixel splitting and supersampling. The edges do not depend on the
+/// bin count or the radial unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AzimuthalEdgesKey {
+    dim1: usize,
+    dim2: usize,
+    method: usize,
+}
+
 /// Inputs that determine [`Integrator`]'s default 2D radial edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RadialEdgesKey {
@@ -397,7 +407,7 @@ impl Integrator {
     }
 
     /// Cache key of the shared-grid table for this integrator's method and unit.
-    fn shared_grid_key(&self, grid: IntegrationGrid2d) -> super::cache::TwoDKey {
+    pub(super) fn shared_grid_key(&self, grid: IntegrationGrid2d) -> super::cache::TwoDKey {
         super::cache::TwoDKey::SharedGrid {
             grid,
             unit: self.radial_unit,
@@ -502,31 +512,7 @@ impl Integrator {
         // propagate into the bins they contribute to.
         self.validate_2d_setup(dim1, dim2, data.len())?;
         let view = self.for_shape(dim1, dim2);
-        let radial_range = self.default_radial_edges_2d(&view, n_radial);
-        // Values inside the edges must land in a bin even when their index
-        // rounds to `n`, as on the default path.
-        let mut grid =
-            IntegrationGrid2d::new(n_radial, n_azimuthal, radial_range, azimuthal_range)?
-                .with_clamped_index_rounding();
-        match self.method {
-            IntegrationMethod::PyfaiFull => {
-                grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
-            }
-            // The default counting edges are the min and max of the pixel
-            // centres, the very values binned here, so only a value equal to
-            // the upper edge needs help: the 10-ulp margin of `min_max_step`
-            // does not lift the edge for values above ~32.
-            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
-            // The default supersampled edges come from pixel centres and a
-            // hull grid computed with slightly different floating-point
-            // coordinates than the real subpixels, so the outermost subpixel
-            // can lie a few ulp above the upper edge, and subpixels of pixels
-            // next to the beam lie below the lower edge. The default table
-            // clamps both into the end bins; so does this one. Safe only
-            // because these edges are the data-derived default ones.
-            IntegrationMethod::Supersampled { .. } => grid = grid.with_clamped_radial_outside(),
-            _ => (),
-        }
+        let grid = self.azimuthal_range_grid(&view, n_radial, n_azimuthal, azimuthal_range)?;
         let normalization = view.normalization();
         let mask = self.mask.as_ref().map(|m| m.data.as_slice());
         let lut = view.ensure_lut2d(self.shared_grid_key(grid));
@@ -599,9 +585,228 @@ impl Integrator {
         )
     }
 
+    /// Grid of [`Integrator::integrate2d_on_azimuthal_range_from_slice`]: the
+    /// explicit radial range if one is set (out-of-range values are dropped),
+    /// otherwise the default path's radial edges with its clamping.
+    fn azimuthal_range_grid(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: (f64, f64),
+    ) -> Result<IntegrationGrid2d, String> {
+        let explicit = self.radial_range;
+        let radial_range = match explicit {
+            Some(range) => range,
+            None => self.default_radial_edges_2d(view, n_radial),
+        };
+        // Values inside the edges must land in a bin even when their index
+        // rounds to `n`, as on the default path.
+        let mut grid = IntegrationGrid2d::new(n_radial, n_azimuthal, radial_range, azimuthal_range)
+            .map_err(|e| match explicit {
+                Some((lo, hi)) => format!("radial_range ({lo}, {hi}): {e}"),
+                None => e,
+            })?
+            .with_clamped_index_rounding();
+        match self.method {
+            IntegrationMethod::PyfaiFull => {
+                grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
+            }
+            // User-chosen radial edges: values outside them are dropped, never
+            // clamped into the end bins.
+            _ if explicit.is_some() => (),
+            // The default counting edges are the min and max of the pixel
+            // centres, the very values binned here, so only a value equal to
+            // the upper edge needs help: the 10-ulp margin of `min_max_step`
+            // does not lift the edge for values above ~32.
+            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
+            // The default supersampled edges come from pixel centres and a
+            // hull grid computed with slightly different floating-point
+            // coordinates than the real subpixels, so the outermost subpixel
+            // can lie a few ulp above the upper edge, and subpixels of pixels
+            // next to the beam lie below the lower edge. The default table
+            // clamps both into the end bins; so does this one. Safe only
+            // because these edges are the data-derived default ones.
+            IntegrationMethod::Supersampled { .. } => grid = grid.with_clamped_radial_outside(),
+            _ => (),
+        }
+        Ok(grid)
+    }
+
+    /// Shared grid that `integrate2d*` and `integrate2d_with_azimuthal_range*`
+    /// use for `Counting`, `PixelSplit` and `Supersampled` when an explicit
+    /// radial range is set: `n_radial` equal bins between its edges, values
+    /// outside them dropped. Azimuthally the bins are those of the default
+    /// tables: the data-derived default edges, or with `azimuthal` (first-bin
+    /// centre and step) the sector `[start - step/2, start + (n - 0.5)*step)`,
+    /// which must span at most 2π and is not folded periodically.
+    pub(super) fn explicit_radial_grid_2d(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal: Option<super::cache::AzimuthalRangeKey>,
+        (lo, hi): (f64, f64),
+    ) -> Result<IntegrationGrid2d, String> {
+        let azimuthal_range = match azimuthal {
+            Some(key) => {
+                let start = f64::from_bits(key.start_bits);
+                let step = f64::from_bits(key.step_bits);
+                (
+                    start - 0.5 * step,
+                    start + (n_azimuthal as f64 - 0.5) * step,
+                )
+            }
+            None => self.default_azimuthal_edges_2d(view),
+        };
+        // Index rounding keeps values inside the edges in the last bin, as
+        // the default tables do; it never moves a value from outside the
+        // radial range into a bin.
+        IntegrationGrid2d::new(n_radial, n_azimuthal, (lo, hi), azimuthal_range)
+            .map(|grid| grid.with_clamped_index_rounding())
+            .map_err(|e| format!("2D grid for radial_range ({lo}, {hi}): {e}"))
+    }
+
+    /// Azimuthal edges (radians) of the default 2D tables of `Counting`,
+    /// `PixelSplit` and `Supersampled`. Cached: computing them needs a pass
+    /// over all pixels (or pixel corners).
+    fn default_azimuthal_edges_2d(&self, view: &super::cache::ShapeView<'_>) -> (f64, f64) {
+        let (dim1, dim2) = (view.state.dim1, view.state.dim2);
+        let key = AzimuthalEdgesKey {
+            dim1,
+            dim2,
+            method: match self.method {
+                IntegrationMethod::Counting => 0,
+                IntegrationMethod::Supersampled { n_ss } => n_ss + 1,
+                _ => usize::MAX,
+            },
+        };
+        let cache = &self.azimuthal_edges_2d;
+        if let Some((cached, edges)) = *cache.read().expect("azimuthal edge cache lock poisoned")
+            && cached == key
+        {
+            return edges;
+        }
+        let state = &view.state;
+        let edges = match self.method {
+            IntegrationMethod::Counting => {
+                let (lo, hi, _) = histogram::min_max_step(&state.azimuth, 1);
+                (lo, hi)
+            }
+            IntegrationMethod::Supersampled { n_ss } => {
+                let geom = self.geometry.reshaped(dim1, dim2);
+                let (lo, hi, _) =
+                    histogram::supersampled_azimuthal_min_max_step(&geom, &state.azimuth, 1, n_ss);
+                (lo, hi)
+            }
+            _ => {
+                let geom = self.geometry.reshaped(dim1, dim2);
+                let (_, corners) = geom.angular_corners();
+                (
+                    math::min(&corners),
+                    math::max(&corners) + 10.0 * f64::EPSILON,
+                )
+            }
+        };
+        *cache.write().expect("azimuthal edge cache lock poisoned") = Some((key, edges));
+        edges
+    }
+
+    /// Radial bin centres of a 2D integration of a `dim1 x dim2` image into
+    /// `n_radial` bins, in the integrator's unit: with an explicit radial
+    /// range the centres of `n_radial` equal bins between its edges (no image
+    /// needed), otherwise those of the default path's data-derived edges for
+    /// this method (computed from the geometry and cached).
+    ///
+    /// These are the radial centres of every 2D entry point except
+    /// `integrate2d_raw_on_grid*`, whose edges come from the grid argument.
+    ///
+    /// Returns `Err` for an explicit range the 2D grid cannot use (e.g. a
+    /// negative minimum), so it can serve as a pre-check before the
+    /// `Vec`-returning 2D methods, which panic on such a range.
+    pub fn radial_centers_2d(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+    ) -> Result<Vec<f64>, String> {
+        if let Some((lo, hi)) = self.radial_range {
+            return IntegrationGrid2d::new(n_radial, 1, (lo, hi), (0.0, 1.0))
+                .map(|grid| grid.radial_centers())
+                .map_err(|e| format!("radial_range ({lo}, {hi}): {e}"));
+        }
+        if n_radial == 0 {
+            return Err("n_radial must be positive".into());
+        }
+        let len = dim1
+            .checked_mul(dim2)
+            .ok_or("image dimensions must be positive and match data length")?;
+        self.validate_2d_setup(dim1, dim2, len)?;
+        let view = self.for_shape(dim1, dim2);
+        Ok(centers(
+            self.default_radial_edges_2d(&view, n_radial),
+            n_radial,
+        ))
+    }
+
+    /// `Err` when `integrate2d*` (azimuthal `None`) or
+    /// `integrate2d_with_azimuthal_range*` (`Some((start, step))`) would panic
+    /// because the explicit radial range, or the sector with it, cannot form
+    /// a 2D grid. Needs no image; `Ok` without an explicit range.
+    pub(crate) fn check_2d_bins(
+        &self,
+        n_radial: usize,
+        n_azimuthal: usize,
+        start_step: Option<(f64, f64)>,
+    ) -> Result<(), String> {
+        let Some((lo, hi)) = self.radial_range else {
+            return Ok(());
+        };
+        let azimuthal_range = match start_step {
+            Some((start, step)) => (
+                start - 0.5 * step,
+                start + (n_azimuthal as f64 - 0.5) * step,
+            ),
+            None => (0.0, 1.0),
+        };
+        IntegrationGrid2d::new(n_radial, n_azimuthal, (lo, hi), azimuthal_range)
+            .map(|_| ())
+            .map_err(|e| format!("2D grid for radial_range ({lo}, {hi}): {e}"))
+    }
+
+    /// Build the 2D table that integrating a `dim1 x dim2` image with these
+    /// arguments needs, so parallel batch workers share one table instead of
+    /// each building it. Invalid arguments are left for the integration call
+    /// to report.
+    pub(crate) fn prepare2d(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: Option<(f64, f64)>,
+    ) {
+        let Some(len) = dim1.checked_mul(dim2) else {
+            return;
+        };
+        if n_radial == 0 || n_azimuthal == 0 || self.validate_2d_setup(dim1, dim2, len).is_err() {
+            return;
+        }
+        let view = self.for_shape(dim1, dim2);
+        let key = match azimuthal_range {
+            None => self.try_lut2d_key(&view, n_radial, n_azimuthal, None),
+            Some(range) => self
+                .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
+                .map(|grid| self.shared_grid_key(grid)),
+        };
+        if let Ok(key) = key {
+            drop(view.ensure_lut2d(key));
+        }
+    }
+
     /// Radial edges the default 2D path uses for this method, unit and size.
     /// Cached: computing them needs a pass over all pixels (or pixel corners).
-    fn default_radial_edges_2d(
+    pub(super) fn default_radial_edges_2d(
         &self,
         view: &super::cache::ShapeView<'_>,
         n_radial: usize,

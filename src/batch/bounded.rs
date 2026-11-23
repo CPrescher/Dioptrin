@@ -114,8 +114,9 @@ impl StreamOptions {
 /// [`Frame::name`]. As for the other batch helpers, an item that cannot be
 /// loaded, whose shape the integrator's mask or detector does not accept, or
 /// whose integration panics gets an `Err` and the stream continues. A 2D task
-/// with the Histogram method (see [`IntegrationTask::integrate2d_method`]) is
-/// not run: every item gets that error. If `input` itself panics, the item at
+/// with the Histogram method (see [`IntegrationTask::integrate2d_method`]), or
+/// with an explicit radial range the 2D grid cannot use (see
+/// [`IntegrationTask::check_2d`]), is not run: every item gets that error. If `input` itself panics, the item at
 /// that position gets an `Err` and the stream ends there.
 ///
 /// Dropping the stream, or calling [`BatchStream::close`], stops it: no more
