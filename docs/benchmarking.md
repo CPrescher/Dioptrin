@@ -52,8 +52,17 @@ Follow the [environment setup and validation instructions](https://github.com/CP
 Activate the comparison environment and run the CPU sweep from the repository
 root. On Windows, use the workstation's worker budgets.
 
+The commands below are written for the current harness. Runs recorded with
+earlier versions of these commands used older option names: the variant `azint-cached` was then called
+`azint-prepared-mask`, and `--modes poisson` limited them to the Poisson mode.
+That option no longer exists; the harness now always runs both the
+intensity-only and the Poisson mode, so a run takes about twice as long, and
+`plot_scaling.py --mode poisson` (the default) plots the Poisson rows.
+`plot_scaling.py` reads both variant names and plots only 1D single-process
+rows (`--processes` selects another process count).
+
 ```text
-python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,6,8,10,12,14 --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
+python -E -s -B benchmarks/comparison/compare.py --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated --workers 1,2,4,6,8,10,12,14 --variants dioptrin-supersampled azint azint-cached dioptrin-pyfai_full pyfai-full --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 --output benchmark-results/paper-cpu
 ```
 
 On the M4 Pro MacBook, run the same workload with 1, 2, 4, 6, 8 and 10 workers.
@@ -66,8 +75,8 @@ python3 benchmarks/comparison/setup.py
 .venv-benchmark/bin/python -E -s -B benchmarks/comparison/compare.py \
   --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
   --workers 1,2,4,6,8,10 \
-  --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full \
-  --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 \
+  --variants dioptrin-supersampled azint azint-cached dioptrin-pyfai_full pyfai-full \
+  --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25 \
   --output benchmark-results/paper-macos-cpu
 ```
 
@@ -140,10 +149,16 @@ sbatch --partition="$partition" --constraint="$cpu_feature" \
   benchmarks/comparison/maxwell.sbatch \
   --offline --datasets pilatus synthetic-4m synthetic-9m --workloads repeated \
   --workers 1,2,4,6,8,10,12,14 \
-  --variants dioptrin-supersampled azint azint-prepared-mask dioptrin-pyfai_full pyfai-full \
-  --modes poisson --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25
+  --variants dioptrin-supersampled azint azint-cached dioptrin-pyfai_full pyfai-full \
+  --bins 2000 --frames 16 --trials 3 --blocks 3 --seconds 0.25
 squeue -u "$USER"
 ```
+
+With `--cpus-per-task` the wrapper runs the benchmark as an `srun` job step on
+whole cores, with `--hint=nomultithread` when the job used it, and records the
+step's command in `launch.txt`. If `launch.txt` lacks `--hint=nomultithread`
+for a job submitted with it, resubmit with `SLURM_HINT=nomultithread` in the
+environment.
 
 The wrapper builds and caches the Python environment on the first run for a
 given node class and source revision. It writes the result to

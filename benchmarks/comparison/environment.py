@@ -154,9 +154,15 @@ def cpu_identity():
     )
 
 
-def build_options(azint_fast_math=False, with_opencl=False, pyfai_wheel=None):
+def build_options(
+    azint_fast_math=False, with_opencl=False, pyfai_wheel=None, with_cuda=False
+):
     """setup.py options that change the built environment (part of its key)."""
-    options = dict(azint_fast_math=bool(azint_fast_math), with_opencl=bool(with_opencl))
+    options = dict(
+        azint_fast_math=bool(azint_fast_math),
+        with_opencl=bool(with_opencl),
+        with_cuda=bool(with_cuda),
+    )
     if pyfai_wheel is not None:
         wheel = pyfai_wheel.resolve(strict=True)
         options["pyfai_wheel"] = dict(path=str(wheel), sha256=digest(wheel))
@@ -167,6 +173,7 @@ def setup_arguments(options):
     arguments = [
         *(["--azint-fast-math"] if options["azint_fast_math"] else []),
         *(["--with-opencl"] if options["with_opencl"] else []),
+        *(["--with-cuda"] if options.get("with_cuda") else []),
     ]
     if "pyfai_wheel" in options:
         arguments.extend(["--pyfai-wheel", options["pyfai_wheel"]["path"]])
@@ -353,6 +360,13 @@ def probe_environment(generation, root, timeout=PROBE_TIMEOUT, options=None):
         "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
         "from provenance import verify_build;import numpy,pyFAI,azint;"
         + ("import pyopencl;" if (options or {}).get("with_opencl") else "")
+        # A CUDA build must contain the feature; no GPU is needed for this.
+        + (
+            "import dioptrin;dioptrin.cuda_info()['compiled'] or "
+            "sys.exit('installed dioptrin was built without the cuda feature');"
+            if (options or {}).get("with_cuda")
+            else ""
+        )
         + "r=json.loads(Path(sys.argv[2]).read_text());"
         "problems=verify_build(Path(sys.argv[3]),r);"
         "print('; '.join(problems));sys.exit(bool(problems))"
@@ -491,11 +505,19 @@ def main():
         action="store_true",
         help="Pass --with-opencl to setup.py: install pyopencl for pyfai-full-opencl",
     )
+    parser.add_argument(
+        "--with-cuda",
+        action="store_true",
+        help="Pass --with-cuda to setup.py: build Dioptrin with the 'cuda' feature "
+        "for the dioptrin-*-cuda variants (separate cache entry)",
+    )
     parser.add_argument("--pyfai-wheel", type=Path, help="Use a local pyFAI wheel")
     args = parser.parse_args()
     args.build_root.mkdir(parents=True, exist_ok=True)
     try:
-        options = build_options(args.azint_fast_math, args.with_opencl, args.pyfai_wheel)
+        options = build_options(
+            args.azint_fast_math, args.with_opencl, args.pyfai_wheel, args.with_cuda
+        )
         identity = fingerprint(ROOT, args.rust_toolchain, options)
 
         def build(generation):
@@ -504,7 +526,10 @@ def main():
                 generation, args.build_root.resolve(), args.rust_toolchain, options
             )
             current_options = build_options(
-                args.azint_fast_math, args.with_opencl, args.pyfai_wheel
+                args.azint_fast_math,
+                args.with_opencl,
+                args.pyfai_wheel,
+                args.with_cuda,
             )
             if fingerprint(ROOT, args.rust_toolchain, current_options) != identity:
                 raise RuntimeError(

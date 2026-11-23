@@ -28,6 +28,30 @@ def run(command, **kwargs):
     subprocess.run(list(map(str, command)), check=True, **kwargs)
 
 
+def cargo_features(with_cuda=False):
+    """Cargo features of the Dioptrin wheel ('cuda' adds the CUDA 1D plan)."""
+    return ["python", "cuda"] if with_cuda else ["python"]
+
+
+def maturin_command(python, wheels, with_cuda=False, locked=()):
+    """Release wheel build. The 'cuda' feature needs only the Rust toolchain:
+    cudarc loads libcuda and NVRTC at run time (no CUDA toolkit, no nvcc)."""
+    return [
+        python,
+        "-m",
+        "maturin",
+        "build",
+        "--release",
+        "--features",
+        ",".join(cargo_features(with_cuda)),
+        *locked,
+        "--interpreter",
+        python,
+        "--out",
+        wheels,
+    ]
+
+
 def compiler_environment(portable=False):
     env = os.environ.copy()
     windows_x64 = sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64")
@@ -158,6 +182,13 @@ def main():
         "pyfai-full-opencl variant",
     )
     parser.add_argument(
+        "--with-cuda",
+        action="store_true",
+        help="Build Dioptrin with the 'cuda' Cargo feature (features python,cuda) "
+        "for the dioptrin-*-cuda variants; running them needs an NVIDIA driver "
+        "and NVRTC at run time, not at build time",
+    )
+    parser.add_argument(
         "--azint-only",
         action="store_true",
         help="Rebuild only azint in an existing environment; keep the installed "
@@ -167,6 +198,8 @@ def main():
     args = parser.parse_args()
     if args.pyfai_wheel is not None and args.azint_only:
         parser.error("--pyfai-wheel requires a full environment build")
+    if args.with_cuda and args.azint_only:
+        parser.error("--with-cuda requires a full environment build")
     windows = sys.platform == "win32"
     if sys.platform not in ("linux", "darwin", "win32"):
         parser.error("Use Linux, macOS, or Windows")
@@ -262,20 +295,7 @@ def main():
                 )
             locked = ["--locked"] if (ROOT / "Cargo.lock").is_file() else []
             run(
-                [
-                    python,
-                    "-m",
-                    "maturin",
-                    "build",
-                    "--release",
-                    "--features",
-                    "python",
-                    *locked,
-                    "--interpreter",
-                    python,
-                    "--out",
-                    wheels,
-                ],
+                maturin_command(python, wheels, args.with_cuda, locked),
                 cwd=ROOT,
                 env=env,
             )
@@ -416,6 +436,8 @@ def main():
                     installed_dioptrin=installed,
                     portable=args.portable,
                     opencl=OPENCL_REQUIREMENT if args.with_opencl else None,
+                    cuda=args.with_cuda,
+                    cargo_features=cargo_features(args.with_cuda),
                     pyfai_wheel=pyfai_wheel,
                     flags={
                         k: env[k]

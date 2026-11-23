@@ -296,6 +296,34 @@ class ProcessModeTests(unittest.TestCase):
         probes = dict(pyfai_openmp=dict(openmp=True), opencl=dict(available=True))
         self.assertEqual(skipped_variants(["pyfai-full-omp"], probes), [])
 
+    def test_numa_binding_needs_enough_cpus_per_node(self):
+        """Node CPUs within the affinity must cover the workers bound to it."""
+        nodes = {0: [0, 1, 2, 3], 1: [4, 5]}  # node 1 partly outside the affinity
+        with (
+            patch("compare.shutil.which", return_value="/usr/bin/numactl"),
+            patch("compare.numa_nodes", return_value=nodes),
+        ):
+            self.assertEqual(
+                binding_commands("numa", 2, 2),
+                [
+                    ["/usr/bin/numactl", "--cpunodebind=0", "--membind=0"],
+                    ["/usr/bin/numactl", "--cpunodebind=1", "--membind=1"],
+                ],
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"NUMA node 1 has 2 CPU\(s\) in this process's affinity \(4-5\), "
+                r"fewer than the 3 worker\(s\)",
+            ):
+                binding_commands("numa", 2, 3)
+            # Four ranks: two per node share the node's CPUs.
+            binding_commands("numa", 4, 1)
+            with self.assertRaisesRegex(RuntimeError, "NUMA node 1 .* 4 worker"):
+                binding_commands("numa", 4, 2)
+            # Three ranks: node 0 gets ranks 0 and 2, node 1 only rank 1.
+            binding_commands("numa", 3, 2)
+            self.assertEqual(binding_commands("none", 2, 64), [[], []])
+
     def test_two_process_run_with_beam_pixel_mask(self):
         """End to end: pyFAI rows in one and two processes, direct beam masked."""
         with tempfile.TemporaryDirectory() as temporary:

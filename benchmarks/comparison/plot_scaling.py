@@ -20,8 +20,10 @@ CPU = {
     "pyfai-full": ("pyFAI full CSR", "#d55e00", "s"),
     "dioptrin-supersampled": ("Dioptrin supersampled", "#009e73", "^"),
     "azint": ("AZINT subpixel", "#9b5597", "D"),
-    "azint-prepared-mask": ("AZINT prepared mask", "#6e3b82", "s"),
+    "azint-cached": ("AZINT cached normalisation", "#6e3b82", "s"),
 }
+# Earlier name of azint-cached (results recorded before the rename).
+CPU_ALIASES = {"azint-prepared-mask": "azint-cached"}
 GPU = {
     "dioptrin-cuda-single": ("Dioptrin CUDA, per frame", "#009e73"),
     "dioptrin-cuda-pageable": ("Dioptrin CUDA, ordinary", "#56b4e9"),
@@ -40,17 +42,25 @@ def save(fig, output, name):
     plt.close(fig)
 
 
-def plot_cpu(directory, output, mode):
+def plot_cpu(directory, output, mode, processes=1):
+    """1D rows of `processes` processes (rows recorded before these fields
+    existed are 1D single-process); 2D cakes and other process counts are
+    left out rather than pooled into the same points."""
     rates = defaultdict(list)
     frame_counts = defaultdict(set)
     for path in sorted((directory / "cases").glob("*.result.json")):
         row = json.loads(path.read_text(encoding="utf-8"))
+        if row.get("dimension", "1d") != "1d" or row.get("processes", 1) != processes:
+            continue
         if row["error_mode"] == mode and row["workload"] == "repeated":
-            rates[row["dataset"], row["variant"], row["workers"]].append(row["frames_per_s"])
+            variant = CPU_ALIASES.get(row["variant"], row["variant"])
+            rates[row["dataset"], variant, row["workers"]].append(row["frames_per_s"])
             frame_counts[row["dataset"]].add(row["frames"])
     datasets = [d for d in DATASETS if any(key[0] == d for key in rates)]
     if not datasets:
-        raise ValueError(f"No CPU results in {directory} for {mode}")
+        raise ValueError(
+            f"No 1D {processes}-process CPU results in {directory} for {mode}"
+        )
     fig, axes = plt.subplots(
         2, len(datasets), figsize=(3.7 * len(datasets), 5.8),
         sharey="row", squeeze=False, layout="constrained",
@@ -86,7 +96,8 @@ def plot_cpu(directory, output, mode):
     axes[0, 0].set_ylabel("Throughput (frames/s)")
     axes[1, 0].set_ylabel("Speedup over one worker")
     fig.legend(handles.values(), handles.keys(), loc="outside lower center", ncol=2, frameon=False)
-    save(fig, output, f"cpu-scaling-{mode}")
+    suffix = "" if processes == 1 else f"-p{processes}"
+    save(fig, output, f"cpu-scaling-{mode}{suffix}")
 
 
 def plot_gpu(records, output, mode, series, metric, filename):
@@ -131,12 +142,19 @@ def main():
     parser.add_argument("--gpu", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("intensity", "poisson"), default="poisson")
+    parser.add_argument(
+        "--processes",
+        type=int,
+        default=1,
+        help="CPU plot: use the 1D rows of this process count (compare.py "
+        "--processes); default 1. 2D rows are never plotted.",
+    )
     args = parser.parse_args()
     if not (args.cpu or args.gpu):
         parser.error("pass at least one of --cpu and --gpu")
     args.output.mkdir(parents=True, exist_ok=True)
     if args.cpu:
-        plot_cpu(args.cpu, args.output, args.mode)
+        plot_cpu(args.cpu, args.output, args.mode, args.processes)
     if args.gpu:
         plot_gpu(args.gpu, args.output, args.mode, GPU,
                  "Host-to-pattern throughput (frames/s)", "gpu-detector-scaling")
