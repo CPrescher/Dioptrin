@@ -19,7 +19,7 @@ import os, tempfile, threading, time
 import numpy as np, tifffile, dioptrin
 poni = dict(pixel1=1e-4, pixel2=1e-4, distance=0.1, poni1=0.1, poni2=0.1,
             rot1=0.01, rot2=-0.02, rot3=0, wavelength=1e-10)
-SHAPE = (1500, 1500)
+SHAPE = (500, 500)
 rng = np.random.default_rng(0)
 IMAGE = rng.random(SHAPE) * 100
 d = tempfile.mkdtemp()
@@ -72,6 +72,7 @@ class Integrate1dGilTests(unittest.TestCase):
             ai = make(method)
             for name, call in CALLS.items():
                 expected[method, name] = snapshot(call(ai, IMAGE))
+        del ai  # only the threads' integrators hold tables from here on
         got, errors = {}, []
         def worker(method):
             try:
@@ -96,8 +97,9 @@ class Integrate1dGilTests(unittest.TestCase):
         overlap), and only a call that releases the GIL lets the other thread
         start one meanwhile. With the default 5 ms interval a GIL-holding call
         would still overlap: a thread can be switched out after reading its
-        start time, so its interval contains the other thread's call. A call
-        with azimuthal_std takes about 10 ms, long enough to time one alone."""
+        start time, so its interval contains the other thread's call. With
+        the switch interval raised, even a call of about a millisecond (one
+        with azimuthal_std on IMAGE) separates the two cases."""
         self.check("""
         import sys
         sys.setswitchinterval(30.0)
