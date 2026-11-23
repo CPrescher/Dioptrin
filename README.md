@@ -404,7 +404,7 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
-`integrate2d` releases the GIL while it loads a TIFF and while it integrates,
+`integrate1d` and `integrate2d` release the GIL while they load a TIFF and while they integrate,
 so other Python threads keep running; a NumPy input is borrowed for the call and
 must not be mutated concurrently. An `Integrator` cannot be shared between
 threads: give each thread its own.

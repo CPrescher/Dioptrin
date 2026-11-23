@@ -421,6 +421,11 @@ class Integrator:
         Returns:
             IntegrationResult with radial values, intensities, and optional errors
 
+        The GIL is released while a TIFF loads and while the image is integrated,
+        so other Python threads run meanwhile. An Integrator cannot be shared
+        between threads; give each thread its own. A NumPy input is borrowed
+        read-only for the call and must not be mutated concurrently.
+
         Raises:
             ValueError: If n_points is 0, the TIFF cannot be loaded or is not
                 single-channel (e.g. RGB), the image is empty or not

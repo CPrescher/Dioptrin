@@ -92,6 +92,8 @@ for every method: radial axis, sub-ranges against a full range, dropped pixels
 **`test_integrate2d_gil.py`** - `integrate2d` releases the GIL: threaded results
 match, two integrators run concurrently, Python threads keep running
 
+**`test_integrate1d_gil.py`** - the same for `integrate1d`
+
 **`mask_example.py`** - Demonstration of pixel masking
 
 ### Batch Processing

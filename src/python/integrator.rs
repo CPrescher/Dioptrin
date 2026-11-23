@@ -215,6 +215,33 @@ pub(super) fn resolve_azimuthal_bins(
     }
 }
 
+/// Integrate one image to 1D as `Integrator.integrate1d` (and `batch1d`'s
+/// array branch) does, without touching Python: callers run it detached from
+/// the interpreter.
+fn integrate1d_slice(
+    integrator: &Integrator,
+    data: &[f64],
+    dim1: usize,
+    dim2: usize,
+    n_points: usize,
+    errors: bool,
+    azimuthal_std: bool,
+) -> PyIntegrationResult {
+    if azimuthal_std {
+        PyIntegrationResult::from_azimuthal(
+            integrator
+                .integrate1d_with_azimuthal_std_from_slice(data, dim1, dim2, n_points, errors),
+        )
+    } else if errors {
+        let (radial, intensity, errs) =
+            integrator.integrate1d_with_errors_from_slice(data, dim1, dim2, n_points);
+        PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+    } else {
+        let (radial, intensity) = integrator.integrate1d_from_slice(data, dim1, dim2, n_points);
+        PyIntegrationResult::from_1d(radial, intensity)
+    }
+}
+
 /// Binning of one Python 2D call, after its arguments were resolved.
 #[derive(Clone, Copy)]
 struct Bins2d {
@@ -811,6 +838,12 @@ impl PyIntegrator {
     ///
     /// IntegrationResult with radial values, intensities, and optional errors
     ///
+    /// The GIL is released while a TIFF loads and while the image is integrated,
+    /// so other Python threads run meanwhile (one Integrator per thread: an
+    /// Integrator cannot be shared between threads). A NumPy input is borrowed
+    /// read-only, without copying, for the duration of the call and must not be
+    /// mutated concurrently.
+    ///
     /// # Example
     ///
     /// ```python
@@ -821,39 +854,50 @@ impl PyIntegrator {
     #[pyo3(signature = (image, n_points, errors=false, *, azimuthal_std=false))]
     fn integrate1d(
         &self,
+        py: Python<'_>,
         image: ImageInput,
         n_points: usize,
         errors: bool,
         azimuthal_std: bool,
     ) -> PyResult<PyIntegrationResult> {
         check_positive("n_points", n_points)?;
+        let integrator = &*self.integrator;
+        // The GIL is released while the TIFF loads and while the image is
+        // integrated; only plain Rust data crosses into the detached regions.
         match image {
             ImageInput::Path(tiff_path) => {
-                let mut frame = TiffFrame::default();
-                frame.reload(&tiff_path).map_err(|err| {
-                    PyValueError::new_err(format!("Failed to load TIFF: {}", err))
-                })?;
+                let frame = py
+                    .detach(|| {
+                        let mut frame = TiffFrame::default();
+                        frame
+                            .reload(&tiff_path)
+                            .map(|_| frame)
+                            .map_err(|err| err.to_string())
+                    })
+                    .map_err(|err| {
+                        PyValueError::new_err(format!("Failed to load TIFF: {}", err))
+                    })?;
                 self.check_mask((frame.dim1, frame.dim2), "image")?;
-                if azimuthal_std {
-                    return Ok(PyIntegrationResult::from_azimuthal(
-                        Integration1DWithAzimuthalStd {
-                            n_bins: n_points,
-                            errors,
-                        }
-                        .execute_tiff(&self.integrator, &frame),
-                    ));
-                }
-                if errors {
-                    let (radial, intensity, errs) =
-                        self.integrator.integrate_tiff1d::<true>(&frame, n_points);
-                    Ok(PyIntegrationResult::from_1d_with_errors(
-                        radial, intensity, errs,
-                    ))
-                } else {
-                    let (radial, intensity, _) =
-                        self.integrator.integrate_tiff1d::<false>(&frame, n_points);
-                    Ok(PyIntegrationResult::from_1d(radial, intensity))
-                }
+                Ok(py.detach(|| {
+                    if azimuthal_std {
+                        return PyIntegrationResult::from_azimuthal(
+                            Integration1DWithAzimuthalStd {
+                                n_bins: n_points,
+                                errors,
+                            }
+                            .execute_tiff(integrator, &frame),
+                        );
+                    }
+                    if errors {
+                        let (radial, intensity, errs) =
+                            integrator.integrate_tiff1d::<true>(&frame, n_points);
+                        PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+                    } else {
+                        let (radial, intensity, _) =
+                            integrator.integrate_tiff1d::<false>(&frame, n_points);
+                        PyIntegrationResult::from_1d(radial, intensity)
+                    }
+                }))
             }
             ImageInput::Array(array) => {
                 let (dim1, dim2) = extract_array_dims(&array, "float64")?;
@@ -861,26 +905,19 @@ impl PyIntegrator {
                     PyValueError::new_err(format!("Array must be contiguous: {}", err))
                 })?;
                 self.check_mask((dim1, dim2), "image")?;
-                if azimuthal_std {
-                    return Ok(PyIntegrationResult::from_azimuthal(
-                        self.integrator.integrate1d_with_azimuthal_std_from_slice(
-                            slice, dim1, dim2, n_points, errors,
-                        ),
-                    ));
-                }
-                if errors {
-                    let (radial, intensity, errs) = self
-                        .integrator
-                        .integrate1d_with_errors_from_slice(slice, dim1, dim2, n_points);
-                    Ok(PyIntegrationResult::from_1d_with_errors(
-                        radial, intensity, errs,
-                    ))
-                } else {
-                    let (radial, intensity) = self
-                        .integrator
-                        .integrate1d_from_slice(slice, dim1, dim2, n_points);
-                    Ok(PyIntegrationResult::from_1d(radial, intensity))
-                }
+                // `array` keeps its read-only borrow guard until this call
+                // returns; the array must not be mutated concurrently.
+                Ok(py.detach(|| {
+                    integrate1d_slice(
+                        integrator,
+                        slice,
+                        dim1,
+                        dim2,
+                        n_points,
+                        errors,
+                        azimuthal_std,
+                    )
+                }))
             }
         }
     }
