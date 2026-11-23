@@ -10,7 +10,7 @@ enum Indices<'a> {
     },
     Csc {
         ptr: &'a [u32],
-        bins: &'a [u32],
+        bins: std::borrow::Cow<'a, [u32]>,
         active: &'a [u32],
         chunks: usize,
     },
@@ -114,7 +114,7 @@ impl<'a> Float32<'a> {
                 .collect::<Vec<_>>(),
             Indices::Csc {
                 ptr,
-                bins,
+                ref bins,
                 active,
                 chunks,
             } => {

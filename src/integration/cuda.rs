@@ -204,7 +204,7 @@ pub enum CudaError {
     /// NVRTC missing, or the kernels failed to compile or load for the device.
     Unavailable(String),
     /// The integrator configuration is not supported on the device (dynamic
-    /// mask mode, histogram or supersampled method, a table too large for
+    /// mask mode, histogram method, or a table too large for
     /// 32-bit indices).
     Unsupported(String),
     /// Invalid shapes, sizes, frame lengths or memory budgets.
@@ -709,10 +709,13 @@ fn check_configuration(
     }
     if !matches!(
         integrator.method,
-        IntegrationMethod::Counting | IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull
+        IntegrationMethod::Counting
+            | IntegrationMethod::PixelSplit
+            | IntegrationMethod::PyfaiFull
+            | IntegrationMethod::Supersampled { .. }
     ) {
         return Err(CudaError::Unsupported(format!(
-            "CUDA 1D supports the counting, pixel_split and pyfai_full methods, not {:?}",
+            "CUDA 1D supports the counting, pixel_split, pyfai_full and supersampled methods, not {:?}",
             integrator.method
         )));
     }
@@ -738,7 +741,7 @@ impl Integrator {
     ///    frame has more than `u32::MAX` pixels, or `max_batch_bytes` is 0:
     ///    [`CudaError::InvalidInput`].
     /// 2. The mask mode is not [`MaskMode::Fixed`]: [`CudaError::Unsupported`].
-    /// 3. The method is not counting, pixel_split or pyfai_full:
+    /// 3. The method is not counting, pixel_split, pyfai_full or supersampled:
     ///    [`CudaError::Unsupported`].
     /// 4. `shape` does not match the mask or the attached detector:
     ///    [`CudaError::InvalidInput`].

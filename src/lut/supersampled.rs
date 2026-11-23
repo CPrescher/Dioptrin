@@ -138,6 +138,400 @@ where
     (row_ptr, col_idx, values)
 }
 
+/// Precomputed `cos(2θ) * |cos(2θ)|` thresholds for every bin edge `0..=n_bins`.
+/// Monotonically non-increasing with bin index.
+fn radial_edge_cos2(
+    hist_min: f64,
+    hist_step: f64,
+    n_bins: usize,
+    conversion: &RadialConversion,
+) -> Vec<f64> {
+    (0..=n_bins)
+        .map(|b| {
+            let r_edge = hist_min + (b as f64) * hist_step;
+            let tth = match conversion.unit {
+                RadialUnit::TthRad => r_edge,
+                RadialUnit::TthDeg => r_edge.to_radians(),
+                RadialUnit::QAngstrom | RadialUnit::QNm => {
+                    let s = r_edge / conversion.q_scale;
+                    if s <= 0.0 {
+                        -1.0
+                    } else if s >= 1.0 {
+                        std::f64::consts::PI + 1.0
+                    } else {
+                        2.0 * s.asin()
+                    }
+                }
+            };
+            if tth <= 0.0 {
+                2.0
+            } else if tth >= std::f64::consts::PI {
+                -2.0
+            } else {
+                let c = tth.cos();
+                c * c.abs()
+            }
+        })
+        .collect()
+}
+
+/// Sign of `d(tan²2θ)/ds` at point `p` along direction `d` (valid for `p[2] > 0`).
+#[inline(always)]
+fn edge_grad_sign(p: [f64; 3], d: [f64; 3]) -> f64 {
+    (p[0] * d[0] + p[1] * d[1]) * p[2] - (p[0] * p[0] + p[1] * p[1]) * d[2]
+}
+
+/// Finds bin index `b` in `0..=n_bins` for `u` using a local `hint` first.
+/// Returns `0` if `u > c_edges[0]` when `clamped`, or `n_bins` if `u <= c_edges[n_bins]`.
+#[inline(always)]
+fn find_bin_hint(c_edges: &[f64], u: f64, hint: usize) -> usize {
+    let n_bins = c_edges.len() - 1;
+    let mut b = hint.min(n_bins.saturating_sub(1));
+    if u > c_edges[b] {
+        while b > 0 && u > c_edges[b] {
+            b -= 1;
+        }
+        return b;
+    }
+    if u <= c_edges[b + 1] {
+        // Walk forward a few steps before falling back to binary search.
+        let limit = (b + 4).min(n_bins);
+        while b < limit && u <= c_edges[b + 1] {
+            b += 1;
+            if b == n_bins {
+                return n_bins;
+            }
+        }
+        if b < n_bins && u <= c_edges[b + 1] {
+            // `c_edges` is non-increasing: find first `i` where `c_edges[i] < u`.
+            let pos = c_edges.partition_point(|&ce| ce >= u);
+            return pos.saturating_sub(1).min(n_bins);
+        }
+    }
+    b
+}
+
+/// Fast 1D supersampled CSR builder using affine corner monotonicity and
+/// `cos²(2θ)` bin-edge thresholds for flat detectors, falling back to exact
+/// per-subpixel evaluation near boundaries or for distorted detectors.
+#[allow(clippy::too_many_arguments)]
+fn build_counted_1d_csr<F>(
+    geometry: &Geometry,
+    n_ss: usize,
+    n_bins: usize,
+    hist_min: f64,
+    hist_step: f64,
+    clamped: bool,
+    conversion: &RadialConversion,
+    sample_bin: F,
+) -> (Vec<usize>, Vec<usize>, Vec<f64>)
+where
+    F: Fn(f64, f64) -> Option<usize> + Sync,
+{
+    let transform = geometry.subpixel_transform();
+    let Some((p0, d1_step, d2_step)) = transform.affine_plane() else {
+        return build_counted_csr(geometry, n_ss, n_bins, false, sample_bin);
+    };
+    if n_bins == 0 {
+        return build_counted_csr(geometry, n_ss, n_bins, false, sample_bin);
+    }
+
+    const MARGIN: f64 = 1e-9;
+    let c_edges = radial_edge_cos2(hist_min, hist_step, n_bins, conversion);
+    let ss2 = n_ss * n_ss;
+    let inv_ss = 1.0 / n_ss as f64;
+    let s1 = [
+        d1_step[0] * inv_ss,
+        d1_step[1] * inv_ss,
+        d1_step[2] * inv_ss,
+    ];
+    let s2 = [
+        d2_step[0] * inv_ss,
+        d2_step[1] * inv_ss,
+        d2_step[2] * inv_ss,
+    ];
+    let dim2 = geometry.dim2();
+
+    let rows: Vec<Box<[Contribution]>> = (0..geometry.dim1())
+        .into_par_iter()
+        .map(|row| {
+            let mut entries = Vec::with_capacity(dim2 * 2);
+            let mut counts: Vec<(usize, usize)> = Vec::new();
+            let rf = row as f64;
+            let mut p00 = [
+                p0[0] + rf * d1_step[0],
+                p0[1] + rf * d1_step[1],
+                p0[2] + rf * d1_step[2],
+            ];
+            let mut p10 = [
+                p00[0] + d1_step[0],
+                p00[1] + d1_step[1],
+                p00[2] + d1_step[2],
+            ];
+            let mut hint = 0usize;
+
+            for col in 0..dim2 {
+                let p01 = [
+                    p00[0] + d2_step[0],
+                    p00[1] + d2_step[1],
+                    p00[2] + d2_step[2],
+                ];
+                let p11 = [
+                    p10[0] + d2_step[0],
+                    p10[1] + d2_step[1],
+                    p10[2] + d2_step[2],
+                ];
+                let pixel = row * dim2 + col;
+
+                let fast_done = if p00[2] > 0.0 && p01[2] > 0.0 && p10[2] > 0.0 && p11[2] > 0.0 {
+                    let mono = edge_grad_sign(p00, d2_step) * edge_grad_sign(p01, d2_step) > 0.0
+                        && edge_grad_sign(p10, d2_step) * edge_grad_sign(p11, d2_step) > 0.0
+                        && edge_grad_sign(p00, d1_step) * edge_grad_sign(p10, d1_step) > 0.0
+                        && edge_grad_sign(p01, d1_step) * edge_grad_sign(p11, d1_step) > 0.0;
+                    if mono {
+                        let u00 = (p00[2] * p00[2])
+                            / (p00[0] * p00[0] + p00[1] * p00[1] + p00[2] * p00[2]);
+                        let u01 = (p01[2] * p01[2])
+                            / (p01[0] * p01[0] + p01[1] * p01[1] + p01[2] * p01[2]);
+                        let u10 = (p10[2] * p10[2])
+                            / (p10[0] * p10[0] + p10[1] * p10[1] + p10[2] * p10[2]);
+                        let u11 = (p11[2] * p11[2])
+                            / (p11[0] * p11[0] + p11[1] * p11[1] + p11[2] * p11[2]);
+                        let u_min = u00.min(u01).min(u10.min(u11));
+                        let u_max = u00.max(u01).max(u10.max(u11));
+
+                        if !clamped
+                            && (u_min > c_edges[0] + MARGIN || u_max < c_edges[n_bins] - MARGIN)
+                        {
+                            true
+                        } else {
+                            let mut b_lo = find_bin_hint(&c_edges, u_max, hint);
+                            let mut b_hi = find_bin_hint(&c_edges, u_min, b_lo);
+                            if clamped {
+                                b_lo = b_lo.min(n_bins - 1);
+                                b_hi = b_hi.min(n_bins - 1);
+                            }
+                            hint = b_lo;
+
+                            if b_lo == b_hi && b_lo < n_bins {
+                                let lo_ok =
+                                    (clamped && b_lo == 0) || u_max + MARGIN < c_edges[b_lo];
+                                let hi_ok = (clamped && b_lo == n_bins - 1)
+                                    || u_min - MARGIN > c_edges[b_lo + 1];
+                                if lo_ok && hi_ok {
+                                    entries.push(Contribution {
+                                        bin: b_lo,
+                                        pixel,
+                                        count: ss2,
+                                    });
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else if b_hi == b_lo + 1 && b_hi < n_bins {
+                                let lo_ok =
+                                    (clamped && b_lo == 0) || u_max + MARGIN < c_edges[b_lo];
+                                let hi_ok = (clamped && b_hi == n_bins - 1)
+                                    || u_min - MARGIN > c_edges[b_hi + 1];
+                                if lo_ok && hi_ok {
+                                    let c = c_edges[b_hi];
+                                    let mut cnt_lo = 0usize;
+                                    let mut cnt_hi = 0usize;
+                                    let mut rx = p00[0] + 0.5 * (s1[0] + s2[0]);
+                                    let mut ry = p00[1] + 0.5 * (s1[1] + s2[1]);
+                                    let mut rz = p00[2] + 0.5 * (s1[2] + s2[2]);
+                                    let mut exact_overflow = false;
+                                    for i in 0..n_ss {
+                                        let mut x = rx;
+                                        let mut y = ry;
+                                        let mut z = rz;
+                                        for j in 0..n_ss {
+                                            let r2 = x * x + y * y + z * z;
+                                            let diff = z * z - c * r2;
+                                            let tol = MARGIN * r2;
+                                            if diff > tol {
+                                                cnt_lo += 1;
+                                            } else if diff < -tol {
+                                                cnt_hi += 1;
+                                            } else {
+                                                let d1 = rf + (i as f64 + 0.5) * inv_ss;
+                                                let d2 = ((col * n_ss + j) as f64 + 0.5) * inv_ss;
+                                                match sample_bin(d1, d2) {
+                                                    Some(b) if b == b_lo => cnt_lo += 1,
+                                                    Some(b) if b == b_hi => cnt_hi += 1,
+                                                    _ => {
+                                                        exact_overflow = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            x += s2[0];
+                                            y += s2[1];
+                                            z += s2[2];
+                                        }
+                                        if exact_overflow {
+                                            break;
+                                        }
+                                        rx += s1[0];
+                                        ry += s1[1];
+                                        rz += s1[2];
+                                    }
+                                    if exact_overflow {
+                                        false
+                                    } else {
+                                        if cnt_lo > 0 {
+                                            entries.push(Contribution {
+                                                bin: b_lo,
+                                                pixel,
+                                                count: cnt_lo,
+                                            });
+                                        }
+                                        if cnt_hi > 0 {
+                                            entries.push(Contribution {
+                                                bin: b_hi,
+                                                pixel,
+                                                count: cnt_hi,
+                                            });
+                                        }
+                                        true
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else if b_hi > b_lo + 1 && b_hi < n_bins && b_hi - b_lo < 16 {
+                                let lo_ok =
+                                    (clamped && b_lo == 0) || u_max + MARGIN < c_edges[b_lo];
+                                let hi_ok = (clamped && b_hi == n_bins - 1)
+                                    || u_min - MARGIN > c_edges[b_hi + 1];
+                                if lo_ok && hi_ok {
+                                    let span = b_hi - b_lo + 1;
+                                    let mut local = [0usize; 16];
+                                    let mut rx = p00[0] + 0.5 * (s1[0] + s2[0]);
+                                    let mut ry = p00[1] + 0.5 * (s1[1] + s2[1]);
+                                    let mut rz = p00[2] + 0.5 * (s1[2] + s2[2]);
+                                    let mut exact_overflow = false;
+                                    for i in 0..n_ss {
+                                        let mut x = rx;
+                                        let mut y = ry;
+                                        let mut z = rz;
+                                        for j in 0..n_ss {
+                                            let r2 = x * x + y * y + z * z;
+                                            let u = (z * z) / r2;
+                                            let mut b = b_lo;
+                                            while b < b_hi && u <= c_edges[b + 1] {
+                                                b += 1;
+                                            }
+                                            let near_lo =
+                                                b > b_lo && (c_edges[b] - u).abs() <= MARGIN;
+                                            let near_hi =
+                                                b < b_hi && (u - c_edges[b + 1]).abs() <= MARGIN;
+                                            if !near_lo && !near_hi {
+                                                local[b - b_lo] += 1;
+                                            } else {
+                                                let d1 = rf + (i as f64 + 0.5) * inv_ss;
+                                                let d2 = ((col * n_ss + j) as f64 + 0.5) * inv_ss;
+                                                match sample_bin(d1, d2) {
+                                                    Some(eb) if eb >= b_lo && eb <= b_hi => {
+                                                        local[eb - b_lo] += 1;
+                                                    }
+                                                    _ => {
+                                                        exact_overflow = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            x += s2[0];
+                                            y += s2[1];
+                                            z += s2[2];
+                                        }
+                                        if exact_overflow {
+                                            break;
+                                        }
+                                        rx += s1[0];
+                                        ry += s1[1];
+                                        rz += s1[2];
+                                    }
+                                    if exact_overflow {
+                                        false
+                                    } else {
+                                        for (offset, &count) in local[..span].iter().enumerate() {
+                                            if count > 0 {
+                                                entries.push(Contribution {
+                                                    bin: b_lo + offset,
+                                                    pixel,
+                                                    count,
+                                                });
+                                            }
+                                        }
+                                        true
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !fast_done {
+                    counts.clear();
+                    for i in 0..n_ss {
+                        let d1 = rf + (i as f64 + 0.5) * inv_ss;
+                        for j in 0..n_ss {
+                            let d2 = ((col * n_ss + j) as f64 + 0.5) * inv_ss;
+                            let Some(bin) = sample_bin(d1, d2) else {
+                                continue;
+                            };
+                            match counts.iter_mut().find(|(b, _)| *b == bin) {
+                                Some((_, count)) => *count += 1,
+                                None => counts.push((bin, 1)),
+                            }
+                        }
+                    }
+                    entries.extend(counts.iter().map(|&(bin, count)| Contribution {
+                        bin,
+                        pixel,
+                        count,
+                    }));
+                }
+
+                p00 = p01;
+                p10 = p11;
+            }
+            entries.into_boxed_slice()
+        })
+        .collect();
+
+    let mut row_ptr = vec![0usize; n_bins + 1];
+    for entries in &rows {
+        for entry in entries.iter() {
+            row_ptr[entry.bin + 1] += 1;
+        }
+    }
+    for bin in 0..n_bins {
+        row_ptr[bin + 1] += row_ptr[bin];
+    }
+    let mut col_idx = vec![0usize; row_ptr[n_bins]];
+    let mut values = vec![0.0; row_ptr[n_bins]];
+    let mut next = row_ptr[..n_bins].to_vec();
+    let denom = ss2 as f64;
+    for entries in rows {
+        for entry in entries.iter() {
+            let slot = next[entry.bin];
+            col_idx[slot] = entry.pixel;
+            values[slot] = entry.count as f64 / denom;
+            next[entry.bin] += 1;
+        }
+    }
+    (row_ptr, col_idx, values)
+}
+
 /// Build a supersampled 1D CSR LUT directly (no HashMap in the public type).
 ///
 /// A weight is the fraction of the pixel's `n_ss²` subpixels that fall into the
@@ -179,13 +573,21 @@ pub fn build_lut1d_ss_csr(
 
     let transform = geometry.subpixel_transform();
     let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
-    let (row_ptr, col_idx, values) =
-        build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
+    let (row_ptr, col_idx, values) = build_counted_1d_csr(
+        geometry,
+        n_ss,
+        n_points,
+        hist_min,
+        hist_step,
+        true,
+        &conversion,
+        |d1, d2| {
             let radial = conversion.convert(transform.tth(d1, d2));
             Some(histogram::get_bin_clamped(
                 radial, hist_min, hist_step, n_points,
             ))
-        });
+        },
+    );
 
     Lut1d {
         row_ptr,
@@ -214,11 +616,19 @@ pub fn build_lut1d_ss_csr_with_range(
 
     let transform = geometry.subpixel_transform();
     let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
-    let (row_ptr, col_idx, values) =
-        build_counted_csr(geometry, n_ss, n_points, false, |d1, d2| {
+    let (row_ptr, col_idx, values) = build_counted_1d_csr(
+        geometry,
+        n_ss,
+        n_points,
+        hist_min,
+        hist_step,
+        false,
+        &conversion,
+        |d1, d2| {
             let radial = conversion.convert(transform.tth(d1, d2));
             histogram::get_bin_in_range(radial, hist_min, hist_max, hist_step, n_points)
-        });
+        },
+    );
 
     Lut1d {
         row_ptr,

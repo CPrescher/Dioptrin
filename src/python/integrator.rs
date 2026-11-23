@@ -689,7 +689,7 @@ impl PyIntegrator {
     /// method, unit and radial range; `fast_math` and `sparse_layout` are
     /// ignored. Raises `CudaUnavailableError` when this build has no CUDA
     /// support or the device cannot be used, `ValueError` for an unsupported
-    /// configuration (dynamic mask, histogram or supersampled method) or
+    /// configuration (dynamic mask or histogram method) or
     /// invalid input. The GIL is released while preparing.
     #[pyo3(signature = (shape, n_points, *, precision="f32_compensated", device=0, max_batch_bytes=None))]
     fn prepare_cuda1d(
