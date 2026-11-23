@@ -4,19 +4,24 @@
 //! These names exist in every build. Without the `cuda` cargo feature the Rust
 //! core reports `compiled: false` and `prepare_cuda1d` raises
 //! `CudaUnavailableError` after the configuration checks.
+use std::ffi::c_int;
+use std::sync::Mutex;
+
 use numpy::{
     Element, PyArray2, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyReadonlyArray2,
     PyReadonlyArray3, PyUntypedArray, PyUntypedArrayMethods,
 };
+use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use super::results::PyIntegrationResult;
 use crate::integration::{
-    Cuda1dOptions, Cuda1dPlan, CudaError, CudaPixel, CudaPrecision, Fixed1dResult, Integrator,
-    cuda_info,
+    Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, CudaError, CudaPinnedBytes, CudaPixel, CudaPrecision,
+    Fixed1dResult, Integrator, cuda_info,
 };
 
 create_exception!(
@@ -111,6 +116,9 @@ pub fn cuda_info_py(py: Python<'_>, device: usize) -> PyResult<Bound<'_, PyDict>
 /// Pixel type of one input array.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pixel {
+    U16,
+    U32,
+    I32,
     F32,
     F64,
 }
@@ -118,9 +126,57 @@ enum Pixel {
 impl Pixel {
     fn name(self) -> &'static str {
         match self {
+            Self::U16 => "uint16",
+            Self::U32 => "uint32",
+            Self::I32 => "int32",
             Self::F32 => "float32",
             Self::F64 => "float64",
         }
+    }
+
+    fn itemsize(self) -> usize {
+        match self {
+            Self::U16 => size_of::<u16>(),
+            Self::U32 => size_of::<u32>(),
+            Self::I32 => size_of::<i32>(),
+            Self::F32 => size_of::<f32>(),
+            Self::F64 => size_of::<f64>(),
+        }
+    }
+}
+
+/// Owns a CUDA page-locked host allocation exposed to NumPy via the CPython
+/// buffer protocol so `np.frombuffer(owner, dtype=...).reshape(...)` yields a
+/// standard writable NumPy array whose `.base` keeps the allocation alive.
+#[pyclass(name = "_CudaPinnedBuffer", module = "dioptrin")]
+struct PinnedBufferOwner {
+    _buf: Mutex<CudaPinnedBytes>,
+    ptr: usize,
+    len: isize,
+}
+
+#[pymethods]
+impl PinnedBufferOwner {
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        let owner = slf.borrow();
+        let ret = unsafe {
+            ffi::PyBuffer_FillInfo(
+                view,
+                slf.as_ptr(),
+                owner.ptr as *mut std::ffi::c_void,
+                owner.len,
+                0, // writable
+                flags,
+            )
+        };
+        if ret != 0 {
+            return Err(PyErr::fetch(slf.py()));
+        }
+        Ok(())
     }
 }
 
@@ -146,7 +202,7 @@ fn received(obj: &Bound<'_, PyAny>) -> String {
 }
 
 /// The array and pixel type of `obj`: `TypeError` unless it is a NumPy array
-/// of native float64 or float32.
+/// of native float64, float32, uint16, uint32, or int32.
 fn pixel_type<'a, 'py>(
     obj: &'a Bound<'py, PyAny>,
     what: &str,
@@ -154,7 +210,7 @@ fn pixel_type<'a, 'py>(
     let py = obj.py();
     let array = obj.cast::<PyUntypedArray>().map_err(|_| {
         PyTypeError::new_err(format!(
-            "{what} must be a numpy array with dtype float64 or float32, got {}",
+            "{what} must be a numpy array with dtype float64, float32, uint16, uint32 or int32, got {}",
             received(obj)
         ))
     })?;
@@ -163,9 +219,15 @@ fn pixel_type<'a, 'py>(
         Pixel::F64
     } else if dtype.is_equiv_to(&numpy::dtype::<f32>(py)) {
         Pixel::F32
+    } else if dtype.is_equiv_to(&numpy::dtype::<u16>(py)) {
+        Pixel::U16
+    } else if dtype.is_equiv_to(&numpy::dtype::<u32>(py)) {
+        Pixel::U32
+    } else if dtype.is_equiv_to(&numpy::dtype::<i32>(py)) {
+        Pixel::I32
     } else {
         return Err(PyTypeError::new_err(format!(
-            "{what} must have dtype float64 or float32, got dtype {dtype}"
+            "{what} must have dtype float64, float32, uint16, uint32 or int32, got dtype {dtype}"
         )));
     };
     Ok((array, pixel))
@@ -253,8 +315,14 @@ fn contiguous<'a, T: Element, D: numpy::ndarray::Dimension>(
 /// Checked input arrays of one call, borrowed (never copied) until the call
 /// returns.
 enum Arrays<'py> {
+    U16(Vec<PyReadonlyArray2<'py, u16>>),
+    U32(Vec<PyReadonlyArray2<'py, u32>>),
+    I32(Vec<PyReadonlyArray2<'py, i32>>),
     F64(Vec<PyReadonlyArray2<'py, f64>>),
     F32(Vec<PyReadonlyArray2<'py, f32>>),
+    StackU16(PyReadonlyArray3<'py, u16>),
+    StackU32(PyReadonlyArray3<'py, u32>),
+    StackI32(PyReadonlyArray3<'py, i32>),
     Stack64(PyReadonlyArray3<'py, f64>),
     Stack32(PyReadonlyArray3<'py, f32>),
 }
@@ -283,6 +351,9 @@ impl<'py> Borrowed<'py> {
         let (array, pixel) = pixel_type(image, "image")?;
         check_layout(array, "image", 2, shape)?;
         let arrays = match pixel {
+            Pixel::U16 => Arrays::U16(vec![borrow2(image, "image")?]),
+            Pixel::U32 => Arrays::U32(vec![borrow2(image, "image")?]),
+            Pixel::I32 => Arrays::I32(vec![borrow2(image, "image")?]),
             Pixel::F64 => Arrays::F64(vec![borrow2(image, "image")?]),
             Pixel::F32 => Arrays::F32(vec![borrow2(image, "image")?]),
         };
@@ -314,6 +385,9 @@ impl<'py> Borrowed<'py> {
             }
             check_layout(array, "images", 3, shape)?;
             return Ok(match pixel {
+                Pixel::U16 => Arrays::StackU16(borrow3(images, "images")?),
+                Pixel::U32 => Arrays::StackU32(borrow3(images, "images")?),
+                Pixel::I32 => Arrays::StackI32(borrow3(images, "images")?),
                 Pixel::F64 => Arrays::Stack64(borrow3(images, "images")?),
                 Pixel::F32 => Arrays::Stack32(borrow3(images, "images")?),
             });
@@ -350,6 +424,9 @@ impl<'py> Borrowed<'py> {
             check_layout(array, &what, 2, shape)?;
         }
         Ok(match pixel {
+            Pixel::U16 => Arrays::U16(borrow_list(&items)?),
+            Pixel::U32 => Arrays::U32(borrow_list(&items)?),
+            Pixel::I32 => Arrays::I32(borrow_list(&items)?),
             Pixel::F64 => Arrays::F64(borrow_list(&items)?),
             Pixel::F32 => Arrays::F32(borrow_list(&items)?),
         })
@@ -357,6 +434,9 @@ impl<'py> Borrowed<'py> {
 
     fn pixel(&self) -> Pixel {
         match self.arrays {
+            Arrays::U16(_) | Arrays::StackU16(_) => Pixel::U16,
+            Arrays::U32(_) | Arrays::StackU32(_) => Pixel::U32,
+            Arrays::I32(_) | Arrays::StackI32(_) => Pixel::I32,
             Arrays::F64(_) | Arrays::Stack64(_) => Pixel::F64,
             Arrays::F32(_) | Arrays::Stack32(_) => Pixel::F32,
         }
@@ -394,8 +474,14 @@ impl<'py> Borrowed<'py> {
             })
         };
         match &self.arrays {
+            Arrays::U16(arrays) => Ok(self.slices(arrays)?.len()),
+            Arrays::U32(arrays) => Ok(self.slices(arrays)?.len()),
+            Arrays::I32(arrays) => Ok(self.slices(arrays)?.len()),
             Arrays::F64(arrays) => Ok(self.slices(arrays)?.len()),
             Arrays::F32(arrays) => Ok(self.slices(arrays)?.len()),
+            Arrays::StackU16(array) => stack(contiguous(array, "images")?.len()),
+            Arrays::StackU32(array) => stack(contiguous(array, "images")?.len()),
+            Arrays::StackI32(array) => stack(contiguous(array, "images")?.len()),
             Arrays::Stack64(array) => stack(contiguous(array, "images")?.len()),
             Arrays::Stack32(array) => stack(contiguous(array, "images")?.len()),
         }
@@ -410,8 +496,14 @@ impl<'py> Borrowed<'py> {
         errors: bool,
     ) -> PyResult<Vec<PyIntegrationResult>> {
         let results = match &self.arrays {
+            Arrays::U16(arrays) => frames_call(py, plan, &self.slices(arrays)?, errors),
+            Arrays::U32(arrays) => frames_call(py, plan, &self.slices(arrays)?, errors),
+            Arrays::I32(arrays) => frames_call(py, plan, &self.slices(arrays)?, errors),
             Arrays::F64(arrays) => frames_call(py, plan, &self.slices(arrays)?, errors),
             Arrays::F32(arrays) => frames_call(py, plan, &self.slices(arrays)?, errors),
+            Arrays::StackU16(array) => stack_call(py, plan, contiguous(array, "images")?, errors),
+            Arrays::StackU32(array) => stack_call(py, plan, contiguous(array, "images")?, errors),
+            Arrays::StackI32(array) => stack_call(py, plan, contiguous(array, "images")?, errors),
             Arrays::Stack64(array) => stack_call(py, plan, contiguous(array, "images")?, errors),
             Arrays::Stack32(array) => stack_call(py, plan, contiguous(array, "images")?, errors),
         }
@@ -543,5 +635,122 @@ impl PyCuda1dPlan {
         errors: bool,
     ) -> PyResult<Vec<PyIntegrationResult>> {
         Borrowed::batch(images, self.plan.shape())?.run(py, &self.plan, errors)
+    }
+
+    /// Allocate a writable 3D NumPy array `(n_frames, dim1, dim2)` backed by
+    /// CUDA page-locked (pinned) host memory on this plan's device.
+    ///
+    /// Readers such as `dioptrin-io` or `h5py` (`dataset.read_direct(buf)`) can
+    /// decode directly into the returned array; passing it to `batch1d` or
+    /// `integrate1d` then skips the CPU staging copy and DMAs directly to the
+    /// GPU. Supported dtypes: `uint16`, `uint32`, `int32`, `float32`, `float64`.
+    #[pyo3(signature = (n_frames, dtype=None))]
+    fn alloc_pinned_batch<'py>(
+        &self,
+        py: Python<'py>,
+        n_frames: usize,
+        dtype: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let numpy = py.import("numpy")?;
+        let np_dtype = match dtype {
+            Some(d) => numpy.call_method1("dtype", (d,))?,
+            None => numpy.call_method1("dtype", ("float32",))?,
+        };
+        let dtype_str: String = np_dtype.getattr("name")?.extract()?;
+        let pixel = match dtype_str.as_str() {
+            "uint16" => Pixel::U16,
+            "uint32" => Pixel::U32,
+            "int32" => Pixel::I32,
+            "float32" => Pixel::F32,
+            "float64" => Pixel::F64,
+            _ => {
+                return Err(PyTypeError::new_err(format!(
+                    "dtype must be uint16, uint32, int32, float32 or float64, got {dtype_str}"
+                )));
+            }
+        };
+        let (dim1, dim2) = self.plan.shape();
+        let elems = n_frames
+            .checked_mul(dim1)
+            .and_then(|n| n.checked_mul(dim2))
+            .ok_or_else(|| PyValueError::new_err("pinned batch shape overflows usize"))?;
+        let bytes = elems
+            .checked_mul(pixel.itemsize())
+            .ok_or_else(|| PyValueError::new_err("pinned batch byte size overflows usize"))?;
+        let len = isize::try_from(bytes)
+            .map_err(|_| PyValueError::new_err("pinned batch byte size overflows isize"))?;
+        let mut pinned = py
+            .detach(|| self.plan.alloc_pinned_bytes(bytes))
+            .map_err(cuda_error)?;
+        let ptr = pinned.as_mut_ptr().map_err(cuda_error)? as usize;
+        let owner = Py::new(
+            py,
+            PinnedBufferOwner {
+                _buf: Mutex::new(pinned),
+                ptr,
+                len,
+            },
+        )?;
+        let flat = numpy.call_method1("frombuffer", (owner.bind(py), np_dtype))?;
+        flat.call_method1("reshape", ((n_frames, dim1, dim2),))
+    }
+
+    /// Decompress raw HDF5 Bitshuffle+LZ4 chunks directly on the GPU and
+    /// integrate them in VRAM without transferring uncompressed frames over PCIe.
+    ///
+    /// `chunks` is a list or tuple of raw compressed chunk buffers (`bytes`,
+    /// `bytearray`, `memoryview`, or C-contiguous `uint8` arrays — e.g. from
+    /// `h5py.Dataset.id.read_direct_chunk` or `dioptrin-io`).
+    /// Supported dtypes: `uint16`, `uint32`, `int32`.
+    #[pyo3(signature = (chunks, dtype="uint32", *, errors=false))]
+    fn batch1d_bslz4(
+        &self,
+        py: Python<'_>,
+        chunks: &Bound<'_, PyAny>,
+        dtype: &str,
+        errors: bool,
+    ) -> PyResult<Vec<PyIntegrationResult>> {
+        let bslz4_dtype = match dtype {
+            "uint16" | "u16" => Bslz4Dtype::U16,
+            "uint32" | "u32" => Bslz4Dtype::U32,
+            "int32" | "i32" => Bslz4Dtype::I32,
+            _ => {
+                return Err(PyTypeError::new_err(format!(
+                    "dtype must be 'uint16', 'uint32' or 'int32', got {dtype:?}"
+                )));
+            }
+        };
+        if !(chunks.is_instance_of::<PyList>() || chunks.is_instance_of::<PyTuple>()) {
+            return Err(PyTypeError::new_err(format!(
+                "chunks must be a list or tuple of byte buffers, got {}",
+                received(chunks)
+            )));
+        }
+        let mut buffers: Vec<PyBuffer<u8>> = Vec::new();
+        for item in chunks.try_iter()? {
+            let item = item?;
+            let buf = PyBuffer::<u8>::get(&item).map_err(|e| {
+                PyTypeError::new_err(format!("chunk must support the byte buffer protocol: {e}"))
+            })?;
+            if !buf.is_c_contiguous() {
+                return Err(PyValueError::new_err("chunk buffer must be C contiguous"));
+            }
+            buffers.push(buf);
+        }
+        if buffers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let slices: Vec<&[u8]> = buffers
+            .iter()
+            .map(|buf| {
+                // SAFETY: `buf` holds a live Py_buffer lock for the duration of
+                // this synchronous call and is verified C-contiguous.
+                unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes()) }
+            })
+            .collect();
+        let results = py
+            .detach(|| self.plan.integrate_bslz4(&slices, bslz4_dtype, errors))
+            .map_err(cuda_error)?;
+        Ok(results.into_iter().map(to_python).collect())
     }
 }

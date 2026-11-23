@@ -91,12 +91,22 @@ if dioptrin.cuda_available():
 - `Cuda1dPlan.integrate1d(image, *, errors=False)` returns an
   `IntegrationResult`; `Cuda1dPlan.batch1d(images, *, errors=False)` returns
   a list of them. The fields are lists, as for CPU `integrate1d`.
-- Inputs are C-contiguous float64 or float32 arrays of the plan's shape, or a
-  list or tuple of such arrays of one dtype, or one C-contiguous 3D array.
-  They are borrowed without copying for the call and must not be mutated
-  concurrently; read-only arrays and `np.memmap` views are accepted. Float64
-  frames are copied to the device as float64 and rounded to float32 there
+- Inputs are C-contiguous `float64`, `float32`, `uint16`, `uint32` or `int32`
+  arrays of the plan's shape, or a list or tuple of such arrays of one dtype, or
+  one C-contiguous 3D array. They are borrowed without copying for the call and
+  must not be mutated concurrently; read-only arrays and `np.memmap` views are
+  accepted. Integer frames are uploaded natively and converted in-register on
+  the device; `float64` frames are rounded to `float32` into pinned staging
   unless the precision is `"f64"`.
+- `Cuda1dPlan.alloc_pinned_batch(n_frames, dtype="float32")` allocates a
+  writable 3D NumPy array `(n_frames, dim1, dim2)` backed by CUDA page-locked
+  (pinned) host memory. External readers such as `dioptrin-io` or `h5py`
+  (`dataset.read_direct(buf)`) can decode directly into it; `batch1d` detects
+  pinned memory automatically and performs zero-copy async PCIe DMA.
+- `Cuda1dPlan.batch1d_bslz4(chunks, dtype="uint32", *, errors=False)` accepts a
+  sequence of raw HDF5 Bitshuffle+LZ4 compressed frame chunks (for example from
+  `h5py.Dataset.id.read_direct_chunk` or `dioptrin-io`), decompresses them on
+  the GPU, and integrates the resulting frames directly in VRAM.
 - As on the CPU, the mask of an `np.ma.MaskedArray` input is ignored: only its
   data is integrated. Use `set_mask` before preparing the plan instead.
 - `batch1d` processes frames in chunks of at most `plan.max_batch_frames`. A

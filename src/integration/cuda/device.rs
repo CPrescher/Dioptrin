@@ -17,12 +17,15 @@ use std::{
 use cudarc::{
     driver::{
         CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceRepr, DriverError,
-        LaunchConfig, PushKernelArg, ValidAsZeroBits, sys::CUresult,
+        LaunchConfig, PinnedHostSlice, PushKernelArg, ValidAsZeroBits, sys::CUresult,
     },
     nvrtc::{CompileError, CompileOptions, compile_ptx_with_opts},
 };
+use rayon::prelude::*;
 
-use super::{Cuda1dOptions, Cuda1dPlan, CudaError, CudaInfo, CudaPrecision, sealed::Frames};
+use super::{
+    Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, CudaError, CudaInfo, CudaPrecision, sealed::Frames,
+};
 use crate::integration::{Fixed1dResult, Integrator};
 use crate::lut::prepared::Columns;
 #[cfg(test)]
@@ -36,8 +39,12 @@ const DEFAULT_BATCH_BYTES: usize = 1 << 30;
 /// Frames per kernel launch, which bounds the work of one launch on display
 /// GPUs with a watchdog.
 const FRAMES_PER_LAUNCH: u32 = 256;
-/// Layout of the public plans; the recorded runs picked it most often.
-const DEFAULT_LAYOUT: Layout = Layout::Block;
+/// Minimum element count before staging into pinned host memory uses Rayon.
+const PARALLEL_STAGE_THRESHOLD: usize = 65_536;
+/// Target pinned staging size per pipeline slot (192 MiB: holds 4 Eiger 9M f32 frames).
+const PINNED_SLOT_BYTES: usize = 192 << 20;
+/// Maximum average entries per bin that still prefer `Layout::Warp` over `Layout::Block`.
+const WARP_MAX_ENTRIES_PER_BIN: usize = 5000;
 
 impl From<DriverError> for CudaError {
     fn from(error: DriverError) -> Self {
@@ -89,8 +96,6 @@ impl Accumulation {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Layout {
     Block,
-    /// Only the prototype tests and benchmarks use it.
-    #[cfg_attr(not(test), allow(dead_code))]
     Warp,
 }
 
@@ -221,7 +226,6 @@ fn initialise(ordinal: usize, info: &mut CudaInfo) -> Result<Device, String> {
     let ptx = compile_ptx_with_opts(
         include_str!("kernels.cu"),
         CompileOptions {
-            fmad: Some(false),
             options: vec![
                 "--std=c++17".into(),
                 format!("--gpu-architecture={architecture}"),
@@ -612,15 +616,16 @@ impl<T: DeviceRepr> Plan<T> {
             ));
         }
         let groups = self.bins.div_ceil(kernel.layout.bins_per_block());
-        // Keep the grid within i32::MAX blocks (groups <= bins <= i32::MAX).
-        let per_launch = (i32::MAX as u32 / groups).clamp(1, FRAMES_PER_LAUNCH);
+        // Bound one launch on display GPUs with a watchdog.
+        let per_launch = FRAMES_PER_LAUNCH;
         for first in (0..frames).step_by(per_launch as usize) {
             let end = (first + per_launch).min(frames);
+            let count = end - first;
             let input = input.slice(first as usize * pixels..end as usize * pixels);
             let mut output = output
                 .slice_mut(first as usize * output_per_frame..end as usize * output_per_frame);
             let config = LaunchConfig {
-                grid_dim: (groups * (end - first), 1, 1),
+                grid_dim: (groups, count.div_ceil(4), 1),
                 block_dim: (128, 1, 1),
                 shared_mem_bytes: 0,
             };
@@ -634,7 +639,8 @@ impl<T: DeviceRepr> Plan<T> {
                 .arg(&mut output)
                 .arg(&self.pixels)
                 .arg(&self.bins)
-                .arg(&self.weighted);
+                .arg(&self.weighted)
+                .arg(&count);
             // SAFETY: the views span exactly the launched frames and the
             // kernel matches the storage type, layout and variance specialization.
             unsafe { launch.launch(config)? };
@@ -652,6 +658,33 @@ impl Plan {
     ) -> Result<Kernel, CudaError> {
         self.load_kernel(mode.name(), layout, errors)
     }
+
+    pub(super) fn kernel_u16(
+        &self,
+        mode: Accumulation,
+        layout: Layout,
+        errors: bool,
+    ) -> Result<Kernel<f32, u16>, CudaError> {
+        self.load_kernel(&format!("u16_{}", mode.name()), layout, errors)
+    }
+
+    pub(super) fn kernel_u32(
+        &self,
+        mode: Accumulation,
+        layout: Layout,
+        errors: bool,
+    ) -> Result<Kernel<f32, u32>, CudaError> {
+        self.load_kernel(&format!("u32_{}", mode.name()), layout, errors)
+    }
+
+    pub(super) fn kernel_i32(
+        &self,
+        mode: Accumulation,
+        layout: Layout,
+        errors: bool,
+    ) -> Result<Kernel<f32, i32>, CudaError> {
+        self.load_kernel(&format!("i32_{}", mode.name()), layout, errors)
+    }
 }
 
 impl Plan<f64> {
@@ -667,7 +700,14 @@ impl Plan<f64> {
         self.load_kernel("f32_f64", layout, errors)
     }
 
-    #[cfg(test)]
+    pub(super) fn kernel_u16(
+        &self,
+        layout: Layout,
+        errors: bool,
+    ) -> Result<Kernel<f64, u16>, CudaError> {
+        self.load_kernel("u16_f64", layout, errors)
+    }
+
     pub(super) fn kernel_u32(
         &self,
         layout: Layout,
@@ -676,7 +716,6 @@ impl Plan<f64> {
         self.load_kernel("u32_f64", layout, errors)
     }
 
-    #[cfg(test)]
     pub(super) fn kernel_i32(
         &self,
         layout: Layout,
@@ -688,6 +727,7 @@ impl Plan<f64> {
 
 /// Rounds the first `len` values of `source` to `f32` into `destination`
 /// with the `cast_f64_input` kernel.
+#[cfg(test)]
 fn cast_f64(
     stream: &Arc<CudaStream>,
     cast: &CudaFunction,
@@ -815,21 +855,112 @@ impl<T: DeviceRepr, I: DeviceRepr> Batch<'_, T, I> {
     }
 }
 
-/// Device scratch of a public plan, grown on demand up to
-/// `max_batch_frames` frames and reused by later calls.
-#[derive(Default)]
-struct Scratch {
-    /// `f32` frames: the kernel input of `f32` storage, or `f32` input of an
-    /// `f64` plan.
-    narrow: Option<CudaSlice<f32>>,
-    /// `f64` frames: staging for the cast to `f32` storage, or the kernel
-    /// input of an `f64` plan.
-    wide: Option<CudaSlice<f64>>,
-    /// Interleaved results, sized for `[I, σ]` per bin.
-    output: Option<CudaSlice<f64>>,
+/// Returns `true` when `ptr` resides in CUDA page-locked (pinned) host memory,
+/// allowing async hardware PCIe DMA directly from the caller's slice without an
+/// extra CPU staging copy.
+fn is_pinned_host(ptr: *const std::ffi::c_void) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let mut mem_type: u32 = 0;
+    // SAFETY: `cuPointerGetAttribute` queries driver metadata for `ptr` without
+    // dereferencing it; non-CUDA host pointers return `CUDA_ERROR_INVALID_VALUE`.
+    let status = unsafe {
+        cudarc::driver::sys::cuPointerGetAttribute(
+            (&mut mem_type as *mut u32).cast(),
+            cudarc::driver::sys::CUpointer_attribute::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+            ptr as cudarc::driver::sys::CUdeviceptr,
+        )
+    };
+    status == CUresult::CUDA_SUCCESS
+        && mem_type == cudarc::driver::sys::CUmemorytype::CU_MEMORYTYPE_HOST as u32
 }
 
-/// Returns a buffer of at least `len` elements, replacing a smaller one.
+/// Owned page-locked byte buffer for Python zero-copy NumPy arrays.
+#[cfg(feature = "python")]
+pub(super) struct PinnedBytes {
+    slice: PinnedHostSlice<u8>,
+}
+
+#[cfg(feature = "python")]
+impl PinnedBytes {
+    pub(super) fn as_mut_ptr(&mut self) -> Result<*mut u8, CudaError> {
+        Ok(self.slice.as_mut_ptr()?)
+    }
+}
+
+/// Device and pinned-host scratch for one pipeline slot, grown on demand and
+/// reused across calls.
+#[derive(Default)]
+struct SlotScratch {
+    u16_dev: Option<CudaSlice<u16>>,
+    u32_dev: Option<CudaSlice<u32>>,
+    i32_dev: Option<CudaSlice<i32>>,
+    /// `f32` device frames.
+    narrow: Option<CudaSlice<f32>>,
+    /// `f64` device frames (used only by `CudaPrecision::F64` with `f64` input).
+    wide: Option<CudaSlice<f64>>,
+    /// Interleaved device results, sized for `[I, σ]` per bin.
+    output: Option<CudaSlice<f64>>,
+    /// Compressed Bitshuffle+LZ4 payloads and block descriptors on device.
+    comp_dev: Option<CudaSlice<u8>>,
+    descs_dev: Option<CudaSlice<u32>>,
+    err_dev: Option<CudaSlice<u32>>,
+    pinned_u16: Option<PinnedHostSlice<u16>>,
+    pinned_u32: Option<PinnedHostSlice<u32>>,
+    pinned_i32: Option<PinnedHostSlice<i32>>,
+    /// Pinned host staging for `f32` uploads (including CPU-cast `f64 -> f32`).
+    pinned_f32: Option<PinnedHostSlice<f32>>,
+    /// Pinned host staging for `f64` uploads.
+    pinned_f64: Option<PinnedHostSlice<f64>>,
+    /// Pinned host staging for compressed Bitshuffle+LZ4 chunks & descriptors.
+    pinned_comp: Option<PinnedHostSlice<u8>>,
+    pinned_descs: Option<PinnedHostSlice<u32>>,
+    pinned_err: Option<PinnedHostSlice<u32>>,
+    /// Pinned host staging for interleaved `[I, σ]` downloads.
+    pinned_out: Option<PinnedHostSlice<f64>>,
+}
+
+/// Uploads `frames` of element type `X` into `dev_slot` on `stream`.
+/// If the caller's memory is already CUDA-pinned, it DMAs directly with zero
+/// CPU copy; otherwise multi-frame tiles stage via Rayon into `pinned_slot`.
+fn upload_same_dtype<'s, X: DeviceRepr + ValidAsZeroBits + Copy + Send + Sync>(
+    stream: &Arc<CudaStream>,
+    frames: &[&[X]],
+    pixels: usize,
+    values: usize,
+    dev_slot: &'s mut Option<CudaSlice<X>>,
+    pinned_slot: &mut Option<PinnedHostSlice<X>>,
+    stage_to_pinned: bool,
+) -> Result<&'s CudaSlice<X>, CudaError> {
+    let input = reserve(stream, dev_slot, values)?;
+    let all_pinned = frames.iter().all(|s| is_pinned_host(s.as_ptr().cast()));
+    if all_pinned {
+        let mut offset = 0;
+        for slice in frames {
+            let mut dev_dst = input.slice_mut(offset..offset + slice.len());
+            stream.memcpy_htod(*slice, &mut dev_dst)?;
+            offset += slice.len();
+        }
+    } else if stage_to_pinned {
+        let pinned = reserve_pinned(stream.context(), pinned_slot, values)?;
+        stage_copy(frames, &mut pinned.as_mut_slice()?[..values], pixels);
+        let mut dev_dst = input.slice_mut(..values);
+        stream.memcpy_htod(&pinned.as_slice()?[..values], &mut dev_dst)?;
+    } else {
+        let mut dev_dst = input.slice_mut(..values);
+        stream.memcpy_htod(frames[0], &mut dev_dst)?;
+    }
+    Ok(input)
+}
+
+/// Two-slot double-buffered scratch of a public plan.
+#[derive(Default)]
+struct Scratch {
+    slots: [SlotScratch; 2],
+}
+
+/// Returns a device buffer of at least `len` elements, replacing a smaller one.
 fn reserve<'s, X: DeviceRepr + ValidAsZeroBits>(
     stream: &Arc<CudaStream>,
     slot: &'s mut Option<CudaSlice<X>>,
@@ -842,6 +973,91 @@ fn reserve<'s, X: DeviceRepr + ValidAsZeroBits>(
     }
     slot.as_mut()
         .ok_or_else(|| CudaError::Device("CUDA scratch allocation is missing".into()))
+}
+
+/// Returns a cacheable pinned host buffer of at least `len` elements, replacing
+/// a smaller one.
+fn reserve_pinned<'s, X: DeviceRepr + ValidAsZeroBits>(
+    context: &Arc<CudaContext>,
+    slot: &'s mut Option<PinnedHostSlice<X>>,
+    len: usize,
+) -> Result<&'s mut PinnedHostSlice<X>, CudaError> {
+    if !slot.as_ref().is_some_and(|buffer| buffer.len() >= len) {
+        *slot = None;
+        // SAFETY: `X: ValidAsZeroBits` and the allocation is zero-initialised
+        // before any typed slice is created; flags = 0 requests cacheable pages.
+        let mut host = unsafe { context.alloc_pinned_with_flags::<X>(len, 0)? };
+        unsafe { host.as_mut_ptr()?.write_bytes(0, len) };
+        *slot = Some(host);
+    }
+    slot.as_mut()
+        .ok_or_else(|| CudaError::Device("CUDA pinned staging allocation is missing".into()))
+}
+
+/// Copies `slices` (either one contiguous stack slice or per-frame slices) into
+/// `dst`, using Rayon when large enough to saturate host memory bandwidth.
+fn stage_copy<X: Copy + Send + Sync>(slices: &[&[X]], dst: &mut [X], pixels: usize) {
+    if slices.len() == 1 {
+        let src = slices[0];
+        if dst.len() >= PARALLEL_STAGE_THRESHOLD {
+            let chunk = dst
+                .len()
+                .div_ceil(rayon::current_num_threads().max(1))
+                .max(PARALLEL_STAGE_THRESHOLD);
+            dst.par_chunks_mut(chunk)
+                .zip(src.par_chunks(chunk))
+                .for_each(|(d, s)| d.copy_from_slice(s));
+        } else {
+            dst.copy_from_slice(src);
+        }
+    } else if dst.len() >= PARALLEL_STAGE_THRESHOLD {
+        dst.par_chunks_exact_mut(pixels)
+            .zip(slices.par_iter())
+            .for_each(|(d, s)| d.copy_from_slice(s));
+    } else {
+        for (d, s) in dst.chunks_exact_mut(pixels).zip(slices.iter()) {
+            d.copy_from_slice(s);
+        }
+    }
+}
+
+/// Rounds `f64` frames to `f32` (IEEE 754 round-to-nearest-even, matching
+/// `__double2float_rn`) directly into pinned host staging, halving PCIe traffic.
+fn stage_f64_to_f32(slices: &[&[f64]], dst: &mut [f32], pixels: usize) {
+    if slices.len() == 1 {
+        let src = slices[0];
+        if dst.len() >= PARALLEL_STAGE_THRESHOLD {
+            let chunk = dst
+                .len()
+                .div_ceil(rayon::current_num_threads().max(1))
+                .max(PARALLEL_STAGE_THRESHOLD);
+            dst.par_chunks_mut(chunk)
+                .zip(src.par_chunks(chunk))
+                .for_each(|(d, s)| {
+                    for (out, &x) in d.iter_mut().zip(s) {
+                        *out = x as f32;
+                    }
+                });
+        } else {
+            for (out, &x) in dst.iter_mut().zip(src) {
+                *out = x as f32;
+            }
+        }
+    } else if dst.len() >= PARALLEL_STAGE_THRESHOLD {
+        dst.par_chunks_exact_mut(pixels)
+            .zip(slices.par_iter())
+            .for_each(|(d, s)| {
+                for (out, &x) in d.iter_mut().zip(s.iter()) {
+                    *out = x as f32;
+                }
+            });
+    } else {
+        for (d, s) in dst.chunks_exact_mut(pixels).zip(slices.iter()) {
+            for (out, &x) in d.iter_mut().zip(s.iter()) {
+                *out = x as f32;
+            }
+        }
+    }
 }
 
 /// Loads the kernel variants without and with errors.
@@ -863,33 +1079,12 @@ pub(super) fn frame_count<X>(slices: &[&[X]], pixels: usize) -> Result<usize, Cu
     })
 }
 
-/// Copies `slices` of whole frames (one frame each, or one contiguous stack
-/// chunk) to consecutive frame slots at the start of `input`, with one copy
-/// per slice.
-fn copy_frames<X: DeviceRepr>(
-    stream: &Arc<CudaStream>,
-    slices: &[&[X]],
-    input: &mut CudaSlice<X>,
-    pixels: usize,
-) -> Result<(), CudaError> {
-    // memcpy_htod asserts that the destination is long enough.
-    if input.len() < frame_count(slices, pixels)? * pixels {
-        return Err(CudaError::InvalidInput(
-            "CUDA input buffer is too small".into(),
-        ));
-    }
-    let mut offset = 0;
-    for slice in slices {
-        let mut destination = input.slice_mut(offset..offset + slice.len());
-        stream.memcpy_htod(*slice, &mut destination)?;
-        offset += slice.len();
-    }
-    Ok(())
-}
-
 /// Number of slices in `frames`.
 fn frames_len(frames: &Frames<'_, '_>) -> usize {
     match frames {
+        Frames::U16(frames) => frames.len(),
+        Frames::U32(frames) => frames.len(),
+        Frames::I32(frames) => frames.len(),
         Frames::F32(frames) => frames.len(),
         Frames::F64(frames) => frames.len(),
     }
@@ -897,42 +1092,90 @@ fn frames_len(frames: &Frames<'_, '_>) -> usize {
 
 /// Uploaded table and the kernels a public plan launches, by storage type.
 enum Tables {
-    /// `f32` weights: gather kernels by `errors`, and the `f64` input cast.
+    /// `f32` weights: gather kernels by input dtype and `errors`.
     Single {
         plan: Plan<f32>,
         gather: [Kernel<f32>; 2],
-        cast: CudaFunction,
+        u16: [Kernel<f32, u16>; 2],
+        u32: [Kernel<f32, u32>; 2],
+        i32: [Kernel<f32, i32>; 2],
     },
-    /// `f64` weights: kernels for `f64` and for `f32` input, by `errors`.
+    /// `f64` weights: gather kernels by input dtype and `errors`.
     Double {
         plan: Plan<f64>,
         wide: [Kernel<f64>; 2],
         narrow: [Kernel<f64, f32>; 2],
+        u16: [Kernel<f64, u16>; 2],
+        u32: [Kernel<f64, u32>; 2],
+        i32: [Kernel<f64, i32>; 2],
     },
 }
 
 /// Device state of a public [`Cuda1dPlan`].
 pub(super) struct Engine {
     tables: Tables,
+    decode_u16: CudaFunction,
+    decode_u32: CudaFunction,
+    streams: [Arc<CudaStream>; 2],
     pixels: usize,
     bins: usize,
+    frame_bytes: usize,
     max_batch_frames: usize,
+    explicit_budget: bool,
     scratch: Mutex<Scratch>,
 }
 
 impl Engine {
-    fn stream(&self) -> &Arc<CudaStream> {
+    fn context(&self) -> &Arc<CudaContext> {
         match &self.tables {
-            Tables::Single { plan, .. } => &plan.cuda.stream,
-            Tables::Double { plan, .. } => &plan.cuda.stream,
+            Tables::Single { plan, .. } => &plan.cuda.context,
+            Tables::Double { plan, .. } => &plan.cuda.context,
         }
     }
 
-    /// Integrates frames in chunks of at most `max_batch_frames`. Without
-    /// `stacked`, `frames` holds non-empty frames of the plan's length;
-    /// with it, `frames` holds one non-empty contiguous stack of whole frames,
-    /// copied with one copy per chunk (both checked by the caller). The
-    /// device sees the same chunk contents either way.
+    /// Selects the frame tile size for double-buffered streaming. Uses 4-frame
+    /// tiles on large batches to match the 4-frame CSR-tiled CUDA kernels while
+    /// keeping pinned host staging bounded.
+    fn pipeline_tile(&self, count: usize, elem_bytes: usize) -> usize {
+        let cap = self.max_batch_frames.max(1);
+        if count <= 1 || self.pixels < PARALLEL_STAGE_THRESHOLD {
+            return count.min(cap).max(1);
+        }
+        let max_slot =
+            (PINNED_SLOT_BYTES / self.pixels.saturating_mul(elem_bytes).max(1)).clamp(1, 16);
+        let tile = if count >= 8 {
+            if max_slot >= 4 { 4 } else { max_slot }
+        } else if count >= 4 {
+            max_slot.min(2)
+        } else {
+            1
+        };
+        tile.min(cap).max(1)
+    }
+
+    #[cfg(feature = "python")]
+    pub(super) fn alloc_pinned_bytes(
+        &self,
+        bytes: usize,
+    ) -> Result<super::CudaPinnedBytes, CudaError> {
+        let alloc_len = bytes.max(1);
+        let context = self.context();
+        let slice = guarded(|| {
+            // SAFETY: `u8: ValidAsZeroBits` and initialized before exposure;
+            // flags = 0 allocates cacheable page-locked memory.
+            let mut host = unsafe { context.alloc_pinned_with_flags::<u8>(alloc_len, 0)? };
+            unsafe { host.as_mut_ptr()?.write_bytes(0, alloc_len) };
+            Ok(host)
+        })?;
+        Ok(super::CudaPinnedBytes {
+            buf: PinnedBytes { slice },
+        })
+    }
+
+    /// Integrates frames in double-buffered pinned tiles across two streams.
+    /// Without `stacked`, `frames` holds non-empty frames of the plan's length;
+    /// with it, `frames` holds one non-empty contiguous stack of whole frames
+    /// (both checked by the caller).
     pub(super) fn run(
         &self,
         frames: Frames<'_, '_>,
@@ -941,8 +1184,14 @@ impl Engine {
         radial: &[f64],
     ) -> Result<Vec<Fixed1dResult>, CudaError> {
         let count = match frames {
+            Frames::U16(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::U32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::I32(frames) if stacked => frame_count(frames, self.pixels)?,
             Frames::F32(frames) if stacked => frame_count(frames, self.pixels)?,
             Frames::F64(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::U16(frames) => frames.len(),
+            Frames::U32(frames) => frames.len(),
+            Frames::I32(frames) => frames.len(),
             Frames::F32(frames) => frames.len(),
             Frames::F64(frames) => frames.len(),
         };
@@ -954,45 +1203,138 @@ impl Engine {
         let pixels = self.pixels;
         let stride = 1 + usize::from(errors);
         let per_frame = self.bins * stride;
+        let elem_bytes = match (&self.tables, &frames) {
+            (_, Frames::U16(_)) => size_of::<u16>(),
+            (Tables::Double { .. }, Frames::F64(_)) => size_of::<f64>(),
+            _ => size_of::<f32>(),
+        };
+        let tile = self.pipeline_tile(count, elem_bytes);
         let mut host = vec![0.0; count * per_frame];
         {
             let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
             let outcome = guarded(|| {
-                for first in (0..count).step_by(self.max_batch_frames) {
-                    let end = (first + self.max_batch_frames).min(count);
-                    let host = &mut host[first * per_frame..end * per_frame];
+                if self.explicit_budget && count > tile {
+                    let chunk_frames = count.min(self.max_batch_frames);
+                    let chunk_bytes = chunk_frames.saturating_mul(self.frame_bytes);
+                    let (free, _) = self.context().mem_get_info()?;
+                    if chunk_bytes > free {
+                        return Err(CudaError::Device(format!(
+                            "CUDA chunk of {chunk_frames} frames ({chunk_bytes} bytes) exceeds \
+                             free device memory ({free} bytes)"
+                        )));
+                    }
+                }
+                let mut pending: [Option<(usize, usize)>; 2] = [None, None];
+                for (step, first) in (0..count).step_by(tile).enumerate() {
+                    let end = (first + tile).min(count);
+                    let slot_idx = step % 2;
+                    let stream = &self.streams[slot_idx];
+                    if let Some((p_first, p_end)) = pending[slot_idx].take() {
+                        stream.synchronize()?;
+                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let pinned = scratch.slots[slot_idx]
+                            .pinned_out
+                            .as_ref()
+                            .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
+                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                    }
                     let values = first * pixels..end * pixels;
-                    match frames {
+                    let tile_frames = match frames {
+                        Frames::U16(frames) if stacked => {
+                            let chunk = &frames[0][values];
+                            self.enqueue_tile(
+                                &mut scratch.slots[slot_idx],
+                                stream,
+                                Frames::U16(std::slice::from_ref(&chunk)),
+                                errors,
+                            )?
+                        }
+                        Frames::U32(frames) if stacked => {
+                            let chunk = &frames[0][values];
+                            self.enqueue_tile(
+                                &mut scratch.slots[slot_idx],
+                                stream,
+                                Frames::U32(std::slice::from_ref(&chunk)),
+                                errors,
+                            )?
+                        }
+                        Frames::I32(frames) if stacked => {
+                            let chunk = &frames[0][values];
+                            self.enqueue_tile(
+                                &mut scratch.slots[slot_idx],
+                                stream,
+                                Frames::I32(std::slice::from_ref(&chunk)),
+                                errors,
+                            )?
+                        }
                         Frames::F32(frames) if stacked => {
                             let chunk = &frames[0][values];
-                            let chunk = Frames::F32(std::slice::from_ref(&chunk));
-                            self.run_chunk(&mut scratch, chunk, errors, host)?;
+                            self.enqueue_tile(
+                                &mut scratch.slots[slot_idx],
+                                stream,
+                                Frames::F32(std::slice::from_ref(&chunk)),
+                                errors,
+                            )?
                         }
                         Frames::F64(frames) if stacked => {
                             let chunk = &frames[0][values];
-                            let chunk = Frames::F64(std::slice::from_ref(&chunk));
-                            self.run_chunk(&mut scratch, chunk, errors, host)?;
+                            self.enqueue_tile(
+                                &mut scratch.slots[slot_idx],
+                                stream,
+                                Frames::F64(std::slice::from_ref(&chunk)),
+                                errors,
+                            )?
                         }
-                        Frames::F32(frames) => {
-                            let chunk = Frames::F32(&frames[first..end]);
-                            self.run_chunk(&mut scratch, chunk, errors, host)?;
-                        }
-                        Frames::F64(frames) => {
-                            let chunk = Frames::F64(&frames[first..end]);
-                            self.run_chunk(&mut scratch, chunk, errors, host)?;
-                        }
+                        Frames::U16(frames) => self.enqueue_tile(
+                            &mut scratch.slots[slot_idx],
+                            stream,
+                            Frames::U16(&frames[first..end]),
+                            errors,
+                        )?,
+                        Frames::U32(frames) => self.enqueue_tile(
+                            &mut scratch.slots[slot_idx],
+                            stream,
+                            Frames::U32(&frames[first..end]),
+                            errors,
+                        )?,
+                        Frames::I32(frames) => self.enqueue_tile(
+                            &mut scratch.slots[slot_idx],
+                            stream,
+                            Frames::I32(&frames[first..end]),
+                            errors,
+                        )?,
+                        Frames::F32(frames) => self.enqueue_tile(
+                            &mut scratch.slots[slot_idx],
+                            stream,
+                            Frames::F32(&frames[first..end]),
+                            errors,
+                        )?,
+                        Frames::F64(frames) => self.enqueue_tile(
+                            &mut scratch.slots[slot_idx],
+                            stream,
+                            Frames::F64(&frames[first..end]),
+                            errors,
+                        )?,
+                    };
+                    debug_assert_eq!(tile_frames, end - first);
+                    pending[slot_idx] = Some((first, end));
+                }
+                for (slot_idx, range) in pending.into_iter().enumerate() {
+                    if let Some((p_first, p_end)) = range {
+                        self.streams[slot_idx].synchronize()?;
+                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let pinned = scratch.slots[slot_idx]
+                            .pinned_out
+                            .as_ref()
+                            .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
+                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
                     }
                 }
                 Ok(())
             });
             if outcome.is_err() {
-                // Borrowed host frames must not be read after returning, and
-                // a failed or panicked call leaves the scratch in an unknown
-                // state. `settle` synchronises even when an error recorded on
-                // the shared context made the checked calls return early; that
-                // error may also be the one returned here, although another
-                // plan on the device recorded it (see `settle`).
-                settle(self.stream());
+                settle(&self.streams[0]);
+                settle(&self.streams[1]);
                 *scratch = Scratch::default();
             }
             outcome?;
@@ -1007,43 +1349,139 @@ impl Engine {
             .collect())
     }
 
-    /// Copies one chunk to the device, integrates it, copies the interleaved
-    /// results into `host` and synchronises.
-    fn run_chunk(
+    /// Stages one tile (or DMAs directly if already pinned), enqueues async
+    /// H2D, gather kernel and async D2H on `stream`, without synchronising.
+    fn enqueue_tile(
         &self,
-        scratch: &mut Scratch,
+        slot: &mut SlotScratch,
+        stream: &Arc<CudaStream>,
         frames: Frames<'_, '_>,
         errors: bool,
-        host: &mut [f64],
-    ) -> Result<(), CudaError> {
+    ) -> Result<usize, CudaError> {
         let pixels = self.pixels;
-        let stream = self.stream();
+        let context = self.context();
         let count = match frames {
+            Frames::U16(frames) => frame_count(frames, pixels)?,
+            Frames::U32(frames) => frame_count(frames, pixels)?,
+            Frames::I32(frames) => frame_count(frames, pixels)?,
             Frames::F32(frames) => frame_count(frames, pixels)?,
             Frames::F64(frames) => frame_count(frames, pixels)?,
         };
         let launched = u32::try_from(count)
             .map_err(|_| CudaError::InvalidInput("too many frames in one chunk".into()))?;
         let values = count * pixels;
-        let Scratch {
+        let e = usize::from(errors);
+        let out_len = count * self.bins * (1 + e);
+        let SlotScratch {
+            u16_dev,
+            u32_dev,
+            i32_dev,
             narrow,
             wide,
             output,
-        } = scratch;
+            pinned_u16,
+            pinned_u32,
+            pinned_i32,
+            pinned_f32,
+            pinned_f64,
+            pinned_out,
+            ..
+        } = slot;
         let output = reserve(stream, output, count * self.bins * 2)?;
-        let e = usize::from(errors);
+        let pinned_out = reserve_pinned(context, pinned_out, count * self.bins * 2)?;
+        let stage_to_pinned = count > 1;
         match (&self.tables, frames) {
+            (Tables::Single { plan, u16, .. }, Frames::U16(frames)) => {
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    u16_dev,
+                    pinned_u16,
+                    stage_to_pinned,
+                )?;
+                plan.launch(stream, &u16[e], input, output, launched)?;
+            }
+            (Tables::Single { plan, u32, .. }, Frames::U32(frames)) => {
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    u32_dev,
+                    pinned_u32,
+                    stage_to_pinned,
+                )?;
+                plan.launch(stream, &u32[e], input, output, launched)?;
+            }
+            (Tables::Single { plan, i32, .. }, Frames::I32(frames)) => {
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    i32_dev,
+                    pinned_i32,
+                    stage_to_pinned,
+                )?;
+                plan.launch(stream, &i32[e], input, output, launched)?;
+            }
             (Tables::Single { plan, gather, .. }, Frames::F32(frames)) => {
-                let input = reserve(stream, narrow, values)?;
-                copy_frames(stream, frames, input, pixels)?;
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    narrow,
+                    pinned_f32,
+                    stage_to_pinned,
+                )?;
                 plan.launch(stream, &gather[e], input, output, launched)?;
             }
-            (Tables::Single { plan, gather, cast }, Frames::F64(frames)) => {
-                let staging = reserve(stream, wide, values)?;
-                copy_frames(stream, frames, staging, pixels)?;
+            (Tables::Single { plan, gather, .. }, Frames::F64(frames)) => {
+                let pinned = reserve_pinned(context, pinned_f32, values)?;
+                stage_f64_to_f32(frames, &mut pinned.as_mut_slice()?[..values], pixels);
                 let input = reserve(stream, narrow, values)?;
-                cast_f64(stream, cast, staging, input, values)?;
+                let mut dev_dst = input.slice_mut(..values);
+                stream.memcpy_htod(&pinned.as_slice()?[..values], &mut dev_dst)?;
                 plan.launch(stream, &gather[e], input, output, launched)?;
+            }
+            (Tables::Double { plan, u16, .. }, Frames::U16(frames)) => {
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    u16_dev,
+                    pinned_u16,
+                    stage_to_pinned,
+                )?;
+                plan.launch(stream, &u16[e], input, output, launched)?;
+            }
+            (Tables::Double { plan, u32, .. }, Frames::U32(frames)) => {
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    u32_dev,
+                    pinned_u32,
+                    stage_to_pinned,
+                )?;
+                plan.launch(stream, &u32[e], input, output, launched)?;
+            }
+            (Tables::Double { plan, i32, .. }, Frames::I32(frames)) => {
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    i32_dev,
+                    pinned_i32,
+                    stage_to_pinned,
+                )?;
+                plan.launch(stream, &i32[e], input, output, launched)?;
             }
             (
                 Tables::Double {
@@ -1053,10 +1491,16 @@ impl Engine {
                 },
                 Frames::F64(frames),
             ) => {
-                // f64 plans keep only one input buffer, as budgeted.
                 *narrow = None;
-                let input = reserve(stream, wide, values)?;
-                copy_frames(stream, frames, input, pixels)?;
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    wide,
+                    pinned_f64,
+                    stage_to_pinned,
+                )?;
                 plan.launch(stream, &kernels[e], input, output, launched)?;
             }
             (
@@ -1068,19 +1512,373 @@ impl Engine {
                 Frames::F32(frames),
             ) => {
                 *wide = None;
-                let input = reserve(stream, narrow, values)?;
-                copy_frames(stream, frames, input, pixels)?;
+                let input = upload_same_dtype(
+                    stream,
+                    frames,
+                    pixels,
+                    values,
+                    narrow,
+                    pinned_f32,
+                    stage_to_pinned,
+                )?;
                 plan.launch(stream, &kernels[e], input, output, launched)?;
             }
         }
-        let len = count * self.bins * (1 + e);
-        if host.len() != len {
+        stream.memcpy_dtoh(
+            &output.slice(..out_len),
+            &mut pinned_out.as_mut_slice()?[..out_len],
+        )?;
+        Ok(count)
+    }
+
+    /// Decompresses raw Bitshuffle+LZ4 HDF5 chunks on the GPU and integrates
+    /// them in VRAM across two double-buffered streams.
+    pub(super) fn run_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+        radial: &[f64],
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        let count = chunks.len();
+        let stride = 1 + usize::from(errors);
+        let per_frame = self.bins * stride;
+        let tile = self.pipeline_tile(count, dtype.elem_bytes());
+        let mut host = vec![0.0; count * per_frame];
+        {
+            let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
+            let outcome = guarded(|| {
+                let mut pending: [Option<(usize, usize)>; 2] = [None, None];
+                for (step, first) in (0..count).step_by(tile).enumerate() {
+                    let end = (first + tile).min(count);
+                    let slot_idx = step % 2;
+                    let stream = &self.streams[slot_idx];
+                    if let Some((p_first, p_end)) = pending[slot_idx].take() {
+                        stream.synchronize()?;
+                        let err = scratch.slots[slot_idx]
+                            .pinned_err
+                            .as_ref()
+                            .map_or(Ok(0u32), |p| p.as_slice().map(|s| s[0]))?;
+                        if err != 0 {
+                            return Err(CudaError::InvalidInput(
+                                "corrupt or truncated Bitshuffle/LZ4 compressed block".into(),
+                            ));
+                        }
+                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let pinned = scratch.slots[slot_idx]
+                            .pinned_out
+                            .as_ref()
+                            .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
+                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                    }
+                    self.enqueue_bslz4_tile(
+                        &mut scratch.slots[slot_idx],
+                        stream,
+                        &chunks[first..end],
+                        dtype,
+                        errors,
+                    )?;
+                    pending[slot_idx] = Some((first, end));
+                }
+                for (slot_idx, range) in pending.into_iter().enumerate() {
+                    if let Some((p_first, p_end)) = range {
+                        self.streams[slot_idx].synchronize()?;
+                        let err = scratch.slots[slot_idx]
+                            .pinned_err
+                            .as_ref()
+                            .map_or(Ok(0u32), |p| p.as_slice().map(|s| s[0]))?;
+                        if err != 0 {
+                            return Err(CudaError::InvalidInput(
+                                "corrupt or truncated Bitshuffle/LZ4 compressed block".into(),
+                            ));
+                        }
+                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let pinned = scratch.slots[slot_idx]
+                            .pinned_out
+                            .as_ref()
+                            .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
+                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                    }
+                }
+                Ok(())
+            });
+            if outcome.is_err() {
+                settle(&self.streams[0]);
+                settle(&self.streams[1]);
+                *scratch = Scratch::default();
+            }
+            outcome?;
+        }
+        Ok(host
+            .chunks_exact(per_frame)
+            .map(|frame| Fixed1dResult {
+                radial: radial.to_vec(),
+                intensity: frame.iter().step_by(stride).copied().collect(),
+                errors: errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+            })
+            .collect())
+    }
+
+    fn enqueue_bslz4_tile(
+        &self,
+        slot: &mut SlotScratch,
+        stream: &Arc<CudaStream>,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<(), CudaError> {
+        let pixels = self.pixels;
+        let elem_bytes = dtype.elem_bytes();
+        let expected_uncomp = pixels * elem_bytes;
+        let count = chunks.len();
+        let launched = u32::try_from(count)
+            .map_err(|_| CudaError::InvalidInput("too many frames in one chunk".into()))?;
+        let total_comp: usize = chunks.iter().map(|c| c.len()).sum();
+        if total_comp > u32::MAX as usize {
             return Err(CudaError::InvalidInput(
-                "host output does not match the CUDA chunk".into(),
+                "compressed tile exceeds 4 GiB".into(),
             ));
         }
-        stream.memcpy_dtoh(&output.slice(..len), host)?;
-        stream.synchronize()?;
+
+        // Pre-scan Bitshuffle+LZ4 block headers (~10 us per Eiger 9M frame).
+        let mut descs: Vec<u32> = Vec::with_capacity(count * (expected_uncomp / 8192 + 2) * 4);
+        let mut max_block_bytes: u32 = 0;
+        let mut base_off: u32 = 0;
+        for (frame_idx, chunk) in chunks.iter().enumerate() {
+            if chunk.len() < 12 {
+                return Err(CudaError::InvalidInput(
+                    "Bitshuffle/LZ4 chunk shorter than 12-byte header".into(),
+                ));
+            }
+            let uncomp_bytes = u64::from_be_bytes(chunk[0..8].try_into().unwrap()) as usize;
+            if uncomp_bytes != expected_uncomp {
+                return Err(CudaError::InvalidInput(format!(
+                    "Bitshuffle/LZ4 chunk uncompressed size {uncomp_bytes} does not match \
+                     plan frame size {expected_uncomp} bytes"
+                )));
+            }
+            let raw_block = u32::from_be_bytes(chunk[8..12].try_into().unwrap()) as usize;
+            let block_bytes = if raw_block == 0 { 8192 } else { raw_block };
+            if block_bytes == 0
+                || block_bytes > 49_152
+                || !block_bytes.is_multiple_of(8 * elem_bytes)
+            {
+                return Err(CudaError::InvalidInput(format!(
+                    "unsupported Bitshuffle/LZ4 block size {block_bytes} bytes"
+                )));
+            }
+            max_block_bytes = max_block_bytes.max(block_bytes as u32);
+            let block_elems = block_bytes / elem_bytes;
+            let n_full = pixels / block_elems;
+            let rem_elems = pixels % block_elems;
+            let rem_comp_elems = (rem_elems / 8) * 8;
+            let tail_raw_elems = rem_elems % 8;
+            let frame_dst = frame_idx * pixels;
+
+            let mut off = 12usize;
+            for b in 0..n_full {
+                if off + 4 > chunk.len() {
+                    return Err(CudaError::InvalidInput(
+                        "truncated Bitshuffle/LZ4 block header".into(),
+                    ));
+                }
+                let comp_len = u32::from_be_bytes(chunk[off..off + 4].try_into().unwrap()) as usize;
+                off += 4;
+                if off + comp_len > chunk.len() {
+                    return Err(CudaError::InvalidInput(
+                        "truncated Bitshuffle/LZ4 block payload".into(),
+                    ));
+                }
+                descs.push(base_off + off as u32);
+                descs.push(comp_len as u32);
+                descs.push((frame_dst + b * block_elems) as u32);
+                descs.push(block_bytes as u32);
+                off += comp_len;
+            }
+            if rem_comp_elems > 0 {
+                if off + 4 > chunk.len() {
+                    return Err(CudaError::InvalidInput(
+                        "truncated Bitshuffle/LZ4 partial block header".into(),
+                    ));
+                }
+                let comp_len = u32::from_be_bytes(chunk[off..off + 4].try_into().unwrap()) as usize;
+                off += 4;
+                if off + comp_len > chunk.len() {
+                    return Err(CudaError::InvalidInput(
+                        "truncated Bitshuffle/LZ4 partial block payload".into(),
+                    ));
+                }
+                descs.push(base_off + off as u32);
+                descs.push(comp_len as u32);
+                descs.push((frame_dst + n_full * block_elems) as u32);
+                descs.push((rem_comp_elems * elem_bytes) as u32);
+                off += comp_len;
+            }
+            if tail_raw_elems > 0 {
+                let raw_bytes = tail_raw_elems * elem_bytes;
+                if off + raw_bytes > chunk.len() {
+                    return Err(CudaError::InvalidInput(
+                        "truncated Bitshuffle/LZ4 tail bytes".into(),
+                    ));
+                }
+                descs.push(base_off + off as u32);
+                descs.push(0x8000_0000 | raw_bytes as u32);
+                descs.push((frame_dst + n_full * block_elems + rem_comp_elems) as u32);
+                descs.push(raw_bytes as u32);
+            }
+            base_off += chunk.len() as u32;
+        }
+
+        let n_blocks = (descs.len() / 4) as u32;
+        let values = count * pixels;
+        let e = usize::from(errors);
+        let out_len = count * self.bins * (1 + e);
+        let context = self.context();
+
+        let SlotScratch {
+            u16_dev,
+            u32_dev,
+            i32_dev,
+            output,
+            comp_dev,
+            descs_dev,
+            err_dev,
+            pinned_comp,
+            pinned_descs,
+            pinned_err,
+            pinned_out,
+            ..
+        } = slot;
+
+        let pinned_c = reserve_pinned(context, pinned_comp, total_comp.max(1))?;
+        {
+            let dst = &mut pinned_c.as_mut_slice()?[..total_comp];
+            if total_comp >= PARALLEL_STAGE_THRESHOLD && chunks.len() > 1 {
+                let mut rem = dst;
+                let mut dst_slices: Vec<&mut [u8]> = Vec::with_capacity(chunks.len());
+                for chunk in chunks {
+                    let (head, tail) = rem.split_at_mut(chunk.len());
+                    dst_slices.push(head);
+                    rem = tail;
+                }
+                dst_slices
+                    .into_par_iter()
+                    .zip(chunks.par_iter())
+                    .for_each(|(d, s)| d.copy_from_slice(s));
+            } else {
+                let mut off = 0;
+                for chunk in chunks {
+                    dst[off..off + chunk.len()].copy_from_slice(chunk);
+                    off += chunk.len();
+                }
+            }
+        }
+        let pinned_d = reserve_pinned(context, pinned_descs, descs.len().max(1))?;
+        pinned_d.as_mut_slice()?[..descs.len()].copy_from_slice(&descs);
+        let pinned_e = reserve_pinned(context, pinned_err, 1)?;
+        pinned_e.as_mut_slice()?[0] = 0;
+
+        let comp_buf = reserve(stream, comp_dev, total_comp.max(1))?;
+        let descs_buf = reserve(stream, descs_dev, descs.len().max(1))?;
+        let err_buf = reserve(stream, err_dev, 1)?;
+        let output = reserve(stream, output, count * self.bins * 2)?;
+        let pinned_out = reserve_pinned(context, pinned_out, count * self.bins * 2)?;
+
+        let mut comp_dst = comp_buf.slice_mut(..total_comp);
+        stream.memcpy_htod(&pinned_c.as_slice()?[..total_comp], &mut comp_dst)?;
+        let mut descs_dst = descs_buf.slice_mut(..descs.len());
+        stream.memcpy_htod(&pinned_d.as_slice()?[..descs.len()], &mut descs_dst)?;
+        let mut err_dst = err_buf.slice_mut(..1);
+        stream.memcpy_htod(&pinned_e.as_slice()?[..1], &mut err_dst)?;
+
+        let decode_cfg = LaunchConfig {
+            grid_dim: (n_blocks, 1, 1),
+            block_dim: (32, 1, 1),
+            shared_mem_bytes: max_block_bytes,
+        };
+        let comp_view = comp_buf.slice(..total_comp);
+        let descs_view = descs_buf.slice(..descs.len());
+        let mut err_view = err_buf.slice_mut(..1);
+
+        match (&self.tables, dtype) {
+            (Tables::Single { plan, u16, .. }, Bslz4Dtype::U16) => {
+                let input = reserve(stream, u16_dev, values)?;
+                let mut out_px = input.slice_mut(..values);
+                let mut launch = stream.launch_builder(&self.decode_u16);
+                launch
+                    .arg(&comp_view)
+                    .arg(&descs_view)
+                    .arg(&mut out_px)
+                    .arg(&mut err_view);
+                unsafe { launch.launch(decode_cfg)? };
+                plan.launch(stream, &u16[e], input, output, launched)?;
+            }
+            (Tables::Single { plan, u32, .. }, Bslz4Dtype::U32) => {
+                let input = reserve(stream, u32_dev, values)?;
+                let mut out_px = input.slice_mut(..values);
+                let mut launch = stream.launch_builder(&self.decode_u32);
+                launch
+                    .arg(&comp_view)
+                    .arg(&descs_view)
+                    .arg(&mut out_px)
+                    .arg(&mut err_view);
+                unsafe { launch.launch(decode_cfg)? };
+                plan.launch(stream, &u32[e], input, output, launched)?;
+            }
+            (Tables::Single { plan, i32, .. }, Bslz4Dtype::I32) => {
+                let input = reserve(stream, i32_dev, values)?;
+                let mut out_px = input.slice_mut(..values);
+                let mut launch = stream.launch_builder(&self.decode_u32);
+                launch
+                    .arg(&comp_view)
+                    .arg(&descs_view)
+                    .arg(&mut out_px)
+                    .arg(&mut err_view);
+                unsafe { launch.launch(decode_cfg)? };
+                plan.launch(stream, &i32[e], input, output, launched)?;
+            }
+            (Tables::Double { plan, u16, .. }, Bslz4Dtype::U16) => {
+                let input = reserve(stream, u16_dev, values)?;
+                let mut out_px = input.slice_mut(..values);
+                let mut launch = stream.launch_builder(&self.decode_u16);
+                launch
+                    .arg(&comp_view)
+                    .arg(&descs_view)
+                    .arg(&mut out_px)
+                    .arg(&mut err_view);
+                unsafe { launch.launch(decode_cfg)? };
+                plan.launch(stream, &u16[e], input, output, launched)?;
+            }
+            (Tables::Double { plan, u32, .. }, Bslz4Dtype::U32) => {
+                let input = reserve(stream, u32_dev, values)?;
+                let mut out_px = input.slice_mut(..values);
+                let mut launch = stream.launch_builder(&self.decode_u32);
+                launch
+                    .arg(&comp_view)
+                    .arg(&descs_view)
+                    .arg(&mut out_px)
+                    .arg(&mut err_view);
+                unsafe { launch.launch(decode_cfg)? };
+                plan.launch(stream, &u32[e], input, output, launched)?;
+            }
+            (Tables::Double { plan, i32, .. }, Bslz4Dtype::I32) => {
+                let input = reserve(stream, i32_dev, values)?;
+                let mut out_px = input.slice_mut(..values);
+                let mut launch = stream.launch_builder(&self.decode_u32);
+                launch
+                    .arg(&comp_view)
+                    .arg(&descs_view)
+                    .arg(&mut out_px)
+                    .arg(&mut err_view);
+                unsafe { launch.launch(decode_cfg)? };
+                plan.launch(stream, &i32[e], input, output, launched)?;
+            }
+        }
+        stream.memcpy_dtoh(&err_buf.slice(..1), &mut pinned_e.as_mut_slice()?[..1])?;
+        stream.memcpy_dtoh(
+            &output.slice(..out_len),
+            &mut pinned_out.as_mut_slice()?[..out_len],
+        )?;
         Ok(())
     }
 }
@@ -1094,9 +1892,16 @@ pub(super) fn prepare(
     options: &Cuda1dOptions,
 ) -> Result<Cuda1dPlan, CudaError> {
     let cuda = Cuda::open(options.device())?;
+    let stream1 = guarded(|| Ok(cuda.context.new_stream()?))?;
+    let streams = [Arc::clone(&cuda.stream), stream1];
     let precision = options.precision();
     let (tables, entries, radial) = with_table(integrator, shape, n_points, |table| {
-        let layout = DEFAULT_LAYOUT;
+        let layout = if table.entries as usize <= n_points.saturating_mul(WARP_MAX_ENTRIES_PER_BIN)
+        {
+            Layout::Warp
+        } else {
+            Layout::Block
+        };
         let tables = match precision {
             CudaPrecision::F32 | CudaPrecision::F32Compensated => {
                 let plan = cuda.upload(table, [1.0_f32], encode_f32)?;
@@ -1106,21 +1911,32 @@ pub(super) fn prepare(
                     Accumulation::Compensated
                 };
                 let gather = both(|errors| plan.kernel(mode, layout, errors))?;
-                let cast = cuda
-                    .module
-                    .load_function("cast_f64_input")
-                    .map_err(|error| {
-                        CudaError::Unavailable(format!(
-                            "CUDA kernel cast_f64_input is missing: {error}"
-                        ))
-                    })?;
-                Tables::Single { plan, gather, cast }
+                let u16 = both(|errors| plan.kernel_u16(mode, layout, errors))?;
+                let u32 = both(|errors| plan.kernel_u32(mode, layout, errors))?;
+                let i32 = both(|errors| plan.kernel_i32(mode, layout, errors))?;
+                Tables::Single {
+                    plan,
+                    gather,
+                    u16,
+                    u32,
+                    i32,
+                }
             }
             CudaPrecision::F64 => {
                 let plan = cuda.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights))?;
                 let wide = both(|errors| plan.kernel(layout, errors))?;
                 let narrow = both(|errors| plan.kernel_f32(layout, errors))?;
-                Tables::Double { plan, wide, narrow }
+                let u16 = both(|errors| plan.kernel_u16(layout, errors))?;
+                let u32 = both(|errors| plan.kernel_u32(layout, errors))?;
+                let i32 = both(|errors| plan.kernel_i32(layout, errors))?;
+                Tables::Double {
+                    plan,
+                    wide,
+                    narrow,
+                    u16,
+                    u32,
+                    i32,
+                }
             }
         };
         Ok((tables, table.entries as usize, table.radial.clone()))
@@ -1134,6 +1950,7 @@ pub(super) fn prepare(
         .checked_mul(storage)
         .and_then(|bytes| bytes.checked_add(n_points.checked_mul(2 * size_of::<f64>())?))
         .ok_or_else(|| CudaError::InvalidInput("one CUDA frame exceeds usize bytes".into()))?;
+    let explicit_budget = options.max_batch_bytes().is_some();
     let max_batch_frames = match options.max_batch_bytes() {
         Some(budget) => match budget / frame_bytes {
             0 => {
@@ -1160,6 +1977,22 @@ pub(super) fn prepare(
     // Chunks are counted in u32 by the launch code.
     let max_batch_frames = max_batch_frames.min(u32::MAX as usize);
     let bins = n_points;
+    let decode_u16 = cuda
+        .module
+        .load_function("bshuf_lz4_decode_u16")
+        .map_err(|error| {
+            CudaError::Unavailable(format!(
+                "CUDA kernel bshuf_lz4_decode_u16 is missing: {error}"
+            ))
+        })?;
+    let decode_u32 = cuda
+        .module
+        .load_function("bshuf_lz4_decode_u32")
+        .map_err(|error| {
+            CudaError::Unavailable(format!(
+                "CUDA kernel bshuf_lz4_decode_u32 is missing: {error}"
+            ))
+        })?;
     Ok(Cuda1dPlan {
         shape,
         n_points,
@@ -1171,9 +2004,14 @@ pub(super) fn prepare(
         max_batch_frames,
         engine: Engine {
             tables,
+            decode_u16,
+            decode_u32,
+            streams,
             pixels,
             bins,
+            frame_bytes,
             max_batch_frames,
+            explicit_budget,
             scratch: Mutex::new(Scratch::default()),
         },
     })

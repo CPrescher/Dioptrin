@@ -1231,7 +1231,7 @@ class Cuda1dPlan:
         ...
 
     def integrate1d(self, image: np.ndarray, *, errors: bool = False) -> IntegrationResult:
-        """Integrate one C-contiguous float64 or float32 image of ``shape``.
+        """Integrate one C-contiguous float64, float32, uint16, uint32 or int32 image of ``shape``.
 
         The array is borrowed without copying (read-only arrays and
         ``np.memmap`` views are accepted) and must not be modified until the
@@ -1255,19 +1255,45 @@ class Cuda1dPlan:
     ) -> list[IntegrationResult]:
         """Integrate a list or tuple of 2D images, or one C-contiguous 3D array.
 
-        All images of one call must have the same dtype (float64 or float32).
-        Other sequences and iterators are rejected with ``TypeError``.
-        Frames are processed in chunks of at most ``max_batch_frames``;
-        results are bit-identical to ``integrate1d`` on each frame. An empty
-        list returns ``[]``. Arrays are borrowed without copying for this
-        synchronous call and must not be mutated concurrently. The GIL is
-        released during the device work. The call fails as a whole: there are
-        no per-frame errors.
+        All images of one call must have the same dtype (float64, float32,
+        uint16, uint32 or int32). Arrays backed by CUDA pinned host memory
+        (for example from ``alloc_pinned_batch``) DMA directly without an extra
+        CPU staging copy. Results are bit-identical to ``integrate1d`` on each
+        frame. An empty list returns ``[]``.
 
         Raises:
             TypeError: Another dtype, or mixed dtypes in one call.
             ValueError: Wrong shape, not C-contiguous, or not aligned.
             RuntimeError: A CUDA driver error.
+        """
+        ...
+
+    def alloc_pinned_batch(
+        self,
+        n_frames: int,
+        dtype: Any = "float32",
+    ) -> np.ndarray:
+        """Allocate a writable 3D NumPy array ``(n_frames, dim1, dim2)`` in CUDA pinned host memory.
+
+        Readers such as ``dioptrin-io`` or ``h5py`` (``dataset.read_direct(buf)``)
+        can decode directly into the returned array; passing it to ``batch1d``
+        or ``integrate1d`` then skips CPU staging and DMAs directly to the GPU.
+        Supported dtypes: ``uint16``, ``uint32``, ``int32``, ``float32``, ``float64``.
+        """
+        ...
+
+    def batch1d_bslz4(
+        self,
+        chunks: Union[list[Any], tuple[Any, ...]],
+        dtype: Literal["uint16", "uint32", "int32"] = "uint32",
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]:
+        """Decompress raw HDF5 Bitshuffle+LZ4 chunks on the GPU and integrate them in VRAM.
+
+        Each item in ``chunks`` is a C-contiguous byte buffer holding one raw
+        compressed frame chunk (for example from
+        ``h5py.Dataset.id.read_direct_chunk`` or ``dioptrin-io``).
         """
         ...
 

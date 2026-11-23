@@ -221,7 +221,7 @@ class CudaInputTests(unittest.TestCase):
 
     def test_rejected_inputs(self):
         image = np.ones(SHAPE)
-        for bad in (image.astype(np.int32), image.astype(np.float16),
+        for bad in (image.astype(np.int64), image.astype(np.float16),
                     image.astype(">f8"), image.astype(np.complex128)):
             with self.subTest(dtype=bad.dtype), self.assertRaisesRegex(TypeError, "dtype"):
                 self.check(bad, SHAPE, False)
@@ -409,7 +409,7 @@ class CudaDeviceTests(unittest.TestCase):
         plan = integrator().prepare_cuda1d(SHAPE, 40)
         image = np.ones(SHAPE)
         with self.assertRaises(TypeError):
-            plan.integrate1d(image.astype(np.int32))
+            plan.integrate1d(image.astype(np.int64))
         with self.assertRaises(TypeError):
             plan.batch1d([image, image.astype(np.float32)])
         with self.assertRaises(ValueError):
@@ -591,6 +591,101 @@ class CudaDeviceTests(unittest.TestCase):
                 gpu = plan.integrate1d(image.astype(dtype), errors=True)
                 np.testing.assert_allclose(gpu.intensity, cpu.intensity, rtol=1e-9, atol=0)
                 np.testing.assert_allclose(gpu.errors, cpu.errors, rtol=1e-9, atol=0)
+
+    def test_native_integer_dtypes_and_pinned_batch(self):
+        rng = np.random.default_rng(19)
+        base = rng.integers(0, 5000, size=(5, *SHAPE), dtype=np.uint32)
+        ai = integrator("pyfai_full")
+        refs = [ai.integrate1d(f.astype(np.float64), 40, errors=True) for f in base]
+        for precision, rtol in (("f32", 1e-5), ("f32_compensated", 1e-6), ("f64", 1e-12)):
+            plan = ai.prepare_cuda1d(SHAPE, 40, precision=precision)
+            for dtype in (np.uint16, np.uint32, np.int32):
+                with self.subTest(precision=precision, dtype=dtype.__name__):
+                    arr = np.ascontiguousarray(base, dtype=dtype)
+                    single = [plan.integrate1d(f, errors=True) for f in arr]
+                    pageable = plan.batch1d(arr, errors=True)
+                    pinned = plan.alloc_pinned_batch(len(arr), dtype=dtype)
+                    self.assertEqual(pinned.shape, arr.shape)
+                    self.assertEqual(pinned.dtype, np.dtype(dtype))
+                    self.assertTrue(pinned.flags.c_contiguous and pinned.flags.writeable)
+                    pinned[:] = arr
+                    from_pinned = plan.batch1d(pinned, errors=True)
+                    self.assert_identical(pageable, single)
+                    self.assert_identical(from_pinned, single)
+                    for gpu, cpu in zip(from_pinned, refs):
+                        self.assert_close(gpu.intensity, cpu.intensity, rtol)
+                        self.assert_close(gpu.errors, cpu.errors, rtol)
+        with self.assertRaises(TypeError):
+            plan.alloc_pinned_batch(2, dtype=np.int64)
+
+    def test_batch1d_bslz4_matches_batch1d_and_rejects_corrupt(self):
+        import struct
+
+        def encode_bslz4(arr: np.ndarray, block_bytes: int = 8192) -> bytes:
+            raw = arr.tobytes()
+            elem_bytes = arr.dtype.itemsize
+            n_elems = arr.size
+            block_elems = block_bytes // elem_bytes
+            out = bytearray(struct.pack(">QI", len(raw), block_bytes))
+
+            def lz4_literals(payload: bytes) -> bytes:
+                n = len(payload)
+                buf = bytearray()
+                if n < 15:
+                    buf.append(n << 4)
+                else:
+                    buf.append(15 << 4)
+                    rem = n - 15
+                    while rem >= 255:
+                        buf.append(255)
+                        rem -= 255
+                    buf.append(rem)
+                buf.extend(payload)
+                return bytes(buf)
+
+            def bshuf_block(elems: np.ndarray) -> bytes:
+                # Pack bits per bit-plane (LSB first within each byte).
+                bits = np.unpackbits(
+                    elems.view(np.uint8).reshape(-1, elem_bytes),
+                    axis=1,
+                    bitorder="little",
+                )  # shape (N, elem_bytes * 8)
+                planes = np.packbits(bits.T, axis=1, bitorder="little")
+                return planes.tobytes()
+
+            flat = arr.ravel()
+            pos = 0
+            while pos + block_elems <= n_elems:
+                comp = lz4_literals(bshuf_block(flat[pos : pos + block_elems]))
+                out.extend(struct.pack(">I", len(comp)))
+                out.extend(comp)
+                pos += block_elems
+            rem_elems = n_elems - pos
+            rem_comp = (rem_elems // 8) * 8
+            if rem_comp > 0:
+                comp = lz4_literals(bshuf_block(flat[pos : pos + rem_comp]))
+                out.extend(struct.pack(">I", len(comp)))
+                out.extend(comp)
+                pos += rem_comp
+            if pos < n_elems:
+                out.extend(flat[pos:].tobytes())
+            return bytes(out)
+
+        rng = np.random.default_rng(23)
+        ai = integrator("pyfai_full")
+        plan = ai.prepare_cuda1d(SHAPE, 40, precision="f32_compensated")
+        for dtype, name in ((np.uint16, "uint16"), (np.uint32, "uint32"), (np.int32, "int32")):
+            with self.subTest(dtype=name):
+                frames = rng.integers(0, 4000, size=(5, *SHAPE), dtype=dtype)
+                chunks = [encode_bslz4(f) for f in frames]
+                expected = plan.batch1d(frames, errors=True)
+                actual = plan.batch1d_bslz4(chunks, dtype=name, errors=True)
+                self.assert_identical(actual, expected)
+        self.assertEqual(plan.batch1d_bslz4([], dtype="uint32"), [])
+        with self.assertRaises(ValueError):
+            plan.batch1d_bslz4([b"short"], dtype="uint32")
+        with self.assertRaises(TypeError):
+            plan.batch1d_bslz4([b"0" * 16], dtype="float32")
 
 
 if __name__ == "__main__":

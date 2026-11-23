@@ -313,6 +313,9 @@ pub fn cuda_info(device: usize) -> CudaInfo {
 mod sealed {
     /// Borrowed frames of one supported pixel type.
     pub enum Frames<'a, 'b> {
+        U16(&'a [&'b [u16]]),
+        U32(&'a [&'b [u32]]),
+        I32(&'a [&'b [i32]]),
         F32(&'a [&'b [f32]]),
         F64(&'a [&'b [f64]]),
     }
@@ -321,6 +324,24 @@ mod sealed {
         fn frames<'a, 'b>(frames: &'a [&'b [Self]]) -> Frames<'a, 'b>
         where
             Self: Sized;
+    }
+
+    impl Sealed for u16 {
+        fn frames<'a, 'b>(frames: &'a [&'b [u16]]) -> Frames<'a, 'b> {
+            Frames::U16(frames)
+        }
+    }
+
+    impl Sealed for u32 {
+        fn frames<'a, 'b>(frames: &'a [&'b [u32]]) -> Frames<'a, 'b> {
+            Frames::U32(frames)
+        }
+    }
+
+    impl Sealed for i32 {
+        fn frames<'a, 'b>(frames: &'a [&'b [i32]]) -> Frames<'a, 'b> {
+            Frames::I32(frames)
+        }
     }
 
     impl Sealed for f32 {
@@ -336,15 +357,36 @@ mod sealed {
     }
 }
 
-/// Pixel types a [`Cuda1dPlan`] accepts: `f32` and `f64`. Sealed.
+/// Pixel element type of raw Bitshuffle+LZ4 HDF5 chunks passed to
+/// [`Cuda1dPlan::integrate_bslz4`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bslz4Dtype {
+    U16,
+    U32,
+    I32,
+}
+
+impl Bslz4Dtype {
+    pub(crate) fn elem_bytes(self) -> usize {
+        match self {
+            Self::U16 => size_of::<u16>(),
+            Self::U32 | Self::I32 => size_of::<u32>(),
+        }
+    }
+}
+
+/// Pixel types a [`Cuda1dPlan`] accepts: `u16`, `u32`, `i32`, `f32` and `f64`. Sealed.
 ///
 /// **Experimental:** excluded from semver guarantees until stabilised.
 ///
-/// `f64` frames are uploaded as `f64` and rounded to `f32` on the device
-/// (`__double2float_rn`, the same rounding as `as f32`) unless the precision is
-/// [`CudaPrecision::F64`]; `f32` frames are widened exactly for
-/// [`CudaPrecision::F64`].
+/// Integer frames (`u16`, `u32`, `i32`) are uploaded natively and converted
+/// in-register on the device; `f64` frames are rounded to `f32` (matching
+/// `__double2float_rn`) unless the precision is [`CudaPrecision::F64`]; `f32`
+/// frames are widened exactly for [`CudaPrecision::F64`].
 pub trait CudaPixel: sealed::Sealed + Copy + Send + Sync + 'static {}
+impl CudaPixel for u16 {}
+impl CudaPixel for u32 {}
+impl CudaPixel for i32 {}
 impl CudaPixel for f32 {}
 impl CudaPixel for f64 {}
 
@@ -529,6 +571,42 @@ impl Cuda1dPlan {
         self.run(<P as sealed::Sealed>::frames(&[stack]), true, errors)
     }
 
+    /// Decompresses raw HDF5 Bitshuffle+LZ4 chunks on the GPU and integrates
+    /// them in VRAM without ever transferring uncompressed frames over PCIe.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn integrate_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run_bslz4(chunks, dtype, errors)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        self.engine.run_bslz4(chunks, dtype, errors, &self.radial)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run_bslz4(
+        &self,
+        _chunks: &[&[u8]],
+        _dtype: Bslz4Dtype,
+        _errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        match self.engine {}
+    }
+
     /// Runs `frames` (see `Engine::run` for `stacked`).
     #[cfg(feature = "cuda")]
     fn run(
@@ -548,6 +626,41 @@ impl Cuda1dPlan {
         _errors: bool,
     ) -> Result<Vec<Fixed1dResult>, CudaError> {
         match self.engine {}
+    }
+
+    /// Allocates `bytes` of page-locked (pinned) host memory on this plan's
+    /// CUDA context, for zero-copy DMA uploads.
+    #[cfg(all(feature = "cuda", feature = "python"))]
+    pub(crate) fn alloc_pinned_bytes(&self, bytes: usize) -> Result<CudaPinnedBytes, CudaError> {
+        self.engine.alloc_pinned_bytes(bytes)
+    }
+
+    #[cfg(all(not(feature = "cuda"), feature = "python"))]
+    pub(crate) fn alloc_pinned_bytes(&self, _bytes: usize) -> Result<CudaPinnedBytes, CudaError> {
+        match self.engine {}
+    }
+}
+
+/// Owned page-locked host byte buffer allocated on a CUDA context.
+#[cfg(all(feature = "cuda", feature = "python"))]
+pub(crate) struct CudaPinnedBytes {
+    buf: device::PinnedBytes,
+}
+
+#[cfg(all(feature = "cuda", feature = "python"))]
+impl CudaPinnedBytes {
+    pub(crate) fn as_mut_ptr(&mut self) -> Result<*mut u8, CudaError> {
+        self.buf.as_mut_ptr()
+    }
+}
+
+#[cfg(all(not(feature = "cuda"), feature = "python"))]
+pub(crate) struct CudaPinnedBytes(std::convert::Infallible);
+
+#[cfg(all(not(feature = "cuda"), feature = "python"))]
+impl CudaPinnedBytes {
+    pub(crate) fn as_mut_ptr(&mut self) -> Result<*mut u8, CudaError> {
+        match self.0 {}
     }
 }
 
