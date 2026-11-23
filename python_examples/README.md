@@ -92,6 +92,8 @@ for every method: radial axis, sub-ranges against a full range, dropped pixels
 **`test_integrate2d_gil.py`** - `integrate2d` releases the GIL: threaded results
 match, two integrators run concurrently, Python threads keep running
 
+**`test_integrate1d_gil.py`** - the same for `integrate1d`
+
 **`mask_example.py`** - Demonstration of pixel masking
 
 ### Batch Processing
@@ -101,6 +103,9 @@ match, two integrators run concurrently, Python threads keep running
 **`test_batch2d_arrays.py`** - `batch2d` over lists of NumPy arrays: matches
 `integrate2d`, TIFF paths and `batch2d_iter` for every `num_workers`/`num_threads`
 split; input errors as in `batch1d`
+
+**`test_batch1d_array_workers.py`** - `batch1d` over arrays for every
+`num_workers`/`num_threads` split matches per-frame `integrate1d`
 
 **`batch_api_speed_test.py`** - Performance benchmarks for batch processing
 

@@ -16,7 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `num_threads` they run on the global Rayon pool, all frames in parallel; with
   either, `num_workers` frames run at a time, each on its own pool of
   `num_threads` threads, as for TIFF paths (the missing one resolved the same
-  way). `batch1d` over arrays still ignores both arguments, now documented.
+  way). `batch1d` over arrays does the same on every branch (plain, `errors`,
+  `azimuthal_std`); it used to ignore both arguments and always run on the
+  global pool, which is still what happens when neither is given. So
+  `batch1d(arrays, num_workers=B, num_threads=1)` now runs B frames at a time
+  on one-thread pools instead of on the global pool; results are bit-identical.
+  0.14.0 timings with these arguments were measured on the global-pool path,
+  which a call without the arguments still uses. The split path builds its
+  pools per call (about 0.35 ms fixed cost at 14 workers).
   Input errors match `batch1d` (dtype, shape, contiguity, mask shape; mixed
   lists raise `TypeError`, use `batch2d_iter` for them). The first parameter
   keeps its name `tiff_paths`. A list of arrays no longer needs
@@ -53,10 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 2D results carry the radial bin centres in `radial` when the
   Integrator has a `radial_range`, and on an `azimuthal_range` (where they
   were computed but dropped); otherwise `radial` stays `None`.
-- `Integrator.integrate2d` releases the GIL while it loads a TIFF and while it
-  integrates, so other Python threads, including other integrators, run
-  meanwhile. NumPy inputs are borrowed for the call and must not be mutated
-  concurrently. `integrate1d` still holds the GIL.
+- `Integrator.integrate2d` and `Integrator.integrate1d` release the GIL while
+  they load a TIFF and while they integrate, so other Python threads,
+  including other integrators, run meanwhile. NumPy inputs are borrowed for
+  the call and must not be mutated concurrently. Results are unchanged, and
+  the per-call cost of `integrate1d` is unchanged within noise (about 230 us
+  counting, 580 us pixel_split on a 1M-pixel image, 1000 points).
 
 ## [0.14.0] - 2026-11-15
 
