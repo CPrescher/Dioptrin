@@ -1564,10 +1564,70 @@ impl PyIntegrator {
                 // `frames` holds only plain slices whose borrow guards live in
                 // `arrays`, which outlives this region.
                 let results = py.detach(|| {
-                    if let Some(&(_, dim1, dim2)) = frames.first()
-                        && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
-                    {
+                    let uniform = frames
+                        .first()
+                        .filter(|&&(_, dim1, dim2)| {
+                            frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                        })
+                        .map(|&(_, dim1, dim2)| (dim1, dim2));
+                    if let Some((dim1, dim2)) = uniform {
                         self.integrator.prepare1d(dim1, dim2, n_points);
+                        let min_tiled = 4 * rayon::current_num_threads().max(1);
+                        if !azimuthal_std
+                            && frames.len() >= min_tiled
+                            && self
+                                .integrator
+                                .can_integrate1d_batch4(dim1, dim2, n_points, errors)
+                        {
+                            let n_tiled = (frames.len() / 4) * 4;
+                            let mut out: Vec<PyBatchResult> = frames[..n_tiled]
+                                .par_chunks_exact(4)
+                                .enumerate()
+                                .flat_map(|(chunk_idx, chunk)| {
+                                    let base = chunk_idx * 4;
+                                    let batch = self
+                                        .integrator
+                                        .try_integrate1d_batch4(
+                                            [chunk[0].0, chunk[1].0, chunk[2].0, chunk[3].0],
+                                            dim1,
+                                            dim2,
+                                            n_points,
+                                            errors,
+                                        )
+                                        .expect("can_integrate1d_batch4 pre-checked eligibility");
+                                    batch
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(j, (radial, intensity, errs))| {
+                                            let res = match errs {
+                                                Some(e) => {
+                                                    PyIntegrationResult::from_1d_with_errors(
+                                                        radial, intensity, e,
+                                                    )
+                                                }
+                                                None => {
+                                                    PyIntegrationResult::from_1d(radial, intensity)
+                                                }
+                                            };
+                                            PyBatchResult {
+                                                filename: format!("array[{}]", base + j),
+                                                result: Some(res),
+                                                error: None,
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .collect();
+                            if n_tiled < frames.len() {
+                                out.par_extend(
+                                    frames[n_tiled..]
+                                        .par_iter()
+                                        .enumerate()
+                                        .map(|(j, item)| integrate((n_tiled + j, item))),
+                                );
+                            }
+                            return out;
+                        }
                     }
                     frames.par_iter().enumerate().map(integrate).collect()
                 });

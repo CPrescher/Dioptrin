@@ -246,6 +246,87 @@ impl Integrator {
         }
     }
 
+    fn one_d_key(&self, n_points: usize) -> Option<OneDKey> {
+        let unit = self.radial_unit;
+        let radial_range = self.radial_range_key();
+        match self.method {
+            IntegrationMethod::Histogram => None,
+            IntegrationMethod::Counting => Some(OneDKey::Counting {
+                n_points,
+                unit,
+                radial_range,
+            }),
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                Some(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, IntegrationMethod::PyfaiFull),
+                    n_points,
+                    unit,
+                    radial_range,
+                })
+            }
+            IntegrationMethod::Supersampled { n_ss } => Some(OneDKey::Supersampled {
+                n_points,
+                n_ss,
+                unit,
+                radial_range,
+            }),
+        }
+    }
+
+    /// Returns whether `try_integrate1d_batch4` will take the 4-frame tiled
+    /// path for `(dim1, dim2, n_points, errors)`.
+    #[allow(dead_code)]
+    pub(crate) fn can_integrate1d_batch4(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+        errors: bool,
+    ) -> bool {
+        let Some(key) = self.one_d_key(n_points) else {
+            return false;
+        };
+        let view = self.for_shape(dim1, dim2);
+        let lut = view.ensure_lut1d(key);
+        lut.can_batch4(self.fast_math, errors)
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 1D integration on both fast CSC and CSR
+    /// (fast intensity or strict) paths. Returns `None` for Histogram, dynamic
+    /// masks, or CSR `fast_math && errors`, so callers fall back to per-frame
+    /// integration.
+    #[allow(dead_code, clippy::type_complexity)]
+    pub(crate) fn try_integrate1d_batch4(
+        &self,
+        signals: [&[f64]; 4],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+        errors: bool,
+    ) -> Option<[(Vec<f64>, Vec<f64>, Option<Vec<f64>>); 4]> {
+        let key = self.one_d_key(n_points)?;
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let lut = view.ensure_lut1d(key);
+        let results = match (self.fast_math, errors) {
+            (true, false) => {
+                lut.integrate_batch4::<true, false>(signals, mask_data, &normalization)
+            }
+            (true, true) => lut.integrate_batch4::<true, true>(signals, mask_data, &normalization),
+            (false, false) => {
+                lut.integrate_batch4::<false, false>(signals, mask_data, &normalization)
+            }
+            (false, true) => {
+                lut.integrate_batch4::<false, true>(signals, mask_data, &normalization)
+            }
+        }?;
+        Some(results.map(|(r, y, e)| (r, y, errors.then_some(e))))
+    }
+
     pub fn integrate1d_from_slice(
         &self,
         data: &[f64],
