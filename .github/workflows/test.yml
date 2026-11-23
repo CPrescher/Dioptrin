@@ -58,6 +58,7 @@ jobs:
           name: test-output-data
           path: test_data/test_output
           retention-days: 1
+          if-no-files-found: error
 
   python-tests:
     name: Python Tests & Examples
@@ -87,10 +88,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # Caches dependencies only; the extension module itself is always
-      # rebuilt. One cache per Python version, since PyO3 builds against it.
+      # rebuilt. One cache per Python version, since PyO3 builds against it,
+      # and suffixed with -nolto so the non-LTO dependency artifacts below
+      # don't collide with any previous LTO cache.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: py${{ matrix.python-version }}
+          key: py${{ matrix.python-version }}-nolto
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -104,7 +107,7 @@ jobs:
           uv pip install maturin -r pyproject.toml --extra test
 
       # Skip LTO and single-CGU for CI test builds (release.yml keeps full LTO
-      # for published wheels). Set per step so the rust-cache key is unaffected.
+      # for published wheels).
       - name: Build Python package
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"
