@@ -9,6 +9,11 @@
 
 # Submit from a clone's root. Extra arguments are forwarded to compare.py:
 # sbatch benchmarks/comparison/maxwell.sbatch --suite quick --workers 1,2
+# Environment switches: AZINT_FAST_MATH=1 (default; 0 builds the default azint),
+# WITH_OPENCL=1 installs pyopencl for pyfai-full-opencl, EXTRA_MODULES adds
+# site modules (e.g. a GPU driver/OpenCL stack) after BUILD_MODULES. For a GPU
+# node pass your GPU partition: sbatch --partition=<gpu-partition> ...
+# PYFAI_WHEEL selects a local pyFAI wheel for a separate cached environment.
 set -euo pipefail
 unset LD_PRELOAD PYTHONPATH
 export PYTHONNOUSERSITE=1
@@ -19,6 +24,10 @@ set +u
 module purge
 read -r -a build_modules <<< "${BUILD_MODULES:-maxwell mamba}"
 module load "${build_modules[@]}"
+if [[ -n "${EXTRA_MODULES:-}" ]]; then
+    read -r -a extra_modules <<< "$EXTRA_MODULES"
+    module load "${extra_modules[@]}"
+fi
 set -u
 unset PYTHONPATH
 cd "${SLURM_SUBMIT_DIR:?Submit with sbatch from the Dioptrin root}"
@@ -56,6 +65,19 @@ cache_args=(--cache-root "${ENV_CACHE_ROOT:-$repo_dir/.benchmark-environments}"
 if [[ ${REBUILD_ENV:-0} == 1 ]]; then
     cache_args+=(--rebuild)
 fi
+# Like-for-like azint build by default (see README, "azint build flags").
+if [[ ${AZINT_FAST_MATH:-1} == 1 ]]; then
+    cache_args+=(--azint-fast-math)
+fi
+if [[ ${WITH_OPENCL:-0} == 1 ]]; then
+    cache_args+=(--with-opencl)
+    command -v nvidia-smi >/dev/null && nvidia-smi > "$result_dir/nvidia-smi.txt" || true
+    ls /etc/OpenCL/vendors > "$result_dir/opencl-vendors.txt" 2>&1 || true
+fi
+if [[ -n "${PYFAI_WHEEL:-}" ]]; then
+    cache_args+=(--pyfai-wheel "$PYFAI_WHEEL")
+fi
+command -v numactl >/dev/null && numactl --hardware > "$result_dir/numactl.txt" || true
 "${PYTHON_BIN:-python3}" benchmarks/comparison/environment.py "${cache_args[@]}"
 environment_python=$("${PYTHON_BIN:-python3}" -E -s -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["python"])' "$result_dir/environment.json")

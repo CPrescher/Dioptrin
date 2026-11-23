@@ -645,11 +645,10 @@ impl Prepared1d {
     }
 }
 impl Prepared2d {
-    /// Direct fixed-mask intensity output: preserve row arithmetic without
-    /// constructing raw signal/normalization/count arrays that are unused.
-    pub(crate) fn fixed_intensity<const FAST: bool>(
+    /// Produce fixed-mask intensity in the CSR row pass using the cached denominators.
+    pub(crate) fn fixed_intensity<const FAST: bool, P: Pixel>(
         &self,
-        signal: &[f64],
+        signal: &[P],
         mask: Option<&[u8]>,
         norm: &[f64],
     ) -> Vec<f64> {
@@ -661,7 +660,7 @@ impl Prepared2d {
                 (0..table.row_ptr.len() - 1)
                     .into_par_iter()
                     .map(|i| {
-                        let s = table.sum::<_, f64, FAST, true, false, false, false>(
+                        let s = table.sum::<_, P, FAST, true, false, false, false>(
                             i,
                             $cols,
                             None,
@@ -745,7 +744,11 @@ impl Prepared2d {
         m: Option<&[u8]>,
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
-        self.normalized::<FAST, VAR, P>(s, m, n)
+        if !VAR && self.mode == MaskMode::Fixed {
+            (self.fixed_intensity::<FAST, P>(s, m, n), Vec::new())
+        } else {
+            self.normalized::<FAST, VAR, P>(s, m, n)
+        }
     }
     pub(crate) fn raw2d<const FAST: bool, const VAR: bool>(
         &self,
@@ -919,7 +922,7 @@ mod bounds_tests {
     #[test]
     #[should_panic(expected = "lookup table addresses 6 pixels but the image has only 4")]
     fn fixed_intensity_rejects_an_image_shorter_than_its_table() {
-        table().fixed_intensity::<true>(&[2.; 4], None, &[1.; 6]);
+        table().integrate::<true, false>(&[2.; 4], None, &[1.; 6]);
     }
 
     #[test]

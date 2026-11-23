@@ -239,9 +239,9 @@ impl FixedGrid2dPlan {
         }
         if !errors {
             let intensity = if self.fast {
-                self.lut.fixed_intensity::<true>(data, mask, &self.norm)
+                self.lut.fixed_intensity::<true, _>(data, mask, &self.norm)
             } else {
-                self.lut.fixed_intensity::<false>(data, mask, &self.norm)
+                self.lut.fixed_intensity::<false, _>(data, mask, &self.norm)
             };
             return Ok((intensity, None));
         }
