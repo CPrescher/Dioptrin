@@ -588,6 +588,35 @@ impl Prepared1d {
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
     }
+
+    /// 4-frame SIMD-tiled fixed-mask 1D integration on the fast CSC path.
+    /// Returns `None` when the plan is not on the fixed-mask fast CSC path, so
+    /// callers fall back to per-frame integration.
+    #[cfg(feature = "python")]
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool>(
+        &self,
+        signals: [&[f64]; 4],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> Option<[(Vec<f64>, Vec<f64>, Vec<f64>); 4]> {
+        if self.csr.mode == MaskMode::Fixed
+            && FAST
+            && self.csr.fixed_csc_enabled
+            && self.csr.prefer_csc
+            && let Some(csc) = self.csr.dynamic_csc(norm.len())
+        {
+            let pixels = self
+                .csr
+                .fixed_pixels
+                .get_or_init(|| csc.active_pixels(mask));
+            let cached_norm = self.csr.normalization::<true>(mask, norm);
+            let out = csc.fixed_results_batch4::<VAR>(signals, pixels, cached_norm);
+            let bins = self.bins();
+            return Some(out.map(|(y, e)| (bins.clone(), y, e)));
+        }
+        None
+    }
     /// Strict CSR fallback for independently supplied variances. Preserve every
     /// unmasked contribution, including non-finite signal and zero/negative
     /// weights, just as the ordinary integration kernel does. The spread kernel

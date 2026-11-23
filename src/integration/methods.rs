@@ -246,6 +246,36 @@ impl Integrator {
         }
     }
 
+    /// 4-frame SIMD-tiled fixed-mask 1D integration on the fast CSC path.
+    /// Returns `None` when the method or mask mode does not use the fast fixed
+    /// CSC table, so callers fall back to per-frame integration.
+    #[cfg(feature = "python")]
+    pub(crate) fn try_integrate1d_batch4(
+        &self,
+        signals: [&[f64]; 4],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+        errors: bool,
+    ) -> Option<[(Vec<f64>, Vec<f64>, Option<Vec<f64>>); 4]> {
+        let key = self.one_d_table_key(n_points)?;
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let lut = view.ensure_lut1d(key);
+        let results = match (self.fast_math, errors) {
+            (true, false) => {
+                lut.integrate_batch4::<true, false>(signals, mask_data, &normalization)
+            }
+            (true, true) => lut.integrate_batch4::<true, true>(signals, mask_data, &normalization),
+            (false, _) => None,
+        }?;
+        Some(results.map(|(r, y, e)| (r, y, errors.then_some(e))))
+    }
+
     pub fn integrate1d_from_slice(
         &self,
         data: &[f64],

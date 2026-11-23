@@ -5,9 +5,42 @@ use rayon::prelude::*;
 use super::prepared::{Columns, madd};
 use crate::frame::Pixel;
 
+/// Compact bin index storage: `u16` whenever `nbins <= 65,535` (halves index
+/// bandwidth for all standard 1D integrations), falling back to `u32`.
+pub(crate) enum BinIndices {
+    U16(Vec<u16>),
+    U32(Vec<u32>),
+}
+
+impl BinIndices {
+    #[inline(always)]
+    fn get(&self, k: usize) -> usize {
+        match self {
+            Self::U16(v) => v[k] as usize,
+            Self::U32(v) => v[k] as usize,
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn get_unchecked(&self, k: usize) -> usize {
+        match self {
+            Self::U16(v) => unsafe { *v.get_unchecked(k) as usize },
+            Self::U32(v) => unsafe { *v.get_unchecked(k) as usize },
+        }
+    }
+
+    #[cfg(test)]
+    fn to_vec_u32(&self) -> Vec<u32> {
+        match self {
+            Self::U16(v) => v.iter().map(|&b| u32::from(b)).collect(),
+            Self::U32(v) => v.clone(),
+        }
+    }
+}
+
 pub(crate) struct Csc {
     ptr: Vec<u32>,
-    bins: Vec<u32>,
+    bins: BinIndices,
     weights: Option<Vec<f64>>,
     nbins: usize,
 }
@@ -53,7 +86,7 @@ impl FixedRows {
         for chunk in 0..chunks {
             for &p in &pixels[chunk * pixels.len() / chunks..(chunk + 1) * pixels.len() / chunks] {
                 for k in csc.ptr[p as usize] as usize..csc.ptr[p as usize + 1] as usize {
-                    ptr[(csc.bins[k] as usize * chunks + chunk) * 4 + p as usize % 4 + 1] += 1;
+                    ptr[(csc.bins.get(k) * chunks + chunk) * 4 + p as usize % 4 + 1] += 1;
                 }
             }
         }
@@ -66,7 +99,7 @@ impl FixedRows {
         for chunk in 0..chunks {
             for &p in &pixels[chunk * pixels.len() / chunks..(chunk + 1) * pixels.len() / chunks] {
                 for k in csc.ptr[p as usize] as usize..csc.ptr[p as usize + 1] as usize {
-                    let row = (csc.bins[k] as usize * chunks + chunk) * 4 + p as usize % 4;
+                    let row = (csc.bins.get(k) * chunks + chunk) * 4 + p as usize % 4;
                     let at = next[row] as usize;
                     next[row] += 1;
                     columns[at] = p;
@@ -175,19 +208,36 @@ impl Csc {
             ptr[p + 1] += ptr[p];
         }
         let mut next = ptr[..npix].to_vec();
-        let mut bins = vec![0; nnz];
         let mut transposed_weights = weights.map(|_| vec![0.; nnz]);
-        for b in 0..nbins {
-            for k in rows[b]..rows[b + 1] {
-                let p = columns.get(k);
-                let at = next[p] as usize;
-                next[p] += 1;
-                bins[at] = b as u32;
-                if let Some(w) = transposed_weights.as_mut() {
-                    w[at] = weights.unwrap()[k];
+        let bins = if u16::try_from(nbins).is_ok() {
+            let mut b16 = vec![0u16; nnz];
+            for b in 0..nbins {
+                for k in rows[b]..rows[b + 1] {
+                    let p = columns.get(k);
+                    let at = next[p] as usize;
+                    next[p] += 1;
+                    b16[at] = b as u16;
+                    if let Some(w) = transposed_weights.as_mut() {
+                        w[at] = weights.unwrap()[k];
+                    }
                 }
             }
-        }
+            BinIndices::U16(b16)
+        } else {
+            let mut b32 = vec![0u32; nnz];
+            for b in 0..nbins {
+                for k in rows[b]..rows[b + 1] {
+                    let p = columns.get(k);
+                    let at = next[p] as usize;
+                    next[p] += 1;
+                    b32[at] = b as u32;
+                    if let Some(w) = transposed_weights.as_mut() {
+                        w[at] = weights.unwrap()[k];
+                    }
+                }
+            }
+            BinIndices::U32(b32)
+        };
         Some(Self {
             ptr,
             bins,
@@ -228,29 +278,212 @@ impl Csc {
                 &pixels[i * pixels.len() / chunks..(i + 1) * pixels.len() / chunks],
             )
         };
-        let partials: Vec<Sums> = if rayon::current_thread_index().is_none() && chunks > 1 {
-            (0..chunks).into_par_iter().map(accumulate).collect()
-        } else {
-            (0..chunks).map(accumulate).collect()
-        };
         let n = self.nbins;
         let reduce = |v: &[f64], b: usize| (v[b] + v[n + b]) + (v[2 * n + b] + v[3 * n + b]);
         let mut rows: Vec<_> = normalization
             .iter()
             .map(|&norm| [0., norm, 0., 0.])
             .collect();
-        for sums in partials {
-            for (b, row) in rows.iter_mut().enumerate() {
-                row[0] += reduce(&sums.signal, b);
-                if VAR {
-                    row[2] += reduce(&sums.variance, b);
+        if rayon::current_thread_index().is_none() && chunks > 1 {
+            let partials: Vec<Sums> = (0..chunks).into_par_iter().map(accumulate).collect();
+            for sums in partials {
+                for (b, row) in rows.iter_mut().enumerate() {
+                    row[0] += reduce(&sums.signal, b);
+                    if VAR {
+                        row[2] += reduce(&sums.variance, b);
+                    }
+                    if COUNT {
+                        row[3] += reduce(&sums.count, b);
+                    }
                 }
-                if COUNT {
-                    row[3] += reduce(&sums.count, b);
+            }
+        } else {
+            // Reuse one Sums buffer across chunks when running sequentially on a worker.
+            let mut sums = self.block_sums(VAR);
+            if COUNT {
+                sums.count = vec![0.; 4 * n];
+            }
+            for i in 0..chunks {
+                if i > 0 {
+                    sums.signal.fill(0.);
+                    if VAR {
+                        sums.variance.fill(0.);
+                    }
+                    if COUNT {
+                        sums.count.fill(0.);
+                    }
+                }
+                self.add_fixed_slice::<VAR, COUNT, P>(
+                    signal,
+                    0,
+                    &pixels[i * pixels.len() / chunks..(i + 1) * pixels.len() / chunks],
+                    &mut sums,
+                );
+                for (b, row) in rows.iter_mut().enumerate() {
+                    row[0] += reduce(&sums.signal, b);
+                    if VAR {
+                        row[2] += reduce(&sums.variance, b);
+                    }
+                    if COUNT {
+                        row[3] += reduce(&sums.count, b);
+                    }
                 }
             }
         }
         rows
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 1D integration. Reads the CSC table once
+    /// per 4 frames and accumulates `[f64; 4]` per bin/lane in the exact same
+    /// chunk and lane reduction order as 1-frame `fixed_results` (bit-identical).
+    #[cfg(feature = "python")]
+    pub(super) fn fixed_results_batch4<const VAR: bool>(
+        &self,
+        signals: [&[f64]; 4],
+        pixels: &[u32],
+        normalization: &[f64],
+    ) -> [(Vec<f64>, Vec<f64>); 4] {
+        for s in signals {
+            assert_eq!(s.len() + 1, self.ptr.len());
+        }
+        assert_eq!(normalization.len(), self.nbins);
+        let n = self.nbins;
+        let chunks = self.fixed_chunks(pixels.len());
+        let mut sig_acc = vec![[0.0f64; 4]; n];
+        let mut var_acc = if VAR {
+            vec![[0.0f64; 4]; n]
+        } else {
+            Vec::new()
+        };
+        let mut chunk_sig = vec![[0.0f64; 4]; 4 * n];
+        let mut chunk_var = if VAR {
+            vec![[0.0f64; 4]; 4 * n]
+        } else {
+            Vec::new()
+        };
+
+        macro_rules! run_chunk {
+            ($bins:expr, $weights:expr, $weighted:expr, $pix_slice:expr) => {{
+                let ptr = self.ptr.as_ptr();
+                let bins = $bins.as_ptr();
+                let weights = $weights;
+                let s0 = signals[0].as_ptr();
+                let s1 = signals[1].as_ptr();
+                let s2 = signals[2].as_ptr();
+                let s3 = signals[3].as_ptr();
+                let cs = chunk_sig.as_mut_ptr();
+                let cv = chunk_var.as_mut_ptr();
+                for &pixel in $pix_slice {
+                    let p = pixel as usize;
+                    let x0 = *s0.add(p);
+                    let x1 = *s1.add(p);
+                    let x2 = *s2.add(p);
+                    let x3 = *s3.add(p);
+                    let xp0 = if VAR { x0.max(0.0) } else { 0.0 };
+                    let xp1 = if VAR { x1.max(0.0) } else { 0.0 };
+                    let xp2 = if VAR { x2.max(0.0) } else { 0.0 };
+                    let xp3 = if VAR { x3.max(0.0) } else { 0.0 };
+                    let lane = (p & 3) * n;
+                    let k0 = *ptr.add(p) as usize;
+                    let k1 = *ptr.add(p + 1) as usize;
+                    for k in k0..k1 {
+                        let b = *bins.add(k) as usize + lane;
+                        let dst_s = &mut *cs.add(b);
+                        if $weighted {
+                            let w = *weights.add(k);
+                            dst_s[0] = madd(w, x0, dst_s[0]);
+                            dst_s[1] = madd(w, x1, dst_s[1]);
+                            dst_s[2] = madd(w, x2, dst_s[2]);
+                            dst_s[3] = madd(w, x3, dst_s[3]);
+                            if VAR {
+                                let w2 = w * w;
+                                let dst_v = &mut *cv.add(b);
+                                dst_v[0] = madd(w2, xp0, dst_v[0]);
+                                dst_v[1] = madd(w2, xp1, dst_v[1]);
+                                dst_v[2] = madd(w2, xp2, dst_v[2]);
+                                dst_v[3] = madd(w2, xp3, dst_v[3]);
+                            }
+                        } else {
+                            dst_s[0] += x0;
+                            dst_s[1] += x1;
+                            dst_s[2] += x2;
+                            dst_s[3] += x3;
+                            if VAR {
+                                let dst_v = &mut *cv.add(b);
+                                dst_v[0] += xp0;
+                                dst_v[1] += xp1;
+                                dst_v[2] += xp2;
+                                dst_v[3] += xp3;
+                            }
+                        }
+                    }
+                }
+            }};
+        }
+
+        for i in 0..chunks {
+            if i > 0 {
+                chunk_sig.fill([0.0; 4]);
+                if VAR {
+                    chunk_var.fill([0.0; 4]);
+                }
+            }
+            let pix_slice = &pixels[i * pixels.len() / chunks..(i + 1) * pixels.len() / chunks];
+            // SAFETY: CSC construction checks all bin indices and pixel pointers;
+            // all 4 signal slices are checked above to match `ptr.len() - 1`.
+            unsafe {
+                match (&self.bins, &self.weights) {
+                    (BinIndices::U16(b), Some(w)) => run_chunk!(b, w.as_ptr(), true, pix_slice),
+                    (BinIndices::U16(b), None) => {
+                        run_chunk!(b, std::ptr::null::<f64>(), false, pix_slice)
+                    }
+                    (BinIndices::U32(b), Some(w)) => run_chunk!(b, w.as_ptr(), true, pix_slice),
+                    (BinIndices::U32(b), None) => {
+                        run_chunk!(b, std::ptr::null::<f64>(), false, pix_slice)
+                    }
+                }
+            }
+            for b in 0..n {
+                let a0 = chunk_sig[b];
+                let a1 = chunk_sig[n + b];
+                let a2 = chunk_sig[2 * n + b];
+                let a3 = chunk_sig[3 * n + b];
+                for f in 0..4 {
+                    sig_acc[b][f] += (a0[f] + a1[f]) + (a2[f] + a3[f]);
+                }
+                if VAR {
+                    let v0 = chunk_var[b];
+                    let v1 = chunk_var[n + b];
+                    let v2 = chunk_var[2 * n + b];
+                    let v3 = chunk_var[3 * n + b];
+                    for f in 0..4 {
+                        var_acc[b][f] += (v0[f] + v1[f]) + (v2[f] + v3[f]);
+                    }
+                }
+            }
+        }
+
+        std::array::from_fn(|f| {
+            let mut intensity = Vec::with_capacity(n);
+            let mut errors = Vec::with_capacity(if VAR { n } else { 0 });
+            for b in 0..n {
+                let norm = normalization[b];
+                intensity.push(if norm == 0.0 {
+                    0.0
+                } else {
+                    sig_acc[b][f] / norm
+                });
+                if VAR {
+                    let v = if norm == 0.0 {
+                        0.0
+                    } else {
+                        var_acc[b][f] / (norm * norm)
+                    };
+                    errors.push(v.max(0.0).sqrt());
+                }
+            }
+            (intensity, errors)
+        })
     }
 
     fn fixed_chunks(&self, pixels: usize) -> usize {
@@ -311,7 +544,7 @@ impl Csc {
                 for k in
                     *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
                 {
-                    let b = *self.bins.get_unchecked(k) as usize + lane;
+                    let b = self.bins.get_unchecked(k) + lane;
                     let w = self.weights.as_ref().map_or(1., |w| *w.get_unchecked(k));
                     let s = sums.signal.get_unchecked_mut(b);
                     *s = madd(w, x, *s);
@@ -386,29 +619,53 @@ impl Csc {
         // SAFETY: Csc construction checks compact bounds and active_pixels
         // supplies valid pixels. Signal dimensions are checked above. All
         // destination histograms are private to this frame invocation.
-        unsafe {
-            for &pixel in pixels {
-                let p = pixel as usize;
-                let x = signal.get_unchecked(p - offset).to_f64();
-                let lane = (p % 4) * n;
-                for k in
-                    *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
-                {
-                    let b = *self.bins.get_unchecked(k) as usize + lane;
-                    let w = self
-                        .weights
-                        .as_ref()
-                        .map_or(1., |weights| *weights.get_unchecked(k));
-                    let s = sums.signal.get_unchecked_mut(b);
-                    *s = madd(w, x, *s);
-                    if VAR {
-                        let v = sums.variance.get_unchecked_mut(b);
-                        *v = madd(w * w, x.max(0.), *v);
-                    }
-                    if COUNT {
-                        *sums.count.get_unchecked_mut(b) += w;
+        macro_rules! run_slice {
+            ($bins:expr, $weights:expr, $weighted:expr) => {{
+                let ptr = self.ptr.as_ptr();
+                let bins = $bins.as_ptr();
+                let weights = $weights;
+                let sig_ptr = sums.signal.as_mut_ptr();
+                let var_ptr = sums.variance.as_mut_ptr();
+                let cnt_ptr = sums.count.as_mut_ptr();
+                for &pixel in pixels {
+                    let p = pixel as usize;
+                    let x = signal.get_unchecked(p - offset).to_f64();
+                    let xp = if VAR { x.max(0.) } else { 0. };
+                    let lane = (p & 3) * n;
+                    let k0 = *ptr.add(p) as usize;
+                    let k1 = *ptr.add(p + 1) as usize;
+                    for k in k0..k1 {
+                        let b = *bins.add(k) as usize + lane;
+                        if $weighted {
+                            let w = *weights.add(k);
+                            let s = &mut *sig_ptr.add(b);
+                            *s = madd(w, x, *s);
+                            if VAR {
+                                let v = &mut *var_ptr.add(b);
+                                *v = madd(w * w, xp, *v);
+                            }
+                            if COUNT {
+                                *cnt_ptr.add(b) += w;
+                            }
+                        } else {
+                            *sig_ptr.add(b) += x;
+                            if VAR {
+                                *var_ptr.add(b) += xp;
+                            }
+                            if COUNT {
+                                *cnt_ptr.add(b) += 1.0;
+                            }
+                        }
                     }
                 }
+            }};
+        }
+        unsafe {
+            match (&self.bins, &self.weights) {
+                (BinIndices::U16(b), Some(w)) => run_slice!(b, w.as_ptr(), true),
+                (BinIndices::U16(b), None) => run_slice!(b, std::ptr::null::<f64>(), false),
+                (BinIndices::U32(b), Some(w)) => run_slice!(b, w.as_ptr(), true),
+                (BinIndices::U32(b), None) => run_slice!(b, std::ptr::null::<f64>(), false),
             }
         }
     }
@@ -442,7 +699,7 @@ impl Csc {
                 for k in
                     *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
                 {
-                    let b = *self.bins.get_unchecked(k) as usize + lane;
+                    let b = self.bins.get_unchecked(k) + lane;
                     let w = self
                         .weights
                         .as_ref()
@@ -627,7 +884,7 @@ mod tests {
         let weights = [0.1, 0.3, 0.15];
         let csc = Csc::new(&[0, 2, 3], &columns, Some(&weights), 2).unwrap();
         assert_eq!(csc.ptr, vec![0, 2, 3]);
-        assert_eq!(csc.bins, vec![0, 1, 0]);
+        assert_eq!(csc.bins.to_vec_u32(), vec![0, 1, 0]);
         assert_eq!(
             csc.weights
                 .unwrap()

@@ -1536,10 +1536,60 @@ impl PyIntegrator {
                 // `frames` holds only plain slices whose borrow guards live in
                 // `arrays`, which outlives this region.
                 let results = py.detach(|| {
-                    if let Some(&(_, dim1, dim2)) = frames.first()
-                        && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
-                    {
+                    let uniform = frames
+                        .first()
+                        .filter(|&&(_, dim1, dim2)| {
+                            frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                        })
+                        .map(|&(_, dim1, dim2)| (dim1, dim2));
+                    if let Some((dim1, dim2)) = uniform {
                         self.integrator.prepare1d(dim1, dim2, n_points);
+                        if !azimuthal_std && frames.len() >= 4 {
+                            let chunks: Vec<Vec<PyBatchResult>> = frames
+                                .par_chunks(4)
+                                .enumerate()
+                                .map(|(chunk_idx, chunk)| {
+                                    let base = chunk_idx * 4;
+                                    if chunk.len() == 4
+                                        && let Some(batch) = self.integrator.try_integrate1d_batch4(
+                                            [chunk[0].0, chunk[1].0, chunk[2].0, chunk[3].0],
+                                            dim1,
+                                            dim2,
+                                            n_points,
+                                            errors,
+                                        )
+                                    {
+                                        return batch
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(j, (radial, intensity, errs))| {
+                                                let res = match errs {
+                                                    Some(e) => {
+                                                        PyIntegrationResult::from_1d_with_errors(
+                                                            radial, intensity, e,
+                                                        )
+                                                    }
+                                                    None => PyIntegrationResult::from_1d(
+                                                        radial, intensity,
+                                                    ),
+                                                };
+                                                PyBatchResult {
+                                                    filename: format!("array[{}]", base + j),
+                                                    result: Some(res),
+                                                    error: None,
+                                                }
+                                            })
+                                            .collect();
+                                    }
+                                    chunk
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(j, item)| integrate((base + j, item)))
+                                        .collect()
+                                })
+                                .collect();
+                            return chunks.into_iter().flatten().collect();
+                        }
                     }
                     frames.par_iter().enumerate().map(integrate).collect()
                 });
