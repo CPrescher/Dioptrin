@@ -407,7 +407,7 @@ cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
 ```
 
-`integrate2d` releases the GIL while it loads a TIFF and while it integrates,
+`integrate1d` and `integrate2d` release the GIL while they load a TIFF and while they integrate,
 so other Python threads keep running; a NumPy input is borrowed for the call and
 must not be mutated concurrently. An `Integrator` cannot be shared between
 threads: give each thread its own.
@@ -502,13 +502,12 @@ For processing multiple files, use the batch methods which efficiently share geo
 For synchronous `batch1d` and `batch2d` calls with C-contiguous float64 NumPy arrays, image
 pixels are borrowed directly until all native workers finish. This avoids an
 additional full copy of the input batch. Inputs must remain unchanged during the
-call and must not be mutated concurrently. `batch1d` array batches use the
-global Rayon pool and ignore `num_workers`/`num_threads`; configure the pool
-before the first integration with `set_rayon_threads` or `RAYON_NUM_THREADS`.
-`batch2d` array batches do the same when neither argument is given; with
-either, `num_workers` frames run at a time, each on its own pool of
-`num_threads` Rayon threads, as for TIFF paths (the missing one resolved the
-same way). File and asynchronous streaming paths retain ownership of
+call and must not be mutated concurrently. Without `num_workers` and
+`num_threads`, array batches run on the global Rayon pool, all frames in
+parallel; configure the pool before the first integration with
+`set_rayon_threads` or `RAYON_NUM_THREADS`. With either argument,
+`num_workers` frames run at a time, each on its own pool of `num_threads`
+Rayon threads, as for TIFF paths (the missing one resolved the same way). File and asynchronous streaming paths retain ownership of
 their frame buffers. Standard CSR integrations compute Poisson variance directly
 from each pixel, without a full variance-image temporary. Output arrays are
 allocated for each result. Histogram and azimuthal-spread paths keep their

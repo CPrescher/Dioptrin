@@ -402,6 +402,11 @@ class Integrator:
         Returns:
             IntegrationResult with radial values, intensities, and optional errors
 
+        The GIL is released while a TIFF loads and while the image is integrated,
+        so other Python threads run meanwhile. An Integrator cannot be shared
+        between threads; give each thread its own. A NumPy input is borrowed
+        read-only for the call and must not be mutated concurrently.
+
         Raises:
             ValueError: If n_points is 0, the TIFF cannot be loaded or is not
                 single-channel (e.g. RGB), the image is empty or not
@@ -634,10 +639,14 @@ class Integrator:
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute Poisson error estimates (default: False)
             azimuthal_std: Also compute weighted population spread (default: False)
-            num_workers: Number of parallel workers (optional; TIFF paths only,
-                ignored for arrays, which run on the global Rayon pool)
-            num_threads: Threads per worker (optional; TIFF paths only, ignored
-                for arrays)
+            num_workers: Number of parallel workers (optional). For arrays, the
+                number of frames integrated at a time; see below.
+            num_threads: Threads per worker (optional). For arrays, the Rayon
+                threads each frame uses, in a pool of its own. A missing one of
+                the two is resolved as for TIFF paths (num_threads defaults to
+                2, num_workers to cores / num_threads - 1, at least 1). With
+                neither given, arrays run on the global Rayon pool, all frames
+                in parallel.
 
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
