@@ -722,20 +722,22 @@ impl Integrator {
     ///
     /// For a full-circle azimuthal range, use `azimuthal_step = 2*pi / n_azimuthal` and a
     /// `azimuthal_start` that defines the center of the first bin (e.g. `0.0` for 0..2*pi).
-    /// Azimuthal bins wrap periodically, so angles outside the total range fold into
-    /// `0..n_azimuthal`.
+    /// Without an explicit `radial_range` on the integrator, the azimuthal bins of
+    /// `Counting`, `PixelSplit` and `Supersampled` wrap periodically, so angles outside the
+    /// total range fold into `0..n_azimuthal`.
     ///
-    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
+    /// do not wrap: they treat the bins as the sector
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
-    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
+    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
     ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
-    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
-    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
-    /// `azimuthal_start` is not finite.
+    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
+    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
+    /// positive, or if `azimuthal_start` is not finite.
     pub fn integrate2d_with_azimuthal_range(
         &self,
         frame: &Frame,
@@ -763,17 +765,18 @@ impl Integrator {
 
     /// Like [`Self::integrate2d_with_azimuthal_range`], for a row-major `dim1 x dim2` slice.
     ///
-    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
+    /// do not wrap: they treat the bins as the sector
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
-    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
+    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
     ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
-    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
-    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
-    /// `azimuthal_start` is not finite.
+    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
+    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
+    /// positive, or if `azimuthal_start` is not finite.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_from_slice(
         &self,
@@ -861,20 +864,22 @@ impl Integrator {
     /// Integrate a frame to 2D with errors using an explicit azimuthal binning definition.
     ///
     /// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
-    /// `azimuthal_start - azimuthal_step / 2`. Azimuthal bins wrap periodically, so angles outside
-    /// the total range fold into `0..n_azimuthal`.
+    /// `azimuthal_start - azimuthal_step / 2`. Without an explicit `radial_range` on the
+    /// integrator, the azimuthal bins of `Counting`, `PixelSplit` and `Supersampled` wrap
+    /// periodically, so angles outside the total range fold into `0..n_azimuthal`.
     ///
-    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
+    /// do not wrap: they treat the bins as the sector
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
-    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
+    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
     ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
-    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
-    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
-    /// `azimuthal_start` is not finite.
+    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
+    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
+    /// positive, or if `azimuthal_start` is not finite.
     pub fn integrate2d_with_azimuthal_range_and_errors(
         &self,
         frame: &Frame,
@@ -903,17 +908,18 @@ impl Integrator {
     /// Like [`Self::integrate2d_with_azimuthal_range_and_errors`], for a row-major
     /// `dim1 x dim2` slice.
     ///
-    /// `IntegrationMethod::PyfaiFull` does not wrap: it treats the bins as the sector
+    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
+    /// do not wrap: they treat the bins as the sector
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and does not fold angles outside it into the bins. A sector whose lower edge lies outside
-    /// `[-2π, 2π]` is shifted by whole turns into that window.
+    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
+    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
     ///
     /// # Panics
     ///
     /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
-    /// With `IntegrationMethod::PyfaiFull`, panics if `n_azimuthal * azimuthal_step`
-    /// exceeds 2π, if `azimuthal_step` is not finite and positive, or if
-    /// `azimuthal_start` is not finite.
+    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
+    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
+    /// positive, or if `azimuthal_start` is not finite.
     #[allow(clippy::too_many_arguments)]
     pub fn integrate2d_with_azimuthal_range_and_errors_from_slice(
         &self,
