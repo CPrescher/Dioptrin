@@ -96,23 +96,22 @@ class Integrate2dGilTests(unittest.TestCase):
         overlap), and only a call that releases the GIL lets the other thread
         start one meanwhile. With the default 5 ms interval a GIL-holding call
         would still overlap: a thread can be switched out after reading its
-        start time, so its interval contains the other thread's call. A call
-        on a 4000x4000 frame takes several milliseconds, long enough to time
-        one alone."""
+        start time, so its interval contains the other thread's call. With
+        the switch interval raised, even a call of under a millisecond on
+        IMAGE separates the two cases, so no larger frame is needed."""
         self.check("""
         import sys
         sys.setswitchinterval(30.0)
-        BIG = rng.random((4000, 4000)) * 100
         def attempt():
             barrier = threading.Barrier(2)
             intervals = {0: [], 1: []}
             def worker(k):
                 ai = make()
-                ai.integrate2d(BIG, 200, 72, errors=True)  # build the tables
+                ai.integrate2d(IMAGE, 200, 72, errors=True)  # build the tables
                 barrier.wait()
                 for _ in range(6):
                     start = time.perf_counter()
-                    ai.integrate2d(BIG, 200, 72, errors=True)
+                    ai.integrate2d(IMAGE, 200, 72, errors=True)
                     intervals[k].append((start, time.perf_counter()))
             threads = [threading.Thread(target=worker, args=(k,)) for k in (0, 1)]
             for t in threads: t.start()
