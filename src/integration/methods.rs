@@ -258,7 +258,28 @@ impl Integrator {
         n_points: usize,
         errors: bool,
     ) -> Option<[(Vec<f64>, Vec<f64>, Option<Vec<f64>>); 4]> {
-        let key = self.one_d_table_key(n_points)?;
+        let unit = self.radial_unit;
+        let radial_range = self.radial_range_key();
+        let key = match self.method {
+            IntegrationMethod::Histogram => return None,
+            IntegrationMethod::Counting => OneDKey::Counting {
+                n_points,
+                unit,
+                radial_range,
+            },
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
+                pyfai: matches!(self.method, IntegrationMethod::PyfaiFull),
+                n_points,
+                unit,
+                radial_range,
+            },
+            IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
+                n_points,
+                n_ss,
+                unit,
+                radial_range,
+            },
+        };
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {
@@ -271,7 +292,12 @@ impl Integrator {
                 lut.integrate_batch4::<true, false>(signals, mask_data, &normalization)
             }
             (true, true) => lut.integrate_batch4::<true, true>(signals, mask_data, &normalization),
-            (false, _) => None,
+            (false, false) => {
+                lut.integrate_batch4::<false, false>(signals, mask_data, &normalization)
+            }
+            (false, true) => {
+                lut.integrate_batch4::<false, true>(signals, mask_data, &normalization)
+            }
         }?;
         Some(results.map(|(r, y, e)| (r, y, errors.then_some(e))))
     }

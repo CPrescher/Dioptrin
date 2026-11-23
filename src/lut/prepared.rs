@@ -365,6 +365,52 @@ impl PreparedCsr {
         }
     }
 
+    /// 4-frame SIMD-tiled fixed-mask CSR integration (mask already compacted).
+    /// Bit-identical to 1-frame `cached_results` for both `FAST = true` and
+    /// `FAST = false`.
+    #[cfg(feature = "python")]
+    fn cached_results_batch4<const FAST: bool, const VAR: bool>(
+        &self,
+        signals: [&[f64]; 4],
+        norm: &[f64],
+    ) -> [(Vec<f64>, Vec<f64>); 4] {
+        let cached = self.normalization::<FAST>(None, norm);
+        for s in signals {
+            self.check_pixels("image", s.len());
+        }
+        let nbins = self.row_ptr.len() - 1;
+        let mut intensities: [Vec<f64>; 4] = std::array::from_fn(|_| Vec::with_capacity(nbins));
+        let mut errors: [Vec<f64>; 4] =
+            std::array::from_fn(|_| Vec::with_capacity(if VAR { nbins } else { 0 }));
+        macro_rules! run_rows {
+            ($cols:expr, $weights:expr, $weighted:expr) => {{
+                for i in 0..nbins {
+                    let start = self.row_ptr[i];
+                    let end = self.row_ptr[i + 1];
+                    let (sig, var) =
+                        row_batch4::<_, FAST, VAR, $weighted>(start, end, $cols, $weights, signals);
+                    let n = cached[i];
+                    for f in 0..4 {
+                        intensities[f].push(if n == 0.0 { 0.0 } else { sig[f] / n });
+                        if VAR {
+                            let v = if n == 0.0 { 0.0 } else { var[f] / (n * n) };
+                            errors[f].push(v.max(0.0).sqrt());
+                        }
+                    }
+                }
+            }};
+        }
+        match (&self.col_idx, self.values.as_deref()) {
+            (Columns::Compact(c), Some(w)) => run_rows!(c, w, true),
+            (Columns::Compact(c), None) => run_rows!(c, &[], false),
+            (Columns::Wide(c), Some(w)) => run_rows!(c, w, true),
+            (Columns::Wide(c), None) => run_rows!(c, &[], false),
+        }
+        let mut it_i = intensities.into_iter();
+        let mut it_e = errors.into_iter();
+        std::array::from_fn(|_| (it_i.next().unwrap(), it_e.next().unwrap()))
+    }
+
     fn results<const FAST: bool, const VAR: bool, const COUNT: bool, P: Pixel>(
         &self,
         signal: &[P],
@@ -589,9 +635,8 @@ impl Prepared1d {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
     }
 
-    /// 4-frame SIMD-tiled fixed-mask 1D integration on the fast CSC path.
-    /// Returns `None` when the plan is not on the fixed-mask fast CSC path, so
-    /// callers fall back to per-frame integration.
+    /// 4-frame SIMD-tiled fixed-mask 1D integration on both fast CSC and CSR
+    /// (fast or strict) paths. Returns `None` only for dynamic masks.
     #[cfg(feature = "python")]
     #[allow(clippy::type_complexity)]
     pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool>(
@@ -600,8 +645,11 @@ impl Prepared1d {
         mask: Option<&[u8]>,
         norm: &[f64],
     ) -> Option<[(Vec<f64>, Vec<f64>, Vec<f64>); 4]> {
-        if self.csr.mode == MaskMode::Fixed
-            && FAST
+        if self.csr.mode != MaskMode::Fixed {
+            return None;
+        }
+        let bins = self.bins();
+        if FAST
             && self.csr.fixed_csc_enabled
             && self.csr.prefer_csc
             && let Some(csc) = self.csr.dynamic_csc(norm.len())
@@ -612,10 +660,11 @@ impl Prepared1d {
                 .get_or_init(|| csc.active_pixels(mask));
             let cached_norm = self.csr.normalization::<true>(mask, norm);
             let out = csc.fixed_results_batch4::<VAR>(signals, pixels, cached_norm);
-            let bins = self.bins();
             return Some(out.map(|(y, e)| (bins.clone(), y, e)));
         }
-        None
+        let table = self.csr.fixed_table(mask);
+        let out = table.cached_results_batch4::<FAST, VAR>(signals, norm);
+        Some(out.map(|(y, e)| (bins.clone(), y, e)))
     }
     /// Strict CSR fallback for independently supplied variances. Preserve every
     /// unmasked contribution, including non-finite signal and zero/negative
@@ -917,6 +966,89 @@ fn row<
         }
     };
     [reduce(s), reduce(n), reduce(v), reduce(c)]
+}
+
+#[cfg(feature = "python")]
+#[inline(always)]
+fn row_batch4<I: PixelIndex, const FAST: bool, const VAR: bool, const WEIGHT: bool>(
+    start: usize,
+    end: usize,
+    cols: &[I],
+    weights: &[f64],
+    signals: [&[f64]; 4],
+) -> ([f64; 4], [f64; 4]) {
+    let mut s = [[0.0f64; 4]; 4];
+    let mut v = [[0.0f64; 4]; 4];
+    let s0 = signals[0].as_ptr();
+    let s1 = signals[1].as_ptr();
+    let s2 = signals[2].as_ptr();
+    let s3 = signals[3].as_ptr();
+    let mut k = start;
+    // SAFETY: `PreparedCsr::new` checks row_ptr/weights against col_idx, and
+    // `cached_results_batch4` checks all four signal lengths via `check_pixels`.
+    unsafe {
+        macro_rules! visit {
+            ($lane:expr, $at:expr) => {{
+                let lane = $lane;
+                let j = cols.get_unchecked($at).pixel();
+                let x = [*s0.add(j), *s1.add(j), *s2.add(j), *s3.add(j)];
+                if WEIGHT {
+                    let w = *weights.get_unchecked($at);
+                    for f in 0..4 {
+                        s[lane][f] = if FAST {
+                            madd(w, x[f], s[lane][f])
+                        } else {
+                            s[lane][f] + w * x[f]
+                        };
+                    }
+                    if VAR {
+                        let w2 = w * w;
+                        for f in 0..4 {
+                            let xp = x[f].max(0.0);
+                            v[lane][f] = if FAST {
+                                madd(w2, xp, v[lane][f])
+                            } else {
+                                v[lane][f] + w2 * xp
+                            };
+                        }
+                    }
+                } else {
+                    for f in 0..4 {
+                        s[lane][f] += x[f];
+                    }
+                    if VAR {
+                        for f in 0..4 {
+                            v[lane][f] += x[f].max(0.0);
+                        }
+                    }
+                }
+            }};
+        }
+        if FAST {
+            while k + 4 <= end {
+                for lane in 0..4 {
+                    visit!(lane, k + lane);
+                }
+                k += 4;
+            }
+            for lane in 0..end - k {
+                visit!(lane, k + lane);
+            }
+        } else {
+            while k < end {
+                visit!(0, k);
+                k += 1;
+            }
+        }
+    }
+    let reduce = |a: [[f64; 4]; 4]| -> [f64; 4] {
+        if FAST {
+            std::array::from_fn(|f| (a[0][f] + a[1][f]) + (a[2][f] + a[3][f]))
+        } else {
+            a[0]
+        }
+    };
+    (reduce(s), reduce(v))
 }
 
 #[cfg(test)]
