@@ -2,8 +2,10 @@
 mod arithmetic;
 mod cache;
 mod corrections;
-#[cfg(all(feature = "cuda", test))]
-mod cuda;
+pub mod cuda;
+pub use cuda::{
+    Cuda1dOptions, Cuda1dPlan, CudaError, CudaInfo, CudaPixel, CudaPrecision, cuda_info,
+};
 mod dynamic;
 pub(crate) mod grid;
 pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode, azimuthal_bracket_bins};

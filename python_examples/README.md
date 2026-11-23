@@ -96,6 +96,13 @@ match, two integrators run concurrently, Python threads keep running
 
 **`mask_example.py`** - Demonstration of pixel masking
 
+**`test_cuda_plan.py`** - Experimental CUDA 1D plans: names, `cuda_info`,
+configuration and input errors (including read-only `np.memmap` frames) on
+every build; agreement with the CPU, batch identity and threads on a usable
+CUDA device. Device tests skip unless `dioptrin.cuda_available()`;
+`DIOPTRIN_REQUIRE_CUDA=1` turns those skips into failures. Build with
+`maturin develop --release --features python,cuda` to run them.
+
 ### Batch Processing
 
 **`batch_api_smoke_test.py`** - Quick smoke test for batch API

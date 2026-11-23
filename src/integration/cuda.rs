@@ -1,462 +1,658 @@
-//! Internal fixed-mask CUDA prototype, exercised through its tests and benchmark.
-use std::{borrow::Cow, error::Error, marker::PhantomData, sync::Arc, time::Instant};
+//! Experimental CUDA 1D integration of fixed-mask lookup tables.
+//!
+//! **Experimental:** everything in this module is excluded from semver
+//! guarantees until it is stabilised.
+//!
+//! The public items are always compiled, so the same code builds with and
+//! without the `cuda` cargo feature. Without the feature,
+//! [`Integrator::prepare_cuda1d`] still checks the configuration and then
+//! returns [`CudaError::NotCompiled`], and [`cuda_info`] reports
+//! `compiled: false`.
+//!
+//! With the feature, the crate loads the CUDA driver (`libcuda`) and NVRTC
+//! (`libnvrtc`) at run time; neither the CUDA toolkit nor a GPU is needed to
+//! build. The kernels are compiled by NVRTC for the device's compute capability
+//! on first use of a device, once per process and device.
+//!
+//! A [`Cuda1dPlan`] is a snapshot of an [`Integrator`]'s fixed-mask CSR lookup
+//! table, corrections (solid angle, polarisation), radial unit and radial
+//! range, uploaded to one device. It integrates `f32` or `f64` frames and
+//! returns the same [`Fixed1dResult`] as the CPU plans:
+//!
+//! - Bin denominators are summed on the CPU in strict `f64` when the plan is
+//!   prepared; the device divides in `f64` and returns 0 for a zero
+//!   denominator, as the CPU does. The error is `sqrt(max(var, 0)) / |den|`
+//!   with `var = Σ w² · max(signal, 0)`.
+//! - [`CudaPrecision`] selects the storage and accumulation precision.
+//! - The device gathers the rows of the masked table in its own fixed order,
+//!   so its results agree with CPU [`Integrator::integrate1d`] within the
+//!   tolerance of the chosen precision, not bit for bit. Results are
+//!   deterministic, and the single-frame and multi-frame calls give
+//!   bit-identical results for the same frame.
+//! - [`Integrator::with_fast_math`] and [`Integrator::with_sparse_layout`] do
+//!   not affect the device.
+//!
+//! CUDA is not fork-safe once initialised: do not fork a process (for example
+//! with Python `multiprocessing` and the `fork` start method) after using this
+//! module in it.
+// The parent `integration` module allows dead code; re-enable the lint here so
+// items that only the tests and benchmarks use stay behind `cfg(test)`.
+#![warn(dead_code)]
+use std::{fmt, str::FromStr};
 
-use cudarc::{
-    driver::{
-        CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceRepr, HostSlice,
-        LaunchConfig, PushKernelArg, ValidAsZeroBits, sys::CUresult,
-    },
-    nvrtc::{CompileOptions, compile_ptx_with_opts},
-};
+use super::{Fixed1dResult, IntegrationMethod, Integrator, MaskMode};
 
-use super::{IntegrationMethod, Integrator, MaskMode};
-use crate::lut::prepared::Columns;
+#[cfg(feature = "cuda")]
+mod device;
+// The prototype benchmarks reach the internal device types through `super::*`.
+#[cfg(all(feature = "cuda", test))]
+use device::*;
 
+#[cfg(all(feature = "cuda", test))]
 mod bench;
+#[cfg(test)]
 mod tests;
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
-#[derive(Clone, Copy, Debug)]
-enum Accumulation {
-    Plain,
-    Compensated,
-    Double,
+/// Storage and accumulation precision of a [`Cuda1dPlan`].
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// In every mode the bin denominators are computed on the CPU in `f64`, and
+/// the division, square root and output are `f64`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CudaPrecision {
+    /// `f32` pixels and weights, `f32` fused multiply-add accumulation.
+    F32,
+    /// `f32` pixels and weights, double-word (hi, lo) compensated `f32`
+    /// accumulation. The default.
+    #[default]
+    F32Compensated,
+    /// `f64` pixels and weights, `f64` accumulation.
+    F64,
 }
 
-impl Accumulation {
-    const ALL: [Self; 3] = [Self::Plain, Self::Compensated, Self::Double];
-
-    fn name(self) -> &'static str {
+impl CudaPrecision {
+    /// Name of the precision: `"f32"`, `"f32_compensated"` or `"f64"`.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::Plain => "plain",
-            Self::Compensated => "compensated",
-            Self::Double => "double",
+            Self::F32 => "f32",
+            Self::F32Compensated => "f32_compensated",
+            Self::F64 => "f64",
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Layout {
-    Block,
-    Warp,
+impl fmt::Display for CudaPrecision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
-impl Layout {
-    const ALL: [Self; 2] = [Self::Block, Self::Warp];
+impl FromStr for CudaPrecision {
+    type Err = CudaError;
 
-    fn name(self) -> &'static str {
+    /// Parses `"f32"`, `"f32_compensated"` or `"f64"`; anything else is
+    /// [`CudaError::InvalidInput`].
+    fn from_str(name: &str) -> Result<Self, CudaError> {
+        match name {
+            "f32" => Ok(Self::F32),
+            "f32_compensated" => Ok(Self::F32Compensated),
+            "f64" => Ok(Self::F64),
+            _ => Err(CudaError::InvalidInput(format!(
+                "unknown CUDA precision {name:?}; expected \"f32\", \"f32_compensated\" or \"f64\""
+            ))),
+        }
+    }
+}
+
+/// Options for [`Integrator::prepare_cuda1d`].
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// The defaults are [`CudaPrecision::F32Compensated`], device 0 and an
+/// automatic chunk budget (see [`Cuda1dOptions::with_max_batch_bytes`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cuda1dOptions {
+    precision: CudaPrecision,
+    device: usize,
+    max_batch_bytes: Option<usize>,
+}
+
+impl Cuda1dOptions {
+    /// Default options: compensated `f32`, device 0, automatic chunk budget.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Selects the storage and accumulation precision.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn with_precision(mut self, precision: CudaPrecision) -> Self {
+        self.precision = precision;
+        self
+    }
+
+    /// Selects the CUDA device by ordinal, counted among the devices visible
+    /// to the driver (`CUDA_VISIBLE_DEVICES` is honoured). An ordinal out of
+    /// range makes [`Integrator::prepare_cuda1d`] return
+    /// [`CudaError::Unavailable`].
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn with_device(mut self, ordinal: usize) -> Self {
+        self.device = ordinal;
+        self
+    }
+
+    /// Caps the device scratch memory of one chunk of frames.
+    ///
+    /// Multi-frame calls copy, integrate and download frames in chunks of at
+    /// most [`Cuda1dPlan::max_batch_frames`] frames. One frame costs
+    /// `pixels × size_of(storage)` bytes, plus `pixels × 8` for the `f64`
+    /// staging buffer unless the precision is [`CudaPrecision::F64`], plus
+    /// `n_points × 16` for the results. Without this option the budget is
+    /// `min(1 GiB, free device memory after the table upload / 2)`.
+    ///
+    /// Zero, or a budget smaller than one frame, makes
+    /// [`Integrator::prepare_cuda1d`] return [`CudaError::InvalidInput`].
+    /// An explicit budget is not checked against the free device memory: if
+    /// a chunk does not fit, the integration call that needs it returns
+    /// [`CudaError::Device`] (out of memory) and the plan stays usable with
+    /// smaller calls.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn with_max_batch_bytes(mut self, bytes: usize) -> Self {
+        self.max_batch_bytes = Some(bytes);
+        self
+    }
+
+    /// The selected precision.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn precision(&self) -> CudaPrecision {
+        self.precision
+    }
+
+    /// The selected device ordinal.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn device(&self) -> usize {
+        self.device
+    }
+
+    /// The explicit chunk budget in bytes, if one was set.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn max_batch_bytes(&self) -> Option<usize> {
+        self.max_batch_bytes
+    }
+}
+
+/// Error of the CUDA integration API.
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CudaError {
+    /// The crate was built without the `cuda` cargo feature.
+    NotCompiled,
+    /// CUDA cannot be used: no driver library, no device or no such ordinal,
+    /// NVRTC missing, or the kernels failed to compile or load for the device.
+    Unavailable(String),
+    /// The integrator configuration is not supported on the device (dynamic
+    /// mask mode, histogram or supersampled method, a table too large for
+    /// 32-bit indices).
+    Unsupported(String),
+    /// Invalid shapes, sizes, frame lengths or memory budgets.
+    InvalidInput(String),
+    /// A CUDA driver error at run time, such as running out of device memory
+    /// or a failed kernel launch.
+    ///
+    /// The driver also reports some failures later, for example while freeing
+    /// the memory of a dropped plan; such an error is returned by the next
+    /// call on the same device, which may belong to another plan.
+    Device(String),
+}
+
+impl fmt::Display for CudaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Block => "block",
-            Self::Warp => "warp",
-        }
-    }
-
-    fn bins_per_block(self) -> u32 {
-        match self {
-            Self::Block => 1,
-            Self::Warp => 4,
-        }
-    }
-}
-
-struct Cuda {
-    context: Arc<CudaContext>,
-    stream: Arc<CudaStream>,
-    module: Arc<CudaModule>,
-    compile_ms: f64,
-    module_ms: f64,
-}
-
-impl Cuda {
-    fn open() -> Result<Option<Self>> {
-        // In a CPU-only environment, probing avoids cudarc's missing-library panic.
-        if !unsafe { cudarc::driver::sys::is_culib_present() } {
-            return Ok(None);
-        }
-        match CudaContext::device_count() {
-            Ok(0) => return Ok(None),
-            Err(err) if err.0 == CUresult::CUDA_ERROR_NO_DEVICE => return Ok(None),
-            result => result?,
-        };
-        if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
-            return Ok(None);
-        }
-        let context = CudaContext::new(0)?;
-        let (major, minor) = context.compute_capability()?;
-        if (major, minor) < (7, 5) {
-            eprintln!(
-                "CUDA 13 NVRTC requires compute capability 7.5 or later (found {major}.{minor})"
-            );
-            return Ok(None);
-        }
-        let stream = context.new_stream()?;
-        let start = Instant::now();
-        let ptx = compile_ptx_with_opts(
-            include_str!("cuda/kernels.cu"),
-            CompileOptions {
-                fmad: Some(false),
-                options: vec![
-                    "--std=c++17".into(),
-                    format!("--gpu-architecture=compute_{major}{minor}"),
-                ],
-                ..Default::default()
-            },
-        )?;
-        let compile_ms = elapsed_ms(start);
-        let start = Instant::now();
-        let module = context.load_module(ptx).map_err(|error| {
-            format!("loading NVRTC PTX for compute capability {major}.{minor} failed ({error}); check driver and NVRTC compatibility")
-        })?;
-        let module_ms = elapsed_ms(start);
-        Ok(Some(Self {
-            context,
-            stream,
-            module,
-            compile_ms,
-            module_ms,
-        }))
-    }
-
-    fn prepare(
-        &self,
-        integrator: &Integrator,
-        shape: (usize, usize),
-        bins: u32,
-    ) -> Result<Plan<'_>> {
-        self.prepare_with(integrator, shape, bins, [1.0_f32], |weights| {
-            Cow::Owned(weights.iter().map(|&w| w as f32).collect())
-        })
-    }
-
-    fn prepare_f64(
-        &self,
-        integrator: &Integrator,
-        shape: (usize, usize),
-        bins: u32,
-    ) -> Result<Plan<'_, f64>> {
-        self.prepare_with(integrator, shape, bins, [1.0_f64], |weights| {
-            Cow::Borrowed(weights)
-        })
-    }
-
-    fn prepare_with<T: DeviceRepr + Clone>(
-        &self,
-        integrator: &Integrator,
-        shape: (usize, usize),
-        bins: u32,
-        unit_weight: [T; 1],
-        encode_weights: impl for<'w> FnOnce(&'w [f64]) -> Cow<'w, [T]>,
-    ) -> Result<Plan<'_, T>> {
-        let pixels = shape.0.checked_mul(shape.1).ok_or("image shape overflow")?;
-        let pixels = u32::try_from(pixels)?;
-        if pixels == 0 || bins == 0 || bins > i32::MAX as u32 {
-            return Err(
-                "CUDA requires positive image and bin dimensions within its index range".into(),
-            );
-        }
-        integrator.check_frame_shape(shape.0, shape.1)?;
-        if integrator.mask_mode != MaskMode::Fixed
-            || !matches!(
-                integrator.method,
-                IntegrationMethod::Counting
-                    | IntegrationMethod::PixelSplit
-                    | IntegrationMethod::PyfaiFull
-            )
-        {
-            return Err(
-                "CUDA requires a fixed-mask counting, pixel_split or pyfai_full table".into(),
-            );
-        }
-        let view = integrator.for_shape(shape.0, shape.1);
-        let norm = view.normalization();
-        let key = integrator
-            .one_d_table_key(bins as usize)
-            .ok_or("missing LUT key")?;
-        let lut = view.ensure_lut1d(key);
-        let mask = integrator.mask.as_ref().map(|mask| mask.data.as_slice());
-        let (table, denominator) = lut.fixed_csr_parts(mask, &norm);
-        let rows = table
-            .row_ptr
-            .iter()
-            .copied()
-            .map(u32::try_from)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let entries = rows.last().copied().ok_or("missing CUDA table rows")?;
-        if entries > u32::MAX - 128 {
-            return Err("CUDA table has too many entries".into());
-        }
-        let columns = match &table.col_idx {
-            Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
-            Columns::Wide(columns) => Cow::Owned(
-                columns
-                    .iter()
-                    .copied()
-                    .map(u32::try_from)
-                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            Self::NotCompiled => f.write_str(
+                "dioptrin was built without CUDA support; enable the `cuda` cargo feature",
             ),
-        };
-        let weights = table.values.as_deref().map(encode_weights);
-        let start = Instant::now();
-        let rows = self.stream.clone_htod(&rows)?;
-        // Use one dummy entry for fully masked tables and implicit unit weights.
-        let columns = self.stream.clone_htod(if columns.is_empty() {
-            &[0u32][..]
-        } else {
-            columns.as_ref()
-        })?;
-        let w = weights
-            .as_deref()
-            .filter(|w| !w.is_empty())
-            .unwrap_or(&unit_weight);
-        let weights_device = self.stream.clone_htod(w)?;
-        let denominator = self.stream.clone_htod(denominator)?;
-        self.stream.synchronize()?;
-        Ok(Plan {
-            cuda: self,
-            pixels,
-            bins,
-            entries,
-            rows,
-            columns,
-            weights: weights_device,
-            weighted: u32::from(weights.is_some()),
-            denominator,
-            upload_ms: elapsed_ms(start),
-        })
-    }
-}
-
-struct Plan<'a, T = f32> {
-    cuda: &'a Cuda,
-    pixels: u32,
-    bins: u32,
-    entries: u32,
-    rows: CudaSlice<u32>,
-    columns: CudaSlice<u32>,
-    weights: CudaSlice<T>,
-    weighted: u32,
-    denominator: CudaSlice<f64>,
-    upload_ms: f64,
-}
-
-struct Batch<'a, T = f32, I = T> {
-    plan: &'a Plan<'a, T>,
-    stream: Arc<CudaStream>,
-    input: CudaSlice<I>,
-    output: CudaSlice<f64>,
-    frames: u32,
-    errors: bool,
-}
-
-struct Kernel<T = f32, I = T> {
-    function: CudaFunction,
-    layout: Layout,
-    errors: bool,
-    storage: PhantomData<(T, I)>,
-}
-
-impl<'a, T: DeviceRepr + ValidAsZeroBits> Plan<'a, T> {
-    fn batch(&'a self, frames: u32, errors: bool) -> Result<Batch<'a, T>> {
-        self.batch_on(frames, errors, Arc::clone(&self.cuda.stream))
-    }
-
-    fn batch_on(
-        &'a self,
-        frames: u32,
-        errors: bool,
-        stream: Arc<CudaStream>,
-    ) -> Result<Batch<'a, T>> {
-        self.batch_with_input(frames, errors, stream)
-    }
-
-    fn batch_with_input<I: DeviceRepr + ValidAsZeroBits>(
-        &'a self,
-        frames: u32,
-        errors: bool,
-        stream: Arc<CudaStream>,
-    ) -> Result<Batch<'a, T, I>> {
-        if frames == 0 || frames > i32::MAX as u32 / self.bins {
-            return Err("CUDA batch exceeds the grid limit or is empty".into());
+            Self::Unavailable(reason) => write!(f, "CUDA unavailable: {reason}"),
+            Self::Unsupported(reason) => write!(f, "unsupported CUDA configuration: {reason}"),
+            Self::InvalidInput(reason) => write!(f, "invalid CUDA input: {reason}"),
+            Self::Device(reason) => write!(f, "CUDA device error: {reason}"),
         }
-        let elements = |per_frame: usize, element_bytes: usize| {
-            per_frame
-                .checked_mul(frames as usize)
-                .filter(|&len| len <= isize::MAX as usize / element_bytes)
-                .ok_or("CUDA batch allocation exceeds the addressable range")
-        };
-        let input_len = elements(self.pixels as usize, size_of::<I>())?;
-        let output_len = elements(
-            self.bins as usize * (1 + usize::from(errors)),
-            size_of::<f64>(),
-        )?;
-        Ok(Batch {
-            plan: self,
-            input: stream.alloc_zeros(input_len)?,
-            output: stream.alloc_zeros(output_len)?,
-            stream,
-            frames,
-            errors,
-        })
-    }
-
-    fn load_kernel<I>(&self, name: &str, layout: Layout, errors: bool) -> Result<Kernel<T, I>> {
-        let suffix = if errors { "iv" } else { "i" };
-        Ok(Kernel {
-            function: self
-                .cuda
-                .module
-                .load_function(&format!("{name}_{}_{suffix}", layout.name()))?,
-            layout,
-            errors,
-            storage: PhantomData,
-        })
     }
 }
 
-impl Plan<'_> {
-    fn kernel(&self, mode: Accumulation, layout: Layout, errors: bool) -> Result<Kernel> {
-        self.load_kernel(mode.name(), layout, errors)
+impl std::error::Error for CudaError {}
+
+/// Description of the CUDA runtime and one device, from [`cuda_info`].
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// Fields that could not be determined are `None`; when initialisation fails
+/// part-way, the fields read before the failure are still filled in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CudaInfo {
+    /// Whether the crate was built with the `cuda` feature.
+    pub compiled: bool,
+    /// Whether the device is initialised and the kernels are loaded.
+    pub available: bool,
+    /// Why the device is unavailable; `Some` whenever `available` is false.
+    pub reason: Option<String>,
+    /// Device ordinal this description refers to.
+    pub device: usize,
+    /// Device name reported by the driver.
+    pub device_name: Option<String>,
+    /// Compute capability `(major, minor)`.
+    pub compute_capability: Option<(i32, i32)>,
+    /// Total device memory in bytes.
+    pub total_memory_bytes: Option<usize>,
+    /// Driver version from `cuDriverGetVersion`, e.g. `13040` for CUDA 13.4.
+    pub driver_version: Option<i32>,
+    /// NVRTC version `(major, minor)` of the library that was loaded.
+    pub nvrtc_version: Option<(i32, i32)>,
+    /// CUDA API version of the compiled bindings, `(13, 4)` for cudarc's
+    /// `cuda-13040` feature; `None` without the `cuda` feature.
+    pub bindings_version: Option<(u32, u32)>,
+}
+
+impl CudaInfo {
+    fn unavailable(device: usize, compiled: bool, reason: String) -> Self {
+        Self {
+            compiled,
+            available: false,
+            reason: Some(reason),
+            device,
+            device_name: None,
+            compute_capability: None,
+            total_memory_bytes: None,
+            driver_version: None,
+            nvrtc_version: None,
+            bindings_version: None,
+        }
     }
 }
 
-impl Plan<'_, f64> {
-    fn kernel(&self, layout: Layout, errors: bool) -> Result<Kernel<f64>> {
-        self.load_kernel("full_f64", layout, errors)
+/// Describes CUDA support and device `device`. Never panics.
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// With the `cuda` feature this performs the full device initialisation
+/// (driver, context, NVRTC compile of the kernels and module load). A
+/// successful initialisation is cached for the process per device ordinal, and
+/// later plans on that device reuse it; a failed one is retried on the next
+/// call. Without the feature it returns `compiled: false` and
+/// `available: false`.
+pub fn cuda_info(device: usize) -> CudaInfo {
+    #[cfg(feature = "cuda")]
+    {
+        match device::device(device) {
+            Ok(device) => device.info.clone(),
+            Err(info) => info,
+        }
     }
-
-    fn kernel_u32(&self, layout: Layout, errors: bool) -> Result<Kernel<f64, u32>> {
-        self.load_kernel("u32_f64", layout, errors)
-    }
-
-    fn kernel_i32(&self, layout: Layout, errors: bool) -> Result<Kernel<f64, i32>> {
-        self.load_kernel("i32_f64", layout, errors)
+    #[cfg(not(feature = "cuda"))]
+    {
+        CudaInfo::unavailable(
+            device,
+            false,
+            "dioptrin was built without the `cuda` cargo feature".into(),
+        )
     }
 }
 
-impl<T: DeviceRepr, I: DeviceRepr> Batch<'_, T, I> {
-    fn upload(&mut self, offset: usize, frames: &(impl HostSlice<I> + ?Sized)) -> Result<()> {
-        let pixels = self.plan.pixels as usize;
-        let end = offset
-            .checked_add(frames.len())
-            .filter(|&end| end <= self.input.len());
-        if !offset.is_multiple_of(pixels) || !frames.len().is_multiple_of(pixels) {
-            return Err("CUDA upload must cover whole frames".into());
+mod sealed {
+    /// Borrowed frames of one supported pixel type.
+    pub enum Frames<'a, 'b> {
+        F32(&'a [&'b [f32]]),
+        F64(&'a [&'b [f64]]),
+    }
+
+    pub trait Sealed {
+        fn frames<'a, 'b>(frames: &'a [&'b [Self]]) -> Frames<'a, 'b>
+        where
+            Self: Sized;
+    }
+
+    impl Sealed for f32 {
+        fn frames<'a, 'b>(frames: &'a [&'b [f32]]) -> Frames<'a, 'b> {
+            Frames::F32(frames)
         }
-        let mut destination = self
-            .input
-            .slice_mut(offset..end.ok_or("CUDA upload exceeds the batch")?);
-        Ok(self.stream.memcpy_htod(frames, &mut destination)?)
+    }
+
+    impl Sealed for f64 {
+        fn frames<'a, 'b>(frames: &'a [&'b [f64]]) -> Frames<'a, 'b> {
+            Frames::F64(frames)
+        }
     }
 }
 
-impl Batch<'_> {
-    fn upload_f64(
-        &mut self,
-        frames: &(impl HostSlice<f64> + ?Sized),
-        staging: &mut CudaSlice<f64>,
-        cast: &CudaFunction,
-    ) -> Result<()> {
-        let len = frames.len();
-        if len == 0
-            || !len.is_multiple_of(self.plan.pixels as usize)
-            || len > self.input.len()
-            || len > staging.len()
-        {
-            return Err("f64 upload must fit both buffers and cover whole frames".into());
-        }
-        let mut source = staging.slice_mut(..len);
-        let mut destination = self.input.slice_mut(..len);
-        self.stream.memcpy_htod(frames, &mut source)?;
-        let source = staging.slice(..len);
-        let config = LaunchConfig {
-            grid_dim: (len.div_ceil(256).min(65_535) as u32, 1, 1),
-            block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
-        };
-        let len = len as u64;
-        let mut launch = self.stream.launch_builder(cast);
-        launch.arg(&source).arg(&mut destination).arg(&len);
-        // SAFETY: both views cover len elements and cast is the matching
-        // f64-to-f32 function in this plan's CUDA module.
-        unsafe { launch.launch(config)? };
-        Ok(())
+/// Pixel types a [`Cuda1dPlan`] accepts: `f32` and `f64`. Sealed.
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// `f64` frames are uploaded as `f64` and rounded to `f32` on the device
+/// (`__double2float_rn`, the same rounding as `as f32`) unless the precision is
+/// [`CudaPrecision::F64`]; `f32` frames are widened exactly for
+/// [`CudaPrecision::F64`].
+pub trait CudaPixel: sealed::Sealed + Copy + Send + Sync + 'static {}
+impl CudaPixel for f32 {}
+impl CudaPixel for f64 {}
+
+#[cfg(feature = "cuda")]
+type Engine = device::Engine;
+#[cfg(not(feature = "cuda"))]
+type Engine = std::convert::Infallible;
+
+/// A fixed-mask 1D integration table uploaded to one CUDA device.
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// Created by [`Integrator::prepare_cuda1d`]. The plan is a snapshot: later
+/// changes to the integrator (mask, corrections, method, unit, radial range)
+/// do not affect it. It owns its device memory and its own CUDA stream, and
+/// frees them when dropped.
+///
+/// The plan is `Send + Sync`. Calls on one plan are serialised by an internal
+/// lock that guards the reusable device scratch buffers; separate plans may
+/// run concurrently. Every call copies the frames to the device, integrates
+/// them, copies the results back and synchronises before it returns.
+pub struct Cuda1dPlan {
+    shape: (usize, usize),
+    n_points: usize,
+    precision: CudaPrecision,
+    device: usize,
+    device_name: String,
+    radial: Vec<f64>,
+    table_entries: usize,
+    max_batch_frames: usize,
+    engine: Engine,
+}
+
+impl fmt::Debug for Cuda1dPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cuda1dPlan")
+            .field("shape", &self.shape)
+            .field("n_points", &self.n_points)
+            .field("precision", &self.precision)
+            .field("device", &self.device)
+            .field("device_name", &self.device_name)
+            .field("table_entries", &self.table_entries)
+            .field("max_batch_frames", &self.max_batch_frames)
+            .finish_non_exhaustive()
     }
 }
 
-impl<T: DeviceRepr, I: DeviceRepr> Batch<'_, T, I> {
-    fn run(&mut self, kernel: &Kernel<T, I>) -> Result<()> {
-        self.run_frames(self.frames, kernel)
+impl Cuda1dPlan {
+    /// Image shape `(dim1, dim2)` every frame must have.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn shape(&self) -> (usize, usize) {
+        self.shape
     }
 
-    fn run_frames(&mut self, frames: u32, kernel: &Kernel<T, I>) -> Result<()> {
-        if frames == 0 || frames > self.frames {
-            return Err("CUDA launch frame count exceeds the allocated batch or is empty".into());
-        }
-        if self.errors != kernel.errors {
-            return Err("CUDA kernel and output strides differ".into());
-        }
-        let plan = self.plan;
-        let output_per_frame = plan.bins as usize * (1 + usize::from(self.errors));
-        let pixels = plan.pixels as usize;
-        // Bound the work in each launch on display GPUs with a watchdog.
-        for first in (0..frames).step_by(256) {
-            let end = (first + 256).min(frames);
-            let input = self
-                .input
-                .slice(first as usize * pixels..end as usize * pixels);
-            let mut output = self
-                .output
-                .slice_mut(first as usize * output_per_frame..end as usize * output_per_frame);
-            let config = LaunchConfig {
-                grid_dim: (
-                    plan.bins.div_ceil(kernel.layout.bins_per_block()) * (end - first),
-                    1,
-                    1,
-                ),
-                block_dim: (128, 1, 1),
-                shared_mem_bytes: 0,
-            };
-            let mut launch = self.stream.launch_builder(&kernel.function);
-            launch
-                .arg(&plan.rows)
-                .arg(&plan.columns)
-                .arg(&plan.weights)
-                .arg(&plan.denominator)
-                .arg(&input)
-                .arg(&mut output)
-                .arg(&plan.pixels)
-                .arg(&plan.bins)
-                .arg(&plan.weighted);
-            // SAFETY: the views span exactly the launched frames and the
-            // kernel matches the storage type, layout and variance specialization.
-            unsafe { launch.launch(config)? };
-        }
-        Ok(())
+    /// Number of radial bins.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn n_points(&self) -> usize {
+        self.n_points
     }
 
-    fn download(&self, output: &mut (impl HostSlice<f64> + ?Sized)) -> Result<()> {
-        self.download_frames(self.frames, output)
+    /// Storage and accumulation precision.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn precision(&self) -> CudaPrecision {
+        self.precision
     }
 
-    fn download_frames(
+    /// Ordinal of the device holding the plan.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn device(&self) -> usize {
+        self.device
+    }
+
+    /// Name of the device holding the plan.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// Radial bin centres; identical to the radial axis of CPU
+    /// [`Integrator::integrate1d`] for the same integrator and `n_points`.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn radial(&self) -> &[f64] {
+        &self.radial
+    }
+
+    /// Number of (unmasked) entries of the uploaded table.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn table_entries(&self) -> usize {
+        self.table_entries
+    }
+
+    /// Maximum number of frames copied to the device in one chunk, sized for
+    /// the worst case of `f64` input (see
+    /// [`Cuda1dOptions::with_max_batch_bytes`]).
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn max_batch_frames(&self) -> usize {
+        self.max_batch_frames
+    }
+
+    /// Integrates one frame of `dim1 × dim2` pixels in row-major order.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    ///
+    /// `errors` requests the propagated standard deviation. A frame of the
+    /// wrong length is [`CudaError::InvalidInput`]; driver failures are
+    /// [`CudaError::Device`].
+    pub fn integrate_frame<P: CudaPixel>(
         &self,
-        frames: u32,
-        output: &mut (impl HostSlice<f64> + ?Sized),
-    ) -> Result<()> {
-        if frames == 0
-            || frames > self.frames
-            || output.len()
-                != frames as usize * self.plan.bins as usize * (1 + usize::from(self.errors))
+        frame: &[P],
+        errors: bool,
+    ) -> Result<Fixed1dResult, CudaError> {
+        let mut results = self.integrate_frames(&[frame], errors)?;
+        results
+            .pop()
+            .ok_or_else(|| CudaError::Device("CUDA integration returned no result".into()))
+    }
+
+    /// Integrates several frames, in chunks of at most
+    /// [`max_batch_frames`](Self::max_batch_frames) frames.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    ///
+    /// Every frame length is checked before anything is copied. The results
+    /// are bit-identical to [`integrate_frame`](Self::integrate_frame) on each
+    /// frame. An empty slice returns an empty vector.
+    pub fn integrate_frames<P: CudaPixel>(
+        &self,
+        frames: &[&[P]],
+        errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        if let Some((index, frame)) = frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.len() != pixels)
         {
-            return Err("host output does not match CUDA batch shape".into());
+            return Err(CudaError::InvalidInput(format!(
+                "frame {index} has {} pixels, but the CUDA plan expects {pixels} ({} x {})",
+                frame.len(),
+                self.shape.0,
+                self.shape.1
+            )));
         }
-        Ok(self
-            .stream
-            .memcpy_dtoh(&self.output.slice(..output.len()), output)?)
+        if frames.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run(<P as sealed::Sealed>::frames(frames), false, errors)
+    }
+
+    /// Integrates `k` frames stored contiguously (`stack.len() == k × pixels`).
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    ///
+    /// Equivalent to [`integrate_frames`](Self::integrate_frames) on the
+    /// frames of the stack, with bit-identical results, but each chunk is
+    /// copied to the device in one piece. A length that is not a multiple of
+    /// the frame size is [`CudaError::InvalidInput`]; an empty stack returns
+    /// an empty vector.
+    pub fn integrate_stack<P: CudaPixel>(
+        &self,
+        stack: &[P],
+        errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        if !stack.len().is_multiple_of(pixels) {
+            return Err(CudaError::InvalidInput(format!(
+                "stack of {} values is not a whole number of {pixels}-pixel frames",
+                stack.len()
+            )));
+        }
+        if stack.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run(<P as sealed::Sealed>::frames(&[stack]), true, errors)
+    }
+
+    /// Runs `frames` (see `Engine::run` for `stacked`).
+    #[cfg(feature = "cuda")]
+    fn run(
+        &self,
+        frames: sealed::Frames<'_, '_>,
+        stacked: bool,
+        errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        self.engine.run(frames, stacked, errors, &self.radial)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run(
+        &self,
+        _frames: sealed::Frames<'_, '_>,
+        _stacked: bool,
+        _errors: bool,
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        match self.engine {}
     }
 }
 
-fn elapsed_ms(start: Instant) -> f64 {
-    start.elapsed().as_secs_f64() * 1e3
+/// Checks steps 1 to 4 of [`Integrator::prepare_cuda1d`]; returns the number
+/// of pixels per frame.
+fn check_configuration(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    n_points: usize,
+    max_batch_bytes: Option<usize>,
+) -> Result<usize, CudaError> {
+    if n_points == 0 || n_points > i32::MAX as usize {
+        return Err(CudaError::InvalidInput(format!(
+            "n_points must be between 1 and {}, got {n_points}",
+            i32::MAX
+        )));
+    }
+    if shape.0 == 0 || shape.1 == 0 {
+        return Err(CudaError::InvalidInput(format!(
+            "image shape ({}, {}) has a zero side",
+            shape.0, shape.1
+        )));
+    }
+    let pixels = shape
+        .0
+        .checked_mul(shape.1)
+        .filter(|&pixels| pixels <= u32::MAX as usize)
+        .ok_or_else(|| {
+            CudaError::InvalidInput(format!(
+                "image shape ({}, {}) exceeds {} pixels",
+                shape.0,
+                shape.1,
+                u32::MAX
+            ))
+        })?;
+    if max_batch_bytes == Some(0) {
+        return Err(CudaError::InvalidInput(
+            "max_batch_bytes must be positive".into(),
+        ));
+    }
+    if integrator.mask_mode != MaskMode::Fixed {
+        return Err(CudaError::Unsupported(
+            "CUDA 1D requires mask_mode fixed".into(),
+        ));
+    }
+    if !matches!(
+        integrator.method,
+        IntegrationMethod::Counting | IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull
+    ) {
+        return Err(CudaError::Unsupported(format!(
+            "CUDA 1D supports the counting, pixel_split and pyfai_full methods, not {:?}",
+            integrator.method
+        )));
+    }
+    integrator
+        .check_frame_shape(shape.0, shape.1)
+        .map_err(CudaError::InvalidInput)?;
+    Ok(pixels)
+}
+
+impl Integrator {
+    /// Uploads this integrator's fixed-mask 1D table for `shape` and
+    /// `n_points` bins to a CUDA device.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    ///
+    /// The plan is a snapshot of the current mask, corrections, method, unit
+    /// and radial range; see the [module documentation](crate::integration::cuda) for how
+    /// its results relate to the CPU. `fast_math` and `sparse_layout` are
+    /// ignored. The checks run in this order, so configuration errors are
+    /// reported without touching the driver:
+    ///
+    /// 1. `n_points` is 0 or above `i32::MAX`, a side of `shape` is 0, the
+    ///    frame has more than `u32::MAX` pixels, or `max_batch_bytes` is 0:
+    ///    [`CudaError::InvalidInput`].
+    /// 2. The mask mode is not [`MaskMode::Fixed`]: [`CudaError::Unsupported`].
+    /// 3. The method is not counting, pixel_split or pyfai_full:
+    ///    [`CudaError::Unsupported`].
+    /// 4. `shape` does not match the mask or the attached detector:
+    ///    [`CudaError::InvalidInput`].
+    /// 5. The crate was built without the `cuda` feature:
+    ///    [`CudaError::NotCompiled`].
+    /// 6. The device cannot be initialised: [`CudaError::Unavailable`]
+    ///    (cached per device after the first success).
+    /// 7. The CPU table is built (more than `u32::MAX - 128` entries is
+    ///    [`CudaError::Unsupported`]) and uploaded (driver failures, such as
+    ///    running out of memory, are [`CudaError::Device`]).
+    /// 8. The chunk size is computed; a `max_batch_bytes` too small for one
+    ///    frame is [`CudaError::InvalidInput`], too little free device memory
+    ///    for one frame is [`CudaError::Device`].
+    pub fn prepare_cuda1d(
+        &self,
+        shape: (usize, usize),
+        n_points: usize,
+        options: &Cuda1dOptions,
+    ) -> Result<Cuda1dPlan, CudaError> {
+        let pixels = check_configuration(self, shape, n_points, options.max_batch_bytes)?;
+        #[cfg(feature = "cuda")]
+        {
+            device::prepare(self, shape, pixels, n_points, options)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = pixels;
+            Err(CudaError::NotCompiled)
+        }
+    }
 }

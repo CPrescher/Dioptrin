@@ -7,7 +7,7 @@ struct Chunk {
 }
 
 impl Chunk {
-    fn new(plan: &Plan<'_>, frames: u32, errors: bool) -> Result<Self> {
+    fn new(plan: &Plan, frames: u32, errors: bool) -> Result<Self> {
         Ok(Self {
             frames,
             input: pinned(&plan.cuda.context, frames as usize * plan.pixels as usize)?,
@@ -45,19 +45,15 @@ fn run_pipeline(
     Ok(completed?)
 }
 
-fn slots<'a>(plan: &'a Plan<'a>, count: usize, tile: u32, errors: bool) -> Result<Vec<Batch<'a>>> {
+fn slots<'a>(plan: &'a Plan, count: usize, tile: u32, errors: bool) -> Result<Vec<Batch<'a>>> {
     (0..count)
-        .map(|_| plan.batch_on(tile, errors, plan.cuda.context.new_stream()?))
+        .map(|_| Ok(plan.batch_on(tile, errors, plan.cuda.context.new_stream()?)?))
         .collect()
 }
 
 #[test]
 fn gpu_transfer_variants_preserve_rounded_input_and_frame_order() -> Result<()> {
-    let Some(cuda) = Cuda::open()? else {
-        assert!(
-            env::var_os("DIOPTRIN_REQUIRE_CUDA").is_none(),
-            "CUDA driver, GPU or NVRTC unavailable"
-        );
+    let Some(cuda) = Cuda::probe() else {
         return Ok(());
     };
     let case = Case::load("31", false)?;
@@ -91,7 +87,7 @@ fn gpu_transfer_variants_preserve_rounded_input_and_frame_order() -> Result<()> 
             io.push(part);
         }
         run_pipeline(&mut slots, &mut io, &kernel, |_, slot, data| {
-            slot.upload(0, data)
+            Ok(slot.upload(0, data)?)
         })?;
         let mut offset = 0;
         for part in io {
@@ -107,7 +103,7 @@ fn gpu_transfer_variants_preserve_rounded_input_and_frame_order() -> Result<()> 
 #[test]
 #[ignore = "hardware benchmark; use run.py --gpu-transfers"]
 fn gpu_transfers() -> Result<()> {
-    let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
+    let cuda = Cuda::open(0)?;
     let cast = cuda.module.load_function("cast_f64_input")?;
     let mut out = BufWriter::new(File::create(env::var("DIOPTRIN_CUDA_OUT")?)?);
     let casting_pool = ThreadPoolBuilder::new().num_threads(8).build()?;
@@ -236,7 +232,7 @@ fn gpu_transfers() -> Result<()> {
                         let mut slots = slots(&plan, streams, tile, true)?;
                         let times = sample(repeats, || {
                             run_pipeline(&mut slots, &mut io, &kernel, |_, slot, data| {
-                                slot.upload(0, data)
+                                Ok(slot.upload(0, data)?)
                             })
                         })?;
                         record("pinned_f32_pipeline", tile, streams, times)?;
@@ -245,7 +241,7 @@ fn gpu_transfers() -> Result<()> {
                                 let start = i * tile as usize * case.pixels.len();
                                 let end = start + data.len();
                                 cast_pixels(data.as_mut_slice()?, &wide[start..end], &casting_pool);
-                                slot.upload(0, data)
+                                Ok(slot.upload(0, data)?)
                             })
                         })?;
                         let mut offset = 0;

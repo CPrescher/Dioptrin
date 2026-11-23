@@ -54,7 +54,7 @@ fn measure(
 #[test]
 #[ignore = "hardware benchmark; use run.py --gpu-full-f64"]
 fn gpu_full_f64() -> Result<()> {
-    let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
+    let cuda = Cuda::open(0)?;
     let mut out = BufWriter::new(File::create(env::var("DIOPTRIN_CUDA_OUT")?)?);
     let cases = env::var("DIOPTRIN_CUDA_CASES").unwrap_or_else(|_| "eiger".into());
     let methods = env::var("DIOPTRIN_CUDA_METHODS")

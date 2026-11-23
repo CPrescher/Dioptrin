@@ -6,11 +6,21 @@ use crate::{
     mask::Mask,
     poni::Poni,
 };
-use cudarc::driver::{DeviceRepr, PinnedHostSlice, ValidAsZeroBits, sys::CUevent_flags};
+// The prototype module's imports, which the benchmarks reach through `super::*`.
+#[allow(unused_imports)]
+use crate::lut::prepared::Columns;
+#[allow(unused_imports)]
+use cudarc::driver::{
+    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceRepr, HostSlice,
+    LaunchConfig, PinnedHostSlice, PushKernelArg, ValidAsZeroBits, sys::CUevent_flags,
+    sys::CUresult,
+};
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+#[allow(unused_imports)]
+use std::{borrow::Cow, error::Error, marker::PhantomData, sync::Arc, time::Instant};
 use std::{
     env,
     fs::{self, File},
@@ -19,6 +29,9 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+
+/// The benchmarks keep the prototype's boxed error type.
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 mod file_batch;
 mod float32;
@@ -500,7 +513,7 @@ fn thread_counts(default: &str) -> Result<Vec<usize>> {
 #[ignore = "hardware benchmark; run docs/benchmarks/2026-11-18-cuda/run.py"]
 fn benchmark_cuda() -> Result<()> {
     let mut out = BufWriter::new(File::create(env::var("DIOPTRIN_CUDA_OUT")?)?);
-    let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
+    let cuda = Cuda::open(0)?;
     let repeats: usize = env::var("DIOPTRIN_CUDA_REPEATS")
         .unwrap_or_else(|_| "5".into())
         .parse()?;

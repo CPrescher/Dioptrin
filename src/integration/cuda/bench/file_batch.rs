@@ -211,7 +211,7 @@ struct Tile<'a, I> {
 }
 
 impl<'a, I: DeviceRepr + ValidAsZeroBits + From<i32> + Default + Copy + Send> Tile<'a, I> {
-    fn new(plan: &'a Plan<'a, f64>, use_pinned: bool) -> Result<Self> {
+    fn new(plan: &'a Plan<f64>, use_pinned: bool) -> Result<Self> {
         let n = plan.pixels as usize * TILE;
         Ok(Self {
             batch: plan.batch_with_input(TILE as u32, true, plan.cuda.context.new_stream()?)?,
@@ -373,7 +373,7 @@ fn eiger_files() -> Result<()> {
             return Err("unknown disk benchmark backend".into());
         }
         let use_pinned = selection != "cuda_pageable";
-        let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
+        let cuda = Cuda::open(0)?;
         let plan = cuda.prepare_f64(&cpu, case.shape, BINS)?;
         let requested = env::var("DIOPTRIN_CUDA_DISK_LAYOUT").unwrap_or_else(|_| "block".into());
         let layout = Layout::ALL

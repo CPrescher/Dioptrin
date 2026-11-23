@@ -191,7 +191,7 @@ impl PreparedCsr {
             .unwrap_or(self)
     }
 
-    #[cfg(all(feature = "cuda", test))]
+    #[cfg(feature = "cuda")]
     pub(crate) fn fixed_csr_parts<'a>(
         &'a self,
         mask: Option<&[u8]>,

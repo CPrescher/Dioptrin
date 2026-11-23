@@ -693,6 +693,29 @@ results = integrator.batch1d(
 # Total threads used: num_workers * num_threads
 ```
 
+### Experimental CUDA 1D integration
+
+Fixed-mask 1D integration with the `counting`, `pixel_split` and `pyfai_full`
+methods can run on an NVIDIA GPU through an explicit plan. It is experimental
+(excluded from semver guarantees) and not included in the PyPI wheels; build
+with `maturin build --release --features python,cuda`. At run time it needs an
+NVIDIA driver and NVRTC.
+
+```python
+if dioptrin.cuda_available():        # dioptrin.cuda_info() explains why not
+    plan = integrator.prepare_cuda1d(image.shape, 2000)  # precision="f32_compensated"
+    result = plan.integrate1d(image, errors=True)        # IntegrationResult
+    results = plan.batch1d(frames)                       # list or 3D array
+```
+
+The plan is a snapshot of the integrator's mask, corrections, method, unit and
+radial range. Results agree with CPU `integrate1d` within the tolerance of the
+chosen precision, not bit for bit; `fast_math` and `sparse_layout` are ignored.
+CUDA is not fork-safe once initialised. Without CUDA support or a usable device,
+`prepare_cuda1d` raises `dioptrin.CudaUnavailableError`. See the
+[CUDA guide](https://dioptrin.readthedocs.io/en/latest/cuda.html) for
+requirements, precisions and errors.
+
 <!-- manual-python-end -->
 
 ## License

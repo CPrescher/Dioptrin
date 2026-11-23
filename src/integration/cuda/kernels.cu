@@ -21,6 +21,13 @@ template<> struct Sum<1> {
     __device__ void combine(Sum x) {
         // TwoSum with a persistent low component, also used for tree merges.
         float total = hi + x.hi;
+        if (!(fabsf(total) <= 3.40282347e+38f)) {
+            // Non-finite total (|x| > FLT_MAX or NaN): keep +-inf or NaN as the
+            // CPU does; TwoSum would turn an infinite total into NaN.
+            hi = total;
+            lo = 0;
+            return;
+        }
         float part = total - hi;
         float error = (hi - (total - part)) + (x.hi - part);
         float tail = (error + lo) + x.lo;
@@ -135,6 +142,7 @@ STORED_KERNEL(Prefix##_warp_i, double, Pixel, 2, false, 4) \
 STORED_KERNEL(Prefix##_warp_iv, double, Pixel, 2, true, 4)
 
 F64_KERNELS(full_f64, double)
+F64_KERNELS(f32_f64, float)
 F64_KERNELS(u32_f64, unsigned)
 F64_KERNELS(i32_f64, int)
 

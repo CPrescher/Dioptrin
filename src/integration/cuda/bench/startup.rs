@@ -18,7 +18,7 @@ fn first_pattern() -> Result<()> {
     let mut integrator = case.strict(method)?;
     let mut phases = if selection == "cuda" {
         let stage = Instant::now();
-        let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
+        let cuda = Cuda::open(0)?;
         let context_and_compilation_ms = elapsed_ms(stage);
         let stage = Instant::now();
         let plan = cuda.prepare(&integrator, case.shape, BINS)?;

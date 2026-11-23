@@ -99,7 +99,7 @@ fn paper_native_cuda() -> Result<()> {
         .with_polarization_factor(0.965)
         .with_fast_math(false)
         .with_mask(mask);
-    let cuda = Cuda::open()?.ok_or("CUDA or NVRTC unavailable")?;
+    let cuda = Cuda::open(0)?;
     let plan = cuda.prepare_f64(&integrator, case.shape, case.bins)?;
     let kernel = plan.kernel_u32(layout, case.errors)?;
     let stride = 1 + usize::from(case.errors);

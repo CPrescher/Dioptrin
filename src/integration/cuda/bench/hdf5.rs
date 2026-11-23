@@ -170,7 +170,7 @@ struct Slot<'a, I> {
 }
 
 impl<'a, I: DeviceRepr + ValidAsZeroBits> Slot<'a, I> {
-    fn new(plan: &'a Plan<'a, f64>, frames: usize, pixels: usize) -> Result<Self> {
+    fn new(plan: &'a Plan<f64>, frames: usize, pixels: usize) -> Result<Self> {
         Ok(Self {
             batch: plan.batch_with_input(
                 frames.try_into()?,
@@ -254,7 +254,7 @@ fn cuda_batch_hdf5<I: DeviceRepr + ValidAsZeroBits>(
 }
 
 fn slots<'a, I: DeviceRepr + ValidAsZeroBits>(
-    plan: &'a Plan<'a, f64>,
+    plan: &'a Plan<f64>,
     work: &Work,
 ) -> Result<Vec<Slot<'a, I>>> {
     (0..work.frames.div_ceil(work.tile).min(2))
@@ -358,7 +358,7 @@ fn eiger_hdf5() -> Result<()> {
             cpu_batch_hdf5(&mut source, &work, &cpu, &pool, &mut buffers)
         });
     }
-    let cuda = Cuda::open()?.ok_or("CUDA driver, GPU or NVRTC unavailable")?;
+    let cuda = Cuda::open(0)?;
     let plan = cuda.prepare_f64(&cpu, work.shape, BINS)?;
     let (layout, native) = match backend.as_str() {
         "cuda_native_block" => (Layout::Block, true),
