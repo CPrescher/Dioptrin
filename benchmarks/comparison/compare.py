@@ -434,10 +434,9 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
 
     1. Azimuth convention: an asymmetric chi pattern is integrated by every
        requested library onto the harness grid; all must put it in the same rows.
-    2. Dioptrin's radial axes: Integrator 2D results have no radial axis and
-       only pyfai_full honours radial_range in 2D. pixel_split/supersampled use
-       their default (data-derived) edges, which are the edges of the 1D
-       default grid of the same method, read here from integrate1d.
+    2. Fallback radial axes for older Dioptrin builds whose 2D results omit
+       the axis. For those builds, pixel_split/supersampled use the default
+       edges of the 1D grid of the same method.
     3. Table-size estimates for the memory model, from pixel-corner spans.
     """
     import numpy as np
@@ -1026,6 +1025,7 @@ def setup_case_2d(case, rank=None):
     subpixels = case.get("subpixels")
     pool = None
     stock_check = None
+    unwrap_batch_result = None
     info = dict(rss_inputs_mib=peak_rss(), uncertainty_support=UNCERTAINTY_2D[lib])
     started = time.perf_counter()
 
@@ -1047,9 +1047,7 @@ def setup_case_2d(case, rank=None):
                 "Dioptrin Rayon pool does not match requested CPU budget"
             )
         span = tuple(math.radians(v) for v in AZIMUTH_RANGE_DEG)
-        # Integrator 2D results carry no radial axis; the preflight measured
-        # Dioptrin's actual edges (radial_range is honoured by pyfai_full only).
-        radial_axis = np.asarray(case["dioptrin_radial_axis"])
+        fallback_radial_axis = np.asarray(case["dioptrin_radial_axis"])
 
         def integrate(engine, frame):
             return engine.integrate2d(
@@ -1096,16 +1094,14 @@ def setup_case_2d(case, rank=None):
                     ) from None
 
             def run():
-                results = []
-                for index, item in enumerate(batch(frames)):
-                    if item.filename != f"array[{index}]":
-                        raise RuntimeError(
-                            f"batch2d result {index} is {item.filename!r}"
-                        )
-                    if not item.is_ok():
-                        raise RuntimeError(item.error)
-                    results.append(item.result)
-                return results
+                return batch(frames)
+
+            def unwrap_batch_result(index, item):
+                if item.filename != f"array[{index}]":
+                    raise RuntimeError(f"batch2d result {index} is {item.filename!r}")
+                if not item.is_ok():
+                    raise RuntimeError(item.error)
+                return item.result
 
         elif case["dioptrin_2d_path"] == "stream":
             # Frame-parallel stream: num_workers frames at once, one thread
@@ -1132,13 +1128,14 @@ def setup_case_2d(case, rank=None):
             raise ValueError(f"Unknown Dioptrin 2D path {case['dioptrin_2d_path']!r}")
 
         def extract(result):
+            radial = result.radial
             sigma = None
             if errors:
                 if result.errors is None:
                     raise Unsupported("Dioptrin returned no 2D errors")
                 sigma = np.asarray(result.errors).reshape(na, nr)
             return (
-                radial_axis,
+                fallback_radial_axis if radial is None else np.asarray(radial),
                 np.degrees(np.asarray(result.azimuthal)),
                 np.asarray(result.intensity).reshape(na, nr),
                 sigma,
@@ -1276,6 +1273,13 @@ def setup_case_2d(case, rank=None):
             ai, integrate, image, frames, threads, variant
         )
 
+    def extract_run_result(index, result):
+        # The BatchResult getter clones the cake. Keep this and the result
+        # checks in validation, matching the timed batch1d path.
+        if unwrap_batch_result is not None:
+            result = unwrap_batch_result(index, result)
+        return extract(result)
+
     first = extract(first)
     warm_result = run()
     setup_ready = time.perf_counter() - started
@@ -1296,7 +1300,7 @@ def setup_case_2d(case, rank=None):
     # run, and (single process) any distinct frame the run did not reach.
     outputs = {}
     for index, result in enumerate(warm_result):
-        outputs.setdefault(logical[index] % distinct, extract(result))
+        outputs.setdefault(logical[index] % distinct, extract_run_result(index, result))
     for u in needed:
         if u not in outputs:
             outputs[u] = extract(integrate(ai, unique[u]))
@@ -1326,7 +1330,7 @@ def setup_case_2d(case, rank=None):
         if len(results) != len(frames):
             raise AssertionError("Wrong output frame count")
         for index, result in enumerate(results):
-            radial, azimuthal, intensity, sigma = extract(result)
+            radial, azimuthal, intensity, sigma = extract_run_result(index, result)
             expected = row(logical[index] % distinct)
             if intensity.shape != (na, nr) or not np.isfinite(intensity).all():
                 raise AssertionError("Invalid integration output")

@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
 
@@ -22,6 +24,7 @@ from compare import (
     estimate_memory_mib,
     parse_cake,
     roll_azint,
+    setup_case_2d,
 )
 
 HERE = Path(__file__).resolve().parents[1]
@@ -131,6 +134,50 @@ class CakeTests(unittest.TestCase):
         )
         self.assertEqual(sub["estimated_table_nnz"], 2_000_000)
 
+    def test_batch_cake_times_wrappers_and_validates_the_reported_radial_axis(self):
+        frame = np.ones((2, 2))
+        cake = SimpleNamespace(azimuthal=[0.0], intensity=[1.0, 2.0])
+        item = Mock(filename="array[0]")
+        item.is_ok.return_value = True
+        read_cake = PropertyMock(return_value=cake)
+        type(item).result = read_cake
+        engine = Mock()
+        engine.integrate2d.return_value = cake
+        engine.batch2d.return_value = [item]
+        module = SimpleNamespace(
+            Integrator=Mock(return_value=engine), rayon_num_threads=lambda: 1
+        )
+        inputs = (
+            HERE, {"n_splitting": 1}, np.zeros_like(frame), {0: frame}, [0], [frame],
+            [0], 1,
+        )
+        case = dict(
+            n_radial=2,
+            n_azimuthal=1,
+            workers=1,
+            errors=False,
+            variant="dioptrin-pixel_split",
+            radial_range_2d=(0.5, 2.5),
+            dioptrin_radial_axis=[3.0, 4.0],
+            dioptrin_2d_path="batch",
+            dioptrin_2d_batch_split="frames",
+        )
+        with patch.dict(sys.modules, {"dioptrin": module}), patch(
+            "compare.load_inputs", return_value=inputs
+        ):
+            for radial in ([1.0, 2.0], None):
+                with self.subTest(reported_radial=radial):
+                    cake.radial = radial
+                    expected = case["dioptrin_radial_axis"] if radial is None else radial
+                    state = setup_case_2d(case)
+                    np.testing.assert_array_equal(state["sample"]["radial"], expected)
+                    read_cake.reset_mock()
+                    results = state["run"]()
+                    self.assertIs(results[0], item)
+                    read_cake.assert_not_called()
+                    state["validate"](results)
+                    read_cake.assert_called_once_with()
+
 
 class CakeRunTests(unittest.TestCase):
     def run_compare(self, output, *extra):
@@ -214,8 +261,8 @@ class CakeRunTests(unittest.TestCase):
             self.assertLess(pyfai["max_radial_axis_difference_deg"], 1e-4)
             self.assertIn("seam_rows", pyfai["intensity"])
             self.assertIn("sigma", pyfai)
-            # Supersampled cakes have their own radial grid; the common-grid
-            # companion (MultiIntegrator) lines up with everyone else.
+            # The common-grid companion (MultiIntegrator) lines up with azint.
+            # Older Dioptrin builds can use a different native radial grid.
             grids = {
                 e["grid"]: e
                 for e in numerical
@@ -226,7 +273,6 @@ class CakeRunTests(unittest.TestCase):
             }
             self.assertEqual(set(grids), {"native", "common"})
             self.assertLess(grids["common"]["max_radial_axis_difference_deg"], 1e-9)
-            self.assertGreater(grids["native"]["max_radial_axis_difference_deg"], 1e-6)
             self.assertEqual(
                 preflight["multiintegrator_check"]["max_relative_difference"], 0.0
             )
