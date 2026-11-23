@@ -14,6 +14,10 @@
 # site modules (e.g. a GPU driver/OpenCL stack) after BUILD_MODULES. For a GPU
 # node pass your GPU partition: sbatch --partition=<gpu-partition> ...
 # PYFAI_WHEEL selects a local pyFAI wheel for a separate cached environment.
+# WITH_CUDA=1 builds Dioptrin with the 'cuda' feature (separate cached
+# environment) for the dioptrin-*-cuda variants. The build needs no CUDA
+# toolkit; at run time NVRTC must be found, so put a CUDA toolkit module no
+# newer than the node's driver (nvidia-smi "CUDA Version") into EXTRA_MODULES.
 set -euo pipefail
 unset LD_PRELOAD PYTHONPATH
 export PYTHONNOUSERSITE=1
@@ -74,6 +78,11 @@ if [[ ${WITH_OPENCL:-0} == 1 ]]; then
     command -v nvidia-smi >/dev/null && nvidia-smi > "$result_dir/nvidia-smi.txt" || true
     ls /etc/OpenCL/vendors > "$result_dir/opencl-vendors.txt" 2>&1 || true
 fi
+if [[ ${WITH_CUDA:-0} == 1 ]]; then
+    cache_args+=(--with-cuda)
+    command -v nvidia-smi >/dev/null && nvidia-smi > "$result_dir/nvidia-smi.txt" || true
+    printf '%s\n' "${LD_LIBRARY_PATH:-}" > "$result_dir/ld-library-path.txt"
+fi
 if [[ -n "${PYFAI_WHEEL:-}" ]]; then
     cache_args+=(--pyfai-wheel "$PYFAI_WHEEL")
 fi
@@ -81,5 +90,29 @@ command -v numactl >/dev/null && numactl --hardware > "$result_dir/numactl.txt" 
 "${PYTHON_BIN:-python3}" benchmarks/comparison/environment.py "${cache_args[@]}"
 environment_python=$("${PYTHON_BIN:-python3}" -E -s -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["python"])' "$result_dir/environment.json")
-"$environment_python" -E -s -u benchmarks/comparison/compare.py \
+# With --cpus-per-task the benchmark runs as a job step restricted to that many
+# CPUs; the binding options are passed explicitly so the step gets whole cores
+# (an exclusive node would otherwise let srun pick hardware threads freely):
+# - job submitted with --hint=nomultithread: N cores, one hardware thread each.
+#   srun does not reliably inherit sbatch's --hint, so it is repeated here when
+#   the environment (SLURM_HINT) or the job record (threads per core 1,
+#   "ReqB:S:C:T=...:1") shows it. --hint excludes --cpu-bind.
+# - otherwise: N CPUs counted as hardware threads, bound as whole cores.
+# Untested outside Slurm (the job-record format is version dependent): check
+# launch.txt and the affinity in environment.json; if the hint was missed,
+# submit with SLURM_HINT=nomultithread in the environment. Without
+# --cpus-per-task the launch is unchanged.
+launch=()
+if [[ -n ${SLURM_CPUS_PER_TASK:-} ]]; then
+    launch=(srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK")
+    if [[ ${SLURM_HINT:-} == nomultithread ]] ||
+        grep -Eq 'ReqB:S:C:T=[^ ]*:1( |$)' "$result_dir/slurm-job.txt"; then
+        launch+=(--hint=nomultithread)
+    else
+        launch+=(--cpu-bind=cores)
+    fi
+fi
+# ${a[@]+"${a[@]}"}: an empty array is not "unbound" under set -u (bash < 4.4).
+printf '%s\n' "${launch[*]+${launch[*]}}" > "$result_dir/launch.txt"
+${launch[@]+"${launch[@]}"} "$environment_python" -E -s -u benchmarks/comparison/compare.py \
     --output "$result_dir/comparison" --suite "${SUITE:-standard}" "$@"

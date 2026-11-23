@@ -14,12 +14,14 @@ from pathlib import Path
 import platform
 import resource
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from fixtures import MANIFEST, manifest, prepare, sha256
+from hardware import capture
 from provenance import azint_signature, verify_azint_build, verify_build
 
 
@@ -35,6 +37,30 @@ VARIANTS = (
     "pyfai-full-omp",
     "pyfai-full-opencl",
 )
+# Dioptrin's CUDA 1D plan (Integrator.prepare_cuda1d): (method, call). "frame"
+# submits one frame per public call, like pyFAI's OpenCL engine; "batch" uses
+# the plan's multi-frame batch1d. 1D only.
+CUDA_VARIANTS = {
+    "dioptrin-pixel_split-cuda": ("pixel_split", "frame"),
+    "dioptrin-pyfai_full-cuda": ("pyfai_full", "frame"),
+    "dioptrin-pixel_split-cuda-batch": ("pixel_split", "batch"),
+    "dioptrin-pyfai_full-cuda-batch": ("pyfai_full", "batch"),
+}
+# f32 pixels and weights with double-word compensated sums, f64 denominators,
+# division and output: the counterpart of pyFAI's OpenCL CSR engine.
+CUDA_PRECISION = "f32_compensated"
+# Untimed agreement of every CUDA output with CPU Integrator.integrate1d.
+CUDA_AGREEMENT = dict(radial_rtol=1e-12, rtol=1e-5, atol_of_max=1e-5)
+CUDA_NO_API = "installed dioptrin has no CUDA API"
+# The default variant list; the CUDA rows are opt-in (--variants), so a default
+# run never initialises a CUDA device or NVRTC.
+DEFAULT_VARIANTS = VARIANTS
+# Every selectable variant.
+VARIANTS += tuple(CUDA_VARIANTS)
+# The CUDA probe (device initialisation and NVRTC compilation) runs in its own
+# child process; a crash, signal or a child running longer than this marks
+# CUDA unavailable instead of stopping the run.
+CUDA_PROBE_TIMEOUT_S = 600
 
 
 THREAD_VARIABLES = (
@@ -55,8 +81,8 @@ PYFAI_METHODS = {
 }
 # One engine integrating frames in sequence: pyFAI parallelises inside the
 # CSR kernel (OpenMP threads, or the OpenCL device) instead of over frames.
-SEQUENTIAL_VARIANTS = ("pyfai-full-omp", "pyfai-full-opencl")
-GPU_VARIANTS = ("pyfai-full-opencl",)
+SEQUENTIAL_VARIANTS = ("pyfai-full-omp", "pyfai-full-opencl", *CUDA_VARIANTS)
+GPU_VARIANTS = ("pyfai-full-opencl", *CUDA_VARIANTS)
 CONTROL = "@@"
 # Multi-process blocks start this long after the parent sends the command.
 START_LEAD_SECONDS = 0.1
@@ -83,6 +109,15 @@ COUNTERPARTS_2D = (
     ("pyfai-full-opencl", "pyfai-full"),
     ("azint", "dioptrin-supersampled"),
     ("azint-cached", "dioptrin-supersampled"),
+)
+# 1D (variant, counterpart) pairs in numerical.json besides the
+# dioptrin-pixel_split reference: GPU rows against their CPU method.
+COUNTERPARTS_1D = (
+    ("dioptrin-pixel_split-cuda", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-cuda", "dioptrin-pyfai_full"),
+    ("dioptrin-pixel_split-cuda-batch", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-cuda-batch", "dioptrin-pyfai_full"),
+    ("pyfai-full-opencl", "pyfai-full"),
 )
 # What each library does when 2D Poisson uncertainties are requested.
 UNCERTAINTY_2D = {
@@ -118,6 +153,77 @@ class Unsupported(Exception):
 def library(variant):
     """dioptrin, pyfai or azint."""
     return variant.split("-", 1)[0]
+
+
+def dioptrin_method(variant):
+    """Integrator method of a Dioptrin variant (CPU or CUDA)."""
+    if variant in CUDA_VARIANTS:
+        return CUDA_VARIANTS[variant][0]
+    if not variant.startswith("dioptrin-"):
+        raise ValueError(f"{variant!r} is not a Dioptrin variant")
+    return variant.removeprefix("dioptrin-")
+
+
+def jsonable(value):
+    """Tuples (e.g. from dioptrin.cuda_info) as lists, recursively."""
+    if isinstance(value, dict):
+        return {k: jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    return value
+
+
+def cuda_version(value):
+    """13040 -> '13.4' (CUDA driver/runtime integer); (12, 8) -> '12.8'."""
+    if value is None:
+        return "unknown"
+    if isinstance(value, (list, tuple)):
+        return ".".join(map(str, value))
+    return f"{value // 1000}.{value % 1000 // 10}"
+
+
+def cuda_agreement(gpu, cpu, errors):
+    """Compare CUDA outputs with CPU Integrator.integrate1d of the same frames.
+
+    gpu and cpu are lists of (radial, intensity, sigma) per frame. Raises
+    AssertionError beyond CUDA_AGREEMENT; returns the observed differences.
+    """
+    import numpy as np
+
+    tolerance = CUDA_AGREEMENT
+    radial_exact = True
+    found = {key: dict(max_abs=0.0, max_rel_nonzero=None) for key in ("intensity", "sigma")}
+    for (g_radial, *g_values), (c_radial, *c_values) in zip(gpu, cpu, strict=True):
+        np.testing.assert_allclose(
+            g_radial, c_radial, rtol=tolerance["radial_rtol"], atol=0,
+            err_msg="CUDA radial axis differs from CPU integrate1d",
+        )
+        radial_exact &= bool(np.array_equal(g_radial, c_radial))
+        for key, g, c in zip(("intensity", "sigma"), g_values, c_values):
+            if key == "sigma" and not errors:
+                continue
+            g, c = np.asarray(g, dtype=float), np.asarray(c, dtype=float)
+            scale = float(np.max(np.abs(c))) if c.size else 0.0
+            np.testing.assert_allclose(
+                g, c, rtol=tolerance["rtol"], atol=tolerance["atol_of_max"] * scale,
+                err_msg=f"CUDA {key} differs from CPU integrate1d",
+            )
+            difference = np.abs(g - c)
+            entry = found[key]
+            entry["max_abs"] = max(entry["max_abs"], float(difference.max(initial=0.0)))
+            nonzero = c != 0
+            if nonzero.any():
+                relative = float(np.max(difference[nonzero] / np.abs(c[nonzero])))
+                entry["max_rel_nonzero"] = max(entry["max_rel_nonzero"] or 0.0, relative)
+    if not errors:
+        found.pop("sigma")
+    return dict(
+        reference="CPU Integrator.integrate1d (same Integrator, float64 frames)",
+        frames_checked=len(gpu),
+        tolerances=dict(tolerance),
+        radial_exactly_equal=radial_exact,
+        **found,
+    )
 
 
 def parse_cake(text):
@@ -250,8 +356,11 @@ def dump(path, value):
 
 def contiguous_chunks(frames, workers):
     indexed = list(enumerate(frames))
-    size = (len(frames) + workers - 1) // workers
-    return [indexed[i * size : (i + 1) * size] for i in range(workers)]
+    size, extra = divmod(len(frames), workers)
+    return [
+        indexed[i * size + min(i, extra) : (i + 1) * size + min(i + 1, extra)]
+        for i in range(workers)
+    ]
 
 
 def process_share(total, processes, rank):
@@ -343,6 +452,32 @@ def opencl_device_info(device):
         accumulation="float32 arithmetic with double-word (float2) compensated "
         "accumulators (pyFAI ocl_azim_CSR.cl); float32 input and coefficients",
     )
+
+
+def cuda_probe(device):
+    """dioptrin.cuda_info(device) with tuples as lists; never raises.
+
+    Run only in a fresh process: it initialises CUDA, which is not fork-safe.
+    """
+    try:
+        import dioptrin
+
+        info = dioptrin.cuda_info(device)
+    except (ImportError, AttributeError):
+        return dict(compiled=False, available=False, reason=CUDA_NO_API, device=device)
+    except BaseException as error:  # a Rust panic surfaces as a BaseException
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        return dict(
+            compiled=True,
+            available=False,
+            reason=f"dioptrin.cuda_info failed: {error!r}",
+            device=device,
+        )
+    info = jsonable(dict(info))
+    if not info.get("available") and not info.get("reason"):
+        info["reason"] = "no reason reported"
+    return info
 
 
 def probe(device):
@@ -689,6 +824,7 @@ def setup_case(case, rank=None):
     bounds = meta["radial_range"]
     pool = None
     stock_check = None
+    cuda_check = None
     info = {}
     started = time.perf_counter()
 
@@ -697,7 +833,7 @@ def setup_case(case, rank=None):
 
         ai = dioptrin.Integrator(
             str(fixture / "geometry.poni"),
-            method=variant.removeprefix("dioptrin-"),
+            method=dioptrin_method(variant),
             unit="2th_deg",
             n_ss=meta["n_splitting"],
             polarization_factor=0.965,
@@ -711,6 +847,100 @@ def setup_case(case, rank=None):
             raise RuntimeError(
                 "Dioptrin Rayon pool does not match requested CPU budget"
             )
+
+    if variant in CUDA_VARIANTS:
+        # One host thread drives one device (w1, p1). The plan snapshots the
+        # Integrator's mask, corrections, method, unit and radial range and
+        # holds the table on the device. Every timed call copies each float64
+        # frame, unchanged, host to device, casts it to float32 there,
+        # integrates, copies the pattern back and synchronises; the results are
+        # host-resident (IntegrationResult). List-to-NumPy conversion happens in
+        # extract/validate, outside timing, as for the CPU Dioptrin rows.
+        kind = CUDA_VARIANTS[variant][1]
+        plan = ai.prepare_cuda1d(
+            image.shape, n, precision=CUDA_PRECISION, device=case["cuda_device"]
+        )
+
+        def integrate_one(frame):
+            return plan.integrate1d(frame, errors=errors)
+
+        if kind == "frame":
+
+            def integrate_frames(images):
+                return [integrate_one(frame) for frame in images]
+
+        else:
+
+            def integrate_frames(images):
+                return plan.batch1d(images, errors=errors)
+
+        def run():
+            return integrate_frames(frames)
+
+        def extract(result):
+            return (
+                np.asarray(result.radial),
+                np.asarray(result.intensity),
+                np.asarray(result.errors) if errors else None,
+            )
+
+        extract(integrate_one(image))
+        setup_first = time.perf_counter() - started
+        baseline = [extract(r) for r in integrate_frames([unique[u] for u in needed])]
+
+        def cuda_check(sample):
+            """Untimed, after setup_ready: device facts, agreement with the CPU
+            Integrator and, for batch rows, batch1d == per-frame integrate1d."""
+            device = dioptrin.cuda_info(plan.device)
+            gpu = [
+                (sample[0][i], sample[1][i], sample[2][i] if errors else None)
+                for i in range(len(needed))
+            ]
+            cpu = [
+                extract(ai.integrate1d(np.ascontiguousarray(unique[u]), n, errors=errors))
+                for u in needed
+            ]
+            identical = None
+            if kind == "batch":
+                images = [unique[u] for u in needed]
+                batched = plan.batch1d(images, errors=errors)
+                single = [integrate_one(frame) for frame in images]
+                identical = len(batched) == len(single) and all(
+                    same_bits(a, b)
+                    for x, y in zip(batched, single)
+                    for a, b in zip(extract(x), extract(y))
+                )
+                if not identical:
+                    raise AssertionError(
+                        "CUDA batch1d differs from per-frame integrate1d"
+                    )
+            info["cuda"] = jsonable(
+                dict(
+                    call="plan.integrate1d per frame"
+                    if kind == "frame"
+                    else "plan.batch1d over all frames",
+                    precision=plan.precision,
+                    requested_precision=CUDA_PRECISION,
+                    device=plan.device,
+                    device_name=plan.device_name,
+                    compute_capability=device.get("compute_capability"),
+                    total_memory_bytes=device.get("total_memory_bytes"),
+                    driver_version=device.get("driver_version"),
+                    nvrtc_version=device.get("nvrtc_version"),
+                    bindings_version=device.get("bindings_version"),
+                    max_batch_frames=plan.max_batch_frames,
+                    table_entries=plan.table_entries,
+                    input_dtype=str(np.asarray(image).dtype),
+                    cpu_agreement=cuda_agreement(gpu, cpu, errors),
+                    batch_bit_identical=identical,
+                )
+            )
+            if info["cuda"]["precision"] != CUDA_PRECISION:
+                raise AssertionError(
+                    f"CUDA plan precision {plan.precision!r}, expected {CUDA_PRECISION!r}"
+                )
+
+    elif variant.startswith("dioptrin-"):
 
         def integrate_frames(images):
             return ai.batch1d(
@@ -923,6 +1153,12 @@ def setup_case(case, rank=None):
         checked = min(len(needed), len(frames))
         stock_check(frames[:checked], warm_result[:checked])
     del warm_result
+    if cuda_check is not None:
+        cuda_check(sample)  # outside setup and timing
+        # The check ran CPU integrations while the device idled; one more
+        # untimed pass so the first timed block starts warm, as for
+        # pyfai-full-opencl (setup_ready is unchanged).
+        run()
     negative = np.argwhere(sample[2] < 0).tolist() if errors else []
     return dict(
         meta=meta,
@@ -1651,6 +1887,15 @@ def extra_lines(output):
             f"{opencl['platform']}; fp64 {'yes' if opencl['device_fp64'] else 'no'}; "
             "single-precision double-word accumulation"
         )
+    cuda = (environment.get("variant_probes") or {}).get("cuda") or {}
+    if cuda.get("available"):
+        capability = cuda.get("compute_capability")
+        lines.append(
+            f"Dioptrin CUDA device: {cuda.get('device_name')} (compute "
+            f"{cuda_version(capability)}), driver "
+            f"{cuda_version(cuda.get('driver_version'))}, NVRTC "
+            f"{cuda_version(cuda.get('nvrtc_version'))}, precision {CUDA_PRECISION}"
+        )
     for fixture in sorted(output.glob("*/fixture.json")):
         meta = json.loads(fixture.read_text())
         beam = meta.get("beam_pixel_mask")
@@ -1707,25 +1952,22 @@ def summarize(output):
         writer.writerows(rows)
     rows_2d = [r for r in rows if r["dimension"] == "2d"]
     rows = [r for r in rows if r["dimension"] == "1d"]
-    numerical = []
-    for row in rows:
-        if row["workers"] != 1 or row["trial"] != 0:
-            continue
-        reference = next(
+    def find_1d(row, variant):
+        return next(
             (
                 r
                 for r in rows
                 if r["dataset"] == row["dataset"]
                 and r["workload"] == row["workload"]
-                and r["variant"] == "dioptrin-pixel_split"
+                and r["variant"] == variant
                 and r["workers"] == 1
                 and r["trial"] == 0
                 and r["errors"] == row["errors"]
             ),
             None,
         )
-        if reference is None:
-            continue
+
+    def metrics_1d(row, reference, **extra):
         with np.load(Path(row["result"]).with_suffix(".npz")) as saved:
             a = {key: saved[key] for key in ("radial", "intensity", "sigma")}
         with np.load(Path(reference["result"]).with_suffix(".npz")) as saved:
@@ -1735,7 +1977,7 @@ def summarize(output):
             workload=row["workload"],
             variant=row["variant"],
             error_mode=row["error_mode"],
-            reference="dioptrin-pixel_split",
+            reference=reference["variant"],
             negative_sigma_bins=row.get("negative_sigma_bins", 0),
             max_axis_difference_deg=float(np.max(np.abs(a["radial"] - b["radial"]))),
         )
@@ -1745,7 +1987,37 @@ def summarize(output):
                 metrics[key + "_relative_l2"] = float(
                     np.linalg.norm(a[key] - b[key])
                 ) / max(denominator, 1e-300)
-        numerical.append(metrics)
+        metrics.update(extra)
+        return metrics
+
+    # Entry kinds (README, "Outputs"): a reference entry (no "comparison" key)
+    # per one-worker trial-0 row against dioptrin-pixel_split, then a
+    # "comparison": "counterpart" entry per COUNTERPARTS_1D pair. A pair whose
+    # counterpart is dioptrin-pixel_split itself would repeat the reference
+    # entry; instead that reference entry gets "also_counterpart": true.
+    counterparts = dict(COUNTERPARTS_1D)
+    numerical = []
+    for row in rows:
+        if row["workers"] != 1 or row["trial"] != 0:
+            continue
+        reference = find_1d(row, "dioptrin-pixel_split")
+        if reference is None:
+            continue
+        extra = {}
+        if counterparts.get(row["variant"]) == "dioptrin-pixel_split":
+            extra["also_counterpart"] = True
+        numerical.append(metrics_1d(row, reference, **extra))
+    # Counterparts (GPU rows against their CPU method), after the reference
+    # entries; a pair whose counterpart row is missing is left out.
+    for row in rows:
+        if row["workers"] != 1 or row["trial"] != 0:
+            continue
+        counterpart = counterparts.get(row["variant"])
+        if counterpart is None or counterpart == "dioptrin-pixel_split":
+            continue
+        reference = find_1d(row, counterpart)
+        if reference is not None:
+            numerical.append(metrics_1d(row, reference, comparison="counterpart"))
     # azint-cached must reproduce stock azint exactly; compare every matching case.
     identity = []
     for row in rows:
@@ -1795,10 +2067,25 @@ def summarize(output):
     identity += azint_identity_2d(rows_2d)
     dump(output / "numerical.json", numerical)
     dump(output / "azint_cached_identity.json", identity)
+    # Runs without Dioptrin CUDA rows keep the original wording byte for byte
+    # (pyfai-full-opencl predates the CUDA rows and may use a CPU device).
+    present = {r["variant"] for r in rows + rows_2d}
+    gpu_rows = sorted(present & set(GPU_VARIANTS)) if present & set(CUDA_VARIANTS) else []
+    gpu_lines = (
+        [
+            "CUDA and OpenCL rows (" + ", ".join(gpu_rows) + ")",
+            "use one host thread driving one device at CPU budget 1 in one process; their",
+            "timed calls include the host-to-device frame transfers and the transfer of",
+            "the results back.",
+        ]
+        if gpu_rows
+        else []
+    )
     lines = [
-        "# CPU integration benchmark",
+        "# CPU and GPU integration benchmark" if gpu_rows else "# CPU integration benchmark",
         "",
         "1D, preloaded float64 inputs; generation, decoding, and output writing excluded.",
+        *gpu_lines,
         "Repeated reuses one image; frames cycles through distinct generated images.",
         "Cross-library algorithms, precision, and normalization differ; see numerical.json.",
         "azint reuses its constructor normalisation in azint-cached; azint_cached_identity.json",
@@ -2110,15 +2397,46 @@ def numa_nodes():
     return nodes
 
 
-def binding_commands(binding, processes):
+def compact_cpus(cpus):
+    """[0, 1, 2, 5] -> '0-2,5'."""
+    parts, cpus = [], sorted(cpus)
+    start = previous = None
+    for cpu in cpus + [None]:
+        if previous is not None and cpu == previous + 1:
+            previous = cpu
+            continue
+        if start is not None:
+            parts.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu
+    return ",".join(parts)
+
+
+def binding_commands(binding, processes, workers_per_process=1):
     """Command prefix per rank. `numa` binds rank r's CPUs and memory to one
-    NUMA node, round-robin over the nodes in the allocation."""
+    NUMA node, round-robin over the nodes in the allocation.
+
+    Fails when a node's CPUs in this process's affinity are fewer than the
+    workers of the ranks bound to it (ranks on one node share its CPUs).
+    """
     if binding == "none":
         return [[] for _ in range(processes)]
     numactl = shutil.which("numactl")
-    nodes = sorted(numa_nodes())
+    available = numa_nodes()
+    nodes = sorted(available)
     if numactl is None or not nodes:
         raise RuntimeError("--bind numa needs Linux NUMA topology and numactl in PATH")
+    for index, node in enumerate(nodes):
+        ranks = len(range(index, processes, len(nodes)))
+        needed = ranks * workers_per_process
+        if ranks and len(available[node]) < needed:
+            raise RuntimeError(
+                f"--bind numa: NUMA node {node} has {len(available[node])} CPU(s) "
+                f"in this process's affinity ({compact_cpus(available[node])}), "
+                f"fewer than the {needed} worker(s) of the {ranks} process(es) "
+                f"bound to it ({workers_per_process} per process, "
+                f"{processes} processes over nodes {nodes}); use fewer workers or "
+                "processes, --bind none, or an allocation with more CPUs per node"
+            )
     return [
         [
             numactl,
@@ -2263,28 +2581,87 @@ def run_processes(case, case_path, env, prefixes):
     )
 
 
-def probe_variants(variants, opencl_device):
-    """Run the availability probe in a fresh process (same flags as cases)."""
-    if not any(v in ("pyfai-full-omp", "pyfai-full-opencl") for v in variants):
-        return {}
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-E",
-            "-s",
-            __file__,
-            "--probe",
-            "--opencl-device",
-            opencl_device,
-        ],
-        capture_output=True,
-        text=True,
-        env=os.environ | case_threads("pyfai-full", 1),
-    )
-    lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
-    if result.returncode or not lines:
-        raise RuntimeError("Variant probe failed: " + result.stderr[-2000:])
-    return json.loads(lines[-1])
+def probe_variants(variants, opencl_device, cuda_device=0):
+    """Run the availability probes in fresh processes (same flags as cases).
+
+    The pyFAI probe never touches CUDA. CUDA is probed (and initialised) only
+    when a CUDA variant is requested, in a separate child with a timeout, so a
+    crash or hang there skips only the CUDA variants; this parent never
+    touches the device.
+    """
+    result = {}
+    if any(v in ("pyfai-full-omp", "pyfai-full-opencl") for v in variants):
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-E",
+                "-s",
+                __file__,
+                "--probe",
+                "--opencl-device",
+                opencl_device,
+            ],
+            capture_output=True,
+            text=True,
+            env=os.environ | case_threads("pyfai-full", 1),
+        )
+        lines = [line for line in child.stdout.splitlines() if line.startswith("{")]
+        if child.returncode or not lines:
+            raise RuntimeError("Variant probe failed: " + child.stderr[-2000:])
+        result.update(json.loads(lines[-1]))
+    if any(v in CUDA_VARIANTS for v in variants):
+        result["cuda"] = probe_cuda_child(cuda_device)
+    return result
+
+
+def probe_cuda_child(device, timeout=CUDA_PROBE_TIMEOUT_S):
+    """cuda_probe(device) in its own child process; never raises.
+
+    A non-zero exit, a signal, a timeout or unparsable output is recorded as
+    unavailable (probe_failed) with the exit status in the reason.
+    """
+    command = [
+        sys.executable,
+        "-E",
+        "-s",
+        __file__,
+        "--probe-cuda",
+        "--cuda-device",
+        str(device),
+    ]
+    failed = dict(compiled=None, available=False, probe_failed=True, device=device)
+    try:
+        child = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=os.environ | case_threads("dioptrin-pixel_split-cuda", 1),
+        )
+    except subprocess.TimeoutExpired:
+        return dict(failed, reason=f"CUDA probe timed out after {timeout:g} s (killed)")
+    tail = (child.stderr or "").strip()[-500:]
+    if child.returncode:
+        if child.returncode < 0:
+            try:
+                name = signal.Signals(-child.returncode).name
+            except ValueError:
+                name = f"signal {-child.returncode}"
+            status = f"killed by {name} (exit status {child.returncode})"
+        else:
+            status = f"exit status {child.returncode}"
+        return dict(
+            failed, reason=f"CUDA probe child failed: {status}" + (f"; {tail}" if tail else "")
+        )
+    lines = [line for line in child.stdout.splitlines() if line.startswith("{")]
+    try:
+        return json.loads(lines[-1])
+    except (IndexError, json.JSONDecodeError):
+        return dict(
+            failed,
+            reason="CUDA probe child printed no result (exit status 0)"
+            + (f"; {tail}" if tail else ""),
+        )
 
 
 def skipped_variants(variants, probes):
@@ -2305,6 +2682,27 @@ def skipped_variants(variants, probes):
                 reason=probes["opencl"].get("reason", "OpenCL unavailable"),
             )
         )
+    cuda = probes.get("cuda") or dict(
+        compiled=False, available=False, reason="CUDA was not probed"
+    )
+    for variant in (v for v in variants if v in CUDA_VARIANTS):
+        if cuda.get("available"):
+            continue
+        if cuda.get("probe_failed"):
+            reason = cuda.get("reason") or "CUDA probe child failed"
+        elif not cuda.get("compiled"):
+            reason = (
+                "Dioptrin was built without the 'cuda' feature; rerun setup.py "
+                "--with-cuda (environment.py --with-cuda / WITH_CUDA=1)"
+            )
+            if cuda.get("reason") == CUDA_NO_API:
+                reason += f" ({CUDA_NO_API})"
+        else:
+            reason = (
+                f"CUDA unavailable on device {cuda.get('device', 0)}: "
+                f"{cuda.get('reason') or 'no reason reported'}"
+            )
+        skipped.append(dict(variant=variant, reason=reason))
     return skipped
 
 
@@ -2375,6 +2773,12 @@ def main():
         default="gpu",
         help="pyfai-full-opencl device: gpu, cpu, acc, any, or PLATFORM:DEVICE ids",
     )
+    parser.add_argument(
+        "--cuda-device",
+        type=int,
+        help="CUDA device ordinal for the dioptrin-*-cuda variants (after "
+        "CUDA_VISIBLE_DEVICES). Default: 0",
+    )
     parser.add_argument("--datasets", nargs="+", choices=definition["datasets"])
     parser.add_argument(
         "--workloads",
@@ -2383,7 +2787,11 @@ def main():
         default=["repeated", "frames"],
     )
     parser.add_argument(
-        "--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS)
+        "--variants",
+        nargs="+",
+        choices=VARIANTS,
+        default=list(DEFAULT_VARIANTS),
+        help="Default: every variant except the opt-in dioptrin-*-cuda rows",
     )
     parser.add_argument("--bins", type=int)
     parser.add_argument("--frames", type=int)
@@ -2448,6 +2856,7 @@ def main():
     parser.add_argument("--case", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--probe", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--probe-cuda", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preflight-2d", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.case:
@@ -2456,6 +2865,14 @@ def main():
     if args.probe:
         probe(args.opencl_device)
         return
+    if args.cuda_device is None:
+        args.cuda_device = 0
+    if args.probe_cuda:
+        # Own child process (probe_cuda_child): initialises CUDA and NVRTC.
+        print(json.dumps(cuda_probe(args.cuda_device)), flush=True)
+        return
+    if args.cuda_device < 0:
+        parser.error("--cuda-device must be a non-negative device ordinal")
     if args.preflight_2d:
         preflight_2d(
             args.preflight_2d,
@@ -2515,8 +2932,13 @@ def main():
     bindings = {}
     for count in process_counts:
         if count > 1:
+            # The largest per-process share scheduled with this process count.
+            per_process = max(
+                (w // count for w in workers if w >= count and w % count == 0),
+                default=1,
+            )
             try:
-                bindings[count] = binding_commands(args.bind, count)
+                bindings[count] = binding_commands(args.bind, count, per_process)
             except RuntimeError as error:
                 parser.error(str(error))
     required = ["numpy", "pyFAI"]
@@ -2567,7 +2989,7 @@ def main():
             )
         print("UNVERIFIED BUILD: " + message, file=sys.stderr, flush=True)
     try:
-        probes = probe_variants(args.variants, args.opencl_device)
+        probes = probe_variants(args.variants, args.opencl_device, args.cuda_device)
     except RuntimeError as error:
         parser.error(str(error))
     skipped = skipped_variants(args.variants, probes)
@@ -2603,6 +3025,7 @@ def main():
             platform=platform.platform(),
             node=platform.node(),
             available_logical_cpus=available,
+            hardware=capture(),
             cpu_budgets=workers,
             process_counts=process_counts,
             binding=args.bind,
@@ -2614,7 +3037,12 @@ def main():
             if Path("/sys/devices/system/node").is_dir()
             else None,
             arguments={
-                k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
+                k: str(v) if isinstance(v, Path) else v
+                for k, v in vars(args).items()
+                # CUDA options only when a CUDA row was requested, so other
+                # runs record the same arguments as before the CUDA rows.
+                if k not in ("cuda_device", "probe_cuda")
+                or any(v in CUDA_VARIANTS for v in args.variants)
             },
             source=provenance,
             manifest_sha256=sha256(MANIFEST),
@@ -2623,6 +3051,7 @@ def main():
                 for name in (
                     "compare.py",
                     "fixtures.py",
+                    "hardware.py",
                     "provenance.py",
                     "prepare_subset.py",
                 )
@@ -2671,7 +3100,12 @@ def main():
     failures = []
     memory_limit = args.max_memory_fraction * total_memory_bytes() / 2**20
     preflights = {}
-    if "2d" in args.dimensions:
+    # The CUDA variants are 1D only: no 2D cases and no 2D preflight entries.
+    variants_2d = [v for v in variants_run if v not in CUDA_VARIANTS]
+    cuda_only = bool(variants_run) and not variants_2d
+    if "2d" in args.dimensions and len(variants_2d) < len(variants_run):
+        print("NOTE: the Dioptrin CUDA variants are 1D only; no 2D cases", flush=True)
+    if "2d" in args.dimensions and not cuda_only:
         for dataset in args.datasets:
             print(
                 f"2D preflight for {dataset} (azimuth convention, axes, estimates)...",
@@ -2693,7 +3127,7 @@ def main():
                         "--subpixels",
                         *map(str, args.subpixels),
                         "--variants",
-                        *variants_run,
+                        *variants_2d,
                     ],
                     env=os.environ
                     | case_threads("dioptrin-pixel_split", 1)
@@ -2844,6 +3278,8 @@ def main():
                                             / "cases"
                                             / f"{suffix}-w1-{mode}-t0.result.npz"
                                         )
+                                    if variant in CUDA_VARIANTS:
+                                        case["cuda_device"] = args.cuda_device
                                     case["threads"] = case_threads(
                                         variant, count, processes
                                     )
@@ -2859,6 +3295,8 @@ def main():
                                 continue
                             for errors in (False, True):
                                 for variant in variants:
+                                    if variant in CUDA_VARIANTS:
+                                        continue  # 1D only
                                     if variant in GPU_VARIANTS and (
                                         count > 1 or processes > 1
                                     ):
@@ -3008,6 +3446,8 @@ def main():
         # self-checks; numerical.json uses the *.cake0.npz files, which stay.
         for path in (output / "cases").glob("*-2d-*.result.npz"):
             path.unlink()
+    if not (output / "summary.md").is_file():
+        summarize(output)  # no case ran (e.g. every variant skipped)
     print(f"Results: {output / 'summary.md'}", flush=True)
 
 

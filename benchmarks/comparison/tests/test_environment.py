@@ -11,6 +11,9 @@ import unittest
 import subprocess
 from unittest.mock import patch
 
+if sys.platform == "win32":
+    raise unittest.SkipTest("cluster environment cache uses POSIX file locking")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from environment import (
     build_options,

@@ -684,6 +684,34 @@ impl PyIntegrator {
         })
     }
 
+    /// Experimental: upload this integrator's fixed-mask 1D table to a CUDA
+    /// device. The plan is a snapshot of the current mask, corrections,
+    /// method, unit and radial range; `fast_math` and `sparse_layout` are
+    /// ignored. Raises `CudaUnavailableError` when this build has no CUDA
+    /// support or the device cannot be used, `ValueError` for an unsupported
+    /// configuration (dynamic mask, histogram or supersampled method) or
+    /// invalid input. The GIL is released while preparing.
+    #[pyo3(signature = (shape, n_points, *, precision="f32_compensated", device=0, max_batch_bytes=None))]
+    fn prepare_cuda1d(
+        &self,
+        py: Python<'_>,
+        shape: (usize, usize),
+        n_points: usize,
+        precision: &str,
+        device: usize,
+        max_batch_bytes: Option<usize>,
+    ) -> PyResult<super::cuda::PyCuda1dPlan> {
+        super::cuda::prepare(
+            py,
+            &self.integrator,
+            shape,
+            n_points,
+            precision,
+            device,
+            max_batch_bytes,
+        )
+    }
+
     /// Release cached file workers and decoding buffers: the pool of the
     /// synchronous and list batches, and the workers kept from the last
     /// finished generator-fed stream for the next one. Admitted streaming work

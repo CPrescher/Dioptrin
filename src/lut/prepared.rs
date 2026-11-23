@@ -191,6 +191,16 @@ impl PreparedCsr {
             .unwrap_or(self)
     }
 
+    #[cfg(feature = "cuda")]
+    pub(crate) fn fixed_csr_parts<'a>(
+        &'a self,
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> (&'a Self, &'a [f64]) {
+        let table = self.fixed_table(mask);
+        (table, table.normalization::<false>(None, norm))
+    }
+
     /// Bounds check for the unchecked kernels: every array they read through
     /// this table must cover all pixels the table addresses. The Integrator
     /// only pairs a table with arrays of the shape it was built for, so this

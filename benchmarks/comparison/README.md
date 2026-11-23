@@ -10,7 +10,9 @@ On Linux or macOS, install Python 3.11+, the stable Rust toolchain, Git, and a
 C++17 compiler with OpenMP. Linux distributions normally provide the latter in
 GCC (`g++`). On macOS, use `brew install gcc`; setup selects Homebrew's versioned
 compiler automatically. Set `CC` and `CXX` to override that selection. On Windows,
-use WSL2 for this benchmark tooling.
+use WSL2 for `compare.py`. `setup.py` also builds a native Windows environment
+(for the GPU runner below) from a Visual Studio Developer PowerShell with the
+MSVC C++ build tools and the Rust MSVC toolchain.
 
 ```bash
 git clone https://github.com/CPrescher/Dioptrin.git
@@ -19,13 +21,22 @@ python3 benchmarks/comparison/setup.py
 .venv-benchmark/bin/python benchmarks/comparison/compare.py
 ```
 
+On native Windows, run `python benchmarks/comparison/setup.py`, then use
+`.venv-benchmark\Scripts\python.exe -E -s -B` in place of the interpreter for
+the GPU runner. On Windows x64, setup pairs Dioptrin's `x86-64-v3` with
+AZINT's MSVC `/arch:AVX2`; `--azint-fast-math` is not available with MSVC.
+The official pyFAI wheel keeps its upstream flags.
+
 Setup creates `.venv-benchmark`, builds the current Dioptrin source in release
-mode, builds the pinned upstream azint source, and installs pyFAI. Both source
-builds target the machine's CPU. Installation needs internet access; do it once
+mode, builds the pinned upstream azint source, and installs pyFAI. Linux and
+macOS source builds use native CPU flags. Installation needs internet access; do it once
 per machine/checkout, and rerun setup after changing the Dioptrin source. No
 Dioptrin runtime dependencies are changed. Setup records wheels, compiler flags,
 Rust versions, Cargo.lock, and resolved Python packages in the environment's
 `build-record/` directory. Don't reuse native wheels on a different CPU model.
+`setup.py --with-cuda` builds Dioptrin with its `cuda` feature for the
+CUDA rows (see "Dioptrin CUDA"); `build.json` records `cuda` and
+`cargo_features`.
 CI uses `setup.py --portable` to omit native CPU flags, making shared Cargo
 caches safe across runner CPU models. This mode checks functionality rather
 than native CPU performance.
@@ -74,6 +85,10 @@ overrides the check and records a visible warning. Both parent and workers ignor
 Results go into a new, ignored `benchmark-results/<timestamp>/` directory:
 `summary.md`, `results.csv`, `numerical.json`, raw timing blocks, per-case logs
 and output arrays, hardware/thread settings, source revision, and input hashes.
+CPU runs save machine details in `environment.json` and GPU runs save them in
+`gpu-results.json`. Capture covers the OS, CPU model, physical and logical cores,
+RAM, and, where available, CPU affinity, Apple performance and efficiency cores,
+GPU inventory and driver, and relevant Slurm allocation settings.
 The standard run time depends on the CPU and setup costs; use the quick suite
 first to verify installation.
 
@@ -218,7 +233,11 @@ subpixel integration in two rows, `azint` and `azint-cached`; pyFAI full CSR and
 bbox CSR using Cython on Python frame threads (`pyfai-full`, `pyfai-bbox`);
 `pyfai-full-omp`, pyFAI's recommended CPU mode, one full CSR Cython engine
 integrating frames in sequence with `OMP_NUM_THREADS` = CPU budget; and
-`pyfai-full-opencl`, method `("full", "csr", "opencl")` on one OpenCL device. Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
+`pyfai-full-opencl`, method `("full", "csr", "opencl")` on one OpenCL device;
+and, in 1D only and opt-in (`--variants`), Dioptrin's CUDA plan in four rows,
+`dioptrin-pixel_split-cuda`, `dioptrin-pyfai_full-cuda`,
+`dioptrin-pixel_split-cuda-batch` and `dioptrin-pyfai_full-cuda-batch` (see
+"Dioptrin CUDA" below). Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
 generated detectors, and 3 x 3 for quick.
 The runner requires pyFAI to use the requested method and rejects fallbacks.
 
@@ -242,6 +261,112 @@ are converted from the shared float64 inputs to float32 on the host inside the
 timed call. It runs at a CPU budget of 1 in one process (one host thread, one
 engine); rows for higher budgets or process counts are not scheduled.
 
+### Dioptrin CUDA
+
+The four CUDA rows run Dioptrin's experimental CUDA 1D plan
+(`Integrator.prepare_cuda1d`) under the same protocol as `pyfai-full-opencl`:
+the same float64 fixture frames, passed unchanged, the same Integrator settings
+as the CPU Dioptrin rows (method, mask, 2theta range, solid angle, polarization
+0.965), a CPU budget of 1 (one host thread, `RAYON_NUM_THREADS=1`) and one
+process. They are 1D only; with `--dimensions 2d` they get no 2D cases and are
+left out of the 2D preflight. They are not in the default variant list: name
+them with `--variants`, so a default run never initialises a CUDA device or
+NVRTC.
+
+| Variant | Method | Timed call |
+| --- | --- | --- |
+| `dioptrin-pixel_split-cuda` | `pixel_split` | `plan.integrate1d(frame)` once per frame |
+| `dioptrin-pyfai_full-cuda` | `pyfai_full` | `plan.integrate1d(frame)` once per frame |
+| `dioptrin-pixel_split-cuda-batch` | `pixel_split` | `plan.batch1d(frames)` over the whole batch |
+| `dioptrin-pyfai_full-cuda-batch` | `pyfai_full` | `plan.batch1d(frames)` over the whole batch |
+
+The `-cuda` rows make one public call per frame, with one transfer each way and
+one synchronisation per frame, as pyFAI's OpenCL `integrate1d` does; they are
+the like-for-like rows for comparison with `pyfai-full-opencl`. The
+`-cuda-batch` rows use Dioptrin's multi-frame call: frames are processed in
+chunks of up to `max_batch_frames` (at most 256 per kernel launch). Both are
+reported.
+
+**Set-up (not timed).** The case process builds the Integrator, sets the mask
+and calls `prepare_cuda1d(shape, bins, precision="f32_compensated",
+device=--cuda-device)`. This initialises the device (context, NVRTC compile of
+the kernels, module load), builds the sparse table on the CPU and uploads it
+once. `setup_first_s` runs to the end of the first integrated frame, as for
+pyFAI's first OpenCL call. The untimed warm-up pass sizes the plan's device
+scratch, so no device memory is allocated inside timing blocks.
+
+**Timed region.** Every timed call copies each float64 frame from host memory
+to the device (8 bytes per pixel), converts it to float32 there, integrates,
+copies the pattern back and synchronises before returning. The timed call
+returns `IntegrationResult` objects holding the data in host memory; the Python
+lists and the NumPy arrays are created when their attributes are read, during
+validation, outside timing, as for the CPU Dioptrin rows. pyFAI's timed call
+returns NumPy arrays. Transfers use ordinary (pageable) NumPy memory, as
+pyFAI's do.
+
+**Precision.** All CUDA rows use `f32_compensated`: float32 pixels and weights,
+sums accumulated as double-word (hi, lo) float32 pairs, and denominators,
+division and output in float64. pyFAI's OpenCL CSR engine also works on float32
+input and coefficients with double-word (float2) compensated accumulators, so
+this is the counterpart setting. Differences that remain:
+
+- Dioptrin computes the normalisation denominators (solid angle,
+  polarization, pixel weights) once, in float64 on the CPU, when the plan is
+  prepared and divides in float64 on the device. pyFAI, as far as we know,
+  accumulates the normalisation on the device for every frame and divides in
+  float32.
+- pyFAI converts the float64 frame to float32 on the host inside its call;
+  Dioptrin uploads float64 and converts on the device. Both conversions are
+  inside each library's timed call. There is no input-dtype option.
+- The GPU reduction order is fixed and differs from the CPU's, so CUDA results
+  agree with CPU Dioptrin within tolerance, not bit for bit. `fast_math` and
+  `sparse_layout` do not affect the GPU path.
+
+**Checks.** Besides the usual self-validation against the one-worker reference,
+each CUDA case, after set-up and outside timing, compares every distinct frame
+with CPU `Integrator.integrate1d` of the same Integrator: the radial axis to
+1e-12 relative (whether it is exactly equal is recorded), intensity and sigma
+with `rtol=1e-5, atol=1e-5 * max|cpu|`. Larger differences fail the case. The
+`-cuda-batch` cases also require `batch1d` to be bit-identical to per-frame
+`integrate1d`. This check runs CPU integrations while the device idles, so one
+more untimed pass of the case's frames follows it before the first timed block
+(`setup_ready_s` is unaffected). Each result JSON records, under `cuda`, the call, the precision,
+device ordinal and name, compute capability, total memory, driver, NVRTC and
+binding versions, `max_batch_frames`, `table_entries`, the input dtype, the
+CPU agreement (`max_abs` and `max_rel_nonzero` for intensity and sigma) and the
+batch identity. In `numerical.json` (entry kinds under "Numerical entries"
+below), `dioptrin-pyfai_full-cuda` and `-cuda-batch` get counterpart entries
+against `dioptrin-pyfai_full`; the counterpart of the `dioptrin-pixel_split-cuda`
+rows is `dioptrin-pixel_split`, the reference itself, so their reference entry
+is marked `"also_counterpart": true` instead of being repeated.
+
+**Build and run-time requirements.** The rows need a Dioptrin built with the
+`cuda` Cargo feature: `setup.py --with-cuda` (maturin `--features python,cuda`;
+`environment.py --with-cuda`, `WITH_CUDA=1` for the Slurm wrapper). The build
+needs only the Rust toolchain: no CUDA toolkit, nvcc or driver. At run time the
+node needs an NVIDIA driver and NVRTC (`libnvrtc` with `libnvrtc-builtins`)
+on the dynamic loader's path. NVRTC must be no newer than the CUDA version the
+driver supports (`nvidia-smi`, "CUDA Version"), or the driver cannot load the
+compiled kernels, and it must support the GPU's compute capability (CUDA 13
+needs 7.5 or later). On a cluster, `module load` a CUDA toolkit no newer than
+the driver before running. Do not set `CUDARC_CUDA_VERSION` when building.
+`--cuda-device` (default 0, counted after `CUDA_VISIBLE_DEVICES`) selects the
+device. When a CUDA row is requested, a probe in its own child process (separate
+from the pyFAI probe, with a 600 s timeout that covers the NVRTC compilation)
+records `dioptrin.cuda_info()` in `environment.json` (`variant_probes.cuda`),
+and `summary.md` prints the device, driver, NVRTC version and precision. Without
+the feature, with a Dioptrin that predates the CUDA API, without a usable
+device, or when the probe child exits non-zero, is killed by a signal or times
+out (`probe_failed`, with the exit status in the reason), the CUDA rows are
+skipped with a `SKIPPED` line and an entry in `skipped.json`, like the OpenCL
+row; every other variant still runs. With CUDA rows in a run, `summary.md` is
+headed "CPU and GPU integration benchmark" and names the CUDA and OpenCL rows;
+runs without CUDA rows keep the earlier wording.
+
+A `WITH_CUDA=1` (`--with-cuda`) environment is a different build with its own
+cache key. Its CPU Dioptrin rows run on that cuda-feature wheel; the CPU code
+is the same.
+
 The two azint rows use the same build and sparse matrix:
 
 - `azint` is azint as documented: `AzimuthalIntegrator(..., mask=mask)` and
@@ -262,6 +387,18 @@ Cross-library differences are reported without asserting identical answers.
 Azint averages corrected pixels, while Dioptrin/pyFAI normalize weighted raw
 counts. pyFAI can slightly expand the upper bin bound; axis offsets are reported.
 
+**Numerical entries.** 1D entries in `numerical.json` come in two kinds, both
+for one-worker, trial-0 rows and matched by dataset, workload and error mode.
+Reference entries (no `comparison` key) compare every row with
+`dioptrin-pixel_split`, as before. Counterpart entries
+(`"comparison": "counterpart"`) follow them and compare a GPU row with its CPU
+method: `pyfai-full-opencl` with `pyfai-full`, and `dioptrin-pyfai_full-cuda`
+and `dioptrin-pyfai_full-cuda-batch` with `dioptrin-pyfai_full`. The
+`dioptrin-pixel_split-cuda` rows' counterpart is the reference itself; their
+reference entry carries `"also_counterpart": true` and no second entry is
+written. A counterpart entry is left out when the counterpart row did not run.
+2D entries are described under "2D cakes".
+
 The CPU-budget column is the total global Rayon pool size for Dioptrin's native
 array batch API. For competitors it is the number of persistent Python frame
 threads. Thread settings per case:
@@ -273,6 +410,7 @@ threads. Thread settings per case:
 | `pyfai-full`, `pyfai-bbox` | budget | 1 | 1 |
 | `pyfai-full-omp` | 1 | budget | 1 |
 | `pyfai-full-opencl` | 1 | 1 | 1 |
+| `dioptrin-*-cuda`, `dioptrin-*-cuda-batch` | 1 | 1 | 1 |
 
 `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, and `NUMEXPR_NUM_THREADS` are 1, and
 `OMP_DYNAMIC`/`OMP_PROC_BIND` are `FALSE` everywhere. In the pinned azint source
@@ -323,7 +461,10 @@ against the one-process, one-worker reference before and after timing, and
 
 `--bind numa` starts rank r under `numactl --cpunodebind=N --membind=N`,
 round-robin over the NUMA nodes in the allocation (frames and tables are then
-first touched on that node). It needs Linux and `numactl`; `--bind none`
+first touched on that node). Before any case runs, the runner fails with a
+message naming the node if the node's CPUs in the runner's affinity are fewer
+than the workers of the ranks bound to it (ranks sharing a node share its CPUs;
+the largest budget/P scheduled is checked). It needs Linux and `numactl`; `--bind none`
 (default) works everywhere, including macOS. This replaces the earlier
 Dioptrin-only socket-local experiment: every library gets the same layouts.
 P = 1 rows keep the single-process measurement described above.
@@ -536,7 +677,57 @@ transitive dependency across future dates. This suite measures in-memory 1D
 integration and, with `--dimensions 2d`, 2D cakes (CPU, plus pyFAI's OpenCL CSR
 where available); it does not assess decompression or file-reading performance.
 
+## Detector-size and GPU comparison
+
+See the [paper benchmark recipes](../../docs/benchmarking.md#repeat-the-detector-size-comparison)
+for the fixed-work Windows and macOS sweeps.
+
+The GPU runner uses the same geometry, detector masks, radial range and
+bin count. It requires pyopencl in the comparison environment and native
+CUDA with NVRTC available to the Rust test executable. Each prepared
+uint32 frame is checked against the fixture for exact representation.
+Dioptrin measures both ordinary and pinned uploads and calculates
+products and sums in f64. pyFAI uses its full-split CSR OpenCL engine
+with ordinary NumPy buffers. A per-frame CUDA series uses the same
+one-frame-at-a-time workload. The CUDA batched series uses a single upload,
+launch, and download for the whole batch.
+The script checks the exact OpenCL implementation and device and rejects
+fallbacks. The timed batch starts in host memory and ends with the
+patterns back on host memory. Plan preparation, allocation and input
+conversion into the already prepared buffers happen before warm timing.
+The runner records a separate GPU kernel series. CUDA events enclose the
+integration launch. OpenCL profiling sums pyFAI's buffer reset, pixel
+preprocessing and CSR reduction kernels, plus any separate conversion kernel
+in the profiled trace. Both device measurements exclude
+the transfers and CPU dispatch in the host-to-pattern timings.
+
+~~~text
+python -B benchmarks/comparison/gpu_compare.py --gpu-name "RTX 5070 Ti" --frames 16 --bins 2000 --repeats 5 --trials 3 --output benchmark-results/paper-gpu
+python -B benchmarks/comparison/plot_scaling.py --cpu benchmark-results/paper-cpu --gpu benchmark-results/paper-gpu/gpu-results.json --output benchmark-results/paper-figures
+~~~
+
+Pass --nvrtc with the directory containing the CUDA libraries if they
+are outside the search path. The GPU results include intensity-only
+and Poisson modes, five timed batches after two warmups, both CUDA
+layouts, and per-layout comparisons against strict CPU output on two distinct
+inputs. Cross-engine comparisons report absolute, relative L2 and positive-bin
+errors. Axis differences above 0.0001 degrees or a relative L2 above 1% fail
+fixture validation. First-pattern time starts with one decoded frame on the
+host, before loading geometry or preparing a plan, in a fresh process for
+each backend and layout. Driver and compiler caches keep their normal state.
+The standard figure uses the Block layout for all CUDA series. The GPU series is
+separate from CPU core scaling because it measures GPU work on a
+single device. Plotting requires Matplotlib and produces separate GPU kernel
+and host-to-pattern figures as PDF and PNG.
+
+This comparison uses prepared inputs. The separate
+[Eiger file benchmarks](../../docs/benchmarks/2026-11-18-cuda/README.md#native-integer-upload-and-hdf5)
+report the effect of real HDF5 and TIFF loading, including decoding,
+with their own calibration, file-cache settings and timing boundaries.
+
 ## Maxwell Slurm wrapper
+
+For the paper runs, follow the [EuXFEL node selection and replay commands](../../docs/benchmarking.md#run-on-desy-maxwell).
 
 From a terminal on Maxwell, clone the repository and submit from its root:
 
@@ -674,13 +865,46 @@ WITH_OPENCL=1 EXTRA_MODULES="<modules, if needed>" sbatch --partition=<gpu-parti
   --variants dioptrin-pyfai_full pyfai-full pyfai-full-opencl --opencl-device gpu
 ```
 
+For the Dioptrin CUDA rows add `WITH_CUDA=1` (Dioptrin built with the `cuda`
+feature, in its own cached environment) and load a CUDA toolkit module through
+`EXTRA_MODULES`; NVRTC comes from that module at run time only, and its
+version must not be newer than the node driver's CUDA version (check
+`nvidia-smi` on the node). `EXTRA_MODULES` is loaded before the environment
+step, so the module's `LD_LIBRARY_PATH` is part of the cache key: keep the same
+module for runs that should share an environment. With `WITH_CUDA=1` the
+wrapper also saves `nvidia-smi` and `LD_LIBRARY_PATH`. One job for the GPU
+comparison, frame-per-call and batch rows next to pyFAI OpenCL and the CPU
+rows at one CPU:
+
+```bash
+WITH_OPENCL=1 WITH_CUDA=1 EXTRA_MODULES="<CUDA toolkit module>" \
+  sbatch --partition=<gpu-partition> benchmarks/comparison/maxwell.sbatch \
+  --datasets eiger9m-subset eiger4m-subset --subset-dir "$SUBSETS" \
+  --workloads frames --workers 1 --bins 2000 \
+  --variants dioptrin-pixel_split dioptrin-pyfai_full \
+             dioptrin-pixel_split-cuda dioptrin-pyfai_full-cuda \
+             dioptrin-pixel_split-cuda-batch dioptrin-pyfai_full-cuda-batch \
+             pyfai-full pyfai-full-opencl --opencl-device gpu --cuda-device 0
+```
+
+With `--cpus-per-task` (as in the paper commands) the wrapper runs the
+benchmark as `srun --ntasks=1 --cpus-per-task=N` with explicit binding:
+`--hint=nomultithread` when the job used it (seen in `SLURM_HINT` or the job
+record), otherwise `--cpu-bind=cores`, so the step gets whole cores. It writes
+the step command to `launch.txt`. This is untested outside Slurm; check
+`launch.txt` and the affinity in `environment.json`, and if a
+`--hint=nomultithread` job's `launch.txt` lacks it, resubmit with
+`SLURM_HINT=nomultithread` in the environment. Without `--cpus-per-task` the
+launch is unchanged.
+
 `allcpu` can be preempted/requeued; every restart writes a new results directory.
 Higher worker counts can require substantial memory for pyFAI full CSR. Optional
 wrapper environment settings are `BUILD_MODULES`, `EXTRA_MODULES`, `PYTHON_BIN`,
 `BUILD_JOBS` (default 8), `RUST_TOOLCHAIN` (stable), `RESULT_ROOT`, `SUITE`
 (standard), `CC`, `CXX`, `ENV_CACHE_ROOT`, `REBUILD_ENV=1`, `KEEP_BUILD=1`
-(node-local build tools), `AZINT_FAST_MATH` (default 1) and `WITH_OPENCL` (default 0).
-Both build switches are part of the environment cache key.
+(node-local build tools), `AZINT_FAST_MATH` (default 1), `WITH_OPENCL` (default 0)
+and `WITH_CUDA` (default 0). All three build switches are part of the
+environment cache key.
 
 References: [Maxwell batch jobs](https://docs.desy.de/maxwell/documentation/jobs/running_batch_jobs/),
 [Python modules](https://docs.desy.de/maxwell/development/python/),

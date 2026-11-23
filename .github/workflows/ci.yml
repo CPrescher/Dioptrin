@@ -41,6 +41,26 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # The `cuda` feature loads the driver and NVRTC at run time (cudarc
+  # `dynamic-loading`), so it builds with the Rust toolchain alone. Runners
+  # have no GPU, so the device tests skip and the host-side table tests run.
+  # Clippy without --all-targets catches items that only the tests use. Only
+  # the CUDA module's tests change with the feature; the rest run in `test`.
+  cuda:
+    name: CUDA feature (no device)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --features cuda -- -D warnings
+      - run: cargo clippy --all-targets --features cuda -- -D warnings
+      - run: cargo test --features cuda --lib integration::cuda
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: 0
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

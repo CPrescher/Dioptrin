@@ -2,6 +2,12 @@
 mod arithmetic;
 mod cache;
 mod corrections;
+pub mod cuda;
+#[cfg(feature = "python")]
+pub(crate) use cuda::CudaPinnedBytes;
+pub use cuda::{
+    Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, CudaError, CudaInfo, CudaPixel, CudaPrecision, cuda_info,
+};
 mod dynamic;
 pub(crate) mod grid;
 pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode, azimuthal_bracket_bins};

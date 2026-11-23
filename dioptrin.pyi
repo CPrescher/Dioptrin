@@ -1,6 +1,6 @@
 """Type stubs for dioptrin - High-performance 1D/2D diffraction integration library."""
 
-from typing import Iterable, Iterator, Literal, Optional, Tuple, Union
+from typing import Any, Iterable, Iterator, Literal, Optional, Tuple, Union
 
 import numpy as np
 
@@ -8,6 +8,10 @@ __all__ = [
     "Integrator",
     "Dynamic1dPlan",
     "Dynamic1dWorker",
+    "Cuda1dPlan",
+    "CudaUnavailableError",
+    "cuda_available",
+    "cuda_info",
     "MultiIntegrator",
     "IntegrationResult",
     "BatchResult",
@@ -62,6 +66,47 @@ def set_rayon_threads(threads: int) -> None:
     Example:
         >>> import dioptrin
         >>> dioptrin.set_rayon_threads(8)  # Use 8 threads
+    """
+    ...
+
+
+class CudaUnavailableError(RuntimeError):
+    """Experimental: CUDA cannot be used.
+
+    Raised by ``Integrator.prepare_cuda1d`` when dioptrin was built without the
+    ``cuda`` cargo feature (PyPI wheels; build with
+    ``maturin build --release --features python,cuda``), or when the NVIDIA
+    driver, NVRTC or the device cannot be initialised. A subclass of
+    ``RuntimeError``.
+    """
+
+
+def cuda_available(device: int = 0) -> bool:
+    """Experimental: whether CUDA device ``device`` can be used by this build.
+
+    Equivalent to ``cuda_info(device)["available"]``; never raises because
+    CUDA is missing. The first call on a device initialises it (NVRTC
+    compile, cached for the process). The GIL is released.
+    """
+    ...
+
+
+def cuda_info(device: int = 0) -> dict[str, object]:
+    """Experimental: describe the CUDA build and device ``device``.
+
+    Keys: ``compiled`` (bool, built with the ``cuda`` feature),
+    ``available`` (bool), ``reason`` (str | None, set whenever not
+    available), ``device`` (int), ``device_name`` (str | None),
+    ``compute_capability`` (tuple[int, int] | None),
+    ``total_memory_bytes`` (int | None), ``driver_version`` (int | None,
+    e.g. 13040 for CUDA 13.4), ``nvrtc_version`` (tuple[int, int] | None),
+    ``bindings_version`` (tuple[int, int] | None, the CUDA API version of
+    the compiled bindings).
+
+    Never raises because CUDA is missing. The first call on a device
+    initialises it (context, NVRTC compile, module load), cached for the
+    process; a failed initialisation is retried on the next call. CUDA is not
+    fork-safe once initialised. The GIL is released.
     """
     ...
 
@@ -371,6 +416,57 @@ class Integrator:
 
         The stored mask is excluded. Workers accept a complete uint8 mask per
         frame. Subsequent changes to this Integrator do not change the plan.
+        """
+        ...
+
+    def prepare_cuda1d(
+        self,
+        shape: Tuple[int, int],
+        n_points: int,
+        *,
+        precision: Literal["f32", "f32_compensated", "f64"] = "f32_compensated",
+        device: int = 0,
+        max_batch_bytes: Optional[int] = None,
+    ) -> Cuda1dPlan:
+        """Experimental: upload the fixed-mask 1D table to a CUDA device.
+
+        Supports ``mask_mode="fixed"`` with the ``counting``, ``pixel_split``
+        and ``pyfai_full`` methods. The plan is a snapshot of the current
+        mask, corrections, method, unit and radial range; later changes to
+        this Integrator do not affect it. ``fast_math`` and ``sparse_layout``
+        are ignored. Results agree with ``integrate1d`` within the tolerance
+        of ``precision``, not bit for bit:
+
+        - ``"f32"``: float32 pixels and weights, float32 accumulation.
+        - ``"f32_compensated"`` (default): float32 pixels and weights,
+          double-word compensated float32 accumulation.
+        - ``"f64"``: float64 pixels, weights and accumulation.
+
+        Bin denominators are computed on the CPU in float64 in every mode;
+        division and output are float64.
+
+        Args:
+            shape: Image shape ``(dim1, dim2)`` of every frame.
+            n_points: Number of radial bins.
+            precision: Storage and accumulation precision.
+            device: CUDA device ordinal (``CUDA_VISIBLE_DEVICES`` is honoured).
+            max_batch_bytes: Device scratch budget of one chunk of frames in
+                ``batch1d``; default ``min(1 GiB, free memory after upload / 2)``.
+                An explicit value is not checked against the free device
+                memory: a chunk that does not fit raises RuntimeError when
+                ``batch1d`` runs.
+
+        Raises:
+            CudaUnavailableError: Built without the ``cuda`` feature, or the
+                driver, NVRTC or device cannot be used.
+            ValueError: Dynamic mask mode, histogram or supersampled method,
+                ``n_points == 0``, a shape that does not match the mask or
+                detector, an unknown precision, or a budget too small for one
+                frame.
+            RuntimeError: A CUDA driver error, such as running out of memory.
+            OverflowError: A negative ``device``.
+
+        The GIL is released while preparing.
         """
         ...
 
@@ -1099,6 +1195,111 @@ class Dynamic1dWorker:
 
         Inputs must remain unchanged until the call returns. All masks and
         accumulators are independent between calls, including normalization.
+        """
+        ...
+
+
+class Cuda1dPlan:
+    """Experimental: a fixed-mask 1D table uploaded to one CUDA device.
+
+    Created by ``Integrator.prepare_cuda1d``. Can be shared between threads;
+    calls on one plan run one at a time. Every call copies the frames to the
+    device, integrates them, copies the results back and synchronises before
+    it returns. Device memory is freed when the plan is garbage-collected.
+    """
+    @property
+    def shape(self) -> Tuple[int, int]: ...
+    @property
+    def n_points(self) -> int: ...
+    @property
+    def precision(self) -> Literal["f32", "f32_compensated", "f64"]: ...
+    @property
+    def device(self) -> int: ...
+    @property
+    def device_name(self) -> str: ...
+    @property
+    def radial(self) -> list[float]:
+        """Radial bin centres, identical to ``Integrator.integrate1d``'s."""
+        ...
+    @property
+    def max_batch_frames(self) -> int:
+        """Frames per device chunk in ``batch1d``."""
+        ...
+    @property
+    def table_entries(self) -> int:
+        """Number of entries of the masked lookup table on the device."""
+        ...
+
+    def integrate1d(self, image: np.ndarray, *, errors: bool = False) -> IntegrationResult:
+        """Integrate one C-contiguous float64, float32, uint16, uint32 or int32 image of ``shape``.
+
+        The array is borrowed without copying (read-only arrays and
+        ``np.memmap`` views are accepted) and must not be modified until the
+        call returns. The GIL is released during the device work. Returns an
+        ``IntegrationResult`` with ``radial``, ``intensity`` and, if
+        requested, ``errors`` (lists, as for CPU ``integrate1d``);
+        ``azimuthal_std`` is None.
+
+        Raises:
+            TypeError: Another dtype.
+            ValueError: Wrong shape, not C-contiguous, or not aligned.
+            RuntimeError: A CUDA driver error.
+        """
+        ...
+
+    def batch1d(
+        self,
+        images: Union[list[np.ndarray], tuple[np.ndarray, ...], np.ndarray],
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]:
+        """Integrate a list or tuple of 2D images, or one C-contiguous 3D array.
+
+        All images of one call must have the same dtype (float64, float32,
+        uint16, uint32 or int32). The arrays are borrowed without copying
+        (read-only arrays and ``np.memmap`` views are accepted) and must not be
+        modified until the call returns. Frames are processed in chunks of at
+        most ``max_batch_frames`` with the GIL released; a failure fails the
+        whole call. Arrays backed by CUDA pinned host memory (for example from
+        ``alloc_pinned_batch``) DMA directly without an extra CPU staging copy
+        (except ``float64`` inputs on ``"f32"`` / ``"f32_compensated"`` plans,
+        which still stage via a CPU cast to ``float32``). Results are
+        bit-identical to ``integrate1d`` on each frame. An empty list returns
+        ``[]``.
+
+        Raises:
+            TypeError: Another dtype, or mixed dtypes in one call.
+            ValueError: Wrong shape, not C-contiguous, or not aligned.
+            RuntimeError: A CUDA driver error.
+        """
+        ...
+
+    def alloc_pinned_batch(
+        self,
+        n_frames: int,
+        dtype: Any = "float32",
+    ) -> np.ndarray:
+        """Allocate a writable 3D NumPy array ``(n_frames, dim1, dim2)`` in CUDA pinned host memory.
+
+        Readers such as ``dioptrin-io`` or ``h5py`` (``dataset.read_direct(buf)``)
+        can decode directly into the returned array; passing it to ``batch1d``
+        or ``integrate1d`` then skips CPU staging and DMAs directly to the GPU.
+        Supported dtypes: ``uint16``, ``uint32``, ``int32``, ``float32``, ``float64``.
+        """
+        ...
+
+    def batch1d_bslz4(
+        self,
+        chunks: Union[list[Any], tuple[Any, ...]],
+        dtype: Literal["uint16", "uint32", "int32"] = "uint32",
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]:
+        """Decompress raw HDF5 Bitshuffle+LZ4 chunks on the GPU and integrate them in VRAM.
+
+        Each item in ``chunks`` is a C-contiguous byte buffer holding one raw
+        compressed frame chunk (for example from
+        ``h5py.Dataset.id.read_direct_chunk`` or ``dioptrin-io``).
         """
         ...
 

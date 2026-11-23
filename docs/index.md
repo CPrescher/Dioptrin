@@ -31,6 +31,8 @@ validation/pyfai-full-seam
 validation/cached-pyfai
 validation/polygon-resident
 PERFORMANCE
+cuda
+benchmarking
 ```
 
 ```{toctree}

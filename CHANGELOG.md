@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental CUDA 1D integration behind the optional `cuda` cargo feature,
+  excluded from semver guarantees. `Integrator.prepare_cuda1d(shape, n_points,
+  *, precision="f32_compensated", device=0, max_batch_bytes=None)` (Rust:
+  `Integrator::prepare_cuda1d` with `Cuda1dOptions`) uploads the fixed-mask 1D
+  table of the `counting`, `pixel_split` or `pyfai_full` method to an NVIDIA
+  GPU and returns a `Cuda1dPlan` with `integrate1d` and `batch1d` (a list or tuple of 2D
+  float64/float32 arrays or one 3D array, borrowed without copying, GIL
+  released), returning `IntegrationResult`s. Precisions: `f32`,
+  `f32_compensated` (default) and `f64`; denominators, division and output
+  are float64. Results agree with CPU `integrate1d` within tolerance, not bit
+  for bit; `fast_math` and `sparse_layout` are ignored; the plan is a snapshot
+  of the integrator's configuration. `dioptrin.cuda_available()`,
+  `dioptrin.cuda_info()` and `dioptrin.CudaUnavailableError` exist in every
+  build. PyPI wheels do not enable the feature: build with
+  `maturin build --release --features python,cuda`. The build needs no CUDA
+  toolkit; running needs an NVIDIA driver and NVRTC. CUDA is not fork-safe
+  once initialised. Without the feature or a usable device, `prepare_cuda1d`
+  raises `CudaUnavailableError`.
 - `Integrator.batch2d` accepts a list of 2D float64 NumPy arrays as well as a
   list of TIFF paths, like `batch1d`: the arrays are borrowed without copying
   and integrated with the GIL released, on every branch (plain, `errors`,

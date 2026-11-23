@@ -150,6 +150,19 @@ impl FixedRows {
 }
 
 impl Csc {
+    #[cfg(all(feature = "cuda", test))]
+    pub(crate) fn fixed_benchmark_parts(
+        &self,
+        active_pixels: usize,
+    ) -> (&[u32], &[u32], Option<&[f64]>, usize) {
+        (
+            &self.ptr,
+            &self.bins,
+            self.weights.as_deref(),
+            self.fixed_chunks(active_pixels),
+        )
+    }
+
     pub(super) fn new(
         rows: &[usize],
         columns: &Columns,
