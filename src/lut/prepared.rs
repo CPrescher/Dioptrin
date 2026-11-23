@@ -662,6 +662,11 @@ impl Prepared1d {
             let out = csc.fixed_results_batch4::<VAR>(signals, pixels, cached_norm);
             return Some(out.map(|(y, e)| (bins.clone(), y, e)));
         }
+        if FAST && VAR {
+            // 4 unrolled lanes x 4 frames x (signal + variance) exceeds AVX2's
+            // 16 YMM registers; fall back to the untiled per-frame CSR path.
+            return None;
+        }
         let table = self.csr.fixed_table(mask);
         let out = table.cached_results_batch4::<FAST, VAR>(signals, norm);
         Some(out.map(|(y, e)| (bins.clone(), y, e)))
