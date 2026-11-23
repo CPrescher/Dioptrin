@@ -21,14 +21,6 @@ impl BinIndices {
         }
     }
 
-    #[inline(always)]
-    unsafe fn get_unchecked(&self, k: usize) -> usize {
-        match self {
-            Self::U16(v) => unsafe { *v.get_unchecked(k) as usize },
-            Self::U32(v) => unsafe { *v.get_unchecked(k) as usize },
-        }
-    }
-
     #[cfg(test)]
     fn to_vec_u32(&self) -> Vec<u32> {
         match self {
@@ -336,7 +328,6 @@ impl Csc {
     /// 4-frame SIMD-tiled fixed-mask 1D integration. Reads the CSC table once
     /// per 4 frames and accumulates `[f64; 4]` per bin/lane in the exact same
     /// chunk and lane reduction order as 1-frame `fixed_results` (bit-identical).
-    #[cfg(feature = "python")]
     pub(super) fn fixed_results_batch4<const VAR: bool>(
         &self,
         signals: [&[f64]; 4],
@@ -528,33 +519,42 @@ impl Csc {
         let errors = !sums.variance.is_empty();
         // SAFETY: compact indices originate from checked CSR construction;
         // the complete input dimensions are checked above. Sums are private.
-        unsafe {
-            for p in 0..signal.len() {
-                if mask.is_some_and(|m| *m.get_unchecked(p) != 0) {
-                    continue;
-                }
-                let x = *signal.get_unchecked(p);
-                let n = *norm.get_unchecked(p);
-                let v = if errors {
-                    variance.map_or_else(|| x.max(0.), |v| *v.get_unchecked(p))
-                } else {
-                    0.
-                };
-                let lane = (p % 4) * self.nbins;
-                for k in
-                    *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
-                {
-                    let b = self.bins.get_unchecked(k) + lane;
-                    let w = self.weights.as_ref().map_or(1., |w| *w.get_unchecked(k));
-                    let s = sums.signal.get_unchecked_mut(b);
-                    *s = madd(w, x, *s);
-                    let nsum = sums.norm.get_unchecked_mut(b);
-                    *nsum = madd(w, n, *nsum);
-                    if errors {
-                        let var = sums.variance.get_unchecked_mut(b);
-                        *var = madd(w * w, v, *var);
+        macro_rules! run_dynamic {
+            ($bins:expr) => {{
+                let bins = $bins.as_ptr();
+                for p in 0..signal.len() {
+                    if mask.is_some_and(|m| *m.get_unchecked(p) != 0) {
+                        continue;
+                    }
+                    let x = *signal.get_unchecked(p);
+                    let n = *norm.get_unchecked(p);
+                    let v = if errors {
+                        variance.map_or_else(|| x.max(0.), |v| *v.get_unchecked(p))
+                    } else {
+                        0.
+                    };
+                    let lane = (p % 4) * self.nbins;
+                    for k in
+                        *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
+                    {
+                        let b = *bins.add(k) as usize + lane;
+                        let w = self.weights.as_ref().map_or(1., |w| *w.get_unchecked(k));
+                        let s = sums.signal.get_unchecked_mut(b);
+                        *s = madd(w, x, *s);
+                        let nsum = sums.norm.get_unchecked_mut(b);
+                        *nsum = madd(w, n, *nsum);
+                        if errors {
+                            let var = sums.variance.get_unchecked_mut(b);
+                            *var = madd(w * w, v, *var);
+                        }
                     }
                 }
+            }};
+        }
+        unsafe {
+            match &self.bins {
+                BinIndices::U16(b) => run_dynamic!(b),
+                BinIndices::U32(b) => run_dynamic!(b),
             }
         }
         let n = self.nbins;
@@ -688,34 +688,44 @@ impl Csc {
         // SAFETY: construction checks compact bounds and builds bins from valid
         // CSR row numbers. Integrator validates frame/mask dimensions; norm is
         // geometry-sized. Each invocation owns all destination histograms.
+        macro_rules! run_acc {
+            ($bins:expr) => {{
+                let bins = $bins.as_ptr();
+                for p in start..end {
+                    if mask.is_some_and(|m| *m.get_unchecked(p) != 0) {
+                        continue;
+                    }
+                    let x = signal.get_unchecked(p).to_f64();
+                    let xp = if VAR { x.max(0.) } else { 0. };
+                    let n = *norm.get_unchecked(p);
+                    let lane = (p % 4) * self.nbins;
+                    for k in
+                        *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
+                    {
+                        let b = *bins.add(k) as usize + lane;
+                        let w = self
+                            .weights
+                            .as_ref()
+                            .map_or(1., |weights| *weights.get_unchecked(k));
+                        let s = sums.signal.get_unchecked_mut(b);
+                        *s = madd(w, x, *s);
+                        let s = sums.norm.get_unchecked_mut(b);
+                        *s = madd(w, n, *s);
+                        if VAR {
+                            let s = sums.variance.get_unchecked_mut(b);
+                            *s = madd(w * w, xp, *s);
+                        }
+                        if COUNT {
+                            *sums.count.get_unchecked_mut(b) += w;
+                        }
+                    }
+                }
+            }};
+        }
         unsafe {
-            for p in start..end {
-                if mask.is_some_and(|m| *m.get_unchecked(p) != 0) {
-                    continue;
-                }
-                let x = signal.get_unchecked(p).to_f64();
-                let n = *norm.get_unchecked(p);
-                let lane = (p % 4) * self.nbins;
-                for k in
-                    *self.ptr.get_unchecked(p) as usize..*self.ptr.get_unchecked(p + 1) as usize
-                {
-                    let b = self.bins.get_unchecked(k) + lane;
-                    let w = self
-                        .weights
-                        .as_ref()
-                        .map_or(1., |weights| *weights.get_unchecked(k));
-                    let s = sums.signal.get_unchecked_mut(b);
-                    *s = madd(w, x, *s);
-                    let s = sums.norm.get_unchecked_mut(b);
-                    *s = madd(w, n, *s);
-                    if VAR {
-                        let s = sums.variance.get_unchecked_mut(b);
-                        *s = madd(w * w, x.max(0.), *s);
-                    }
-                    if COUNT {
-                        *sums.count.get_unchecked_mut(b) += w;
-                    }
-                }
+            match &self.bins {
+                BinIndices::U16(b) => run_acc!(b),
+                BinIndices::U32(b) => run_acc!(b),
             }
         }
         sums
@@ -994,6 +1004,72 @@ mod fixed_partition_tests {
             let inside =
                 pool.install(|| table.fixed_results::<true, true, _>(&signal, &pixels, &norm));
             assert_eq!(direct, inside);
+        }
+    }
+
+    #[test]
+    fn fixed_results_batch4_is_bit_identical_for_u16_u32_and_zero_norm() {
+        for (nbins, npix) in [(7usize, 600_000usize), (65_536usize, 70_000usize)] {
+            let mut rows = vec![0usize];
+            let mut cols = Vec::new();
+            let mut weights = Vec::new();
+            for b in 0..nbins {
+                let p = b % npix;
+                cols.push(p as u32);
+                weights.push(((b % 13) + 1) as f64 / 17.0);
+                if b + 1 < nbins && b % 3 == 0 {
+                    cols.push(((p + 1) % npix) as u32);
+                    weights.push(0.25);
+                }
+                rows.push(cols.len());
+            }
+            for use_weights in [true, false] {
+                let table = Csc::new(
+                    &rows,
+                    &Columns::Compact(cols.clone()),
+                    use_weights.then_some(weights.as_slice()),
+                    npix,
+                )
+                .unwrap();
+                assert_eq!(
+                    matches!(table.bins, BinIndices::U16(_)),
+                    nbins <= usize::from(u16::MAX)
+                );
+                let mask: Vec<_> = (0..npix).map(|p| u8::from(p % 29 == 0)).collect();
+                let pixels = table.active_pixels(Some(&mask));
+                let mut norm = vec![17.0; nbins];
+                norm[0] = 0.0; // exercise zero-normalization bin
+                let s0: Vec<f64> = (0..npix).map(|p| (p % 97) as f64 - 5.0).collect();
+                let s1: Vec<f64> = (0..npix).map(|p| ((p * 3) % 89) as f64 / 7.0).collect();
+                let s2: Vec<f64> = (0..npix).map(|p| ((p * 5) % 83) as f64 - 12.5).collect();
+                let s3: Vec<f64> = (0..npix).map(|p| ((p * 7) % 79) as f64 * 0.5).collect();
+                let signals = [s0.as_slice(), s1.as_slice(), s2.as_slice(), s3.as_slice()];
+
+                let batch_i = table.fixed_results_batch4::<false>(signals, &pixels, &norm);
+                let batch_p = table.fixed_results_batch4::<true>(signals, &pixels, &norm);
+                for f in 0..4 {
+                    let ref_i = table.fixed_results::<false, false, _>(signals[f], &pixels, &norm);
+                    let ref_p = table.fixed_results::<true, false, _>(signals[f], &pixels, &norm);
+                    let exp_i: Vec<f64> = ref_i
+                        .iter()
+                        .map(|r| if r[1] == 0.0 { 0.0 } else { r[0] / r[1] })
+                        .collect();
+                    let exp_e: Vec<f64> = ref_p
+                        .iter()
+                        .map(|r| {
+                            if r[1] == 0.0 {
+                                0.0
+                            } else {
+                                (r[2] / (r[1] * r[1])).max(0.0).sqrt()
+                            }
+                        })
+                        .collect();
+                    assert_eq!(batch_i[f].0, exp_i);
+                    assert!(batch_i[f].1.is_empty());
+                    assert_eq!(batch_p[f].0, exp_i);
+                    assert_eq!(batch_p[f].1, exp_e);
+                }
+            }
         }
     }
 }

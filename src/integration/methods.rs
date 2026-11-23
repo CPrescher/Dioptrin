@@ -246,10 +246,56 @@ impl Integrator {
         }
     }
 
-    /// 4-frame SIMD-tiled fixed-mask 1D integration on the fast CSC path.
-    /// Returns `None` when the method or mask mode does not use the fast fixed
-    /// CSC table, so callers fall back to per-frame integration.
-    #[cfg(feature = "python")]
+    fn one_d_key(&self, n_points: usize) -> Option<OneDKey> {
+        let unit = self.radial_unit;
+        let radial_range = self.radial_range_key();
+        match self.method {
+            IntegrationMethod::Histogram => None,
+            IntegrationMethod::Counting => Some(OneDKey::Counting {
+                n_points,
+                unit,
+                radial_range,
+            }),
+            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                Some(OneDKey::PixelSplit {
+                    pyfai: matches!(self.method, IntegrationMethod::PyfaiFull),
+                    n_points,
+                    unit,
+                    radial_range,
+                })
+            }
+            IntegrationMethod::Supersampled { n_ss } => Some(OneDKey::Supersampled {
+                n_points,
+                n_ss,
+                unit,
+                radial_range,
+            }),
+        }
+    }
+
+    /// Returns whether `try_integrate1d_batch4` will take the 4-frame tiled
+    /// path for `(dim1, dim2, n_points, errors)`.
+    #[allow(dead_code)]
+    pub(crate) fn can_integrate1d_batch4(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+        errors: bool,
+    ) -> bool {
+        let Some(key) = self.one_d_key(n_points) else {
+            return false;
+        };
+        let view = self.for_shape(dim1, dim2);
+        let lut = view.ensure_lut1d(key);
+        lut.can_batch4(self.fast_math, errors)
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 1D integration on both fast CSC and CSR
+    /// (fast intensity or strict) paths. Returns `None` for Histogram, dynamic
+    /// masks, or CSR `fast_math && errors`, so callers fall back to per-frame
+    /// integration.
+    #[allow(dead_code, clippy::type_complexity)]
     pub(crate) fn try_integrate1d_batch4(
         &self,
         signals: [&[f64]; 4],
@@ -258,28 +304,7 @@ impl Integrator {
         n_points: usize,
         errors: bool,
     ) -> Option<[(Vec<f64>, Vec<f64>, Option<Vec<f64>>); 4]> {
-        let unit = self.radial_unit;
-        let radial_range = self.radial_range_key();
-        let key = match self.method {
-            IntegrationMethod::Histogram => return None,
-            IntegrationMethod::Counting => OneDKey::Counting {
-                n_points,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
-                pyfai: matches!(self.method, IntegrationMethod::PyfaiFull),
-                n_points,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
-                n_points,
-                n_ss,
-                unit,
-                radial_range,
-            },
-        };
+        let key = self.one_d_key(n_points)?;
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.mask.as_ref().map(|mask| {

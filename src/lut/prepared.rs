@@ -368,7 +368,6 @@ impl PreparedCsr {
     /// 4-frame SIMD-tiled fixed-mask CSR integration (mask already compacted).
     /// Bit-identical to 1-frame `cached_results` for both `FAST = true` and
     /// `FAST = false`.
-    #[cfg(feature = "python")]
     fn cached_results_batch4<const FAST: bool, const VAR: bool>(
         &self,
         signals: [&[f64]; 4],
@@ -635,9 +634,19 @@ impl Prepared1d {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
     }
 
+    /// Returns whether `integrate_batch4` will take the tiled path for `(fast, var)`.
+    pub(crate) fn can_batch4(&self, fast: bool, var: bool) -> bool {
+        if self.csr.mode != MaskMode::Fixed {
+            return false;
+        }
+        if fast && self.csr.fixed_csc_enabled && self.csr.prefer_csc {
+            return true;
+        }
+        !(fast && var)
+    }
+
     /// 4-frame SIMD-tiled fixed-mask 1D integration on both fast CSC and CSR
-    /// (fast or strict) paths. Returns `None` only for dynamic masks.
-    #[cfg(feature = "python")]
+    /// (fast or strict) paths. Returns `None` for dynamic masks or CSR `fast && var`.
     #[allow(clippy::type_complexity)]
     pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool>(
         &self,
@@ -973,7 +982,6 @@ fn row<
     [reduce(s), reduce(n), reduce(v), reduce(c)]
 }
 
-#[cfg(feature = "python")]
 #[inline(always)]
 fn row_batch4<I: PixelIndex, const FAST: bool, const VAR: bool, const WEIGHT: bool>(
     start: usize,
