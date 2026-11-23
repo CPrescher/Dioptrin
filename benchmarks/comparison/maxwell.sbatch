@@ -13,6 +13,7 @@
 # WITH_OPENCL=1 installs pyopencl for pyfai-full-opencl, EXTRA_MODULES adds
 # site modules (e.g. a GPU driver/OpenCL stack) after BUILD_MODULES. For a GPU
 # node pass your GPU partition: sbatch --partition=<gpu-partition> ...
+# PYFAI_WHEEL selects a local pyFAI wheel for a separate cached environment.
 set -euo pipefail
 unset LD_PRELOAD PYTHONPATH
 export PYTHONNOUSERSITE=1
@@ -72,6 +73,9 @@ if [[ ${WITH_OPENCL:-0} == 1 ]]; then
     cache_args+=(--with-opencl)
     command -v nvidia-smi >/dev/null && nvidia-smi > "$result_dir/nvidia-smi.txt" || true
     ls /etc/OpenCL/vendors > "$result_dir/opencl-vendors.txt" 2>&1 || true
+fi
+if [[ -n "${PYFAI_WHEEL:-}" ]]; then
+    cache_args+=(--pyfai-wheel "$PYFAI_WHEEL")
 fi
 command -v numactl >/dev/null && numactl --hardware > "$result_dir/numactl.txt" || true
 "${PYTHON_BIN:-python3}" benchmarks/comparison/environment.py "${cache_args[@]}"

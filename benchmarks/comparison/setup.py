@@ -154,7 +154,10 @@ def main():
         help="Rebuild only azint in an existing environment; keep the installed "
         "Dioptrin, pyFAI, and their build record unchanged",
     )
+    parser.add_argument("--pyfai-wheel", type=Path, help="Use a local pyFAI wheel")
     args = parser.parse_args()
+    if args.pyfai_wheel is not None and args.azint_only:
+        parser.error("--pyfai-wheel requires a full environment build")
     if sys.platform not in ("linux", "darwin"):
         parser.error(
             "The comparison tool currently supports Linux/macOS; on Windows use WSL2."
@@ -213,6 +216,12 @@ def main():
         artifacts.mkdir(parents=True, exist_ok=True)
         wheels = artifacts / "wheels"
         wheels.mkdir(exist_ok=True)
+        pyfai_wheel = None
+        if args.pyfai_wheel is not None:
+            pyfai_wheel_path = args.pyfai_wheel.resolve(strict=True)
+            pyfai_wheel = dict(
+                path=str(pyfai_wheel_path), sha256=digest(pyfai_wheel_path)
+            )
         if not args.azint_only:
             run([python, "-m", "pip", "install", "--upgrade", "pip"], env=env)
             run(
@@ -223,6 +232,7 @@ def main():
                     "install",
                     "-r",
                     Path(__file__).with_name("requirements.txt"),
+                    *([pyfai_wheel["path"]] if pyfai_wheel is not None else []),
                 ],
                 env=env,
             )
@@ -405,6 +415,7 @@ def main():
                     installed_dioptrin=installed,
                     portable=args.portable,
                     opencl=OPENCL_REQUIREMENT if args.with_opencl else None,
+                    pyfai_wheel=pyfai_wheel,
                     flags={
                         k: env[k]
                         for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "RUSTFLAGS")

@@ -356,6 +356,17 @@ class EnvironmentTests(unittest.TestCase):
             setup_arguments(build_options(True, True)),
             ["--azint-fast-math", "--with-opencl"],
         )
+        with tempfile.TemporaryDirectory() as directory:
+            wheel = Path(directory) / "pyfai-local.whl"
+            wheel.write_bytes(b"first build")
+            options = build_options(pyfai_wheel=wheel)
+            self.assertEqual(
+                setup_arguments(options), ["--pyfai-wheel", str(wheel.resolve())]
+            )
+            wheel.write_bytes(b"second build")
+            self.assertNotEqual(
+                cache_key(options), cache_key(build_options(pyfai_wheel=wheel))
+            )
 
 
 if __name__ == "__main__":

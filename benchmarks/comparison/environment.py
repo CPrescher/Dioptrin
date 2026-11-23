@@ -17,7 +17,7 @@ import sys
 import sysconfig
 import uuid
 
-from provenance import source_hashes
+from provenance import digest, source_hashes
 from setup import compiler_environment
 
 
@@ -154,16 +154,23 @@ def cpu_identity():
     )
 
 
-def build_options(azint_fast_math=False, with_opencl=False):
+def build_options(azint_fast_math=False, with_opencl=False, pyfai_wheel=None):
     """setup.py options that change the built environment (part of its key)."""
-    return dict(azint_fast_math=bool(azint_fast_math), with_opencl=bool(with_opencl))
+    options = dict(azint_fast_math=bool(azint_fast_math), with_opencl=bool(with_opencl))
+    if pyfai_wheel is not None:
+        wheel = pyfai_wheel.resolve(strict=True)
+        options["pyfai_wheel"] = dict(path=str(wheel), sha256=digest(wheel))
+    return options
 
 
 def setup_arguments(options):
-    return [
+    arguments = [
         *(["--azint-fast-math"] if options["azint_fast_math"] else []),
         *(["--with-opencl"] if options["with_opencl"] else []),
     ]
+    if "pyfai_wheel" in options:
+        arguments.extend(["--pyfai-wheel", options["pyfai_wheel"]["path"]])
+    return arguments
 
 
 def fingerprint(root, rust_toolchain, options=None):
@@ -484,10 +491,11 @@ def main():
         action="store_true",
         help="Pass --with-opencl to setup.py: install pyopencl for pyfai-full-opencl",
     )
+    parser.add_argument("--pyfai-wheel", type=Path, help="Use a local pyFAI wheel")
     args = parser.parse_args()
     args.build_root.mkdir(parents=True, exist_ok=True)
-    options = build_options(args.azint_fast_math, args.with_opencl)
     try:
+        options = build_options(args.azint_fast_math, args.with_opencl, args.pyfai_wheel)
         identity = fingerprint(ROOT, args.rust_toolchain, options)
 
         def build(generation):
@@ -495,7 +503,10 @@ def main():
             build_environment(
                 generation, args.build_root.resolve(), args.rust_toolchain, options
             )
-            if fingerprint(ROOT, args.rust_toolchain, options) != identity:
+            current_options = build_options(
+                args.azint_fast_math, args.with_opencl, args.pyfai_wheel
+            )
+            if fingerprint(ROOT, args.rust_toolchain, current_options) != identity:
                 raise RuntimeError(
                     "Build inputs changed during setup; cache was not published"
                 )
