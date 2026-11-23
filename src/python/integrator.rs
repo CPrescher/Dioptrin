@@ -215,9 +215,15 @@ pub(super) fn resolve_azimuthal_bins(
     }
 }
 
-/// Integrate one image to 1D as `Integrator.integrate1d` (and `batch1d`'s
-/// array branch) does, without touching Python: callers run it detached from
-/// the interpreter.
+/// Integrate one image to 1D as `Integrator.integrate1d` does, without
+/// touching Python: callers run it detached from the interpreter.
+///
+/// `batch1d`'s array branch deliberately keeps its own closure instead of
+/// calling this. Merging the two, or adding any new call site into the 1D
+/// `integrate1d*_from_slice` entry points, changed fat-LTO inlining when tried
+/// and slowed the 1D pixel_split/pyfai_full kernels by up to ~20% on every 1D
+/// path, default ones included. Re-benchmark any such refactor against
+/// v0.14.0 on the release wheel build.
 fn integrate1d_slice(
     integrator: &Integrator,
     data: &[f64],
@@ -1451,6 +1457,13 @@ impl PyIntegrator {
 
                 // Process frames in parallel using rayon
                 use rayon::prelude::*;
+                // Deliberately its own closure, shared with the worker split
+                // above only through the same parallel iterator: replacing it
+                // by `integrate1d_slice`, or adding new call sites into the 1D
+                // `*_from_slice` entry points, changed fat-LTO inlining and
+                // slowed the 1D pixel_split/pyfai_full kernels by up to ~20%
+                // when tried. Re-benchmark any such refactor against v0.14.0
+                // on the release wheel build.
                 let integrate = |(i, &(data, dim1, dim2))| {
                     let integration_result = if azimuthal_std {
                         PyIntegrationResult::from_azimuthal(
