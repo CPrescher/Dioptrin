@@ -102,7 +102,9 @@ if dioptrin.cuda_available():
   writable 3D NumPy array `(n_frames, dim1, dim2)` backed by CUDA page-locked
   (pinned) host memory. External readers such as `dioptrin-io` or `h5py`
   (`dataset.read_direct(buf)`) can decode directly into it; `batch1d` detects
-  pinned memory automatically and performs zero-copy async PCIe DMA.
+  pinned memory automatically and performs zero-copy async PCIe DMA (except for
+  `float64` inputs on `"f32"` / `"f32_compensated"` plans, which still stage
+  through a CPU `float64` → `float32` cast).
 - `Cuda1dPlan.batch1d_bslz4(chunks, dtype="uint32", *, errors=False)` accepts a
   sequence of raw HDF5 Bitshuffle+LZ4 compressed frame chunks (for example from
   `h5py.Dataset.id.read_direct_chunk` or `dioptrin-io`), decompresses them on
@@ -130,7 +132,7 @@ Errors:
 | --- | --- |
 | Built without the `cuda` feature, or no usable driver, NVRTC or device | `CudaUnavailableError` (a `RuntimeError`) |
 | Dynamic mask, unsupported method, `n_points == 0`, shape not matching the mask or detector, unknown precision, budget too small | `ValueError` |
-| Input dtype other than float64/float32, or mixed dtypes in one call | `TypeError` |
+| Input dtype other than float64, float32, uint16, uint32 or int32, or mixed dtypes in one call | `TypeError` |
 | Input not C-contiguous, not aligned, or of the wrong shape | `ValueError` |
 | CUDA driver error at run time, such as running out of device memory | `RuntimeError` |
 

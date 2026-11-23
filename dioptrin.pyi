@@ -1,6 +1,6 @@
 """Type stubs for dioptrin - High-performance 1D/2D diffraction integration library."""
 
-from typing import Iterable, Iterator, Literal, Optional, Tuple, Union
+from typing import Any, Iterable, Iterator, Literal, Optional, Tuple, Union
 
 import numpy as np
 
@@ -1256,10 +1256,16 @@ class Cuda1dPlan:
         """Integrate a list or tuple of 2D images, or one C-contiguous 3D array.
 
         All images of one call must have the same dtype (float64, float32,
-        uint16, uint32 or int32). Arrays backed by CUDA pinned host memory
-        (for example from ``alloc_pinned_batch``) DMA directly without an extra
-        CPU staging copy. Results are bit-identical to ``integrate1d`` on each
-        frame. An empty list returns ``[]``.
+        uint16, uint32 or int32). The arrays are borrowed without copying
+        (read-only arrays and ``np.memmap`` views are accepted) and must not be
+        modified until the call returns. Frames are processed in chunks of at
+        most ``max_batch_frames`` with the GIL released; a failure fails the
+        whole call. Arrays backed by CUDA pinned host memory (for example from
+        ``alloc_pinned_batch``) DMA directly without an extra CPU staging copy
+        (except ``float64`` inputs on ``"f32"`` / ``"f32_compensated"`` plans,
+        which still stage via a CPU cast to ``float32``). Results are
+        bit-identical to ``integrate1d`` on each frame. An empty list returns
+        ``[]``.
 
         Raises:
             TypeError: Another dtype, or mixed dtypes in one call.

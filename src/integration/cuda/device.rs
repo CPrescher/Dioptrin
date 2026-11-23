@@ -226,6 +226,7 @@ fn initialise(ordinal: usize, info: &mut CudaInfo) -> Result<Device, String> {
     let ptx = compile_ptx_with_opts(
         include_str!("kernels.cu"),
         CompileOptions {
+            fmad: Some(false),
             options: vec![
                 "--std=c++17".into(),
                 format!("--gpu-architecture={architecture}"),
@@ -858,6 +859,10 @@ impl<T: DeviceRepr, I: DeviceRepr> Batch<'_, T, I> {
 /// Returns `true` when `ptr` resides in CUDA page-locked (pinned) host memory,
 /// allowing async hardware PCIe DMA directly from the caller's slice without an
 /// extra CPU staging copy.
+///
+/// If no CUDA context is bound on the calling thread, `cuPointerGetAttribute`
+/// returns `CUDA_ERROR_INVALID_CONTEXT`, which safely returns `false` and falls
+/// back to staging.
 fn is_pinned_host(ptr: *const std::ffi::c_void) -> bool {
     if ptr.is_null() {
         return false;
@@ -919,6 +924,43 @@ struct SlotScratch {
     pinned_err: Option<PinnedHostSlice<u32>>,
     /// Pinned host staging for interleaved `[I, σ]` downloads.
     pinned_out: Option<PinnedHostSlice<f64>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveInputDtype {
+    U16,
+    U32,
+    I32,
+    F32,
+    F64,
+}
+
+impl SlotScratch {
+    /// Drops device and pinned-host input buffers belonging to inactive dtypes
+    /// so a plan reused across multiple dtypes does not retain redundant large
+    /// allocations.
+    fn retain_input_dtype(&mut self, active: ActiveInputDtype) {
+        if active != ActiveInputDtype::U16 {
+            self.u16_dev = None;
+            self.pinned_u16 = None;
+        }
+        if active != ActiveInputDtype::U32 {
+            self.u32_dev = None;
+            self.pinned_u32 = None;
+        }
+        if active != ActiveInputDtype::I32 {
+            self.i32_dev = None;
+            self.pinned_i32 = None;
+        }
+        if active != ActiveInputDtype::F32 {
+            self.narrow = None;
+            self.pinned_f32 = None;
+        }
+        if active != ActiveInputDtype::F64 {
+            self.wide = None;
+            self.pinned_f64 = None;
+        }
+    }
 }
 
 /// Uploads `frames` of element type `X` into `dev_slot` on `stream`.
@@ -1216,18 +1258,22 @@ impl Engine {
                 if self.explicit_budget && count > tile {
                     let chunk_frames = count.min(self.max_batch_frames);
                     let chunk_bytes = chunk_frames.saturating_mul(self.frame_bytes);
-                    let (free, _) = self.context().mem_get_info()?;
-                    if chunk_bytes > free {
+                    let (_, total) = self.context().mem_get_info()?;
+                    if chunk_bytes > total {
                         return Err(CudaError::Device(format!(
                             "CUDA chunk of {chunk_frames} frames ({chunk_bytes} bytes) exceeds \
-                             free device memory ({free} bytes)"
+                             total device memory ({total} bytes)"
                         )));
                     }
                 }
                 let mut pending: [Option<(usize, usize)>; 2] = [None, None];
                 for (step, first) in (0..count).step_by(tile).enumerate() {
                     let end = (first + tile).min(count);
-                    let slot_idx = step % 2;
+                    let slot_idx = if self.max_batch_frames == 1 {
+                        0
+                    } else {
+                        step % 2
+                    };
                     let stream = &self.streams[slot_idx];
                     if let Some((p_first, p_end)) = pending[slot_idx].take() {
                         stream.synchronize()?;
@@ -1372,6 +1418,14 @@ impl Engine {
         let values = count * pixels;
         let e = usize::from(errors);
         let out_len = count * self.bins * (1 + e);
+        let active_dtype = match (&self.tables, &frames) {
+            (_, Frames::U16(_)) => ActiveInputDtype::U16,
+            (_, Frames::U32(_)) => ActiveInputDtype::U32,
+            (_, Frames::I32(_)) => ActiveInputDtype::I32,
+            (Tables::Double { .. }, Frames::F64(_)) => ActiveInputDtype::F64,
+            (_, Frames::F32(_)) | (Tables::Single { .. }, Frames::F64(_)) => ActiveInputDtype::F32,
+        };
+        slot.retain_input_dtype(active_dtype);
         let SlotScratch {
             u16_dev,
             u32_dev,
@@ -1551,7 +1605,11 @@ impl Engine {
                 let mut pending: [Option<(usize, usize)>; 2] = [None, None];
                 for (step, first) in (0..count).step_by(tile).enumerate() {
                     let end = (first + tile).min(count);
-                    let slot_idx = step % 2;
+                    let slot_idx = if self.max_batch_frames == 1 {
+                        0
+                    } else {
+                        step % 2
+                    };
                     let stream = &self.streams[slot_idx];
                     if let Some((p_first, p_end)) = pending[slot_idx].take() {
                         stream.synchronize()?;
@@ -1644,6 +1702,8 @@ impl Engine {
         let mut descs: Vec<u32> = Vec::with_capacity(count * (expected_uncomp / 8192 + 2) * 4);
         let mut max_block_bytes: u32 = 0;
         let mut base_off: u32 = 0;
+        let u32_overflow =
+            || CudaError::InvalidInput("Bitshuffle/LZ4 offset exceeds 32-bit range".into());
         for (frame_idx, chunk) in chunks.iter().enumerate() {
             if chunk.len() < 12 {
                 return Err(CudaError::InvalidInput(
@@ -1667,7 +1727,9 @@ impl Engine {
                     "unsupported Bitshuffle/LZ4 block size {block_bytes} bytes"
                 )));
             }
-            max_block_bytes = max_block_bytes.max(block_bytes as u32);
+            let block_bytes_u32 = u32::try_from(block_bytes).map_err(|_| u32_overflow())?;
+            max_block_bytes = max_block_bytes.max(block_bytes_u32);
+            let max_full_comp = block_bytes + block_bytes / 255 + 16;
             let block_elems = block_bytes / elem_bytes;
             let n_full = pixels / block_elems;
             let rem_elems = pixels % block_elems;
@@ -1677,64 +1739,111 @@ impl Engine {
 
             let mut off = 12usize;
             for b in 0..n_full {
-                if off + 4 > chunk.len() {
+                if off.checked_add(4).is_none_or(|end| end > chunk.len()) {
                     return Err(CudaError::InvalidInput(
                         "truncated Bitshuffle/LZ4 block header".into(),
                     ));
                 }
                 let comp_len = u32::from_be_bytes(chunk[off..off + 4].try_into().unwrap()) as usize;
                 off += 4;
-                if off + comp_len > chunk.len() {
+                if comp_len > max_full_comp {
+                    return Err(CudaError::InvalidInput(format!(
+                        "Bitshuffle/LZ4 compressed block length {comp_len} exceeds LZ4 bound {max_full_comp}"
+                    )));
+                }
+                if off
+                    .checked_add(comp_len)
+                    .is_none_or(|end| end > chunk.len())
+                {
                     return Err(CudaError::InvalidInput(
                         "truncated Bitshuffle/LZ4 block payload".into(),
                     ));
                 }
-                descs.push(base_off + off as u32);
-                descs.push(comp_len as u32);
-                descs.push((frame_dst + b * block_elems) as u32);
-                descs.push(block_bytes as u32);
+                let src_off = base_off
+                    .checked_add(u32::try_from(off).map_err(|_| u32_overflow())?)
+                    .ok_or_else(u32_overflow)?;
+                let comp_len_u32 = u32::try_from(comp_len).map_err(|_| u32_overflow())?;
+                let dst_off =
+                    u32::try_from(frame_dst + b * block_elems).map_err(|_| u32_overflow())?;
+                descs.push(src_off);
+                descs.push(comp_len_u32);
+                descs.push(dst_off);
+                descs.push(block_bytes_u32);
                 off += comp_len;
             }
             if rem_comp_elems > 0 {
-                if off + 4 > chunk.len() {
+                if off.checked_add(4).is_none_or(|end| end > chunk.len()) {
                     return Err(CudaError::InvalidInput(
                         "truncated Bitshuffle/LZ4 partial block header".into(),
                     ));
                 }
                 let comp_len = u32::from_be_bytes(chunk[off..off + 4].try_into().unwrap()) as usize;
                 off += 4;
-                if off + comp_len > chunk.len() {
+                let rem_bytes = rem_comp_elems * elem_bytes;
+                let max_rem_comp = rem_bytes + rem_bytes / 255 + 16;
+                if comp_len > max_rem_comp {
+                    return Err(CudaError::InvalidInput(format!(
+                        "Bitshuffle/LZ4 partial compressed block length {comp_len} exceeds LZ4 bound {max_rem_comp}"
+                    )));
+                }
+                if off
+                    .checked_add(comp_len)
+                    .is_none_or(|end| end > chunk.len())
+                {
                     return Err(CudaError::InvalidInput(
                         "truncated Bitshuffle/LZ4 partial block payload".into(),
                     ));
                 }
-                descs.push(base_off + off as u32);
-                descs.push(comp_len as u32);
-                descs.push((frame_dst + n_full * block_elems) as u32);
-                descs.push((rem_comp_elems * elem_bytes) as u32);
+                let src_off = base_off
+                    .checked_add(u32::try_from(off).map_err(|_| u32_overflow())?)
+                    .ok_or_else(u32_overflow)?;
+                let comp_len_u32 = u32::try_from(comp_len).map_err(|_| u32_overflow())?;
+                let dst_off =
+                    u32::try_from(frame_dst + n_full * block_elems).map_err(|_| u32_overflow())?;
+                let rem_bytes_u32 = u32::try_from(rem_bytes).map_err(|_| u32_overflow())?;
+                descs.push(src_off);
+                descs.push(comp_len_u32);
+                descs.push(dst_off);
+                descs.push(rem_bytes_u32);
                 off += comp_len;
             }
             if tail_raw_elems > 0 {
                 let raw_bytes = tail_raw_elems * elem_bytes;
-                if off + raw_bytes > chunk.len() {
+                if off
+                    .checked_add(raw_bytes)
+                    .is_none_or(|end| end > chunk.len())
+                {
                     return Err(CudaError::InvalidInput(
                         "truncated Bitshuffle/LZ4 tail bytes".into(),
                     ));
                 }
-                descs.push(base_off + off as u32);
-                descs.push(0x8000_0000 | raw_bytes as u32);
-                descs.push((frame_dst + n_full * block_elems + rem_comp_elems) as u32);
-                descs.push(raw_bytes as u32);
+                let src_off = base_off
+                    .checked_add(u32::try_from(off).map_err(|_| u32_overflow())?)
+                    .ok_or_else(u32_overflow)?;
+                let raw_bytes_u32 = u32::try_from(raw_bytes).map_err(|_| u32_overflow())?;
+                let dst_off = u32::try_from(frame_dst + n_full * block_elems + rem_comp_elems)
+                    .map_err(|_| u32_overflow())?;
+                descs.push(src_off);
+                descs.push(0x8000_0000 | raw_bytes_u32);
+                descs.push(dst_off);
+                descs.push(raw_bytes_u32);
             }
-            base_off += chunk.len() as u32;
+            base_off = base_off
+                .checked_add(u32::try_from(chunk.len()).map_err(|_| u32_overflow())?)
+                .ok_or_else(u32_overflow)?;
         }
 
-        let n_blocks = (descs.len() / 4) as u32;
+        let n_blocks = u32::try_from(descs.len() / 4).map_err(|_| u32_overflow())?;
         let values = count * pixels;
         let e = usize::from(errors);
         let out_len = count * self.bins * (1 + e);
         let context = self.context();
 
+        slot.retain_input_dtype(match dtype {
+            Bslz4Dtype::U16 => ActiveInputDtype::U16,
+            Bslz4Dtype::U32 => ActiveInputDtype::U32,
+            Bslz4Dtype::I32 => ActiveInputDtype::I32,
+        });
         let SlotScratch {
             u16_dev,
             u32_dev,

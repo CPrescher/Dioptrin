@@ -617,9 +617,72 @@ class CudaDeviceTests(unittest.TestCase):
                         self.assert_close(gpu.errors, cpu.errors, rtol)
         with self.assertRaises(TypeError):
             plan.alloc_pinned_batch(2, dtype=np.int64)
+        with self.assertRaises(TypeError):
+            plan.alloc_pinned_batch(2, dtype=">f4")
 
     def test_batch1d_bslz4_matches_batch1d_and_rejects_corrupt(self):
         import struct
+
+        seen_offsets = {"eq1": False, "short": False, "long": False}
+
+        def lz4_compress_block(payload: bytes) -> bytes:
+            """Minimal valid LZ4 block compressor that emits real matches
+            across offset == 1, 1 < offset < 32, and offset >= 32."""
+            n = len(payload)
+            out = bytearray()
+            anchor = 0
+            ip = 0
+            # Candidate lookback distances covering all three decoder paths.
+            candidates = (1, 2, 3, 4, 7, 13, 32, 64, 128, 256)
+
+            def emit_len(val: int) -> None:
+                while val >= 255:
+                    out.append(255)
+                    val -= 255
+                out.append(val)
+
+            while ip + 12 < n:
+                best_len = 3
+                best_off = 0
+                for off in candidates:
+                    if ip < off:
+                        continue
+                    ml = 0
+                    limit = n - 5 - ip
+                    while ml < limit and payload[ip + ml] == payload[ip - off + ml]:
+                        ml += 1
+                    if ml > best_len:
+                        best_len = ml
+                        best_off = off
+                if best_off == 0:
+                    ip += 1
+                    continue
+                if best_off == 1:
+                    seen_offsets["eq1"] = True
+                elif best_off < 32:
+                    seen_offsets["short"] = True
+                else:
+                    seen_offsets["long"] = True
+                lit_len = ip - anchor
+                match_extra = best_len - 4
+                token = (min(lit_len, 15) << 4) | min(match_extra, 15)
+                out.append(token)
+                if lit_len >= 15:
+                    emit_len(lit_len - 15)
+                out.extend(payload[anchor:ip])
+                out.extend(struct.pack("<H", best_off))
+                if match_extra >= 15:
+                    emit_len(match_extra - 15)
+                ip += best_len
+                anchor = ip
+
+            # Trailing literals (required by LZ4 block format).
+            lit_len = n - anchor
+            out.append(min(lit_len, 15) << 4)
+            if lit_len >= 15:
+                emit_len(lit_len - 15)
+            out.extend(payload[anchor:n])
+            return bytes(out)
 
         def encode_bslz4(arr: np.ndarray, block_bytes: int = 8192) -> bytes:
             raw = arr.tobytes()
@@ -627,21 +690,6 @@ class CudaDeviceTests(unittest.TestCase):
             n_elems = arr.size
             block_elems = block_bytes // elem_bytes
             out = bytearray(struct.pack(">QI", len(raw), block_bytes))
-
-            def lz4_literals(payload: bytes) -> bytes:
-                n = len(payload)
-                buf = bytearray()
-                if n < 15:
-                    buf.append(n << 4)
-                else:
-                    buf.append(15 << 4)
-                    rem = n - 15
-                    while rem >= 255:
-                        buf.append(255)
-                        rem -= 255
-                    buf.append(rem)
-                buf.extend(payload)
-                return bytes(buf)
 
             def bshuf_block(elems: np.ndarray) -> bytes:
                 # Pack bits per bit-plane (LSB first within each byte).
@@ -656,14 +704,14 @@ class CudaDeviceTests(unittest.TestCase):
             flat = arr.ravel()
             pos = 0
             while pos + block_elems <= n_elems:
-                comp = lz4_literals(bshuf_block(flat[pos : pos + block_elems]))
+                comp = lz4_compress_block(bshuf_block(flat[pos : pos + block_elems]))
                 out.extend(struct.pack(">I", len(comp)))
                 out.extend(comp)
                 pos += block_elems
             rem_elems = n_elems - pos
             rem_comp = (rem_elems // 8) * 8
             if rem_comp > 0:
-                comp = lz4_literals(bshuf_block(flat[pos : pos + rem_comp]))
+                comp = lz4_compress_block(bshuf_block(flat[pos : pos + rem_comp]))
                 out.extend(struct.pack(">I", len(comp)))
                 out.extend(comp)
                 pos += rem_comp
@@ -677,13 +725,25 @@ class CudaDeviceTests(unittest.TestCase):
         for dtype, name in ((np.uint16, "uint16"), (np.uint32, "uint32"), (np.int32, "int32")):
             with self.subTest(dtype=name):
                 frames = rng.integers(0, 4000, size=(5, *SHAPE), dtype=dtype)
+                # Structured patterns so LZ4 emits offset==1, 1<offset<32, and offset>=32 matches.
+                half_r = SHAPE[0] // 2
+                frames[0, :half_r, :] = 0
+                pat24 = rng.integers(1, 4000, size=24, dtype=dtype)
+                frames[1, :half_r, :] = np.resize(pat24, (half_r, SHAPE[1]))
+                frames[2, half_r : 2 * half_r, :] = frames[2, :half_r, :]
                 chunks = [encode_bslz4(f) for f in frames]
                 expected = plan.batch1d(frames, errors=True)
                 actual = plan.batch1d_bslz4(chunks, dtype=name, errors=True)
                 self.assert_identical(actual, expected)
+        self.assertTrue(all(seen_offsets.values()), f"missing LZ4 offset coverage: {seen_offsets}")
         self.assertEqual(plan.batch1d_bslz4([], dtype="uint32"), [])
         with self.assertRaises(ValueError):
             plan.batch1d_bslz4([b"short"], dtype="uint32")
+        # Over-bound comp_len must be rejected on host.
+        over_bound = 8192 + 8192 // 255 + 17
+        bad_chunk = struct.pack(">QII", SHAPE[0] * SHAPE[1] * 4, 8192, over_bound) + b"\x00" * over_bound
+        with self.assertRaises(ValueError):
+            plan.batch1d_bslz4([bad_chunk], dtype="uint32")
         with self.assertRaises(TypeError):
             plan.batch1d_bslz4([b"0" * 16], dtype="float32")
 

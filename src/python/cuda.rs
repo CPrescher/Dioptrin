@@ -656,18 +656,23 @@ impl PyCuda1dPlan {
             Some(d) => numpy.call_method1("dtype", (d,))?,
             None => numpy.call_method1("dtype", ("float32",))?,
         };
-        let dtype_str: String = np_dtype.getattr("name")?.extract()?;
-        let pixel = match dtype_str.as_str() {
-            "uint16" => Pixel::U16,
-            "uint32" => Pixel::U32,
-            "int32" => Pixel::I32,
-            "float32" => Pixel::F32,
-            "float64" => Pixel::F64,
-            _ => {
-                return Err(PyTypeError::new_err(format!(
-                    "dtype must be uint16, uint32, int32, float32 or float64, got {dtype_str}"
-                )));
-            }
+        let descr = np_dtype
+            .cast::<numpy::PyArrayDescr>()
+            .map_err(|_| PyTypeError::new_err("dtype must be a valid numpy dtype"))?;
+        let pixel = if descr.is_equiv_to(&numpy::dtype::<u16>(py)) {
+            Pixel::U16
+        } else if descr.is_equiv_to(&numpy::dtype::<u32>(py)) {
+            Pixel::U32
+        } else if descr.is_equiv_to(&numpy::dtype::<i32>(py)) {
+            Pixel::I32
+        } else if descr.is_equiv_to(&numpy::dtype::<f32>(py)) {
+            Pixel::F32
+        } else if descr.is_equiv_to(&numpy::dtype::<f64>(py)) {
+            Pixel::F64
+        } else {
+            return Err(PyTypeError::new_err(format!(
+                "dtype must be native uint16, uint32, int32, float32 or float64, got {descr}"
+            )));
         };
         let (dim1, dim2) = self.plan.shape();
         let elems = n_frames

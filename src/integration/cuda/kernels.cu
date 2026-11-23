@@ -63,9 +63,9 @@ template<> struct Sum<2> {
     double value;
     __device__ __forceinline__ void add(double x) { value += x; }
     __device__ __forceinline__ void combine(Sum x) { add(x.value); }
-    __device__ __forceinline__ void product(double w, double x) { value = fma(w, x, value); }
+    __device__ __forceinline__ void product(double w, double x) { add(w * x); }
     __device__ __forceinline__ static WeightSq square_weight(double w) { return w * w; }
-    __device__ __forceinline__ void product_w2(WeightSq w2, double x) { value = fma(w2, x, value); }
+    __device__ __forceinline__ void product_w2(WeightSq w2, double x) { add(w2 * x); }
     __device__ __forceinline__ Sum shuffle(int offset) const {
         return {__shfl_down_sync(0xffffffff, value, offset)};
     }
@@ -327,11 +327,12 @@ __device__ void bshuf_lz4_decode_impl(const unsigned char * __restrict__ comp_bu
                     do {
                         if (ip_off >= comp_len) { status = 2; break; }
                         s = ip[ip_off++];
+                        if (s > uncomp_bytes - op_off - lit_len) { status = 2; break; }
                         lit_len += s;
                     } while (s == 255);
                 }
                 if (status == 0
-                    && (ip_off + lit_len > comp_len || op_off + lit_len > uncomp_bytes)) {
+                    && (lit_len > comp_len - ip_off || lit_len > uncomp_bytes - op_off)) {
                     status = 2;
                 }
             }
@@ -370,10 +371,15 @@ __device__ void bshuf_lz4_decode_impl(const unsigned char * __restrict__ comp_bu
                         do {
                             if (ip_off >= comp_len) { status = 2; break; }
                             s = ip[ip_off++];
+                            if (match_len > uncomp_bytes - op_off
+                                || s > uncomp_bytes - op_off - match_len) {
+                                status = 2;
+                                break;
+                            }
                             match_len += s;
                         } while (s == 255);
                     }
-                    if (status == 0 && op_off + match_len > uncomp_bytes) {
+                    if (status == 0 && match_len > uncomp_bytes - op_off) {
                         status = 2;
                     }
                 }
