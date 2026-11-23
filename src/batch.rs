@@ -234,7 +234,14 @@ impl IntegrationTask for Integration2DWithErrors {
     }
 }
 
-/// 2D integration on an azimuthal grid given by first-bin centre and step (wrapping periodically).
+/// 2D integration on an azimuthal grid given by first-bin centre and step.
+///
+/// Without an explicit `radial_range` on the integrator, the bins of
+/// `Counting`, `PixelSplit` and `Supersampled` wrap periodically: angles
+/// outside the total range fold into the bins. `PyfaiFull`, and every method
+/// once an explicit `radial_range` is set, treat the bins as the sector
+/// `[start - step/2, start + (n_azimuthal - 0.5)*step)` and drop angles
+/// outside it; a sector wider than 2π (`n_azimuthal * step > 2π`) is refused.
 ///
 /// Returns a flat vector of intensities `[n_radial * n_azimuthal]`.
 #[derive(Clone, Copy, Debug)]

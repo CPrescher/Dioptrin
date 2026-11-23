@@ -534,7 +534,9 @@ impl PyIntegrator {
     /// shape, contiguity, mask), then the frames are integrated without
     /// copying and with the GIL released. The read-only borrow guards in
     /// `arrays` outlive the workers; only plain slices cross into them. An
-    /// invalid azimuthal range fails each entry, as for TIFF paths.
+    /// invalid azimuthal range never gets here: the caller
+    /// (`validate_azimuthal_range`) raises ValueError up front, as for TIFF
+    /// paths.
     ///
     /// `split` is `None` when the caller gave neither `num_workers` nor
     /// `num_threads`: the frames then run as in `batch1d`'s array branch, a
