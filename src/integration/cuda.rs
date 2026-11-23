@@ -366,6 +366,7 @@ pub enum Bslz4Dtype {
     I32,
 }
 
+#[cfg(feature = "cuda")]
 impl Bslz4Dtype {
     pub(crate) fn elem_bytes(self) -> usize {
         match self {
