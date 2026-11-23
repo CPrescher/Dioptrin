@@ -1460,7 +1460,7 @@ impl PyIntegrator {
                 // Process frames in parallel using rayon
                 use rayon::prelude::*;
                 // Deliberately its own closure, shared with the worker split
-                // above only through the same parallel iterator: replacing it
+                // below only through the same parallel iterator: replacing it
                 // by `integrate1d_slice`, or adding new call sites into the 1D
                 // `*_from_slice` entry points, changed fat-LTO inlining and
                 // slowed the 1D pixel_split/pyfai_full kernels by up to ~20%
@@ -1492,7 +1492,6 @@ impl PyIntegrator {
                     }
                 };
                 if split_requested {
-                    use rayon::prelude::*;
                     // At most `num_workers` frames at a time, each on its own
                     // pool of `num_threads` threads, as for TIFF paths; the
                     // table is built first in the first worker's pool.

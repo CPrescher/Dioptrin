@@ -663,8 +663,9 @@ class Integrator:
             num_threads: Threads per worker (optional). For arrays, the Rayon
                 threads each frame uses, in a pool of its own. A missing one of
                 the two is resolved as for TIFF paths (num_threads defaults to
-                2, num_workers to cores / num_threads - 1). With neither given,
-                arrays run on the global Rayon pool, all frames in parallel.
+                2, num_workers to cores / num_threads - 1, at least 1). With
+                neither given, arrays run on the global Rayon pool, all frames
+                in parallel.
 
         Returns:
             List of BatchResult objects, each containing filename and IntegrationResult.
