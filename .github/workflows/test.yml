@@ -14,53 +14,25 @@ concurrency:
 
 # The full Rust test suite and the format check run in ci.yml.
 jobs:
-  python-tests:
-    name: Python Tests & Examples
+  # The scripts in python_examples compare against the text files these Rust
+  # tests write to test_data/test_output. Generate them once and share them
+  # across the Python version matrix instead of compiling and running the Rust
+  # test binary five times.
+  test-data:
+    name: Generate Test Output Data
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
-
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Caches dependencies only; the extension module itself is always
-      # rebuilt. One cache per Python version, since PyO3 builds against it.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: py${{ matrix.python-version }}
+          key: test-data
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      # Installs only the test dependencies, not the project: building the
-      # project here would compile the extension a second time.
-      - name: Install Python dependencies
-        run: |
-          uv venv .venv
-          source .venv/bin/activate
-          uv pip install maturin -r pyproject.toml --extra test
-
-      - name: Build Python package
-        run: |
-          source .venv/bin/activate
-          maturin develop --release --features python
-
-      # The scripts in python_examples compare against the text files these
-      # Rust tests write to test_data/test_output; the full suite runs in ci.yml.
-      # They run in seconds, so the crate is compiled unoptimised even if the
-      # test profile asks for more; set per step to leave the cache key alone.
       - name: Generate test output data
         env:
           CARGO_PROFILE_TEST_OPT_LEVEL: 0
@@ -80,6 +52,69 @@ jobs:
           integration::tests::test_integrate_pixel_split_1d_with_errors
           integration::tests::test_integrate_supersampled_1d
           integration::tests::test_integrator
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-output-data
+          path: test_data/test_output
+          retention-days: 1
+          if-no-files-found: error
+
+  python-tests:
+    name: Python Tests & Examples
+    needs: test-data
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-output-data
+          path: test_data/test_output
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Caches dependencies only; the extension module itself is always
+      # rebuilt. One cache per Python version, since PyO3 builds against it,
+      # and suffixed with -nolto so the non-LTO dependency artifacts below
+      # don't collide with any previous LTO cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: py${{ matrix.python-version }}-nolto
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      # Installs only the test dependencies, not the project: building the
+      # project here would compile the extension a second time.
+      - name: Install Python dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install maturin -r pyproject.toml --extra test
+
+      # Skip LTO and single-CGU for CI test builds (release.yml keeps full LTO
+      # for published wheels).
+      - name: Build Python package
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          source .venv/bin/activate
+          maturin develop --release --features python
 
       - name: Test integration and array batch regressions
         run: |

@@ -58,9 +58,9 @@ jobs:
       # opt-level 1: without incremental builds on these runners, compiling
       # it optimised took about as long as it saved in test run time (#57).
       # Set per step so that the rust-cache key is unaffected.
-      - run: cargo build --all-targets
-        env:
-          CARGO_PROFILE_TEST_OPT_LEVEL: 0
+      # `cargo test` builds and links the library, examples, and all test
+      # targets; benches are checked by `clippy --all-targets` and built in
+      # test.yml.
       - run: cargo test
         env:
           CARGO_PROFILE_TEST_OPT_LEVEL: 0
