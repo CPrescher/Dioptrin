@@ -58,7 +58,10 @@ jobs:
       # opt-level 1: without incremental builds on these runners, compiling
       # it optimised took about as long as it saved in test run time (#57).
       # Set per step so that the rust-cache key is unaffected.
-      - run: cargo build --all-targets
+      # Verify examples and benchmarks compile without linking unused benchmark
+      # binaries on every OS; `cargo test` below builds, links, and runs the
+      # library and all test targets.
+      - run: cargo check --all-targets
         env:
           CARGO_PROFILE_TEST_OPT_LEVEL: 0
       - run: cargo test

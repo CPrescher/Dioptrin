@@ -14,8 +14,54 @@ concurrency:
 
 # The full Rust test suite and the format check run in ci.yml.
 jobs:
+  # The scripts in python_examples compare against the text files these Rust
+  # tests write to test_data/test_output. Generate them once and share them
+  # across the Python version matrix instead of compiling and running the Rust
+  # test binary five times.
+  test-data:
+    name: Generate Test Output Data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-data
+
+      - name: Generate test output data
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: 0
+        run: >-
+          cargo test --lib -- --exact
+          frame::tests::frame_from_tiff
+          geometry::tests::calc_azimuth_all
+          geometry::tests::calc_pixel_positions_det_reference
+          geometry::tests::calc_pixel_positions_poni_reference
+          geometry::tests::calc_pixel_positions_with_sample_reference
+          geometry::tests::calc_polarization
+          geometry::tests::calc_solid_angle
+          geometry::tests::calc_tth_all
+          integration::tests::test_integrate_counting_1d
+          integration::tests::test_integrate_counting_1d_with_errors
+          integration::tests::test_integrate_pixel_split_1d
+          integration::tests::test_integrate_pixel_split_1d_with_errors
+          integration::tests::test_integrate_supersampled_1d
+          integration::tests::test_integrator
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-output-data
+          path: test_data/test_output
+          retention-days: 1
+
   python-tests:
     name: Python Tests & Examples
+    needs: test-data
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -25,6 +71,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-output-data
+          path: test_data/test_output
 
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
@@ -52,34 +103,15 @@ jobs:
           source .venv/bin/activate
           uv pip install maturin -r pyproject.toml --extra test
 
+      # Skip LTO and single-CGU for CI test builds (release.yml keeps full LTO
+      # for published wheels). Set per step so the rust-cache key is unaffected.
       - name: Build Python package
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           source .venv/bin/activate
           maturin develop --release --features python
-
-      # The scripts in python_examples compare against the text files these
-      # Rust tests write to test_data/test_output; the full suite runs in ci.yml.
-      # They run in seconds, so the crate is compiled unoptimised even if the
-      # test profile asks for more; set per step to leave the cache key alone.
-      - name: Generate test output data
-        env:
-          CARGO_PROFILE_TEST_OPT_LEVEL: 0
-        run: >-
-          cargo test --lib -- --exact
-          frame::tests::frame_from_tiff
-          geometry::tests::calc_azimuth_all
-          geometry::tests::calc_pixel_positions_det_reference
-          geometry::tests::calc_pixel_positions_poni_reference
-          geometry::tests::calc_pixel_positions_with_sample_reference
-          geometry::tests::calc_polarization
-          geometry::tests::calc_solid_angle
-          geometry::tests::calc_tth_all
-          integration::tests::test_integrate_counting_1d
-          integration::tests::test_integrate_counting_1d_with_errors
-          integration::tests::test_integrate_pixel_split_1d
-          integration::tests::test_integrate_pixel_split_1d_with_errors
-          integration::tests::test_integrate_supersampled_1d
-          integration::tests::test_integrator
 
       - name: Test integration and array batch regressions
         run: |
