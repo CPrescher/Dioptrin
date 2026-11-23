@@ -11,6 +11,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An optional `cuda` experiment for fixed-mask 1D integration, with an
   internal GPU correctness test and a benchmark against the f64 CPU paths.
+- `Integrator.batch2d` accepts a list of 2D float64 NumPy arrays as well as a
+  list of TIFF paths, like `batch1d`: the arrays are borrowed without copying
+  and integrated with the GIL released, on every branch (plain, `errors`,
+  `azimuthal_range`, `azimuthal_bracket`). Without `num_workers` and
+  `num_threads` they run on the global Rayon pool, all frames in parallel; with
+  either, `num_workers` frames run at a time, each on its own pool of
+  `num_threads` threads, as for TIFF paths (the missing one resolved the same
+  way). `batch1d` over arrays does the same on every branch (plain, `errors`,
+  `azimuthal_std`); it used to ignore both arguments and always run on the
+  global pool, which is still what happens when neither is given. So
+  `batch1d(arrays, num_workers=B, num_threads=1)` now runs B frames at a time
+  on one-thread pools instead of on the global pool; results are bit-identical.
+  0.14.0 timings with these arguments were measured on the global-pool path,
+  which a call without the arguments still uses. The split path builds its
+  pools per call (about 0.35 ms fixed cost at 14 workers).
+  Input errors match `batch1d` (dtype, shape, contiguity, mask shape; mixed
+  lists raise `TypeError`, use `batch2d_iter` for them). The first parameter
+  keeps its name `tiff_paths`. A list of arrays no longer needs
+  `batch2d_iter`, which copies each frame on one producer thread.
+- `Integrator::radial_centers_2d` (Rust) returns the radial bin centres of a
+  2D integration, for an explicit radial range or the default edges.
+
+### Changed
+
+- An explicit `radial_range` now applies to 2D integration with every method.
+  `counting`, `pixel_split` and `supersampled` used to ignore it and keep
+  their detector-local radial grid; they now bin onto `n_radial` equal bins
+  between its edges and drop pixels, subpixels or polygon pieces outside it,
+  on every 2D entry point (Rust `integrate2d*`,
+  `integrate2d_with_azimuthal_range*`, `integrate2d_on_azimuthal_range*`,
+  batch tasks; Python `integrate2d`, `batch2d`, `batch2d_iter`), in fixed and
+  dynamic mask modes. They use the shared-grid tables of `MultiIntegrator`
+  (exact fractional polygon areas for `pixel_split`, slightly different from
+  its default 2D table: median 3.5e-5 relative per bin, at most 1.7e-3 of the
+  cake maximum, total ratio 1.000056 on the CeO2 Pilatus 1M test image at
+  1000 x 360 bins) with the default azimuthal bins; the Rust
+  first-bin-centre/step methods bin onto the sector `[start - step/2,
+  start + (n - 0.5)*step)` (at most 2π) without folding, as `pyfai_full`
+  already did, and refuse `n * step > 2π`. 2D bins are half-open,
+  `[min, max)` (a value exactly at `max` is dropped), while 1D includes both
+  limits with a step computed from `max + 10 eps`, so 1D and 2D bin centres
+  for the same range are not bit-equal. 2D calls without a `radial_range` are
+  unchanged, bit for bit. The Rust batch helpers answer every input with an
+  error for a 2D task on an unusable range instead of losing the inputs to
+  worker panics.
+  A 2D call on a range with a negative minimum is an error (`ValueError` in
+  Python, `Err` or a panic in Rust, where `Integrator::radial_centers_2d`
+  serves as a pre-check) instead of being ignored; 1D is unchanged.
+- Python 2D results carry the radial bin centres in `radial` when the
+  Integrator has a `radial_range`, and on an `azimuthal_range` (where they
+  were computed but dropped); otherwise `radial` stays `None`.
+- `Integrator.integrate2d` and `Integrator.integrate1d` release the GIL while
+  they load a TIFF and while they integrate, so other Python threads,
+  including other integrators, run meanwhile. NumPy inputs are borrowed for
+  the call and must not be mutated concurrently. Results are unchanged, and
+  the per-call cost of `integrate1d` is unchanged within noise (about 230 us
+  counting, 580 us pixel_split on a 1M-pixel image, 1000 points).
+
+### Removed
+
+- **Breaking:** the Python license-compatibility names are removed:
+  `dioptrin.validate_license()` and the exceptions `dioptrin.LicenseError`,
+  `dioptrin.LicenseNotFoundError` and `dioptrin.LicenseExpiredError`. They
+  were kept in 0.7.0, when activation was dropped, only so that code written
+  for license-activated wheels kept importing. `validate_license()` was a
+  no-op that took no arguments and returned `None`, and nothing in the
+  package raised the exceptions. Migration: delete calls to
+  `validate_license()`, and delete `except` clauses (or the names in an
+  `except (...)` tuple) that catch the `License*` exceptions; they could
+  never trigger. The type stubs, the README note and the release check's
+  `DIOPTRIN_LICENSE` probe are removed with them. Integration is unchanged.
 
 ## [0.14.0] - 2026-11-15
 

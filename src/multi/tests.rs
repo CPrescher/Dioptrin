@@ -58,7 +58,9 @@ fn single_matches_ordinary_2d_on_matched_edges() {
                 crate::math::histogram::ss_tth_min_max_step(&g, &radial, 11, 4, RadialUnit::TthRad)
             }
         };
-        let ordinary = ai(g.clone(), method);
+        // The legacy table on its default edges: an ordinary integrator
+        // without a radial range (with one it would use the shared grid).
+        let ordinary = Integrator::new(g.clone()).with_method(method);
         let (y, e) = ordinary.integrate2d_with_azimuthal_range_and_errors_from_slice(
             &data,
             g.dim1(),
@@ -506,7 +508,8 @@ fn single_polygon_matches_ordinary_for_corrected_uniform_signal() {
     let lo = corners.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = corners.iter().copied().fold(f64::NEG_INFINITY, f64::max) + 10.0 * f64::EPSILON;
     let data: Vec<_> = g.calc_solid_angle().iter().map(|s| s * 50.0).collect();
-    let ordinary = ai(g.clone(), IntegrationMethod::PixelSplit);
+    // Legacy pixel-split table on its default edges (no radial range).
+    let ordinary = Integrator::new(g.clone()).with_method(IntegrationMethod::PixelSplit);
     let y = ordinary.integrate2d_with_azimuthal_range_from_slice(
         &data,
         8,

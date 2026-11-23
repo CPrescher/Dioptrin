@@ -247,9 +247,14 @@ pub fn batch_images<'py>(obj: &Bound<'py, PyAny>) -> PyResult<BatchImageInput<'p
     obj.extract()
 }
 
-/// See [`batch_images`]; for `Integrator.batch2d`'s `tiff_paths`.
-pub fn tiff_path_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
-    reject_single_path(obj, "tiff_paths", "a list of file paths")?;
+/// See [`batch_images`]; for `Integrator.batch2d`, whose first parameter is
+/// still named `tiff_paths` although it also takes arrays.
+pub fn batch2d_images<'py>(obj: &Bound<'py, PyAny>) -> PyResult<BatchImageInput<'py>> {
+    reject_single_path(
+        obj,
+        "tiff_paths",
+        "a list of file paths or a list of 2D float64 numpy arrays",
+    )?;
     obj.extract()
 }
 

@@ -24,6 +24,8 @@ mod mixed_shape_tests;
 #[cfg(test)]
 mod pyfai_orientation_tests;
 #[cfg(test)]
+mod radial_range_2d_tests;
+#[cfg(test)]
 mod tests;
 mod tiff_input;
 
@@ -212,6 +214,8 @@ pub struct Integrator {
     sparse_layout: SparseLayout,
     /// Default 2D radial edges for `integrate2d_on_azimuthal_range`.
     radial_edges_2d: RwLock<Option<(grid::RadialEdgesKey, (f64, f64))>>,
+    /// Default 2D azimuthal edges for 2D integration on an explicit radial range.
+    azimuthal_edges_2d: RwLock<Option<(grid::AzimuthalEdgesKey, (f64, f64))>>,
 }
 
 impl Integrator {
@@ -230,6 +234,7 @@ impl Integrator {
             mask_mode: MaskMode::default(),
             sparse_layout: SparseLayout::default(),
             radial_edges_2d: RwLock::new(None),
+            azimuthal_edges_2d: RwLock::new(None),
         }
     }
 
@@ -368,11 +373,28 @@ impl Integrator {
     ///   and leave out pixels, subpixels or pixel fractions outside the range.
     ///   [`IntegrationMethod::Histogram`] ignores it and always uses the
     ///   automatic range of the pixel centres.
-    /// - 2D (`integrate2d*`, `integrate2d_with_azimuthal_range*` and
-    ///   `integrate2d_on_azimuthal_range*`): only `PyfaiFull` uses it as its
-    ///   radial edges. `Counting`, `PixelSplit` and `Supersampled` ignore it and
-    ///   keep their automatic, data-derived edges; `Histogram` has no 2D
-    ///   integration.
+    /// - 2D (`integrate2d*`, `integrate2d_with_azimuthal_range*`,
+    ///   `integrate2d_on_azimuthal_range*`/`_brackets*` and batch
+    ///   integration): every method bins onto `n_radial` equal bins between
+    ///   `min` and `max` and drops (sub)pixels or pixel fractions outside the
+    ///   range; nothing is clamped into the end bins.
+    ///   [`Integrator::radial_centers_2d`] returns the bin centres. `Counting`,
+    ///   `PixelSplit` and `Supersampled` then use the shared-grid tables of
+    ///   `MultiIntegrator` (exact fractional polygon areas for `PixelSplit`,
+    ///   which differ slightly from its default 2D table) with the default
+    ///   path's azimuthal bins (on CeO2 Pilatus 1M, 1000 x 360 bins on matching
+    ///   edges, `PixelSplit` differs from its default cake by a median 3.5e-5
+    ///   relative per bin). With a range, `integrate2d_with_azimuthal_range*`
+    ///   bins onto the sector `[start - step/2, start + (n - 0.5)*step)` without
+    ///   folding angles outside it (as `PyfaiFull` always does); `n * step > 2π`
+    ///   is refused. The 2D grid needs `0 <= min < max`: other ranges make the
+    ///   `Result` entry points return `Err` and the others panic;
+    ///   [`Integrator::radial_centers_2d`] returns that `Err` and can serve as
+    ///   a pre-check. 2D bins are half-open, `[min, max)`: a value exactly at
+    ///   `max` is dropped, while 1D includes both limits and computes its step
+    ///   from `max + 10 ε`, so 1D and 2D bin centres for the same range are not
+    ///   bit-equal.
+    ///   `Histogram` has no 2D integration.
     /// - `integrate2d_raw_on_grid*` takes its edges from the grid argument, not
     ///   from this range.
     /// - [`crate::multi::MultiIntegrator`] requires it: every detector must have

@@ -117,6 +117,22 @@
       "poni": "eiger_0000.poni",
       "mask": "eiger_0000.mask",
       "n_splitting": 5
+    },
+    "eiger9m-subset": {
+      "kind": "subset",
+      "subset": "eiger9m-subset32.h5",
+      "poni": "eiger9m.poni",
+      "mask": "eiger9m.mask.tif",
+      "n_splitting": 5,
+      "source_sha256": "2b749693d7a942b35d89806d99b9a1025ee119850be0ade27428f1dc11d0a1f3"
+    },
+    "eiger4m-subset": {
+      "kind": "subset",
+      "subset": "eiger4m-subset32.h5",
+      "poni": "eiger4m.poni",
+      "mask": "eiger4m.mask.tif",
+      "n_splitting": 5,
+      "source_sha256": "01db69e90fcd65067f3446c1c2a2cbdfb60e624fdd03d75e88b0d45b70c978ab"
     }
   }
 }

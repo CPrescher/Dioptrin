@@ -119,6 +119,13 @@ fn prepared_matches_original_strict_exactly_and_fast_with_reassociation() {
                     };
                     compare(&expected.0, &actual.0);
                     compare(&expected.1, &actual.1);
+                    let (direct, errors) = if fast {
+                        p2.integrate::<true, false>(&signal, m, &norm)
+                    } else {
+                        p2.integrate::<false, false>(&signal, m, &norm)
+                    };
+                    same(&actual.0, &direct);
+                    assert!(errors.is_empty());
                 }
             }
         }

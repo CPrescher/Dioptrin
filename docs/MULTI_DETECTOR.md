@@ -237,14 +237,17 @@ clips/recenters vertices. Their seam, beam-center and partial-range behavior
 can differ. Supersampling offers an alternative when polar pixel polygons
 are poorly resolved near the beam center.
 
-The old ordinary `Integrator.integrate2d` with `counting`, `pixel_split` or
-`supersampled` chooses a detector-local radial grid; it does not honor its
-`radial_range` as shared 2D edges. With `pyfai_full` it bins between the
-`radial_range` limits when one is set. The new shared-grid
-raw Rust API below is available for one detector too. Legacy polygon 2D LUTs
-use row-normalized **areas**, rather than fractions of original pixel areas,
-so a nonuniform single-detector polygon cake can also differ from the new
-fractional path. Existing ordinary 2D outputs are unchanged.
+Without a `radial_range`, the ordinary `Integrator.integrate2d` with
+`counting`, `pixel_split` or `supersampled` chooses a detector-local radial
+grid. With one, every method bins between the `radial_range` limits; the
+first three then use the same shared-grid tables (and fractional splitting) as
+`MultiIntegrator`, so a single-detector `MultiIntegrator` and an ordinary
+`Integrator` with the same range and azimuthal edges agree. The new
+shared-grid raw Rust API below is available for one detector too. Legacy
+polygon 2D LUTs, used without a range, use row-normalized **areas**, rather
+than fractions of original pixel areas, so a nonuniform single-detector polygon
+cake can also differ from the fractional path. Ordinary 2D outputs without a
+`radial_range` are unchanged.
 
 1D `pixel_split` and `supersampled` tables hold fractions of each pixel and
 are not normalized per bin, so every pixel enters a merged 1D bin with its own

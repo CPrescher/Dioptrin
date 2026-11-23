@@ -39,6 +39,7 @@
 //! // let results = process_files(&files, integrator, task, 4, 2);
 //! ```
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -87,14 +88,30 @@ pub trait IntegrationTask: Send + Sync {
     fn integrate2d_method(&self) -> Option<&'static str> {
         None
     }
+
+    /// Checks the integrator's 2D configuration for this task before any
+    /// file is read: an explicit radial range the 2D grid cannot use, or a
+    /// first-bin-centre/step sector wider than 2π with such a range, would
+    /// make every integration call panic. The batch helpers then answer each
+    /// input with this error instead.
+    #[doc(hidden)]
+    fn check_2d(&self, _integrator: &Integrator) -> Result<(), String> {
+        Ok(())
+    }
 }
 
-/// Error message for a task the integrator's method cannot run: a 2D task
-/// with the Histogram method. Matches the `integrate2d*` panic message.
+/// Error message for a task the integrator cannot run: a 2D task with the
+/// Histogram method (matching the `integrate2d*` panic message), or a 2D task
+/// whose explicit radial range or sector the 2D grid cannot use (see
+/// [`IntegrationTask::check_2d`]).
 fn rejection<T: IntegrationTask>(integrator: &Integrator, task: &T) -> Option<String> {
     let method = task.integrate2d_method()?;
-    matches!(integrator.method(), IntegrationMethod::Histogram)
-        .then(|| format!("{method} is not supported for Histogram method"))
+    if matches!(integrator.method(), IntegrationMethod::Histogram) {
+        return Some(format!("{method} is not supported for Histogram method"));
+    }
+    task.check_2d(integrator)
+        .err()
+        .map(|e| format!("{method}: {e}"))
 }
 
 /// Runs `task` on `frame`, or returns the error for an image shape the
@@ -186,6 +203,9 @@ impl IntegrationTask for Integration2D {
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d")
     }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(self.n_radial, self.n_azimuthal, None)
+    }
 }
 
 /// 2D integration task with per-bin error estimation.
@@ -209,9 +229,19 @@ impl IntegrationTask for Integration2DWithErrors {
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_errors")
     }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(self.n_radial, self.n_azimuthal, None)
+    }
 }
 
-/// 2D integration on an azimuthal grid given by first-bin centre and step (wrapping periodically).
+/// 2D integration on an azimuthal grid given by first-bin centre and step.
+///
+/// Without an explicit `radial_range` on the integrator, the bins of
+/// `Counting`, `PixelSplit` and `Supersampled` wrap periodically: angles
+/// outside the total range fold into the bins. `PyfaiFull`, and every method
+/// once an explicit `radial_range` is set, treat the bins as the sector
+/// `[start - step/2, start + (n_azimuthal - 0.5)*step)` and drop angles
+/// outside it; a sector wider than 2π (`n_azimuthal * step > 2π`) is refused.
 ///
 /// Returns a flat vector of intensities `[n_radial * n_azimuthal]`.
 #[derive(Clone, Copy, Debug)]
@@ -249,6 +279,13 @@ impl IntegrationTask for Integration2DWithAzimuthalRange {
     }
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_azimuthal_range")
+    }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(
+            self.n_radial,
+            self.n_azimuthal,
+            Some((self.azimuthal_min, self.azimuthal_max)),
+        )
     }
 }
 
@@ -288,6 +325,13 @@ impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
     }
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_azimuthal_range_and_errors")
+    }
+    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
+        integrator.check_2d_bins(
+            self.n_radial,
+            self.n_azimuthal,
+            Some((self.azimuthal_min, self.azimuthal_max)),
+        )
     }
 }
 
@@ -343,7 +387,9 @@ impl IntegrationTask for Integration2DOnAzimuthalRange {
 ///
 /// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
 /// integrator using `IntegrationMethod::Histogram` is not run: every input gets
-/// `Err("<integrate2d method> is not supported for Histogram method")`.
+/// `Err("<integrate2d method> is not supported for Histogram method")`. The same
+/// holds, with the grid error, for an explicit radial range the 2D grid cannot
+/// use (see [`IntegrationTask::check_2d`]).
 ///
 /// # Notes
 ///
@@ -467,7 +513,9 @@ where
 ///
 /// A 2D task (one whose [`IntegrationTask::integrate2d_method`] is `Some`) with an
 /// integrator using `IntegrationMethod::Histogram` is not run: every input gets
-/// `Err("<integrate2d method> is not supported for Histogram method")`.
+/// `Err("<integrate2d method> is not supported for Histogram method")`. The same
+/// holds, with the grid error, for an explicit radial range the 2D grid cannot
+/// use (see [`IntegrationTask::check_2d`]).
 ///
 /// # Examples
 ///
@@ -526,6 +574,76 @@ pub(crate) enum WorkItem {
         name: String,
         frame: Frame,
     },
+}
+
+/// Run `job(i)` for every `i` in `0..n` with at most `workers` items in
+/// flight, each inside a Rayon pool of `threads` threads, and return the
+/// outcomes in input order. Used by Python `batch1d`/`batch2d` over borrowed arrays when
+/// `num_workers`/`num_threads` are given; the items may borrow from the caller.
+///
+/// `min(workers, n)` scoped OS threads pull indices from a shared counter;
+/// each owns a pool built for this call (a few hundred microseconds per pool),
+/// and Rayon work started inside `job` stays in that pool. `prepare` runs once
+/// first, in the first worker's pool, so a one-off table build uses `threads`
+/// threads too. A panicking item does not stop the others: its outcome holds
+/// the panic payload for the caller to report. `Err` when a pool cannot be
+/// built.
+#[cfg_attr(not(feature = "python"), allow(dead_code))]
+pub(crate) fn map_in_pools<R, P, F>(
+    n: usize,
+    workers: usize,
+    threads: usize,
+    prepare: P,
+    job: F,
+) -> Result<Vec<thread::Result<R>>, String>
+where
+    R: Send,
+    P: FnOnce() + Send,
+    F: Fn(usize) -> R + Sync,
+{
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let pools = (0..workers.clamp(1, n))
+        .map(|_| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads.max(1))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if let Err(payload) = pools[0].install(|| catch_unwind(AssertUnwindSafe(prepare))) {
+        // Leave the failure to the items, which hit it again with context.
+        drop(payload);
+    }
+    let next = AtomicUsize::new(0);
+    let mut outcomes: Vec<(usize, thread::Result<R>)> = thread::scope(|scope| {
+        let handles: Vec<_> = pools
+            .iter()
+            .map(|pool| {
+                let (next, job) = (&next, &job);
+                scope.spawn(move || {
+                    pool.install(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i >= n {
+                                break done;
+                            }
+                            done.push((i, catch_unwind(AssertUnwindSafe(|| job(i)))));
+                        }
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("batch worker thread panicked"))
+            .collect()
+    });
+    outcomes.sort_unstable_by_key(|o| o.0);
+    assert_eq!(outcomes.len(), n, "a batch worker lost an item");
+    Ok(outcomes.into_iter().map(|o| o.1).collect())
 }
 
 #[cfg(test)]
@@ -685,11 +803,20 @@ mod tests {
         T: IntegrationTask + Clone + 'static,
         T::Output: 'static,
     {
-        let files = write_tiffs(expected, 4);
-        let integrator = Arc::new(
-            Integrator::new(Geometry::new(3, 3, test_poni()))
-                .with_method(IntegrationMethod::Histogram),
-        );
+        let integrator = Integrator::new(Geometry::new(3, 3, test_poni()))
+            .with_method(IntegrationMethod::Histogram);
+        check_every_input_rejected(task, integrator, expected);
+    }
+
+    /// `process_files`, `process_files_sequential` and `process_streaming`
+    /// answer every input with `expected` (and run no worker that panics).
+    fn check_every_input_rejected<T>(task: T, integrator: Integrator, expected: &str)
+    where
+        T: IntegrationTask + Clone + 'static,
+        T::Output: 'static,
+    {
+        let files = write_tiffs(&format!("{:x}", fxhash(expected)), 4);
+        let integrator = Arc::new(integrator);
         let check = |helper: &str, mut results: Vec<(usize, String, Result<T::Output, String>)>| {
             assert_eq!(results.len(), files.len(), "{helper}");
             results.sort_by_key(|r| r.0);
@@ -712,6 +839,153 @@ mod tests {
         let options = StreamOptions::new(2, 1);
         let stream = process_streaming(files.clone(), integrator, task, options).unwrap();
         check("process_streaming", stream.collect());
+        for file in files {
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+
+    /// `map_in_pools` runs at most `workers` items at a time, each inside a
+    /// pool of exactly `threads` threads (not the global pool), keeps input
+    /// order, and contains a panicking item.
+    #[test]
+    fn map_in_pools_applies_the_requested_split() {
+        use rayon::prelude::*;
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        use std::time::Duration;
+        for (workers, threads, n) in [(1, 3, 6), (3, 1, 9), (2, 2, 8), (8, 1, 3), (4, 2, 1)] {
+            let in_flight = AtomicUsize::new(0);
+            let peak = AtomicUsize::new(0);
+            let seen = Mutex::new(HashSet::new());
+            let prepared = Mutex::new(None);
+            let outcomes = map_in_pools(
+                n,
+                workers,
+                threads,
+                || *prepared.lock().unwrap() = Some(rayon::current_num_threads()),
+                |i| {
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    // Inside a pool of `threads` threads, on one of its threads;
+                    // nested Rayon work stays there too.
+                    assert!(rayon::current_thread_index().is_some());
+                    let nested: Vec<usize> = (0..64)
+                        .into_par_iter()
+                        .map(|_| rayon::current_num_threads())
+                        .collect();
+                    seen.lock().unwrap().insert(std::thread::current().id());
+                    std::thread::sleep(Duration::from_millis(30));
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    if i == n / 2 && n > 2 {
+                        panic!("item {i} failed");
+                    }
+                    (i, rayon::current_num_threads(), nested)
+                },
+            )
+            .unwrap();
+            assert_eq!(*prepared.lock().unwrap(), Some(threads));
+            assert_eq!(outcomes.len(), n);
+            for (i, outcome) in outcomes.into_iter().enumerate() {
+                match outcome {
+                    Ok((index, pool, nested)) => {
+                        assert_eq!(index, i);
+                        assert_eq!(pool, threads, "{workers}x{threads}");
+                        assert!(nested.iter().all(|&t| t == threads));
+                    }
+                    Err(payload) => {
+                        assert!(i == n / 2 && n > 2);
+                        assert_eq!(
+                            payload.downcast_ref::<String>().unwrap(),
+                            &format!("item {i} failed")
+                        );
+                    }
+                }
+            }
+            let expected_peak = workers.min(n);
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                expected_peak,
+                "{workers}x{threads} n={n}"
+            );
+            // Items ran on pool threads, at most workers * threads of them.
+            assert!(seen.lock().unwrap().len() <= expected_peak * threads);
+        }
+        assert!(map_in_pools(0, 2, 2, || (), |i| i).unwrap().is_empty());
+    }
+
+    /// Stable short tag for temporary file names.
+    fn fxhash(text: &str) -> u64 {
+        text.bytes().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+        })
+    }
+
+    /// A 2D task on an explicit radial range the 2D grid cannot use (negative
+    /// minimum), or a first-bin-centre/step sector wider than 2π with a range,
+    /// gets one error per input. Before, every worker panicked in the
+    /// integration call and `process_files` returned no results at all.
+    #[test]
+    fn batch_helpers_reject_unusable_2d_radial_ranges() {
+        let methods = [
+            IntegrationMethod::Counting,
+            IntegrationMethod::PixelSplit,
+            IntegrationMethod::Supersampled { n_ss: 2 },
+            IntegrationMethod::PyfaiFull,
+        ];
+        let (n_radial, n_azimuthal) = (5, 4);
+        for method in methods {
+            let negative = || {
+                Integrator::new(Geometry::new(3, 3, test_poni()))
+                    .with_method(method)
+                    .with_radial_range(-1.0, 30.0)
+            };
+            let grid = "2D grid for radial_range (-1, 30): radial range must be nonnegative";
+            check_every_input_rejected(
+                Integration2D {
+                    n_radial,
+                    n_azimuthal,
+                },
+                negative(),
+                &format!("integrate2d: {grid}"),
+            );
+            check_every_input_rejected(
+                Integration2DWithErrors {
+                    n_radial,
+                    n_azimuthal,
+                },
+                negative(),
+                &format!("integrate2d_with_errors: {grid}"),
+            );
+            // A valid range, but 4 bins of 2 rad span more than one turn.
+            let wide = Integrator::new(Geometry::new(3, 3, test_poni()))
+                .with_method(method)
+                .with_radial_range(0.0, 30.0);
+            check_every_input_rejected(
+                Integration2DWithAzimuthalRangeAndErrors {
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal_min: 0.0,
+                    azimuthal_max: 2.0,
+                },
+                wide,
+                "integrate2d_with_azimuthal_range_and_errors: 2D grid for radial_range \
+                 (0, 30): azimuthal span must be at most 2π (one full turn)",
+            );
+        }
+        // A usable range still integrates every file.
+        let files = write_tiffs("usable-range", 2);
+        let integrator = Arc::new(
+            Integrator::new(Geometry::new(3, 3, test_poni()))
+                .with_method(IntegrationMethod::Counting)
+                .with_radial_range(0.0, 30.0),
+        );
+        let task = Integration2D {
+            n_radial,
+            n_azimuthal,
+        };
+        let results = process_files(&files, integrator, task, 2, 1);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|(_, r)| r.is_ok()));
         for file in files {
             std::fs::remove_file(file).unwrap();
         }

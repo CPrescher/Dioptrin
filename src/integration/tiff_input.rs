@@ -1,5 +1,5 @@
 //! Typed TIFF adapters. Arithmetic is shared with the existing f64 CSR path.
-use super::cache::{AzimuthalRangeKey, OneDKey, TwoDKey};
+use super::cache::{AzimuthalRangeKey, OneDKey};
 use super::{IntegrationMethod, Integrator};
 use crate::frame::TiffFrame;
 use tiff::decoder::DecodingResult;
@@ -109,42 +109,17 @@ impl Integrator {
             m.assert_compatible(h, w);
             m.data.as_slice()
         });
-        let unit = self.radial_unit;
-        let key = match (self.method, azimuthal) {
-            (IntegrationMethod::Counting, None) => TwoDKey::Counting {
-                n_radial,
-                n_azimuthal,
-                unit,
+        let key = self.lut2d_key(
+            &view,
+            n_radial,
+            n_azimuthal,
+            azimuthal.map(|(start, step)| AzimuthalRangeKey::new(start, step)),
+            if azimuthal.is_some() {
+                "integrate2d_with_azimuthal_range"
+            } else {
+                "integrate2d"
             },
-            (IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull, None) => {
-                self.pixel_split2d_key(n_radial, n_azimuthal, None)
-            }
-            (IntegrationMethod::Supersampled { n_ss }, None) => TwoDKey::Supersampled {
-                n_radial,
-                n_azimuthal,
-                n_ss,
-                unit,
-            },
-            (IntegrationMethod::Counting, Some((a, b))) => TwoDKey::CountingAzimuthal {
-                n_radial,
-                n_azimuthal,
-                azimuthal: AzimuthalRangeKey::new(a, b),
-                unit,
-            },
-            (IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull, Some((a, b))) => {
-                self.pixel_split2d_key(n_radial, n_azimuthal, Some(AzimuthalRangeKey::new(a, b)))
-            }
-            (IntegrationMethod::Supersampled { n_ss }, Some((a, b))) => {
-                TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal: AzimuthalRangeKey::new(a, b),
-                    unit,
-                }
-            }
-            _ => unreachable!(),
-        };
+        );
         let lut = view.ensure_lut2d(key);
         pixels!(
             frame,

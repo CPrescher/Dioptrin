@@ -17,7 +17,7 @@ import sys
 import sysconfig
 import uuid
 
-from provenance import source_hashes
+from provenance import digest, source_hashes
 from setup import compiler_environment
 
 
@@ -154,7 +154,26 @@ def cpu_identity():
     )
 
 
-def fingerprint(root, rust_toolchain):
+def build_options(azint_fast_math=False, with_opencl=False, pyfai_wheel=None):
+    """setup.py options that change the built environment (part of its key)."""
+    options = dict(azint_fast_math=bool(azint_fast_math), with_opencl=bool(with_opencl))
+    if pyfai_wheel is not None:
+        wheel = pyfai_wheel.resolve(strict=True)
+        options["pyfai_wheel"] = dict(path=str(wheel), sha256=digest(wheel))
+    return options
+
+
+def setup_arguments(options):
+    arguments = [
+        *(["--azint-fast-math"] if options["azint_fast_math"] else []),
+        *(["--with-opencl"] if options["with_opencl"] else []),
+    ]
+    if "pyfai_wheel" in options:
+        arguments.extend(["--pyfai-wheel", options["pyfai_wheel"]["path"]])
+    return arguments
+
+
+def fingerprint(root, rust_toolchain, options=None):
     env = compiler_environment()
     compilers = {}
     for name, value in {
@@ -186,6 +205,7 @@ def fingerprint(root, rust_toolchain):
         ),
         compilers=compilers,
         rust_toolchain=rust_toolchain,
+        build_options=options or build_options(),
         flags={name: env.get(name, "") for name in BUILD_FLAGS},
         source=source_hashes(root),
         extra_build_inputs={
@@ -323,7 +343,7 @@ def ensure_cached(cache_root, identity, build, validate, rebuild=False):
         return receipt(generation, False)
 
 
-def probe_environment(generation, root, timeout=PROBE_TIMEOUT):
+def probe_environment(generation, root, timeout=PROBE_TIMEOUT, options=None):
     python = generation / "venv/bin/python"
     record = generation / "venv/benchmark-build.json"
     frozen = generation / "build/python-packages.txt"
@@ -332,7 +352,8 @@ def probe_environment(generation, root, timeout=PROBE_TIMEOUT):
     check = (
         "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
         "from provenance import verify_build;import numpy,pyFAI,azint;"
-        "r=json.loads(Path(sys.argv[2]).read_text());"
+        + ("import pyopencl;" if (options or {}).get("with_opencl") else "")
+        + "r=json.loads(Path(sys.argv[2]).read_text());"
         "problems=verify_build(Path(sys.argv[3]),r);"
         "print('; '.join(problems));sys.exit(bool(problems))"
     )
@@ -392,7 +413,7 @@ def probe_environment(generation, root, timeout=PROBE_TIMEOUT):
         return ProbeResult(False, str(error))
 
 
-def build_environment(generation, build_root, rust_toolchain):
+def build_environment(generation, build_root, rust_toolchain, options=None):
     env = sanitized_build_environment()
     env["CARGO_HOME"] = str(build_root / "cargo-home")
     env["RUSTUP_HOME"] = str(build_root / "rustup-home")
@@ -438,6 +459,7 @@ def build_environment(generation, build_root, rust_toolchain):
             str(generation / "venv"),
             "--artifacts",
             str(generation / "build"),
+            *setup_arguments(options or build_options()),
         ],
         env=env,
         check=True,
@@ -459,17 +481,32 @@ def main():
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--rust-toolchain", default="stable")
     parser.add_argument("--rebuild", action="store_true")
+    parser.add_argument(
+        "--azint-fast-math",
+        action="store_true",
+        help="Pass --azint-fast-math to setup.py (separate cache entry)",
+    )
+    parser.add_argument(
+        "--with-opencl",
+        action="store_true",
+        help="Pass --with-opencl to setup.py: install pyopencl for pyfai-full-opencl",
+    )
+    parser.add_argument("--pyfai-wheel", type=Path, help="Use a local pyFAI wheel")
     args = parser.parse_args()
     args.build_root.mkdir(parents=True, exist_ok=True)
     try:
-        identity = fingerprint(ROOT, args.rust_toolchain)
+        options = build_options(args.azint_fast_math, args.with_opencl, args.pyfai_wheel)
+        identity = fingerprint(ROOT, args.rust_toolchain, options)
 
         def build(generation):
             print(f"Building persistent Python environment: {generation}", flush=True)
             build_environment(
-                generation, args.build_root.resolve(), args.rust_toolchain
+                generation, args.build_root.resolve(), args.rust_toolchain, options
             )
-            if fingerprint(ROOT, args.rust_toolchain) != identity:
+            current_options = build_options(
+                args.azint_fast_math, args.with_opencl, args.pyfai_wheel
+            )
+            if fingerprint(ROOT, args.rust_toolchain, current_options) != identity:
                 raise RuntimeError(
                     "Build inputs changed during setup; cache was not published"
                 )
@@ -478,7 +515,7 @@ def main():
             args.cache_root,
             identity,
             build,
-            lambda generation: probe_environment(generation, ROOT),
+            lambda generation: probe_environment(generation, ROOT, options=options),
             args.rebuild,
         )
         receipt["build_records"] = str(Path(receipt["generation"]) / "build")

@@ -1,6 +1,5 @@
-"""Check an installed release wheel without activation or valid license state."""
+"""Check that an installed release wheel imports and integrates."""
 
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,9 +13,6 @@ import numpy as np
 import dioptrin
 
 assert importlib.metadata.metadata("dioptrin")["License-Expression"] == "MIT"
-assert dioptrin.validate_license() is None
-assert issubclass(dioptrin.LicenseNotFoundError, dioptrin.LicenseError)
-assert issubclass(dioptrin.LicenseExpiredError, dioptrin.LicenseError)
 poni = dict(pixel1=1e-4, pixel2=1e-4, distance=0.2, poni1=0.0032,
             poni2=0.0032, rot1=0., rot2=0., rot3=0., wavelength=1e-10)
 path = Path("release-check.poni")
@@ -55,18 +51,12 @@ print("PASS: constructors, 1D/2D, batches, streams and multi-detector integratio
 
 def main():
     with tempfile.TemporaryDirectory(prefix="dioptrin-release-check-") as directory:
-        env = os.environ.copy()
-        env.pop("DIOPTRIN_LICENSE", None)
-        for content in (None, "invalid-release-verification-license"):
-            if content is not None:
-                env["DIOPTRIN_LICENSE"] = content
-            subprocess.run(
-                [sys.executable, "-I", "-c", PROBE],
-                env=env,
-                cwd=Path(directory),
-                check=True,
-            )
-    print("Installed wheel works with missing and invalid activation state")
+        subprocess.run(
+            [sys.executable, "-I", "-c", PROBE],
+            cwd=Path(directory),
+            check=True,
+        )
+    print("Installed wheel works")
 
 
 if __name__ == "__main__":
