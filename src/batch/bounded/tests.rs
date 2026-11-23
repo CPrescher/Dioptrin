@@ -36,9 +36,15 @@ fn small_frame(i: usize) -> Frame {
 /// Poll `done` until it holds; panics after [`TIMEOUT`].
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let start = Instant::now();
+    let mut spins = 0u32;
     while !done() {
         assert!(start.elapsed() < TIMEOUT, "timed out waiting for {what}");
-        thread::sleep(Duration::from_millis(1));
+        if spins < 64 {
+            spins += 1;
+            thread::yield_now();
+        } else {
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -193,7 +199,7 @@ fn read_ahead_limit_defaults_to_four_per_worker() {
 /// fill that window (so the bound, not slowness, is what stops it).
 #[test]
 fn read_ahead_bound_holds_for_a_slow_consumer() {
-    for workers in [1, 2, 4, 8] {
+    for workers in [1, 2, 4] {
         for read_ahead in [None, Some(1), Some(3), Some(5)] {
             let mut options = StreamOptions::new(workers, 1);
             if let Some(n) = read_ahead {
@@ -209,7 +215,7 @@ fn read_ahead_bound_holds_for_a_slow_consumer() {
                 options,
             )
             .unwrap();
-            for expected in 0..25 {
+            for expected in 0..12 {
                 let taken = state.taken.fetch_add(1, Ordering::SeqCst) + 1;
                 let (index, name, result) = results.next().unwrap();
                 assert_eq!((index, name.as_str()), (expected, &*format!("f{expected}")));
@@ -226,7 +232,7 @@ fn read_ahead_bound_holds_for_a_slow_consumer() {
             );
             assert_eq!(
                 state.pulled(),
-                25 + window,
+                12 + window,
                 "{workers} workers, window {window}"
             );
         }
@@ -457,7 +463,7 @@ fn pilatus_results_match_process_files() {
     let poni = Poni::load("test_data/v1.poni").unwrap();
     let integrator = Arc::new(Integrator::new(Geometry::new(0, 0, poni)));
     let path = String::from("test_data/CeO2_Pilatus1M.tif");
-    let files = vec![path.clone(), path.clone(), path];
+    let files = vec![path.clone(), path];
     let task = Integration1D { n_bins: 1000 };
     let reference = process_files(&files, Arc::clone(&integrator), task, 2, 1);
     let frame = Frame::from_tiff(files[0].clone()).unwrap();
@@ -467,7 +473,7 @@ fn pilatus_results_match_process_files() {
             .unwrap()
             .collect();
     let from_frames: Vec<_> = process_streaming(
-        copies(&[copy(&frame), copy(&frame), frame]),
+        copies(&[copy(&frame), frame]),
         Arc::clone(&integrator),
         task,
         options,

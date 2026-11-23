@@ -22,9 +22,9 @@ pub fn save_vec(path: &str, vec: &[f64]) {
 
     let path_str = dir_str + path;
     let path: &Path = Path::new(path_str.as_str());
-    let mut file = fs::File::create(path).unwrap();
+    let mut writer = std::io::BufWriter::new(fs::File::create(path).unwrap());
     for val in vec.iter() {
-        file.write_all(format!("{}\n", val).as_bytes()).unwrap();
+        writeln!(writer, "{val}").unwrap();
     }
 }
 
@@ -42,10 +42,9 @@ pub fn save_vec2(path: &str, x: &[f64], y: &[f64]) {
 
     let path_str = dir_str + path;
     let path: &Path = Path::new(path_str.as_str());
-    let mut file = fs::File::create(path).unwrap();
+    let mut writer = std::io::BufWriter::new(fs::File::create(path).unwrap());
     for (xv, yv) in x.iter().zip(y.iter()) {
-        file.write_all(format!("{} {}\n", xv, yv).as_bytes())
-            .unwrap();
+        writeln!(writer, "{xv} {yv}").unwrap();
     }
 }
 
@@ -57,10 +56,9 @@ pub fn save_vec3(path: &str, x: &[f64], y: &[f64], z: &[f64]) {
 
     let path_str = dir_str + path;
     let path: &Path = Path::new(path_str.as_str());
-    let mut file = fs::File::create(path).unwrap();
+    let mut writer = std::io::BufWriter::new(fs::File::create(path).unwrap());
     for ((xv, yv), zv) in x.iter().zip(y.iter()).zip(z.iter()) {
-        file.write_all(format!("{} {} {}\n", xv, yv, zv).as_bytes())
-            .unwrap();
+        writeln!(writer, "{xv} {yv} {zv}").unwrap();
     }
 }
 

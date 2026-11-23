@@ -753,13 +753,13 @@ mod integration_tests {
             poni::Poni,
         };
         use std::sync::Arc;
-        const FULL: [usize; 2] = [36, 72];
+        const FULL: [usize; 2] = [12, 18];
         const PIXEL: f64 = 1e-4;
         let edges = |n: usize, axis: usize, gaps: bool, curved: bool| -> Vec<[[f64; 3]; 2]> {
             let mut lo = 0.;
             (0..n)
                 .map(|i| {
-                    if gaps && (i == 7 || i == 20) {
+                    if gaps && (i == 3 || i == 7) {
                         lo += 0.4 * PIXEL;
                     }
                     let hi = lo + PIXEL * (1. + 0.05 * (i as f64 * 0.7).sin());

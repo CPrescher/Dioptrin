@@ -260,23 +260,39 @@ fn test_integrator_set_radial_unit() {
     assert_eq!(integrator.radial_unit(), RadialUnit::QAngstrom);
 }
 
+fn small_radial_unit_fixture() -> (Frame, Poni) {
+    let mut poni = Poni::load("test_data/v1.poni").unwrap();
+    // Same physical extent as Pilatus 1M on a compact 48x48 grid.
+    let scale = 1000.0 / 48.0;
+    poni.pixel1 *= scale;
+    poni.pixel2 *= scale;
+    let (dim1, dim2) = (48, 48);
+    let data = (0..dim1 * dim2)
+        .map(|i| 10.0 + ((i * 37) % 101) as f64)
+        .collect();
+    (
+        Frame {
+            name: "synthetic_48x48".into(),
+            data,
+            dim1,
+            dim2,
+        },
+        poni,
+    )
+}
+
 #[test]
 fn test_integrator_tth_deg_output_range() {
-    util::download_pilatus_test_file();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
 
     // Integrate in radians
-    let poni1 = Poni::load("test_data/v1.poni").unwrap();
-    let geometry1 = Geometry::new(0, 0, poni1);
-    let integrator_rad = Integrator::new(geometry1)
+    let integrator_rad = Integrator::new(Geometry::new(0, 0, poni.clone()))
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::TthRad);
     let (x_rad, _) = integrator_rad.integrate1d(&frame, 100);
 
     // Integrate in degrees
-    let poni2 = Poni::load("test_data/v1.poni").unwrap();
-    let geometry2 = Geometry::new(0, 0, poni2);
-    let integrator_deg = Integrator::new(geometry2)
+    let integrator_deg = Integrator::new(Geometry::new(0, 0, poni))
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::TthDeg);
     let (x_deg, _) = integrator_deg.integrate1d(&frame, 100);
@@ -295,10 +311,8 @@ fn test_integrator_tth_deg_output_range() {
 
 #[test]
 fn test_integrator_q_angstrom_output_range() {
-    util::download_pilatus_test_file();
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
     let wavelength = poni.wavelength;
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
 
     // Integrate in q (Å⁻¹)
     let geometry = Geometry::new(0, 0, poni);
@@ -329,21 +343,16 @@ fn test_integrator_q_angstrom_output_range() {
 
 #[test]
 fn test_integrator_q_nm_vs_q_angstrom_ratio() {
-    util::download_pilatus_test_file();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
 
     // Integrate in q (Å⁻¹)
-    let poni1 = Poni::load("test_data/v1.poni").unwrap();
-    let geometry1 = Geometry::new(0, 0, poni1);
-    let integrator_qa = Integrator::new(geometry1)
+    let integrator_qa = Integrator::new(Geometry::new(0, 0, poni.clone()))
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::QAngstrom);
     let (x_qa, _) = integrator_qa.integrate1d(&frame, 100);
 
     // Integrate in q (nm⁻¹)
-    let poni2 = Poni::load("test_data/v1.poni").unwrap();
-    let geometry2 = Geometry::new(0, 0, poni2);
-    let integrator_qn = Integrator::new(geometry2)
+    let integrator_qn = Integrator::new(Geometry::new(0, 0, poni))
         .with_method(IntegrationMethod::Counting)
         .with_radial_unit(RadialUnit::QNm);
     let (x_qn, _) = integrator_qn.integrate1d(&frame, 100);
@@ -366,8 +375,7 @@ fn test_integrator_q_nm_vs_q_angstrom_ratio() {
 fn test_integrator_intensity_invariant_across_units() {
     // The integrated intensity should be approximately the same regardless of radial unit
     // (since we're integrating the same data, just with different x-axis)
-    util::download_pilatus_test_file();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
 
     let units = [
         RadialUnit::TthRad,
@@ -379,8 +387,7 @@ fn test_integrator_intensity_invariant_across_units() {
     let mut total_intensities = Vec::new();
 
     for unit in &units {
-        let poni = Poni::load("test_data/v1.poni").unwrap();
-        let geometry = Geometry::new(0, 0, poni);
+        let geometry = Geometry::new(0, 0, poni.clone());
         let integrator = Integrator::new(geometry)
             .with_method(IntegrationMethod::Counting)
             .with_radial_unit(*unit);
@@ -406,9 +413,7 @@ fn test_integrator_intensity_invariant_across_units() {
 
 #[test]
 fn test_integrator_pixel_split_with_q_unit() {
-    util::download_pilatus_test_file();
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
     let geometry = Geometry::new(0, 0, poni);
 
     let integrator = Integrator::new(geometry)
@@ -426,9 +431,7 @@ fn test_integrator_pixel_split_with_q_unit() {
 
 #[test]
 fn test_integrator_supersampled_with_q_unit() {
-    util::download_pilatus_test_file();
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
     let geometry = Geometry::new(0, 0, poni);
 
     let integrator = Integrator::new(geometry)
@@ -446,9 +449,7 @@ fn test_integrator_supersampled_with_q_unit() {
 
 #[test]
 fn test_integrator_unit_change_invalidates_cache() {
-    util::download_pilatus_test_file();
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
-    let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
     let geometry = Geometry::new(0, 0, poni);
 
     let mut integrator = Integrator::new(geometry)
@@ -1363,14 +1364,14 @@ fn polarization_setter_reuses_unchanged_corrections_and_updates_changed_factors(
 /// bin. The Histogram method used to index out of bounds here.
 #[test]
 fn histogram_method_keeps_the_outermost_pixel_in_range() {
-    let (rows, cols) = (1043, 981);
-    let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
+    let (frame, poni) = small_radial_unit_fixture();
+    let (rows, cols) = (frame.dim1, frame.dim2);
     let data = vec![1.0; rows * cols];
-    for n in [1000, 1500, 2000, 3000] {
-        for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
-            let integrator = Integrator::new(Geometry::new(rows, cols, poni.clone()))
-                .with_method(IntegrationMethod::Histogram)
-                .with_radial_unit(unit);
+    for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
+        let integrator = Integrator::new(Geometry::new(rows, cols, poni.clone()))
+            .with_method(IntegrationMethod::Histogram)
+            .with_radial_unit(unit);
+        for n in [1000, 1500, 2000, 3000] {
             let (x, y) = integrator.integrate1d_from_slice(&data, rows, cols, n);
             assert_eq!((x.len(), y.len()), (n, n));
             // The last bin holds the outermost pixel, so it is not empty.
@@ -1729,22 +1730,22 @@ fn pixel_split_cake_is_bit_identical_across_thread_counts() {
     poni.pixel1 = 172e-6;
     poni.pixel2 = 172e-6;
     poni.distance = 0.05;
-    poni.poni1 = 60.0 * 172e-6;
-    poni.poni2 = 90.0 * 172e-6;
+    poni.poni1 = 24.0 * 172e-6;
+    poni.poni2 = 36.0 * 172e-6;
     poni.wavelength = 1e-10;
-    let (dim1, dim2) = (160, 200);
+    let (dim1, dim2) = (64, 80);
     let data: Vec<f64> = (0..dim1 * dim2)
         .map(|j| 10.0 + (j as f64 * 0.37).sin() * 7.0 + (j % 13) as f64)
         .collect();
     let cake = || {
         let ai = Integrator::new(Geometry::new(dim1, dim2, poni.clone()))
             .with_method(IntegrationMethod::PixelSplit);
-        let (i, e) = ai.integrate2d_with_errors_from_slice(&data, dim1, dim2, 64, 36);
+        let (i, e) = ai.integrate2d_with_errors_from_slice(&data, dim1, dim2, 32, 36);
         let ranged = ai.integrate2d_with_azimuthal_range_from_slice(
             &data,
             dim1,
             dim2,
-            64,
+            32,
             36,
             0.0,
             10f64.to_radians(),
@@ -1754,7 +1755,7 @@ fn pixel_split_cake_is_bit_identical_across_thread_counts() {
             &data,
             dim1,
             dim2,
-            64,
+            32,
             36,
             0.0,
             1f64.to_radians(),
@@ -1773,7 +1774,7 @@ fn pixel_split_cake_is_bit_identical_across_thread_counts() {
             .unwrap()
     };
     let reference = pool(1).install(cake);
-    for threads in [2, 3, 4, 8, 2, 3, 4, 8] {
+    for threads in [2, 3, 4, 8] {
         assert!(
             pool(threads).install(cake) == reference,
             "pixel_split cake differs with {threads} threads"

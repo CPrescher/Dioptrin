@@ -31,18 +31,15 @@ fn catalogue_coordinates_and_builtin_masks_match_pyfai() {
             }
         }
         use sha2::{Digest, Sha256};
+        let mask = d.builtin_mask(shape).unwrap();
         assert_eq!(
-            format!("{:x}", Sha256::digest(d.builtin_mask(shape).unwrap())),
+            format!("{:x}", Sha256::digest(&mask)),
             row["mask_sha256"].as_str().unwrap(),
             "{} mask pixels",
             d.name
         );
         assert_eq!(
-            d.builtin_mask(shape)
-                .unwrap()
-                .iter()
-                .filter(|v| **v != 0)
-                .count() as u64,
+            mask.iter().filter(|v| **v != 0).count() as u64,
             row["masked"].as_u64().unwrap(),
             "{}",
             d.name
@@ -456,25 +453,20 @@ fn refinement_uses_nonuniform_physical_positions_in_every_residual_and_jacobian(
     assert!(fitted.rms_rad < 1e-9);
 }
 /// Pixels of `t` (an `op` transform of `base`) whose built-in mask differs
-/// from the base mask mapped through the same operation, at binning `bin`.
-fn mask_mismatches(
-    base: &detector::Detector,
+/// from `bmask` (the base mask at `bshape`) mapped through the same operation.
+fn mask_mismatches_with_base(
+    bshape: [usize; 2],
+    bmask: &[u8],
     t: &detector::Detector,
     op: detector::DetectorTransform,
-    bin: [usize; 2],
 ) -> usize {
     use detector::DetectorTransform::*;
-    let full = base.max_shape.unwrap();
-    let bshape = [full[0] / bin[0], full[1] / bin[1]];
     let shape = if matches!(op, Transpose | Transverse | Left | Right) {
         [bshape[1], bshape[0]]
     } else {
         bshape
     };
-    let (tmask, bmask) = (
-        t.builtin_mask(shape).unwrap(),
-        base.builtin_mask(bshape).unwrap(),
-    );
+    let tmask = t.builtin_mask(shape).unwrap();
     let mut differ = 0;
     for r in 0..shape[0] {
         for c in 0..shape[1] {
@@ -484,6 +476,19 @@ fn mask_mismatches(
         }
     }
     differ
+}
+/// Pixels of `t` (an `op` transform of `base`) whose built-in mask differs
+/// from the base mask mapped through the same operation, at binning `bin`.
+fn mask_mismatches(
+    base: &detector::Detector,
+    t: &detector::Detector,
+    op: detector::DetectorTransform,
+    bin: [usize; 2],
+) -> usize {
+    let full = base.max_shape.unwrap();
+    let bshape = [full[0] / bin[0], full[1] / bin[1]];
+    let bmask = base.builtin_mask(bshape).unwrap();
+    mask_mismatches_with_base(bshape, &bmask, t, op)
 }
 const OPS: [detector::DetectorTransform; 8] = {
     use detector::DetectorTransform::*;
@@ -640,9 +645,14 @@ fn binned_circular_masks_match_pyfai_under_every_transform() {
         // Every transform at one odd shape (the exhaustive invariant runs on
         // small detectors above; full catalogue sizes are slow in debug).
         if bin == [6, 6] {
+            let bshape = [full[0] / bin[0], full[1] / bin[1]];
             for op in OPS {
                 let t = base.transformed(op).unwrap();
-                assert_eq!(mask_mismatches(&base, &t, op, bin), 0, "{case} {op:?}");
+                assert_eq!(
+                    mask_mismatches_with_base(bshape, &mask, &t, op),
+                    0,
+                    "{case} {op:?}"
+                );
             }
         }
     }

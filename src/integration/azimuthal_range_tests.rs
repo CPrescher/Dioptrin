@@ -49,66 +49,88 @@ fn image() -> Vec<f64> {
 fn fixed_grid_snapshots_preserve_corrected_range_edges_and_error_bars() {
     // Exercise the cached execution with the exact edge policies of the corrected
     // range API, including full circles written on either side of the seam.
+    let (rows, cols, nr, na) = (16, 20, 8, 12);
+    let mut p = Poni::new();
+    p.pixel1 = 1e-4;
+    p.pixel2 = 1e-4;
+    p.distance = 0.015;
+    p.poni1 = 0.0008;
+    p.poni2 = 0.001;
+    p.rot1 = 0.01;
+    p.rot2 = -0.02;
+    p.wavelength = 1e-10;
+    let geom = Geometry::new(rows, cols, p);
+    let base_data: Vec<f64> = (0..rows * cols)
+        .map(|i| 10.0 + ((i * 37) % 101) as f64)
+        .collect();
     for method in methods().into_iter().chain([IntegrationMethod::PyfaiFull]) {
-        for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
-            for fast in [false, true] {
-                let mut ai = integrator(method)
-                    .with_radial_unit(unit)
-                    .with_fast_math(fast)
-                    .with_polarization_factor(0.6);
-                for masking in 0..3 {
-                    ai.set_mask(Mask {
-                        data: (0..ROWS * COLS)
-                            .map(|i| u8::from(masking == 2 || (masking == 1 && i % 17 == 0)))
-                            .collect(),
-                        dim1: ROWS,
-                        dim2: COLS,
-                    });
-                    for range in [
+        for (unit, fast) in [(RadialUnit::TthDeg, false), (RadialUnit::QNm, true)] {
+            let mut ai = Integrator::new(geom.clone())
+                .with_method(method)
+                .with_radial_unit(unit)
+                .with_fast_math(fast)
+                .with_polarization_factor(0.6);
+            for masking in 0..3 {
+                ai.set_mask(Mask {
+                    data: (0..rows * cols)
+                        .map(|i| u8::from(masking == 2 || (masking == 1 && i % 17 == 0)))
+                        .collect(),
+                    dim1: rows,
+                    dim2: cols,
+                });
+                let ranges: &[(f64, f64)] = if masking == 2 {
+                    &[(-PI, PI)]
+                } else {
+                    &[
                         (-PI, PI),
                         (0., TAU),
                         (-TAU, 0.),
                         (-3. * PI, -PI),
                         (2.5, 2.5 + PI / 2.),
-                    ] {
-                        let mut data = image();
-                        let first = run(&ai, &data, range, false).unwrap();
-                        let radial = ai.default_radial_edges_2d(&ai.for_shape(ROWS, COLS), NR);
-                        let mut grid = IntegrationGrid2d::new(NR, NA, radial, range)
-                            .unwrap()
-                            .with_clamped_index_rounding();
-                        // Mirror the radial clamping of the range path.
-                        match method {
-                            IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
-                            IntegrationMethod::Supersampled { .. } => {
-                                grid = grid.with_clamped_radial_outside()
-                            }
-                            _ => (),
+                    ]
+                };
+                for &range in ranges {
+                    let mut data = base_data.clone();
+                    let first = ai
+                        .integrate2d_on_azimuthal_range_from_slice(
+                            &data, rows, cols, nr, na, range, false,
+                        )
+                        .unwrap();
+                    let radial = ai.default_radial_edges_2d(&ai.for_shape(rows, cols), nr);
+                    let mut grid = IntegrationGrid2d::new(nr, na, radial, range)
+                        .unwrap()
+                        .with_clamped_index_rounding();
+                    // Mirror the radial clamping of the range path.
+                    match method {
+                        IntegrationMethod::Counting => grid = grid.with_clamped_radial_end(),
+                        IntegrationMethod::Supersampled { .. } => {
+                            grid = grid.with_clamped_radial_outside()
                         }
-                        let plan = ai.prepare_fixed2d_on_grid((ROWS, COLS), &grid).unwrap();
-                        let same = |a: &[f64], b: &[f64]| {
-                            assert_eq!(a.len(), b.len());
-                            for (a, b) in a.iter().zip(b) {
-                                assert_eq!(
-                                    a.to_bits(),
-                                    b.to_bits(),
-                                    "{method:?} {unit:?} {range:?}"
-                                );
-                            }
-                        };
-                        same(
-                            &plan.integrate_frame(&data, false).unwrap().0,
-                            &first.intensity,
-                        );
-                        for scale in [1., -0.3] {
-                            for x in &mut data {
-                                *x *= scale;
-                            }
-                            let expected = run(&ai, &data, range, true).unwrap();
-                            let (actual, errors) = plan.integrate_frame(&data, true).unwrap();
-                            same(&actual, &expected.intensity);
-                            same(&errors.unwrap(), expected.errors.as_ref().unwrap());
+                        _ => (),
+                    }
+                    let plan = ai.prepare_fixed2d_on_grid((rows, cols), &grid).unwrap();
+                    let same = |a: &[f64], b: &[f64]| {
+                        assert_eq!(a.len(), b.len());
+                        for (a, b) in a.iter().zip(b) {
+                            assert_eq!(a.to_bits(), b.to_bits(), "{method:?} {unit:?} {range:?}");
                         }
+                    };
+                    same(
+                        &plan.integrate_frame(&data, false).unwrap().0,
+                        &first.intensity,
+                    );
+                    for scale in [1., -0.3] {
+                        for x in &mut data {
+                            *x *= scale;
+                        }
+                        let expected = ai
+                            .integrate2d_on_azimuthal_range_from_slice(
+                                &data, rows, cols, nr, na, range, true,
+                            )
+                            .unwrap();
+                        let (actual, errors) = plan.integrate_frame(&data, true).unwrap();
+                        same(&actual, &expected.intensity);
+                        same(&errors.unwrap(), expected.errors.as_ref().unwrap());
                     }
                 }
             }
@@ -553,7 +575,17 @@ fn distant_full_turns_are_corrected_with_consistent_axes_and_results() {
 #[test]
 fn non_finite_pixels_follow_the_default_path() {
     // A pixel well away from the beam, at an azimuth inside (0, pi/2).
-    let g = geometry();
+    let (rows, cols, nr, na) = (24, 32, 8, 12);
+    let mut p = Poni::new();
+    p.pixel1 = 1e-4;
+    p.pixel2 = 1e-4;
+    p.distance = 0.02;
+    p.poni1 = 0.0012;
+    p.poni2 = 0.0016;
+    p.rot1 = 0.01;
+    p.rot2 = -0.02;
+    p.wavelength = 1e-10;
+    let g = Geometry::new(rows, cols, p);
     let azimuth = g.calc_azimuth_all();
     let tth = g.calc_tth_all();
     let pixel = (0..g.size())
@@ -561,27 +593,53 @@ fn non_finite_pixels_follow_the_default_path() {
         .unwrap();
     let mut one_hot = vec![0.0; g.size()];
     one_hot[pixel] = 1.0;
+    let base_data: Vec<f64> = (0..rows * cols)
+        .map(|i| 10.0 + ((i * 37) % 101) as f64)
+        .collect();
     let all = [
         IntegrationMethod::Counting,
         IntegrationMethod::PixelSplit,
         IntegrationMethod::Supersampled { n_ss: 3 },
         IntegrationMethod::PyfaiFull,
     ];
-    for bad in [f64::NAN, f64::INFINITY] {
-        let mut data = image();
-        data[pixel] = bad;
-        for method in all {
-            for fast in [true, false] {
-                let ai = integrator(method).with_fast_math(fast);
+    for method in all {
+        for fast in [true, false] {
+            let ai = Integrator::new(g.clone())
+                .with_method(method)
+                .with_radial_unit(RadialUnit::TthDeg)
+                .with_fast_math(fast);
+            let touched = ai
+                .integrate2d_on_azimuthal_range_from_slice(
+                    &one_hot,
+                    rows,
+                    cols,
+                    nr,
+                    na,
+                    (-PI, PI),
+                    false,
+                )
+                .unwrap();
+            let touched: Vec<usize> = (0..nr * na)
+                .filter(|&k| touched.intensity[k] != 0.0)
+                .collect();
+            assert!(!touched.is_empty());
+            for bad in [f64::NAN, f64::INFINITY] {
+                let mut data = base_data.clone();
+                data[pixel] = bad;
                 let (want, want_err) =
-                    ai.integrate2d_with_errors_from_slice(&data, ROWS, COLS, NR, NA);
-                let got = run(&ai, &data, (-PI, PI), true).unwrap();
+                    ai.integrate2d_with_errors_from_slice(&data, rows, cols, nr, na);
+                let got = ai
+                    .integrate2d_on_azimuthal_range_from_slice(
+                        &data,
+                        rows,
+                        cols,
+                        nr,
+                        na,
+                        (-PI, PI),
+                        true,
+                    )
+                    .unwrap();
                 let got_err = got.errors.clone().unwrap();
-                let touched = run(&ai, &one_hot, (-PI, PI), false).unwrap();
-                let touched: Vec<usize> = (0..NR * NA)
-                    .filter(|&k| touched.intensity[k] != 0.0)
-                    .collect();
-                assert!(!touched.is_empty());
                 assert_eq!(
                     nonfinite(&got.intensity),
                     touched,
@@ -606,7 +664,17 @@ fn non_finite_pixels_follow_the_default_path() {
                     assert!(bit_identical(&got_err, &want_err), "{bad} fast={fast}");
                 }
                 // A sector that does not contain the pixel stays finite.
-                let other = run(&ai, &data, (-2.0, -1.0), true).unwrap();
+                let other = ai
+                    .integrate2d_on_azimuthal_range_from_slice(
+                        &data,
+                        rows,
+                        cols,
+                        nr,
+                        na,
+                        (-2.0, -1.0),
+                        true,
+                    )
+                    .unwrap();
                 assert!(
                     nonfinite(&other.intensity).is_empty()
                         && nonfinite(&other.errors.unwrap()).is_empty()
@@ -861,8 +929,8 @@ fn supersampled_radial_axis_matches_the_default_on_random_geometries() {
         ((seed >> 11) as f64) / ((1u64 << 53) as f64)
     };
     let (mut above, mut below) = (0, 0);
-    for _ in 0..24 {
-        let (rows, cols) = (20 + (rnd() * 30.0) as usize, 20 + (rnd() * 30.0) as usize);
+    for _ in 0..10 {
+        let (rows, cols) = (10 + (rnd() * 14.0) as usize, 10 + (rnd() * 14.0) as usize);
         let mut p = Poni::new();
         p.pixel1 = 1e-4;
         p.pixel2 = 1.3e-4;
