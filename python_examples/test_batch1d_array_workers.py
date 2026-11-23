@@ -3,7 +3,13 @@ with neither it runs on the global Rayon pool as before; with either, at most
 num_workers frames run at a time, each on a pool of num_threads threads (the
 split itself is checked in Rust by
 batch::tests::map_in_pools_applies_the_requested_split). Every split gives
-the bits of per-frame integrate1d. Synthetic geometry only."""
+the bits of the default batch path, and on the small frames used here those
+of per-frame integrate1d. Not on large ones in general: with
+mask_mode="dynamic" on the default csc layout, a direct integrate1d call
+accumulates a frame of at least 262,144 pixels in chunks across the Rayon
+pool, while frames in a batch (default or split) are accumulated in one pass,
+so batch1d can differ from integrate1d in the last bits (~1e-13).
+Synthetic geometry only."""
 import unittest
 
 import numpy as np
@@ -59,6 +65,29 @@ class Batch1dArrayWorkerTests(unittest.TestCase):
                         for item, wanted in zip(batch, expected):
                             self.assertTrue(item.is_ok(), item.error)
                             self.same(item.result, wanted, label)
+
+    def test_large_dynamic_frames_match_default_batch(self):
+        # Large enough for integrate1d to chunk (see the module docstring), so
+        # the reference is the default batch path, not integrate1d.
+        shape = (1024, 1024)
+        rng = np.random.default_rng(3)
+        images = [rng.random(shape) * 100 + 10 * i for i in range(3)]
+        mask = (np.arange(np.prod(shape)).reshape(shape) % 17 == 0).astype(np.uint8)
+        for method in ("counting", "pixel_split"):
+            ai = dioptrin.Integrator.from_poni_dict(dict(PONI), method=method,
+                                                    mask_mode="dynamic")
+            ai.set_mask(mask)
+            for name in ("plain", "errors"):
+                kw = CALLS[name]
+                expected = ai.batch1d(images, 500, **kw)
+                for workers, threads in SPLITS[1:]:
+                    label = f"{method} {name} {workers}x{threads}"
+                    with self.subTest(label):
+                        batch = ai.batch1d(images, 500, num_workers=workers,
+                                           num_threads=threads, **kw)
+                        for item, wanted in zip(batch, expected):
+                            self.assertTrue(item.is_ok(), item.error)
+                            self.same(item.result, wanted.result, label)
 
     def test_mixed_shapes_empty_and_invalid_counts(self):
         ai = dioptrin.Integrator.from_poni_dict(dict(PONI))

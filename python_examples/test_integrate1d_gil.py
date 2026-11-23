@@ -1,11 +1,10 @@
 """Integrator.integrate1d releases the GIL while it loads a TIFF and while it
 integrates, so other Python threads run meanwhile and two integrators
 (one per thread; an Integrator cannot be shared between threads) integrate
-concurrently. 1D calls take about a millisecond, so every measurement spans
-a loop of many calls.
+concurrently.
 
-Each scenario runs in a subprocess with a timeout and two Rayon threads, so
-the two concurrent calls do not just compete for every core.
+Each scenario runs in a subprocess with a timeout and two Rayon threads (one
+for the counter scenario), so the calls do not just compete for every core.
 """
 import os
 import subprocess
@@ -43,9 +42,9 @@ def snapshot(result):
 """
 
 
-def run_scenario(body):
+def run_scenario(body, rayon_threads=2):
     script = PRELUDE + textwrap.dedent(body) + "\nprint('SCENARIO OK')\n"
-    env = dict(os.environ, RAYON_NUM_THREADS="2")
+    env = dict(os.environ, RAYON_NUM_THREADS=str(rayon_threads))
     try:
         proc = subprocess.run(
             [sys.executable, "-c", script],
@@ -60,8 +59,8 @@ def run_scenario(body):
 
 
 class Integrate1dGilTests(unittest.TestCase):
-    def check(self, body):
-        proc = run_scenario(body)
+    def check(self, body, rayon_threads=2):
+        proc = run_scenario(body, rayon_threads)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("SCENARIO OK", proc.stdout)
 
@@ -90,9 +89,18 @@ class Integrate1dGilTests(unittest.TestCase):
         """)
 
     def test_two_integrators_overlap_in_time(self):
-        """With the GIL held, the second thread could not even record its start
-        time until the first call returned, so the calls could never overlap."""
+        """Single calls of two threads overlap in time. The switch interval is
+        raised above the scenario's length, so CPython never forces a thread
+        to drop the GIL: a thread that holds it through each call runs all
+        its calls before the other thread's first (its intervals then never
+        overlap), and only a call that releases the GIL lets the other thread
+        start one meanwhile. With the default 5 ms interval a GIL-holding call
+        would still overlap: a thread can be switched out after reading its
+        start time, so its interval contains the other thread's call. A call
+        with azimuthal_std takes about 10 ms, long enough to time one alone."""
         self.check("""
+        import sys
+        sys.setswitchinterval(30.0)
         def attempt():
             barrier = threading.Barrier(2)
             intervals = {0: [], 1: []}
@@ -102,20 +110,25 @@ class Integrate1dGilTests(unittest.TestCase):
                 barrier.wait()
                 for _ in range(6):
                     start = time.perf_counter()
-                    for _ in range(20):
-                        ai.integrate1d(IMAGE, 1000, errors=True)
+                    ai.integrate1d(IMAGE, 1000, errors=True, azimuthal_std=True)
                     intervals[k].append((start, time.perf_counter()))
             threads = [threading.Thread(target=worker, args=(k,)) for k in (0, 1)]
             for t in threads: t.start()
             for t in threads: t.join()
-            return any(max(a[0], b[0]) < min(a[1], b[1])
-                       for a in intervals[0] for b in intervals[1])
-        assert any(attempt() for _ in range(3)), "integrate1d calls never overlapped"
+            overlap = sum(max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+                          for a in intervals[0] for b in intervals[1])
+            busy = min(sum(e - s for s, e in intervals[k]) for k in (0, 1))
+            return overlap / busy
+        # Released: the calls overlap for nearly all their time; held: never.
+        fractions = [attempt() for _ in range(3)]
+        print("overlap", ["%.2f" % f for f in fractions])
+        assert max(fractions) > 0.5, ("integrate1d calls did not overlap", fractions)
         """)
 
     def test_python_threads_run_during_a_call(self):
         """A pure-Python thread keeps counting while integrate1d runs, for
-        arrays and TIFF paths and on every branch."""
+        arrays and TIFF paths and on every branch. One Rayon thread, so the
+        counter has a core of its own on a two-core machine."""
         self.check("""
         ai = make("pixel_split")
         warm(ai)
@@ -143,7 +156,7 @@ class Integrate1dGilTests(unittest.TestCase):
             ratios = [attempt() for _ in range(3)]
             print(name, ["%.2f" % r for r in ratios])
             assert max(ratios) > 0.6, (name, ratios)
-        """)
+        """, rayon_threads=1)
 
 
 if __name__ == "__main__":
