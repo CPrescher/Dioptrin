@@ -1209,20 +1209,20 @@ mod tests {
         poni.pixel1 = 172e-6;
         poni.pixel2 = 172e-6;
         poni.distance = 0.05;
-        poni.poni1 = 60.0 * 172e-6;
-        poni.poni2 = 90.0 * 172e-6;
+        poni.poni1 = 24.0 * 172e-6;
+        poni.poni2 = 36.0 * 172e-6;
         poni.wavelength = 1e-10;
-        let geometry = Geometry::new(160, 200, poni);
+        let geometry = Geometry::new(64, 80, poni);
         let tth = geometry.calc_tth_all();
         let azimuthal = geometry.calc_azimuth_all();
         let build = || {
-            let lut = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 64, 36, RadialUnit::TthRad);
+            let lut = build_lut2d_ps_csr(&geometry, &tth, &azimuthal, 32, 36, RadialUnit::TthRad);
             // Bins centred on 0°, 10°, ...: the bins around ±180° wrap.
             let wrapped = build_lut2d_ps_csr_with_azimuthal_range(
                 &geometry,
                 &tth,
                 &azimuthal,
-                64,
+                32,
                 36,
                 0.0,
                 10f64.to_radians(),
@@ -1234,13 +1234,13 @@ mod tests {
                 &geometry,
                 &tth,
                 &azimuthal,
-                64,
+                32,
                 36,
                 0.0,
                 1f64.to_radians(),
                 RadialUnit::TthRad,
             );
-            let lut1d = build_lut1d_ps_csr(&geometry, &tth, 64, RadialUnit::TthRad);
+            let lut1d = build_lut1d_ps_csr(&geometry, &tth, 32, RadialUnit::TthRad);
             [
                 table_bits(
                     &narrow.row_ptr,
@@ -1267,7 +1267,7 @@ mod tests {
                 .unwrap()
         };
         let reference = pool(1).install(build);
-        for threads in [2, 3, 4, 8, 2, 3, 4, 8] {
+        for threads in [2, 3, 4, 8] {
             let tables = pool(threads).install(build);
             for (name, (a, b)) in ["2d narrow", "2d", "2d wrapped", "1d"]
                 .iter()

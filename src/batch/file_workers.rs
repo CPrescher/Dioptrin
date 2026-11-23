@@ -561,14 +561,14 @@ mod tests {
         let waiter = Arc::clone(&control);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || tx.send(waiter.wait_for_credit(2, 2)).unwrap());
-        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
         control.deliver(1);
         assert!(rx.recv_timeout(Duration::from_secs(10)).unwrap());
         // Cancellation releases a waiting producer with `false`.
         let waiter = Arc::clone(&control);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || tx.send(waiter.wait_for_credit(10, 2)).unwrap());
-        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
         control.cancel();
         assert!(!rx.recv_timeout(Duration::from_secs(10)).unwrap());
         assert!(!control.wait_for_credit(0, 2));

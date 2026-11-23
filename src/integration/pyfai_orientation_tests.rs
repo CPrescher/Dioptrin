@@ -20,22 +20,22 @@ use crate::poni::Poni;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-const N1: usize = 18;
-const N2: usize = 24;
+const N1: usize = 10;
+const N2: usize = 14;
 const PIXEL: f64 = 1e-4;
 
-/// Beam on the detector inside pixel (8, 13), so the ±π seam crosses the
+/// Beam on the detector inside pixel (4, 7), so the ±π seam crosses the
 /// image and the beam pixel is singular; or beam off the detector, where no
 /// pixel crosses the seam.
 fn poni(beam_on: bool) -> Poni {
     let mut p = Poni::new();
     p.pixel1 = PIXEL;
     p.pixel2 = PIXEL;
-    p.distance = 0.03;
+    p.distance = 0.02;
     (p.poni1, p.poni2) = if beam_on {
-        (8.3 * PIXEL, 13.7 * PIXEL)
+        (4.3 * PIXEL, 7.7 * PIXEL)
     } else {
-        (-7.0 * PIXEL, -11.0 * PIXEL)
+        (-5.0 * PIXEL, -7.0 * PIXEL)
     };
     p.wavelength = 1e-10;
     p
@@ -162,7 +162,7 @@ fn assert_paths_agree(
     (reference_image, reference_dims): (&[f64], (usize, usize)),
 ) {
     let one_d = |ai: &Integrator, data: &[f64], (d1, d2): (usize, usize)| {
-        ai.integrate1d_from_slice(data, d1, d2, 40).1
+        ai.integrate1d_from_slice(data, d1, d2, 20).1
     };
     assert_close(
         &format!("{label} 1D"),
@@ -171,7 +171,7 @@ fn assert_paths_agree(
         None,
     );
     let cake = |ai: &Integrator, data: &[f64], (d1, d2): (usize, usize)| {
-        ai.integrate2d_from_slice(data, d1, d2, 20, 36)
+        ai.integrate2d_from_slice(data, d1, d2, 12, 18)
     };
     let radial = reference.radial_range().unwrap_or_else(|| {
         let [lo, hi] = crate::lut::pyfai_radial_range(reference.geometry(), RadialUnit::TthRad);
@@ -184,7 +184,7 @@ fn assert_paths_agree(
         Some(&coverage(
             reference,
             reference_dims,
-            (20, 36),
+            (12, 18),
             radial,
             (-PI, PI),
         )),

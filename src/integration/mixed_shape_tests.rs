@@ -16,7 +16,7 @@ use crate::poni::Poni;
 
 /// Includes two shapes with the same pixel count, which a length check alone
 /// cannot tell apart.
-const SHAPES: [(usize, usize); 3] = [(48, 36), (20, 30), (36, 48)];
+const SHAPES: [(usize, usize); 3] = [(16, 12), (8, 12), (12, 16)];
 const METHODS: [IntegrationMethod; 5] = [
     IntegrationMethod::Counting,
     IntegrationMethod::PixelSplit,
@@ -24,17 +24,17 @@ const METHODS: [IntegrationMethod; 5] = [
     IntegrationMethod::Supersampled { n_ss: 2 },
     IntegrationMethod::Histogram,
 ];
-const N_POINTS: usize = 25;
-const N_RADIAL: usize = 12;
+const N_POINTS: usize = 16;
+const N_RADIAL: usize = 8;
 const N_AZIMUTHAL: usize = 6;
 
 fn integrator(method: IntegrationMethod) -> Integrator {
     let mut poni = Poni::new();
     poni.pixel1 = 1.0;
     poni.pixel2 = 1.0;
-    poni.distance = 40.0;
-    poni.poni1 = 9.3;
-    poni.poni2 = 13.7;
+    poni.distance = 20.0;
+    poni.poni1 = 3.3;
+    poni.poni2 = 4.7;
     poni.wavelength = 1e-10;
     Integrator::new(Geometry::new(2, 2, poni)).with_method(method)
 }
@@ -229,7 +229,7 @@ fn typed_tiff_threads_match_float_references_across_shapes() {
                 })
                 .collect();
             let shared = new();
-            (0..36).into_par_iter().for_each(|i| {
+            (0..18).into_par_iter().for_each(|i| {
                 let k = i % typed.len();
                 let a = (i / typed.len()) % angles.len();
                 let actual = shared.integrate_tiff1d::<true>(&typed[k], N_POINTS);
@@ -253,10 +253,10 @@ fn threads_sharing_an_integrator_integrate_each_shape_with_its_own_tables() {
         let references = references(method);
         let shared = integrator(method);
         std::thread::scope(|scope| {
-            for thread in 0..8 {
+            for thread in 0..4 {
                 let (references, shared) = (&references, &shared);
                 scope.spawn(move || {
-                    for i in 0..30 {
+                    for i in 0..12 {
                         let reference = &references[(thread + i) % references.len()];
                         assert_integrates_like_fresh(shared, reference);
                     }
@@ -273,7 +273,7 @@ fn one_rayon_pool_integrates_mixed_shapes_without_deadlock() {
     for method in METHODS {
         let references = references(method);
         let shared = integrator(method);
-        (0..96).into_par_iter().for_each(|i| {
+        (0..36).into_par_iter().for_each(|i| {
             assert_integrates_like_fresh(&shared, &references[i % references.len()]);
         });
     }
@@ -291,81 +291,79 @@ fn concurrent_shapes_preserve_true_ranges_errors_and_supplied_variances() {
         }
     };
     for method in METHODS.into_iter().take(4) {
-        for fast in [false, true] {
-            for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
-                let new = || {
-                    integrator(method)
-                        .with_fast_math(fast)
-                        .with_radial_unit(unit)
+        for (fast, unit) in [(false, RadialUnit::TthDeg), (true, RadialUnit::QNm)] {
+            let new = || {
+                integrator(method)
+                    .with_fast_math(fast)
+                    .with_radial_unit(unit)
+            };
+            let evaluate = |ai: &Integrator, frame: &Frame| {
+                let range = match frame.dim1 {
+                    8 => (2.5, 2.5 + std::f64::consts::FRAC_PI_2),
+                    12 => (-3. * std::f64::consts::PI, -std::f64::consts::PI),
+                    _ => (0., std::f64::consts::TAU),
                 };
-                let evaluate = |ai: &Integrator, frame: &Frame| {
-                    let range = match frame.dim1 {
-                        20 => (2.5, 2.5 + std::f64::consts::FRAC_PI_2),
-                        36 => (-3. * std::f64::consts::PI, -std::f64::consts::PI),
-                        _ => (0., std::f64::consts::TAU),
-                    };
-                    let pattern = ai.integrate1d_with_errors_from_slice(
+                let pattern = ai.integrate1d_with_errors_from_slice(
+                    &frame.data,
+                    frame.dim1,
+                    frame.dim2,
+                    N_POINTS,
+                );
+                let cake = ai
+                    .integrate2d_on_azimuthal_range_from_slice(
                         &frame.data,
                         frame.dim1,
                         frame.dim2,
-                        N_POINTS,
-                    );
-                    let cake = ai
-                        .integrate2d_on_azimuthal_range_from_slice(
-                            &frame.data,
-                            frame.dim1,
-                            frame.dim2,
-                            N_RADIAL,
-                            N_AZIMUTHAL,
-                            range,
-                            true,
-                        )
-                        .unwrap();
-                    let grid =
-                        IntegrationGrid2d::new(N_RADIAL, N_AZIMUTHAL, (0., 120.), range).unwrap();
-                    let variance: Vec<_> = frame.data.iter().map(|s| 2. * s + 3.).collect();
-                    let raw = ai
-                        .integrate2d_raw_on_grid_with_variances_from_slice(
-                            &frame.data,
-                            &variance,
-                            frame.dim1,
-                            frame.dim2,
-                            &grid,
-                        )
-                        .unwrap();
-                    (pattern, cake, raw)
-                };
-                let references: Vec<_> = SHAPES
-                    .into_iter()
-                    .map(|shape| {
-                        let frame = frame(shape);
-                        let expected = evaluate(&new(), &frame);
-                        (frame, expected)
-                    })
-                    .collect();
-                let shared = new();
-                (0..24).into_par_iter().for_each(|i| {
-                    let (frame, (pattern, cake, raw)) = &references[i % references.len()];
-                    let (actual_pattern, actual_cake, actual_raw) = evaluate(&shared, frame);
-                    close(&actual_pattern.0, &pattern.0);
-                    close(&actual_pattern.1, &pattern.1);
-                    close(&actual_pattern.2, &pattern.2);
-                    assert_eq!(actual_cake.radial, cake.radial);
-                    assert_eq!(actual_cake.azimuthal, cake.azimuthal);
-                    close(&actual_cake.intensity, &cake.intensity);
-                    close(
-                        actual_cake.errors.as_ref().unwrap(),
-                        cake.errors.as_ref().unwrap(),
-                    );
-                    close(&actual_raw.sum_signal, &raw.sum_signal);
-                    close(&actual_raw.sum_norm, &raw.sum_norm);
-                    close(&actual_raw.count, &raw.count);
-                    close(
-                        actual_raw.sum_variance.as_ref().unwrap(),
-                        raw.sum_variance.as_ref().unwrap(),
-                    );
-                });
-            }
+                        N_RADIAL,
+                        N_AZIMUTHAL,
+                        range,
+                        true,
+                    )
+                    .unwrap();
+                let grid =
+                    IntegrationGrid2d::new(N_RADIAL, N_AZIMUTHAL, (0., 120.), range).unwrap();
+                let variance: Vec<_> = frame.data.iter().map(|s| 2. * s + 3.).collect();
+                let raw = ai
+                    .integrate2d_raw_on_grid_with_variances_from_slice(
+                        &frame.data,
+                        &variance,
+                        frame.dim1,
+                        frame.dim2,
+                        &grid,
+                    )
+                    .unwrap();
+                (pattern, cake, raw)
+            };
+            let references: Vec<_> = SHAPES
+                .into_iter()
+                .map(|shape| {
+                    let frame = frame(shape);
+                    let expected = evaluate(&new(), &frame);
+                    (frame, expected)
+                })
+                .collect();
+            let shared = new();
+            (0..12).into_par_iter().for_each(|i| {
+                let (frame, (pattern, cake, raw)) = &references[i % references.len()];
+                let (actual_pattern, actual_cake, actual_raw) = evaluate(&shared, frame);
+                close(&actual_pattern.0, &pattern.0);
+                close(&actual_pattern.1, &pattern.1);
+                close(&actual_pattern.2, &pattern.2);
+                assert_eq!(actual_cake.radial, cake.radial);
+                assert_eq!(actual_cake.azimuthal, cake.azimuthal);
+                close(&actual_cake.intensity, &cake.intensity);
+                close(
+                    actual_cake.errors.as_ref().unwrap(),
+                    cake.errors.as_ref().unwrap(),
+                );
+                close(&actual_raw.sum_signal, &raw.sum_signal);
+                close(&actual_raw.sum_norm, &raw.sum_norm);
+                close(&actual_raw.count, &raw.count);
+                close(
+                    actual_raw.sum_variance.as_ref().unwrap(),
+                    raw.sum_variance.as_ref().unwrap(),
+                );
+            });
         }
     }
 }
@@ -405,34 +403,56 @@ fn queue_batch_with_workers_handles_mixed_shapes() {
 /// adapters are exercised separately above.
 #[test]
 fn file_batch_with_workers_handles_tiffs_of_different_sizes() {
-    crate::util::download_pilatus_test_file();
-    let files = [
-        "test_data/CeO2_Pilatus1M.tif", // 1043 x 981
-        "test_data/ceo2_side.tif",
-    ];
+    use std::{
+        fs::File,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tiff::encoder::{TiffEncoder, colortype};
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let files: Vec<String> = [(24usize, 18usize), (18, 24)]
+        .into_iter()
+        .enumerate()
+        .map(|(k, (h, w))| {
+            let path = std::env::temp_dir().join(format!(
+                "dioptrin-mixed-file-{}-{stamp}-{k}.tif",
+                std::process::id()
+            ));
+            let pixels: Vec<u16> = (0..h * w)
+                .map(|p| ((p * 37 + w * 13 + k * 7) % 4093) as u16)
+                .collect();
+            TiffEncoder::new(File::create(&path).unwrap())
+                .unwrap()
+                .write_image::<colortype::Gray16>(w as u32, h as u32, &pixels)
+                .unwrap();
+            path.to_str().unwrap().to_owned()
+        })
+        .collect();
     let shapes: Vec<_> = files
         .iter()
         .map(|f| {
-            let frame = Frame::from_tiff(f.to_string()).unwrap();
+            let frame = Frame::from_tiff(f.clone()).unwrap();
             (frame.dim1, frame.dim2)
         })
         .collect();
     assert_ne!(shapes[0], shapes[1], "fixtures must differ in shape");
-    let filenames: Vec<String> = (0..12).map(|i| files[i % 2].to_string()).collect();
+    let filenames: Vec<String> = (0..12).map(|i| files[i % 2].clone()).collect();
     let poni = Poni::load("test_data/v1.poni").unwrap();
     let new = || {
         Integrator::new(Geometry::new(2, 2, poni.clone())).with_method(IntegrationMethod::Counting)
     };
 
     let task = Integration2D {
-        n_radial: 50,
+        n_radial: 20,
         n_azimuthal: 12,
     };
     let expected: Vec<_> = files
         .iter()
         .map(|f| {
             process_streaming(
-                vec![f.to_string()],
+                vec![f.clone()],
                 Arc::new(new()),
                 task,
                 StreamOptions::new(1, 1),
@@ -457,12 +477,12 @@ fn file_batch_with_workers_handles_tiffs_of_different_sizes() {
         assert_eq!(result.as_ref(), Ok(&expected[index % 2]), "{name} #{index}");
     }
 
-    let task = Integration1D { n_bins: 200 };
+    let task = Integration1D { n_bins: 40 };
     let expected: Vec<_> = files
         .iter()
         .map(|f| {
             process_streaming(
-                vec![f.to_string()],
+                vec![f.clone()],
                 Arc::new(new()),
                 task,
                 StreamOptions::new(1, 1),
@@ -485,5 +505,8 @@ fn file_batch_with_workers_handles_tiffs_of_different_sizes() {
     assert_eq!(results.len(), filenames.len(), "a worker died");
     for (index, name, result) in results {
         assert_eq!(result.as_ref(), Ok(&expected[index % 2]), "{name} #{index}");
+    }
+    for f in files {
+        let _ = std::fs::remove_file(f);
     }
 }

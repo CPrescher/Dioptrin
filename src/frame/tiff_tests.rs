@@ -31,6 +31,39 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
             .as_nanos()
     ));
     let mut typed = TiffFrame::default();
+    let integrators: Vec<(IntegrationMethod, Integrator)> = [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+        IntegrationMethod::Histogram,
+    ]
+    .into_iter()
+    .flat_map(|method| {
+        [false, true].into_iter().flat_map(move |fast| {
+            [MaskMode::Fixed, MaskMode::Dynamic]
+                .into_iter()
+                .map(move |mode| {
+                    let mut p = Poni::new();
+                    p.pixel1 = 0.1;
+                    p.pixel2 = 0.1;
+                    p.distance = 1.0;
+                    p.poni1 = 0.12;
+                    p.poni2 = 0.09;
+                    let mut ai = Integrator::new(Geometry::new(3, 3, p))
+                        .with_method(method)
+                        .with_fast_math(fast)
+                        .with_mask_mode(mode)
+                        .with_polarization_factor(0.965);
+                    ai.set_mask(Mask {
+                        data: vec![0, 1, 0, 0, 0, 0, 0, 0, 1],
+                        dim1: 3,
+                        dim2: 3,
+                    });
+                    (method, ai)
+                })
+        })
+    })
+    .collect();
     macro_rules! check {
         ($color:ty, $values:expr) => {{
             let values = $values;
@@ -53,56 +86,29 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
                 assert_eq!(before, pointer(&typed.pixels));
                 same(&typed.to_frame().data, &reference.data);
                 // Exercise actual same-type decoding reuse with changed pixels.
-                for method in [
-                    IntegrationMethod::Counting,
-                    IntegrationMethod::PixelSplit,
-                    IntegrationMethod::Supersampled { n_ss: 3 },
-                    IntegrationMethod::Histogram,
-                ] {
-                    for (fast, mode) in [false, true].into_iter().flat_map(|fast| {
-                        [MaskMode::Fixed, MaskMode::Dynamic].map(|mode| (fast, mode))
-                    }) {
-                        let mut p = Poni::new();
-                        p.pixel1 = 0.1;
-                        p.pixel2 = 0.1;
-                        p.distance = 1.0;
-                        p.poni1 = 0.12;
-                        p.poni2 = 0.09;
-                        let mut ai = Integrator::new(Geometry::new(3, 3, p))
-                            .with_method(method)
-                            .with_fast_math(fast)
-                            .with_mask_mode(mode)
-                            .with_polarization_factor(0.965);
-                        ai.set_mask(Mask {
-                            data: vec![0, 1, 0, 0, 0, 0, 0, 0, 1],
-                            dim1: 3,
-                            dim2: 3,
-                        });
-                        let expected = ai.integrate1d_with_errors(&reference, 7);
-                        let actual = ai.integrate_tiff1d::<true>(&typed, 7);
+                for (method, ai) in &integrators {
+                    let expected = ai.integrate1d_with_errors(&reference, 7);
+                    let actual = ai.integrate_tiff1d::<true>(&typed, 7);
+                    same(&expected.0, &actual.0);
+                    same(&expected.1, &actual.1);
+                    same(&expected.2, &actual.2);
+                    let expected = ai.integrate1d(&reference, 7);
+                    let actual = ai.integrate_tiff1d::<false>(&typed, 7);
+                    same(&expected.0, &actual.0);
+                    same(&expected.1, &actual.1);
+                    // Histogram has no 2D binning; its rejection is tested below.
+                    if matches!(method, IntegrationMethod::Histogram) {
+                        continue;
+                    }
+                    for az in [None, Some((-0.3, 0.7))] {
+                        let expected = if let Some((a, b)) = az {
+                            ai.integrate2d_with_azimuthal_range_and_errors(&reference, 5, 4, a, b)
+                        } else {
+                            ai.integrate2d_with_errors(&reference, 5, 4)
+                        };
+                        let actual = ai.integrate_tiff2d::<true>(&typed, 5, 4, az);
                         same(&expected.0, &actual.0);
                         same(&expected.1, &actual.1);
-                        same(&expected.2, &actual.2);
-                        let expected = ai.integrate1d(&reference, 7);
-                        let actual = ai.integrate_tiff1d::<false>(&typed, 7);
-                        same(&expected.0, &actual.0);
-                        same(&expected.1, &actual.1);
-                        // Histogram has no 2D binning; its rejection is tested below.
-                        if matches!(method, IntegrationMethod::Histogram) {
-                            continue;
-                        }
-                        for az in [None, Some((-0.3, 0.7))] {
-                            let expected = if let Some((a, b)) = az {
-                                ai.integrate2d_with_azimuthal_range_and_errors(
-                                    &reference, 5, 4, a, b,
-                                )
-                            } else {
-                                ai.integrate2d_with_errors(&reference, 5, 4)
-                            };
-                            let actual = ai.integrate_tiff2d::<true>(&typed, 5, 4, az);
-                            same(&expected.0, &actual.0);
-                            same(&expected.1, &actual.1);
-                        }
                     }
                 }
             }
