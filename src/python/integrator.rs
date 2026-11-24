@@ -1017,6 +1017,60 @@ impl PyIntegrator {
         )
     }
 
+    /// Experimental: upload this integrator's fixed-mask 1D table to a Metal
+    /// GPU device on macOS.
+    #[pyo3(signature = (shape, n_points, *, precision="f32_compensated", device=0, max_batch_bytes=None))]
+    fn prepare_metal1d(
+        &self,
+        py: Python<'_>,
+        shape: (usize, usize),
+        n_points: usize,
+        precision: &str,
+        device: usize,
+        max_batch_bytes: Option<usize>,
+    ) -> PyResult<super::metal::PyMetal1dPlan> {
+        super::metal::prepare(
+            py,
+            &self.integrator,
+            shape,
+            n_points,
+            precision,
+            device,
+            max_batch_bytes,
+        )
+    }
+
+    /// Experimental: upload this integrator's fixed-mask 2D table to a Metal
+    /// GPU device on macOS. Mirrors `prepare_metal1d` for 2D azimuthal integration.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (shape, n_radial, n_azimuthal=None, *, azimuthal_range=None, azimuthal_bracket=None, precision="f32_compensated", device=0, max_batch_bytes=None))]
+    fn prepare_metal2d(
+        &self,
+        py: Python<'_>,
+        shape: (usize, usize),
+        n_radial: usize,
+        n_azimuthal: Option<usize>,
+        azimuthal_range: Option<(f64, f64)>,
+        azimuthal_bracket: Option<f64>,
+        precision: &str,
+        device: usize,
+        max_batch_bytes: Option<usize>,
+    ) -> PyResult<super::metal::PyMetal2dPlan> {
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        super::metal::prepare_2d(
+            py,
+            &self.integrator,
+            shape,
+            n_radial,
+            n_azimuthal,
+            azimuthal_range,
+            precision,
+            device,
+            max_batch_bytes,
+        )
+    }
+
     /// Release cached file workers and decoding buffers: the pool of the
     /// synchronous and list batches, and the workers kept from the last
     /// finished generator-fed stream for the next one. Admitted streaming work
