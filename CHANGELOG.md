@@ -7,26 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-24
+
 ### Added
 
-- Experimental CUDA 1D integration behind the optional `cuda` cargo feature,
-  excluded from semver guarantees. `Integrator.prepare_cuda1d(shape, n_points,
-  *, precision="f32_compensated", device=0, max_batch_bytes=None)` (Rust:
-  `Integrator::prepare_cuda1d` with `Cuda1dOptions`) uploads the fixed-mask 1D
-  table of the `counting`, `pixel_split` or `pyfai_full` method to an NVIDIA
-  GPU and returns a `Cuda1dPlan` with `integrate1d` and `batch1d` (a list or tuple of 2D
-  float64/float32 arrays or one 3D array, borrowed without copying, GIL
-  released), returning `IntegrationResult`s. Precisions: `f32`,
+- Experimental **Metal** 1D and 2D GPU integration on macOS behind the optional
+  `metal` cargo feature, excluded from semver guarantees.
+  `Integrator::prepare_metal1d` / `prepare_metal2d` (Python:
+  `Integrator.prepare_metal1d` / `prepare_metal2d`) upload the fixed-mask
+  table (`counting`, `pixel_split`, `pyfai_full`, `supersampled`) to Apple
+  Silicon / Metal GPUs with 4-frame tiled kernels, 8-thread `SubWarp` 2D
+  kernels, native `f32`/`u16`/`u32`/`i32` inputs, zero-copy Apple Silicon
+  unified memory binding, and GPU Bitshuffle/LZ4 (`integrate_bslz4`) decode +
+  integrate. `dioptrin.metal_available()`, `dioptrin.metal_info()`, and
+  `dioptrin.MetalUnavailableError` exist in every build.
+- Experimental **CUDA** 1D and 2D GPU integration behind the optional `cuda`
+  cargo feature, excluded from semver guarantees.
+  `Integrator::prepare_cuda1d` / `prepare_cuda2d` (Python:
+  `Integrator.prepare_cuda1d` / `prepare_cuda2d`) upload the fixed-mask
+  table (`counting`, `pixel_split`, `pyfai_full`, `supersampled`) to an NVIDIA
+  GPU with 4-frame tiled kernels, coalesced 8-thread `SubWarp` 2D kernels,
+  native `f32`/`u16`/`u32`/`i32` inputs, pinned host staging, and GPU
+  Bitshuffle/LZ4 (`integrate_bslz4`) decode + integrate. Precisions: `f32`,
   `f32_compensated` (default) and `f64`; denominators, division and output
-  are float64. Results agree with CPU `integrate1d` within tolerance, not bit
-  for bit; `fast_math` and `sparse_layout` are ignored; the plan is a snapshot
-  of the integrator's configuration. `dioptrin.cuda_available()`,
-  `dioptrin.cuda_info()` and `dioptrin.CudaUnavailableError` exist in every
-  build. PyPI wheels do not enable the feature: build with
-  `maturin build --release --features python,cuda`. The build needs no CUDA
-  toolkit; running needs an NVIDIA driver and NVRTC. CUDA is not fork-safe
-  once initialised. Without the feature or a usable device, `prepare_cuda1d`
-  raises `CudaUnavailableError`.
+  are float64. `dioptrin.cuda_available()`, `dioptrin.cuda_info()` and
+  `dioptrin.CudaUnavailableError` exist in every build. PyPI wheels do not
+  enable `cuda` or `metal` by default. The CUDA build needs no CUDA toolkit
+  (uses dynamic loading); running needs an NVIDIA driver and NVRTC.
+- `InputOrder` (`Detector` / `FlipVertical`) support on `Metal1dOptions` /
+  `Metal2dOptions` and `Cuda1dOptions` / `Cuda2dOptions` via
+  `with_input_order()`, remapping CSR column indices once at plan creation so
+  top-to-bottom HDF5 frames integrate with zero per-frame copy or flip cost.
+- Native `f32`, `u16`, `u32`, and `i32` input support across CPU `integrate1d`,
+  `integrate2d`, `batch1d`, `batch2d`, and streaming APIs without upcasting to
+  `f64` up front, plus 4-frame SIMD-tiled CSR CPU `batch1d` / `batch2d` and
+  `batch2d_stack` (3D contiguous stack input) and compact `u16` CSC bin
+  indices.
+- Affine-plane fast path and parallel CSR build for 1D and 2D supersampled
+  lookup tables.
 - `Integrator.batch2d` accepts a list of 2D float64 NumPy arrays as well as a
   list of TIFF paths, like `batch1d`: the arrays are borrowed without copying
   and integrated with the GIL released, on every branch (plain, `errors`,
@@ -84,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the call and must not be mutated concurrently. Results are unchanged, and
   the per-call cost of `integrate1d` is unchanged within noise (about 230 us
   counting, 580 us pixel_split on a 1M-pixel image, 1000 points).
+
+### Fixed
+
+- `Poni::load` now resolves pixel sizes for named detectors (including binning
+  and JSON `Detector_config` fields) instead of falling back to defaults.
 
 ### Removed
 
