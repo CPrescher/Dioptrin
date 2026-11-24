@@ -792,6 +792,147 @@ impl Cuda2dPlan {
         self.run_bslz4(chunks, dtype, errors)
     }
 
+    pub fn integrate_frames_into<P: CudaPixel>(
+        &self,
+        frames: &[&[P]],
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        let bins = self.n_radial * self.n_azimuthal;
+        if let Some((index, frame)) = frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.len() != pixels)
+        {
+            return Err(CudaError::InvalidInput(format!(
+                "frame {index} has {} pixels, but the CUDA plan expects {pixels} ({} x {})",
+                frame.len(),
+                self.shape.0,
+                self.shape.1
+            )));
+        }
+        let expected = frames.len() * bins;
+        if out_intensity.len() != expected
+            || out_errors.as_ref().is_some_and(|e| e.len() != expected)
+        {
+            return Err(CudaError::InvalidInput(
+                "output buffer length does not match frames * n_radial * n_azimuthal".into(),
+            ));
+        }
+        if frames.is_empty() {
+            return Ok(());
+        }
+        self.run_into(
+            <P as sealed::Sealed>::frames(frames),
+            false,
+            out_intensity,
+            out_errors,
+        )
+    }
+
+    pub fn integrate_stack_into<P: CudaPixel>(
+        &self,
+        stack: &[P],
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        let bins = self.n_radial * self.n_azimuthal;
+        if !stack.len().is_multiple_of(pixels) {
+            return Err(CudaError::InvalidInput(format!(
+                "stack of {} values is not a whole number of {pixels}-pixel frames",
+                stack.len()
+            )));
+        }
+        let count = stack.len() / pixels;
+        let expected = count * bins;
+        if out_intensity.len() != expected
+            || out_errors.as_ref().is_some_and(|e| e.len() != expected)
+        {
+            return Err(CudaError::InvalidInput(
+                "output buffer length does not match frames * n_radial * n_azimuthal".into(),
+            ));
+        }
+        if stack.is_empty() {
+            return Ok(());
+        }
+        self.run_into(
+            <P as sealed::Sealed>::frames(&[stack]),
+            true,
+            out_intensity,
+            out_errors,
+        )
+    }
+
+    pub fn integrate_bslz4_into(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let bins = self.n_radial * self.n_azimuthal;
+        let expected = chunks.len() * bins;
+        if out_intensity.len() != expected
+            || out_errors.as_ref().is_some_and(|e| e.len() != expected)
+        {
+            return Err(CudaError::InvalidInput(
+                "output buffer length does not match chunks * n_radial * n_azimuthal".into(),
+            ));
+        }
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        self.run_bslz4_into(chunks, dtype, out_intensity, out_errors)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_into(
+        &self,
+        frames: sealed::Frames<'_, '_>,
+        stacked: bool,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        self.engine
+            .run_into(frames, stacked, out_intensity, out_errors)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run_into(
+        &self,
+        _frames: sealed::Frames<'_, '_>,
+        _stacked: bool,
+        _out_intensity: &mut [f64],
+        _out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        match self.engine {}
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_bslz4_into(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        self.engine
+            .run_bslz4_into(chunks, dtype, out_intensity, out_errors)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run_bslz4_into(
+        &self,
+        _chunks: &[&[u8]],
+        _dtype: Bslz4Dtype,
+        _out_intensity: &mut [f64],
+        _out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        match self.engine {}
+    }
+
     #[cfg(feature = "cuda")]
     fn wrap_results(&self, raw: Vec<(Vec<f64>, Option<Vec<f64>>)>) -> Vec<Fixed2dResult> {
         raw.into_iter()

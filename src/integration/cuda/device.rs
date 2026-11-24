@@ -43,8 +43,8 @@ const FRAMES_PER_LAUNCH: u32 = 256;
 const PARALLEL_STAGE_THRESHOLD: usize = 65_536;
 /// Target pinned staging size per pipeline slot (192 MiB: holds 4 Eiger 9M f32 frames).
 const PINNED_SLOT_BYTES: usize = 192 << 20;
-/// Maximum average entries per bin that prefer `Layout::Thread` (1 thread/bin, ideal for 2D).
-const THREAD_MAX_ENTRIES_PER_BIN: usize = 128;
+/// Maximum average entries per bin that prefer `Layout::SubWarp` (8 threads/bin, ideal for 2D).
+const SUBWARP_MAX_ENTRIES_PER_BIN: usize = 256;
 /// Maximum average entries per bin that still prefer `Layout::Warp` over `Layout::Block`.
 const WARP_MAX_ENTRIES_PER_BIN: usize = 5000;
 
@@ -99,7 +99,7 @@ impl Accumulation {
 pub(super) enum Layout {
     Block,
     Warp,
-    Thread,
+    SubWarp,
 }
 
 impl Layout {
@@ -110,7 +110,7 @@ impl Layout {
         match self {
             Self::Block => "block",
             Self::Warp => "warp",
-            Self::Thread => "thread",
+            Self::SubWarp => "subwarp",
         }
     }
 
@@ -118,7 +118,7 @@ impl Layout {
         match self {
             Self::Block => 1,
             Self::Warp => 4,
-            Self::Thread => 128,
+            Self::SubWarp => 16,
         }
     }
 }
@@ -1305,14 +1305,15 @@ impl Engine {
     }
 
     /// Integrates frames in double-buffered pinned tiles across two streams,
-    /// returning `(intensity, optional_errors)` per frame.
-    #[allow(clippy::type_complexity)]
-    pub(super) fn run_raw(
+    /// calling `drain(first_frame, end_frame, pinned_slice)` directly as each
+    /// tile finishes (avoiding any intermediate host copy).
+    fn run_with_sink(
         &self,
         frames: Frames<'_, '_>,
         stacked: bool,
         errors: bool,
-    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
+        mut drain: impl FnMut(usize, usize, &[f64]),
+    ) -> Result<(), CudaError> {
         let count = match frames {
             Frames::U16(frames) if stacked => frame_count(frames, self.pixels)?,
             Frames::U32(frames) if stacked => frame_count(frames, self.pixels)?,
@@ -1339,7 +1340,6 @@ impl Engine {
             _ => size_of::<f32>(),
         };
         let tile = self.pipeline_tile(count, elem_bytes);
-        let mut host = vec![0.0; count * per_frame];
         {
             let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
             let outcome = guarded(|| {
@@ -1365,12 +1365,12 @@ impl Engine {
                     let stream = &self.streams[slot_idx];
                     if let Some((p_first, p_end)) = pending[slot_idx].take() {
                         stream.synchronize()?;
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                     let values = first * pixels..end * pixels;
                     let tile_frames = match frames {
@@ -1456,12 +1456,12 @@ impl Engine {
                 for (slot_idx, range) in pending.into_iter().enumerate() {
                     if let Some((p_first, p_end)) = range {
                         self.streams[slot_idx].synchronize()?;
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                 }
                 Ok(())
@@ -1473,15 +1473,108 @@ impl Engine {
             }
             outcome?;
         }
-        Ok(host
-            .chunks_exact(per_frame)
-            .map(|frame| {
-                (
-                    frame.iter().step_by(stride).copied().collect(),
-                    errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
-                )
-            })
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn drain_into_vecs(
+        bins: usize,
+        errors: bool,
+        out: &mut [Option<(Vec<f64>, Option<Vec<f64>>)>],
+        p_first: usize,
+        p_end: usize,
+        src: &[f64],
+    ) {
+        let stride = 1 + usize::from(errors);
+        let per_frame = bins * stride;
+        for (idx, frame) in src.chunks_exact(per_frame).enumerate() {
+            let slot = p_first + idx;
+            debug_assert!(slot < p_end);
+            if errors {
+                let mut intensity = Vec::with_capacity(bins);
+                let mut err = Vec::with_capacity(bins);
+                for &[i, e] in frame.as_chunks::<2>().0 {
+                    intensity.push(i);
+                    err.push(e);
+                }
+                out[slot] = Some((intensity, Some(err)));
+            } else {
+                out[slot] = Some((frame.to_vec(), None));
+            }
+        }
+    }
+
+    fn drain_into_slices(
+        bins: usize,
+        out_intensity: &mut [f64],
+        out_errors: &mut Option<&mut [f64]>,
+        p_first: usize,
+        p_end: usize,
+        src: &[f64],
+    ) {
+        let dst_i = &mut out_intensity[p_first * bins..p_end * bins];
+        if let Some(err_buf) = out_errors.as_deref_mut() {
+            let dst_e = &mut err_buf[p_first * bins..p_end * bins];
+            for ((oi, oe), &[i, e]) in dst_i
+                .iter_mut()
+                .zip(dst_e.iter_mut())
+                .zip(src.as_chunks::<2>().0)
+            {
+                *oi = i;
+                *oe = e;
+            }
+        } else {
+            dst_i.copy_from_slice(src);
+        }
+    }
+
+    /// Integrates frames in double-buffered pinned tiles across two streams,
+    /// returning `(intensity, optional_errors)` per frame with no intermediate
+    /// host copy.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_raw(
+        &self,
+        frames: Frames<'_, '_>,
+        stacked: bool,
+        errors: bool,
+    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
+        let count = match frames {
+            Frames::U16(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::U32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::I32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::F32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::F64(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::U16(frames) => frames.len(),
+            Frames::U32(frames) => frames.len(),
+            Frames::I32(frames) => frames.len(),
+            Frames::F32(frames) => frames.len(),
+            Frames::F64(frames) => frames.len(),
+        };
+        let mut out: Vec<Option<(Vec<f64>, Option<Vec<f64>>)>> = vec![None; count];
+        let bins = self.bins;
+        self.run_with_sink(frames, stacked, errors, |p_first, p_end, src| {
+            Self::drain_into_vecs(bins, errors, &mut out, p_first, p_end, src);
+        })?;
+        Ok(out
+            .into_iter()
+            .map(|x| x.expect("every frame drained"))
             .collect())
+    }
+
+    /// Integrates frames directly into caller-provided contiguous output slices
+    /// (`out_intensity.len() == count * bins`, optional `out_errors.len() == count * bins`).
+    pub(super) fn run_into(
+        &self,
+        frames: Frames<'_, '_>,
+        stacked: bool,
+        out_intensity: &mut [f64],
+        mut out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let errors = out_errors.is_some();
+        let bins = self.bins;
+        self.run_with_sink(frames, stacked, errors, |p_first, p_end, src| {
+            Self::drain_into_slices(bins, out_intensity, &mut out_errors, p_first, p_end, src);
+        })
     }
 
     pub(super) fn run(
@@ -1692,20 +1785,17 @@ impl Engine {
         Ok(count)
     }
 
-    /// Decompresses raw Bitshuffle+LZ4 HDF5 chunks on the GPU and integrates
-    /// them in VRAM across two double-buffered streams.
-    #[allow(clippy::type_complexity)]
-    pub(super) fn run_bslz4_raw(
+    fn run_bslz4_with_sink(
         &self,
         chunks: &[&[u8]],
         dtype: Bslz4Dtype,
         errors: bool,
-    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
+        mut drain: impl FnMut(usize, usize, &[f64]),
+    ) -> Result<(), CudaError> {
         let count = chunks.len();
         let stride = 1 + usize::from(errors);
         let per_frame = self.bins * stride;
         let tile = self.pipeline_tile(count, dtype.elem_bytes());
-        let mut host = vec![0.0; count * per_frame];
         {
             let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
             let outcome = guarded(|| {
@@ -1729,12 +1819,12 @@ impl Engine {
                                 "corrupt or truncated Bitshuffle/LZ4 compressed block".into(),
                             ));
                         }
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                     self.enqueue_bslz4_tile(
                         &mut scratch.slots[slot_idx],
@@ -1757,12 +1847,12 @@ impl Engine {
                                 "corrupt or truncated Bitshuffle/LZ4 compressed block".into(),
                             ));
                         }
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                 }
                 Ok(())
@@ -1774,15 +1864,41 @@ impl Engine {
             }
             outcome?;
         }
-        Ok(host
-            .chunks_exact(per_frame)
-            .map(|frame| {
-                (
-                    frame.iter().step_by(stride).copied().collect(),
-                    errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
-                )
-            })
+        Ok(())
+    }
+
+    /// Decompresses raw Bitshuffle+LZ4 HDF5 chunks on the GPU and integrates
+    /// them in VRAM across two double-buffered streams.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_bslz4_raw(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
+        let mut out: Vec<Option<(Vec<f64>, Option<Vec<f64>>)>> = vec![None; chunks.len()];
+        let bins = self.bins;
+        self.run_bslz4_with_sink(chunks, dtype, errors, |p_first, p_end, src| {
+            Self::drain_into_vecs(bins, errors, &mut out, p_first, p_end, src);
+        })?;
+        Ok(out
+            .into_iter()
+            .map(|x| x.expect("every frame drained"))
             .collect())
+    }
+
+    pub(super) fn run_bslz4_into(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        out_intensity: &mut [f64],
+        mut out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let errors = out_errors.is_some();
+        let bins = self.bins;
+        self.run_bslz4_with_sink(chunks, dtype, errors, |p_first, p_end, src| {
+            Self::drain_into_slices(bins, out_intensity, &mut out_errors, p_first, p_end, src);
+        })
     }
 
     pub(super) fn run_bslz4(
@@ -2128,8 +2244,8 @@ fn build_engine(
     let stream1 = guarded(|| Ok(cuda.context.new_stream()?))?;
     let streams = [Arc::clone(&cuda.stream), stream1];
     let precision = options.precision();
-    let layout = if table.entries as usize <= bins.saturating_mul(THREAD_MAX_ENTRIES_PER_BIN) {
-        Layout::Thread
+    let layout = if table.entries as usize <= bins.saturating_mul(SUBWARP_MAX_ENTRIES_PER_BIN) {
+        Layout::SubWarp
     } else if table.entries as usize <= bins.saturating_mul(WARP_MAX_ENTRIES_PER_BIN) {
         Layout::Warp
     } else {

@@ -580,6 +580,67 @@ impl<'py> Borrowed<'py> {
         .map_err(cuda_error)?;
         Ok(results.into_iter().map(to_python_2d).collect())
     }
+    fn run_2d_into(
+        &self,
+        py: Python<'_>,
+        plan: &Cuda2dPlan,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> PyResult<()> {
+        match &self.arrays {
+            Arrays::U16(arrays) => {
+                frames_call_2d_into(py, plan, &self.slices(arrays)?, out_intensity, out_errors)
+            }
+            Arrays::U32(arrays) => {
+                frames_call_2d_into(py, plan, &self.slices(arrays)?, out_intensity, out_errors)
+            }
+            Arrays::I32(arrays) => {
+                frames_call_2d_into(py, plan, &self.slices(arrays)?, out_intensity, out_errors)
+            }
+            Arrays::F64(arrays) => {
+                frames_call_2d_into(py, plan, &self.slices(arrays)?, out_intensity, out_errors)
+            }
+            Arrays::F32(arrays) => {
+                frames_call_2d_into(py, plan, &self.slices(arrays)?, out_intensity, out_errors)
+            }
+            Arrays::StackU16(array) => stack_call_2d_into(
+                py,
+                plan,
+                contiguous(array, "images")?,
+                out_intensity,
+                out_errors,
+            ),
+            Arrays::StackU32(array) => stack_call_2d_into(
+                py,
+                plan,
+                contiguous(array, "images")?,
+                out_intensity,
+                out_errors,
+            ),
+            Arrays::StackI32(array) => stack_call_2d_into(
+                py,
+                plan,
+                contiguous(array, "images")?,
+                out_intensity,
+                out_errors,
+            ),
+            Arrays::Stack64(array) => stack_call_2d_into(
+                py,
+                plan,
+                contiguous(array, "images")?,
+                out_intensity,
+                out_errors,
+            ),
+            Arrays::Stack32(array) => stack_call_2d_into(
+                py,
+                plan,
+                contiguous(array, "images")?,
+                out_intensity,
+                out_errors,
+            ),
+        }
+        .map_err(cuda_error)
+    }
 }
 
 fn frames_call<T: CudaPixel>(
@@ -616,6 +677,26 @@ fn stack_call_2d<T: CudaPixel>(
     errors: bool,
 ) -> Result<Vec<Fixed2dResult>, CudaError> {
     py.detach(|| plan.integrate_stack(stack, errors))
+}
+
+fn frames_call_2d_into<T: CudaPixel>(
+    py: Python<'_>,
+    plan: &Cuda2dPlan,
+    frames: &[&[T]],
+    out_intensity: &mut [f64],
+    out_errors: Option<&mut [f64]>,
+) -> Result<(), CudaError> {
+    py.detach(|| plan.integrate_frames_into(frames, out_intensity, out_errors))
+}
+
+fn stack_call_2d_into<T: CudaPixel>(
+    py: Python<'_>,
+    plan: &Cuda2dPlan,
+    stack: &[T],
+    out_intensity: &mut [f64],
+    out_errors: Option<&mut [f64]>,
+) -> Result<(), CudaError> {
+    py.detach(|| plan.integrate_stack_into(stack, out_intensity, out_errors))
 }
 
 /// Private test hook: run the input checks and borrows of
@@ -1041,5 +1122,134 @@ impl PyCuda2dPlan {
             .detach(|| self.plan.integrate_bslz4(&slices, bslz4_dtype, errors))
             .map_err(cuda_error)?;
         Ok(results.into_iter().map(to_python_2d).collect())
+    }
+
+    /// Integrate a batch of frames directly into a single contiguous 3D NumPy
+    /// `float64` array of shape `(n_frames, n_azimuthal, n_radial)` (or a tuple
+    /// `(intensity, errors)` when `errors=True`), avoiding per-frame allocations.
+    #[pyo3(signature = (images, *, errors=false))]
+    fn batch2d_stack<'py>(
+        &self,
+        py: Python<'py>,
+        images: &Bound<'py, PyAny>,
+        errors: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let borrowed = Borrowed::batch(images, self.plan.shape())?;
+        let n_frames = borrowed.frames(self.plan.shape())?;
+        let (n_az, n_rad) = (self.plan.n_azimuthal(), self.plan.n_radial());
+        // SAFETY: uninitialized buffer is written completely by `run_2d_into`
+        // before being returned to Python.
+        let intensity = unsafe { PyArray3::<f64>::new(py, [n_frames, n_az, n_rad], false) };
+        if errors {
+            let err_arr = unsafe { PyArray3::<f64>::new(py, [n_frames, n_az, n_rad], false) };
+            {
+                let mut i_rw = intensity.readwrite();
+                let mut e_rw = err_arr.readwrite();
+                let i_slice = i_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("intensity output not contiguous: {e}"))
+                })?;
+                let e_slice = e_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("errors output not contiguous: {e}"))
+                })?;
+                borrowed.run_2d_into(py, &self.plan, i_slice, Some(e_slice))?;
+            }
+            Ok((intensity.unbind(), err_arr.unbind())
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        } else {
+            {
+                let mut i_rw = intensity.readwrite();
+                let i_slice = i_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("intensity output not contiguous: {e}"))
+                })?;
+                borrowed.run_2d_into(py, &self.plan, i_slice, None)?;
+            }
+            Ok(intensity.unbind().into_any())
+        }
+    }
+
+    /// Decompress raw HDF5 Bitshuffle+LZ4 chunks on the GPU and integrate them
+    /// directly into a single contiguous 3D NumPy `float64` array of shape
+    /// `(n_frames, n_azimuthal, n_radial)` (or `(intensity, errors)` when `errors=True`).
+    #[pyo3(signature = (chunks, dtype="uint32", *, errors=false))]
+    fn batch2d_bslz4_stack<'py>(
+        &self,
+        py: Python<'py>,
+        chunks: &Bound<'py, PyAny>,
+        dtype: &str,
+        errors: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let bslz4_dtype = match dtype {
+            "uint16" | "u16" => Bslz4Dtype::U16,
+            "uint32" | "u32" => Bslz4Dtype::U32,
+            "int32" | "i32" => Bslz4Dtype::I32,
+            _ => {
+                return Err(PyTypeError::new_err(format!(
+                    "dtype must be 'uint16', 'uint32' or 'int32', got {dtype:?}"
+                )));
+            }
+        };
+        if !(chunks.is_instance_of::<PyList>() || chunks.is_instance_of::<PyTuple>()) {
+            return Err(PyTypeError::new_err(format!(
+                "chunks must be a list or tuple of byte buffers, got {}",
+                received(chunks)
+            )));
+        }
+        let mut buffers: Vec<PyBuffer<u8>> = Vec::new();
+        for item in chunks.try_iter()? {
+            let item = item?;
+            let buf = PyBuffer::<u8>::get(&item).map_err(|e| {
+                PyTypeError::new_err(format!("chunk must support the byte buffer protocol: {e}"))
+            })?;
+            if !buf.is_c_contiguous() {
+                return Err(PyValueError::new_err("chunk buffer must be C contiguous"));
+            }
+            buffers.push(buf);
+        }
+        let n_frames = buffers.len();
+        let (n_az, n_rad) = (self.plan.n_azimuthal(), self.plan.n_radial());
+        let slices: Vec<&[u8]> = buffers
+            .iter()
+            .map(|buf| unsafe {
+                std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes())
+            })
+            .collect();
+        let intensity = unsafe { PyArray3::<f64>::new(py, [n_frames, n_az, n_rad], false) };
+        if errors {
+            let err_arr = unsafe { PyArray3::<f64>::new(py, [n_frames, n_az, n_rad], false) };
+            {
+                let mut i_rw = intensity.readwrite();
+                let mut e_rw = err_arr.readwrite();
+                let i_slice = i_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("intensity output not contiguous: {e}"))
+                })?;
+                let e_slice = e_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("errors output not contiguous: {e}"))
+                })?;
+                py.detach(|| {
+                    self.plan
+                        .integrate_bslz4_into(&slices, bslz4_dtype, i_slice, Some(e_slice))
+                })
+                .map_err(cuda_error)?;
+            }
+            Ok((intensity.unbind(), err_arr.unbind())
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        } else {
+            {
+                let mut i_rw = intensity.readwrite();
+                let i_slice = i_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("intensity output not contiguous: {e}"))
+                })?;
+                py.detach(|| {
+                    self.plan
+                        .integrate_bslz4_into(&slices, bslz4_dtype, i_slice, None)
+                })
+                .map_err(cuda_error)?;
+            }
+            Ok(intensity.unbind().into_any())
+        }
     }
 }

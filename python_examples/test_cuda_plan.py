@@ -767,6 +767,14 @@ class CudaDeviceTests(unittest.TestCase):
                 from_pinned = plan.batch2d(pinned, errors=True)
                 self.assert_identical(batch, single)
                 self.assert_identical(from_pinned, single)
+                stack_i, stack_e = plan.batch2d_stack(pinned, errors=True)
+                self.assertEqual(stack_i.shape, (len(frames), 16, 20))
+                self.assertEqual(stack_e.shape, (len(frames), 16, 20))
+                for idx, ref in enumerate(single):
+                    np.testing.assert_array_equal(stack_i[idx].ravel(), ref.intensity)
+                    np.testing.assert_array_equal(stack_e[idx].ravel(), ref.errors)
+                stack_only = plan.batch2d_stack(pinned, errors=False)
+                np.testing.assert_array_equal(stack_only, stack_i)
                 for gpu, f in zip(batch, frames):
                     cpu = ai.integrate2d(
                         f.astype(np.float64), 20, 16, errors=True, azimuthal_range=az_range

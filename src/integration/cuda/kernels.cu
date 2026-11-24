@@ -74,11 +74,13 @@ template<> struct Sum<2> {
 
 template<typename Acc, bool Variance, int BinsPerBlock>
 __device__ __forceinline__ void reduce_and_store(
-    Acc signal, Acc variance, unsigned thread, double denominator,
+    Acc signal, Acc variance, unsigned thread, bool valid, double denominator,
     double * __restrict__ result, Acc *shared_sig, Acc *shared_var) {
     constexpr unsigned Warps = 128 / 32;
-    if constexpr (BinsPerBlock < 128) {
-        for (int offset = 16; offset > 0; offset /= 2) {
+    constexpr unsigned ThreadsPerBin = 128 / BinsPerBlock;
+    constexpr int ReduceStart = ThreadsPerBin >= 32 ? 16 : (int)(ThreadsPerBin / 2);
+    if constexpr (ReduceStart > 0) {
+        for (int offset = ReduceStart; offset > 0; offset /= 2) {
             signal.combine(signal.shuffle(offset));
             if constexpr (Variance) variance.combine(variance.shuffle(offset));
         }
@@ -97,7 +99,7 @@ __device__ __forceinline__ void reduce_and_store(
         }
         __syncthreads();
     }
-    if (thread == 0) {
+    if (valid && thread == 0) {
         result[0] = denominator == 0 ? 0 : signal.result() / denominator;
         if constexpr (Variance) {
             result[1] = denominator == 0 ? 0 : sqrt(fmax(variance.result(), 0.0)) / fabs(denominator);
@@ -118,12 +120,14 @@ __device__ void gather_impl(const unsigned * __restrict__ rows,
     constexpr unsigned ThreadsPerBin = 128 / BinsPerBlock;
     constexpr unsigned Warps = 128 / 32;
     unsigned thread = threadIdx.x % ThreadsPerBin;
+    unsigned warp_first_bin = blockIdx.x * BinsPerBlock + (threadIdx.x & ~31u) / ThreadsPerBin;
+    if (warp_first_bin >= bins) return;  // Entire warps exit together.
     unsigned bin = blockIdx.x * BinsPerBlock + threadIdx.x / ThreadsPerBin;
-    if (bin >= bins) return;  // Entire warps exit together.
+    const bool valid = bin < bins;
 
-    const unsigned start = __ldg(&rows[bin]);
-    const unsigned end = __ldg(&rows[bin + 1]);
-    const double denominator = __ldg(&norm[bin]);
+    const unsigned start = valid ? __ldg(&rows[bin]) : 0u;
+    const unsigned end = valid ? __ldg(&rows[bin + 1]) : 0u;
+    const double denominator = valid ? __ldg(&norm[bin]) : 0.0;
     const unsigned f0 = blockIdx.y * 4;
     const unsigned out_stride = Variance ? 2 : 1;
 
@@ -170,16 +174,16 @@ __device__ void gather_impl(const unsigned * __restrict__ rows,
             }
         }
         reduce_and_store<Acc, Variance, BinsPerBlock>(
-            sig0, var0, thread, denominator,
+            sig0, var0, thread, valid, denominator,
             output + ((unsigned long long)(f0 + 0) * bins + bin) * out_stride, shared_sig, shared_var);
         reduce_and_store<Acc, Variance, BinsPerBlock>(
-            sig1, var1, thread, denominator,
+            sig1, var1, thread, valid, denominator,
             output + ((unsigned long long)(f0 + 1) * bins + bin) * out_stride, shared_sig, shared_var);
         reduce_and_store<Acc, Variance, BinsPerBlock>(
-            sig2, var2, thread, denominator,
+            sig2, var2, thread, valid, denominator,
             output + ((unsigned long long)(f0 + 2) * bins + bin) * out_stride, shared_sig, shared_var);
         reduce_and_store<Acc, Variance, BinsPerBlock>(
-            sig3, var3, thread, denominator,
+            sig3, var3, thread, valid, denominator,
             output + ((unsigned long long)(f0 + 3) * bins + bin) * out_stride, shared_sig, shared_var);
     } else {
         for (unsigned f = f0; f < num_frames; ++f) {
@@ -202,7 +206,7 @@ __device__ void gather_impl(const unsigned * __restrict__ rows,
                 }
             }
             reduce_and_store<Acc, Variance, BinsPerBlock>(
-                signal, variance, thread, denominator,
+                signal, variance, thread, valid, denominator,
                 output + ((unsigned long long)f * bins + bin) * out_stride, shared_sig, shared_var);
         }
     }
@@ -250,19 +254,19 @@ KERNEL(compensated_warp_i, 1, false, 4)
 KERNEL(compensated_warp_iv, 1, true, 4)
 KERNEL(double_warp_i, 2, false, 4)
 KERNEL(double_warp_iv, 2, true, 4)
-KERNEL(plain_thread_i, 0, false, 128)
-KERNEL(plain_thread_iv, 0, true, 128)
-KERNEL(compensated_thread_i, 1, false, 128)
-KERNEL(compensated_thread_iv, 1, true, 128)
-KERNEL(double_thread_i, 2, false, 128)
-KERNEL(double_thread_iv, 2, true, 128)
+KERNEL(plain_subwarp_i, 0, false, 16)
+KERNEL(plain_subwarp_iv, 0, true, 16)
+KERNEL(compensated_subwarp_i, 1, false, 16)
+KERNEL(compensated_subwarp_iv, 1, true, 16)
+KERNEL(double_subwarp_i, 2, false, 16)
+KERNEL(double_subwarp_iv, 2, true, 16)
 #define TYPED_KERNELS(Prefix, Pixel, Mode) \
 STORED_KERNEL(Prefix##_block_i, float, Pixel, Mode, false, 1) \
 STORED_KERNEL(Prefix##_block_iv, float, Pixel, Mode, true, 1) \
 STORED_KERNEL(Prefix##_warp_i, float, Pixel, Mode, false, 4) \
 STORED_KERNEL(Prefix##_warp_iv, float, Pixel, Mode, true, 4) \
-STORED_KERNEL(Prefix##_thread_i, float, Pixel, Mode, false, 128) \
-STORED_KERNEL(Prefix##_thread_iv, float, Pixel, Mode, true, 128)
+STORED_KERNEL(Prefix##_subwarp_i, float, Pixel, Mode, false, 16) \
+STORED_KERNEL(Prefix##_subwarp_iv, float, Pixel, Mode, true, 16)
 
 TYPED_KERNELS(u16_plain, unsigned short, 0)
 TYPED_KERNELS(u32_plain, unsigned, 0)
@@ -276,8 +280,8 @@ STORED_KERNEL(Prefix##_block_i, double, Pixel, 2, false, 1) \
 STORED_KERNEL(Prefix##_block_iv, double, Pixel, 2, true, 1) \
 STORED_KERNEL(Prefix##_warp_i, double, Pixel, 2, false, 4) \
 STORED_KERNEL(Prefix##_warp_iv, double, Pixel, 2, true, 4) \
-STORED_KERNEL(Prefix##_thread_i, double, Pixel, 2, false, 128) \
-STORED_KERNEL(Prefix##_thread_iv, double, Pixel, 2, true, 128)
+STORED_KERNEL(Prefix##_subwarp_i, double, Pixel, 2, false, 16) \
+STORED_KERNEL(Prefix##_subwarp_iv, double, Pixel, 2, true, 16)
 
 F64_KERNELS(full_f64, double)
 F64_KERNELS(f32_f64, float)

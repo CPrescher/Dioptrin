@@ -1384,6 +1384,25 @@ class Cuda2dPlan:
         """Decompress raw HDF5 Bitshuffle+LZ4 chunks on the GPU and integrate them to 2D in VRAM."""
         ...
 
+    def batch2d_stack(
+        self,
+        images: Union[list[np.ndarray], tuple[np.ndarray, ...], np.ndarray],
+        *,
+        errors: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Integrate frames directly into a contiguous 3D NumPy ``(n_frames, n_azimuthal, n_radial)`` array."""
+        ...
+
+    def batch2d_bslz4_stack(
+        self,
+        chunks: Union[list[Any], tuple[Any, ...]],
+        dtype: Literal["uint16", "uint32", "int32"] = "uint32",
+        *,
+        errors: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Decompress raw Bitshuffle+LZ4 chunks on the GPU directly into a 3D NumPy ``(n_frames, n_azimuthal, n_radial)`` array."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Calibration API
