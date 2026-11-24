@@ -79,10 +79,10 @@ def set_rayon_threads(threads: int) -> None:
 class CudaUnavailableError(RuntimeError):
     """Experimental: CUDA cannot be used.
 
-    Raised by ``Integrator.prepare_cuda1d`` when dioptrin was built without the
-    ``cuda`` cargo feature (PyPI wheels; build with
-    ``maturin build --release --features python,cuda``), or when the NVIDIA
-    driver, NVRTC or the device cannot be initialised. A subclass of
+    Raised by ``Integrator.prepare_cuda1d`` / ``prepare_cuda2d`` when dioptrin
+    was built without the ``cuda`` cargo feature (e.g. Windows ARM64 or macOS
+    wheels, or source builds without ``--features python,cuda``), or when the
+    NVIDIA driver or device cannot be initialised. A subclass of
     ``RuntimeError``.
     """
 
@@ -91,8 +91,10 @@ def cuda_available(device: int = 0) -> bool:
     """Experimental: whether CUDA device ``device`` can be used by this build.
 
     Equivalent to ``cuda_info(device)["available"]``; never raises because
-    CUDA is missing. The first call on a device initialises it (NVRTC
-    compile, cached for the process). The GIL is released.
+    CUDA is missing. The first call on a device initialises it (loads embedded
+    forward-compatible ``compute_70`` PTX via the NVIDIA driver, falling back
+    to NVRTC on older GPUs or drivers; cached for the process). The GIL is
+    released.
     """
     ...
 
@@ -110,9 +112,9 @@ def cuda_info(device: int = 0) -> dict[str, object]:
     the compiled bindings).
 
     Never raises because CUDA is missing. The first call on a device
-    initialises it (context, NVRTC compile, module load), cached for the
-    process; a failed initialisation is retried on the next call. CUDA is not
-    fork-safe once initialised. The GIL is released.
+    initialises it (context, embedded PTX or NVRTC fallback, module load),
+    cached for the process; a failed initialisation is retried on the next
+    call. CUDA is not fork-safe once initialised. The GIL is released.
     """
     ...
 
@@ -120,7 +122,8 @@ def cuda_info(device: int = 0) -> dict[str, object]:
 class MetalUnavailableError(RuntimeError):
     """Experimental: Metal cannot be used.
 
-    Raised when dioptrin was built without the ``metal`` cargo feature, on
+    Raised when dioptrin was built without the ``metal`` cargo feature (e.g.
+    non-macOS wheels or source builds without ``--features python,metal``), on
     non-macOS platforms, or when the Metal device or kernels cannot be
     initialised. A subclass of ``RuntimeError``.
     """

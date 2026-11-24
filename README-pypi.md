@@ -202,12 +202,14 @@ for these and the full list.
   `float64`, and fixed-mask CSR batches use 4-frame SIMD tiling.
 - `radial_range` now applies to 2D integration across all methods, and
   `integrate1d` / `integrate2d` release the GIL during integration.
-- Optional experimental **CUDA** (`--features cuda`) and macOS **Metal**
-  (`--features metal`) 1D/2D plans with native dtypes, 4-frame tiling,
-  `InputOrder::FlipVertical`, and GPU Bitshuffle/LZ4 decode are available for
-  source/Rust builds.
+- Experimental **CUDA** and macOS **Metal** 1D/2D plans with native dtypes,
+  4-frame tiling, `InputOrder::FlipVertical`, and GPU Bitshuffle/LZ4 decode.
+  Starting with 0.15.2, prebuilt Linux (x86-64/ARM64) and Windows x64 wheels
+  include `cuda` with embedded forward-compatible `compute_70` PTX (requiring
+  only an NVIDIA display driver on Volta+ GPUs, no CUDA Toolkit), and macOS
+  wheels include `metal`.
 - **Breaking:** the legacy no-op `validate_license()` and `License*Error`
   names have been removed.
 
-See the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.15.0/CHANGELOG.md)
+See the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.15.2/CHANGELOG.md)
 for the full list.

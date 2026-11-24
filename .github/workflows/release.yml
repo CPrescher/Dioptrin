@@ -51,10 +51,31 @@ jobs:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
       - uses: dtolnay/rust-toolchain@stable
+      - name: Select wheel features
+        id: features
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-*|windows-latest)
+              echo "features=python,cuda" >> "$GITHUB_OUTPUT"
+              echo "expect_cuda=1" >> "$GITHUB_OUTPUT"
+              echo "expect_metal=0" >> "$GITHUB_OUTPUT"
+              ;;
+            macos-*)
+              echo "features=python,metal" >> "$GITHUB_OUTPUT"
+              echo "expect_cuda=0" >> "$GITHUB_OUTPUT"
+              echo "expect_metal=1" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "features=python" >> "$GITHUB_OUTPUT"
+              echo "expect_cuda=0" >> "$GITHUB_OUTPUT"
+              echo "expect_metal=0" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
       - name: Build unrestricted wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist --features python -i ${{ matrix.python }}
+          args: --release --out dist --features ${{ steps.features.outputs.features }} -i ${{ matrix.python }}
           maturin-version: 'v1.16.0'
           cache: 'none'
           manylinux: '2_28'
@@ -62,6 +83,9 @@ jobs:
         run: python scripts/check_release_wheels.py dist
       - name: Install and check unrestricted wheel
         shell: bash
+        env:
+          DIOPTRIN_EXPECT_CUDA: ${{ steps.features.outputs.expect_cuda }}
+          DIOPTRIN_EXPECT_METAL: ${{ steps.features.outputs.expect_metal }}
         run: |
           python -m pip install --only-binary=:all: dist/*.whl
           python scripts/check_unrestricted_install.py
