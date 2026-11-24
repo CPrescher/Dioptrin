@@ -136,7 +136,7 @@ class Batch2dArrayTests(unittest.TestCase):
         ai = integrator()
         bad = {
             "non-contiguous": ([image, image[:, ::2]], ValueError, "contiguous"),
-            "wrong dtype": ([image.astype(np.float32)], TypeError, None),
+            "wrong dtype": ([image.astype(np.int64)], TypeError, None),
             "wrong ndim": ([np.ones((2,) + SHAPE)], TypeError, None),
         }
         for name, (images, error, message) in bad.items():
@@ -185,6 +185,35 @@ class Batch2dArrayTests(unittest.TestCase):
         integrator("supersampled").batch2d(images, 20, 16, errors=True)
         for image, copy in zip(images, copies):
             assert_array_equal(image, copy)
+
+    def test_native_pixel_dtypes_match_float64(self):
+        # Test enough frames to trigger the 4-frame SIMD-tiled batch path as well
+        # as a small batch (single-frame fallback) across all native dtypes.
+        rng = np.random.default_rng(7)
+        base_ints = [rng.integers(0, 5000, size=SHAPE, dtype=np.int32) for _ in range(70)]
+        ai = integrator("pixel_split")
+        for dtype in (np.float32, np.uint16, np.uint32, np.int32):
+            typed_all = [x.astype(dtype) for x in base_ints]
+            f64_all = [x.astype(np.float64) for x in typed_all]
+            for count in (3, len(typed_all)):
+                typed = typed_all[:count]
+                f64 = f64_all[:count]
+                for errors in (False, True):
+                    with self.subTest(dtype=dtype.__name__, count=count, errors=errors):
+                        r1_ref = ai.batch1d(f64, 24, errors=errors)
+                        r1_got = ai.batch1d(typed, 24, errors=errors)
+                        for got, ref in zip(r1_got, r1_ref):
+                            self.assertTrue(got.is_ok(), got.error)
+                            assert_array_equal(got.result.radial, ref.result.radial)
+                            assert_array_equal(got.result.intensity, ref.result.intensity)
+                            if errors:
+                                assert_array_equal(got.result.errors, ref.result.errors)
+
+                        r2_ref = ai.batch2d(f64, 20, 16, errors=errors)
+                        r2_got = ai.batch2d(typed, 20, 16, errors=errors)
+                        for got, ref in zip(r2_got, r2_ref):
+                            self.assertTrue(got.is_ok(), got.error)
+                            self.same(got.result, ref.result, f"{dtype.__name__} {count} {errors}")
 
 
 if __name__ == "__main__":

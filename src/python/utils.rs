@@ -19,6 +19,10 @@ pub enum ImageInput<'p> {
 pub enum BatchImageInput<'p> {
     Paths(Vec<String>),
     Arrays(Vec<PyReadonlyArray2<'p, f64>>),
+    ArraysF32(Vec<PyReadonlyArray2<'p, f32>>),
+    ArraysU16(Vec<PyReadonlyArray2<'p, u16>>),
+    ArraysU32(Vec<PyReadonlyArray2<'p, u32>>),
+    ArraysI32(Vec<PyReadonlyArray2<'p, i32>>),
 }
 
 pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
@@ -195,7 +199,10 @@ pub fn check_polarization_factor(factor: Option<f64>) -> PyResult<()> {
 }
 
 /// [`extract_array_dims`] for float64 batch item `index`, naming it in errors.
-pub fn extract_item_dims(array: &PyReadonlyArray2<f64>, index: usize) -> PyResult<(usize, usize)> {
+pub fn extract_item_dims<T: numpy::Element>(
+    array: &PyReadonlyArray2<T>,
+    index: usize,
+) -> PyResult<(usize, usize)> {
     extract_array_dims(array, "float64")
         .map_err(|err| PyValueError::new_err(format!("images[{index}]: {}", err.value(array.py()))))
 }

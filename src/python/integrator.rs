@@ -538,6 +538,151 @@ impl PyIntegrator {
     /// (`validate_azimuthal_range`) raises ValueError up front, as for TIFF
     /// paths.
     ///
+    /// Native-pixel (`f32`/`u16`/`u32`/`i32`) 1D array batch path.
+    ///
+    /// Kept separate from `batch1d`'s `f64` arm to preserve fat-LTO inlining on
+    /// the hot `f64` 1D entry points.
+    #[allow(clippy::too_many_arguments)]
+    fn batch1d_arrays_pixels<P: crate::frame::Pixel + numpy::Element>(
+        &self,
+        py: Python<'_>,
+        arrays: &[PyReadonlyArray2<'_, P>],
+        n_points: usize,
+        errors: bool,
+        azimuthal_std: bool,
+        split: Option<(usize, usize)>,
+    ) -> PyResult<Vec<PyBatchResult>> {
+        let frames = arrays
+            .iter()
+            .enumerate()
+            .map(|(i, array)| {
+                let (dim1, dim2) = extract_item_dims(array, i)?;
+                let slice = array.as_slice().map_err(|err| {
+                    PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+                })?;
+                self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
+                Ok((slice, dim1, dim2))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        use rayon::prelude::*;
+        let integrator = &*self.integrator;
+        let integrate = |(i, &(data, dim1, dim2)): (usize, &(&[P], usize, usize))| {
+            let integration_result = if azimuthal_std {
+                let converted: Vec<f64> = data.iter().map(|&x| x.to_f64()).collect();
+                PyIntegrationResult::from_azimuthal(
+                    integrator.integrate1d_with_azimuthal_std_from_slice(
+                        &converted, dim1, dim2, n_points, errors,
+                    ),
+                )
+            } else {
+                let (radial, intensity, errs) =
+                    integrator.integrate1d_pixels_from_slice(data, dim1, dim2, n_points, errors);
+                match errs {
+                    Some(e) => PyIntegrationResult::from_1d_with_errors(radial, intensity, e),
+                    None => PyIntegrationResult::from_1d(radial, intensity),
+                }
+            };
+            PyBatchResult {
+                filename: format!("array[{}]", i),
+                result: Some(integration_result),
+                error: None,
+            }
+        };
+
+        if let Some((num_workers, num_threads)) = split {
+            let prepare = || {
+                if let Some(&(_, dim1, dim2)) = frames.first()
+                    && frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                {
+                    integrator.prepare1d(dim1, dim2, n_points);
+                }
+            };
+            let outcomes = py
+                .detach(|| {
+                    map_in_pools(frames.len(), num_workers, num_threads, prepare, |i| {
+                        let mut one: Vec<PyBatchResult> = frames[i..=i]
+                            .par_iter()
+                            .enumerate()
+                            .map(integrate)
+                            .collect();
+                        let mut result = one.pop().expect("one frame, one result");
+                        result.filename = format!("array[{}]", i);
+                        result
+                    })
+                })
+                .map_err(PyValueError::new_err)?;
+            return Ok(outcomes
+                .into_iter()
+                .map(|outcome| outcome.unwrap_or_else(|payload| std::panic::resume_unwind(payload)))
+                .collect());
+        }
+
+        let results = py.detach(|| {
+            let uniform = frames
+                .first()
+                .filter(|&&(_, dim1, dim2)| frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2)))
+                .map(|&(_, dim1, dim2)| (dim1, dim2));
+            if let Some((dim1, dim2)) = uniform {
+                integrator.prepare1d(dim1, dim2, n_points);
+                let min_tiled = 4 * rayon::current_num_threads().max(1);
+                if !azimuthal_std
+                    && frames.len() >= min_tiled
+                    && integrator.can_integrate1d_batch4(dim1, dim2, n_points, errors)
+                {
+                    let n_tiled = (frames.len() / 4) * 4;
+                    let mut out: Vec<PyBatchResult> = frames[..n_tiled]
+                        .par_chunks_exact(4)
+                        .enumerate()
+                        .flat_map(|(chunk_idx, chunk)| {
+                            let base = chunk_idx * 4;
+                            let batch = integrator
+                                .try_integrate1d_batch4(
+                                    [chunk[0].0, chunk[1].0, chunk[2].0, chunk[3].0],
+                                    dim1,
+                                    dim2,
+                                    n_points,
+                                    errors,
+                                )
+                                .expect("can_integrate1d_batch4 pre-checked eligibility");
+                            batch
+                                .into_iter()
+                                .enumerate()
+                                .map(|(j, (radial, intensity, errs))| {
+                                    let res = match errs {
+                                        Some(e) => PyIntegrationResult::from_1d_with_errors(
+                                            radial, intensity, e,
+                                        ),
+                                        None => PyIntegrationResult::from_1d(radial, intensity),
+                                    };
+                                    PyBatchResult {
+                                        filename: format!("array[{}]", base + j),
+                                        result: Some(res),
+                                        error: None,
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                    if n_tiled < frames.len() {
+                        out.par_extend(
+                            frames[n_tiled..]
+                                .par_iter()
+                                .enumerate()
+                                .map(|(j, item)| integrate((n_tiled + j, item))),
+                        );
+                    }
+                    return out;
+                }
+            }
+            frames.par_iter().enumerate().map(integrate).collect()
+        });
+
+        Ok(results)
+    }
+
+    /// Borrow a list of 2D NumPy arrays and run 2D integration on them.
+    ///
     /// `split` is `None` when the caller gave neither `num_workers` nor
     /// `num_threads`: the frames then run as in `batch1d`'s array branch, a
     /// `par_iter` on the global Rayon pool. Otherwise `Some((workers,
@@ -545,10 +690,10 @@ impl PyIntegrator {
     /// pool of `threads` threads ([`map_in_pools`]); a panic in one frame is
     /// raised after all frames finished. Only the per-frame closure is 2D
     /// specific, so 1D could use the same structure.
-    fn batch2d_arrays(
+    fn batch2d_arrays<P: crate::frame::Pixel + numpy::Element>(
         &self,
         py: Python<'_>,
-        arrays: &[PyReadonlyArray2<'_, f64>],
+        arrays: &[PyReadonlyArray2<'_, P>],
         bins: Bins2d,
         radial: Option<Vec<f64>>,
         split: Option<(usize, usize)>,
@@ -571,12 +716,50 @@ impl PyIntegrator {
         let integrate = |i: usize| {
             let (data, dim1, dim2) = frames[i];
             let filename = format!("array[{}]", i);
-            match integrate2d_slice(integrator, data, dim1, dim2, bins, radial.clone()) {
-                Ok(result) => PyBatchResult {
-                    filename,
-                    result: Some(result),
-                    error: None,
-                },
+            match integrator.integrate2d_pixels_from_slice(
+                data,
+                dim1,
+                dim2,
+                bins.n_radial,
+                bins.n_azimuthal,
+                bins.azimuthal_range,
+                bins.errors,
+            ) {
+                Ok((intensity, errs, axes)) => {
+                    let result = if let Some((rad, az)) = axes {
+                        PyIntegrationResult::from_azimuthal_range_2d(
+                            crate::integration::AzimuthalRange2dResult {
+                                intensity,
+                                errors: errs,
+                                radial: rad,
+                                azimuthal: az,
+                            },
+                            bins.n_radial,
+                            bins.n_azimuthal,
+                        )
+                    } else {
+                        match errs {
+                            Some(e) => PyIntegrationResult::from_2d_with_errors(
+                                intensity,
+                                e,
+                                bins.n_radial,
+                                bins.n_azimuthal,
+                            )
+                            .with_radial(radial.clone()),
+                            None => PyIntegrationResult::from_2d(
+                                intensity,
+                                bins.n_radial,
+                                bins.n_azimuthal,
+                            )
+                            .with_radial(radial.clone()),
+                        }
+                    };
+                    PyBatchResult {
+                        filename,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
                 Err(error) => PyBatchResult {
                     filename,
                     result: None,
@@ -1727,6 +1910,38 @@ impl PyIntegrator {
 
                 Ok(results)
             }
+            BatchImageInput::ArraysF32(arrays) => self.batch1d_arrays_pixels(
+                py,
+                &arrays,
+                n_points,
+                errors,
+                azimuthal_std,
+                split_requested.then_some((num_workers, num_threads)),
+            ),
+            BatchImageInput::ArraysU16(arrays) => self.batch1d_arrays_pixels(
+                py,
+                &arrays,
+                n_points,
+                errors,
+                azimuthal_std,
+                split_requested.then_some((num_workers, num_threads)),
+            ),
+            BatchImageInput::ArraysU32(arrays) => self.batch1d_arrays_pixels(
+                py,
+                &arrays,
+                n_points,
+                errors,
+                azimuthal_std,
+                split_requested.then_some((num_workers, num_threads)),
+            ),
+            BatchImageInput::ArraysI32(arrays) => self.batch1d_arrays_pixels(
+                py,
+                &arrays,
+                n_points,
+                errors,
+                azimuthal_std,
+                split_requested.then_some((num_workers, num_threads)),
+            ),
         }
     }
 
@@ -2005,6 +2220,46 @@ impl PyIntegrator {
         let tiff_paths = match tiff_paths {
             BatchImageInput::Paths(paths) => paths,
             BatchImageInput::Arrays(arrays) => {
+                let bins = Bins2d {
+                    n_radial,
+                    n_azimuthal,
+                    errors,
+                    azimuthal_range,
+                };
+                let split = split_requested.then_some((num_workers, num_threads));
+                return self.batch2d_arrays(py, &arrays, bins, radial, split);
+            }
+            BatchImageInput::ArraysF32(arrays) => {
+                let bins = Bins2d {
+                    n_radial,
+                    n_azimuthal,
+                    errors,
+                    azimuthal_range,
+                };
+                let split = split_requested.then_some((num_workers, num_threads));
+                return self.batch2d_arrays(py, &arrays, bins, radial, split);
+            }
+            BatchImageInput::ArraysU16(arrays) => {
+                let bins = Bins2d {
+                    n_radial,
+                    n_azimuthal,
+                    errors,
+                    azimuthal_range,
+                };
+                let split = split_requested.then_some((num_workers, num_threads));
+                return self.batch2d_arrays(py, &arrays, bins, radial, split);
+            }
+            BatchImageInput::ArraysU32(arrays) => {
+                let bins = Bins2d {
+                    n_radial,
+                    n_azimuthal,
+                    errors,
+                    azimuthal_range,
+                };
+                let split = split_requested.then_some((num_workers, num_threads));
+                return self.batch2d_arrays(py, &arrays, bins, radial, split);
+            }
+            BatchImageInput::ArraysI32(arrays) => {
                 let bins = Bins2d {
                     n_radial,
                     n_azimuthal,
