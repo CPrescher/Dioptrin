@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/src/integration/cuda/kernels.cu"
-OUT="$ROOT/src/integration/cuda/kernels.ptx"
+OUT="$ROOT/src/integration/cuda/kernels.ptx.gz"
 ARCH="${DIOPTRIN_CUDA_PTX_ARCH:-compute_70}"
 
 if ! command -v nvcc >/dev/null 2>&1; then
@@ -30,6 +30,6 @@ nvcc --ptx \
   echo "// dioptrin-kernels-sha256: $SHA"
   echo "// dioptrin-ptx-arch: $ARCH"
   cat "$TMP"
-} > "$OUT"
+} | gzip -9 -n > "$OUT"
 
 echo "Wrote $OUT ($(wc -c < "$OUT") bytes, arch=$ARCH, sha256=$SHA)"

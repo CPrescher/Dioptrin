@@ -1408,7 +1408,8 @@ mod device {
     fn precompiled_ptx_matches_kernels_cu_and_exports_all_entries() {
         use sha2::{Digest, Sha256};
 
-        let ptx = super::super::device::PRECOMPILED_PTX;
+        let ptx =
+            super::super::device::precompiled_ptx().expect("decompress precompiled kernels.ptx.gz");
         let expected_sha: String = Sha256::digest(include_bytes!("kernels.cu"))
             .iter()
             .map(|b| format!("{b:02x}"))

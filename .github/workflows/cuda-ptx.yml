@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - "src/integration/cuda/kernels.cu"
-      - "src/integration/cuda/kernels.ptx"
+      - "src/integration/cuda/kernels.ptx.gz"
       - "scripts/build_cuda_ptx.sh"
       - ".github/workflows/cuda-ptx.yml"
 
@@ -26,20 +26,20 @@ jobs:
       - name: Compile kernels.cu to PTX
         run: bash scripts/build_cuda_ptx.sh
 
-      - name: Upload compiled kernels.ptx artifact
+      - name: Upload compiled kernels.ptx.gz artifact
         uses: actions/upload-artifact@v4
         with:
           name: cuda-ptx
-          path: src/integration/cuda/kernels.ptx
+          path: src/integration/cuda/kernels.ptx.gz
           retention-days: 7
 
-      - name: Verify committed kernels.ptx matches kernels.cu
+      - name: Verify committed kernels.ptx.gz matches kernels.cu
         run: |
           EXPECTED_SHA="$(sha256sum src/integration/cuda/kernels.cu | awk '{print $1}')"
-          COMMITTED_SHA="$(git show HEAD:src/integration/cuda/kernels.ptx 2>/dev/null | sed -n 's|^// dioptrin-kernels-sha256: ||p' | head -n 1 || true)"
+          COMMITTED_SHA="$(git show HEAD:src/integration/cuda/kernels.ptx.gz 2>/dev/null | gzip -dc 2>/dev/null | sed -n 's|^// dioptrin-kernels-sha256: ||p' | head -n 1 || true)"
           echo "kernels.cu sha256: $EXPECTED_SHA"
-          echo "committed kernels.ptx sha256: ${COMMITTED_SHA:-<missing>}"
+          echo "committed kernels.ptx.gz sha256: ${COMMITTED_SHA:-<missing>}"
           if [ "$COMMITTED_SHA" != "$EXPECTED_SHA" ]; then
-            echo "::error::src/integration/cuda/kernels.ptx is out of date with kernels.cu. Download the 'cuda-ptx' artifact from this run and commit it."
+            echo "::error::src/integration/cuda/kernels.ptx.gz is out of date with kernels.cu. Download the 'cuda-ptx' artifact from this run and commit it."
             exit 1
           fi
