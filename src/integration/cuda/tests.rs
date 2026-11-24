@@ -472,23 +472,29 @@ mod device {
                         }
                         check_configuration(&cpu, shape, bins, None)?;
                         let what = format!("{unit:?} {method:?} {range:?} {name}");
-                        with_table(&cpu, shape, bins, |table| {
-                            if matches!(method, IntegrationMethod::Counting) {
-                                assert!(table.weights.is_none(), "{what}: counting weights");
-                            }
-                            match name {
-                                "full mask" => assert_eq!(table.entries, 0, "{what}"),
-                                _ => assert!(table.entries > 0, "{what}"),
-                            }
-                            if name == "partial mask" {
-                                assert!(
-                                    table.columns.iter().all(|&p| p % 7 != 0),
-                                    "{what}: masked pixel in the table"
-                                );
-                            }
-                            check_host_table(table, &cpu, &frame, shape, &what);
-                            Ok(())
-                        })?;
+                        with_table(
+                            &cpu,
+                            shape,
+                            bins,
+                            crate::integration::InputOrder::Detector,
+                            |table| {
+                                if matches!(method, IntegrationMethod::Counting) {
+                                    assert!(table.weights.is_none(), "{what}: counting weights");
+                                }
+                                match name {
+                                    "full mask" => assert_eq!(table.entries, 0, "{what}"),
+                                    _ => assert!(table.entries > 0, "{what}"),
+                                }
+                                if name == "partial mask" {
+                                    assert!(
+                                        table.columns.iter().all(|&p| p % 7 != 0),
+                                        "{what}: masked pixel in the table"
+                                    );
+                                }
+                                check_host_table(table, &cpu, &frame, shape, &what);
+                                Ok(())
+                            },
+                        )?;
                     }
                 }
             }
@@ -522,11 +528,43 @@ mod device {
                 full.with_radial_range(radial[0] + 0.05 * span, radial[bins - 1] - 0.1 * span);
             check_configuration(&cpu, shape, bins, None)?;
             let what = format!("default {method:?}");
-            with_table(&cpu, shape, bins, |table| {
-                assert!(table.weights.is_some(), "{what}: splitting has weights");
-                check_host_table(table, &cpu, &frame, shape, &what);
-                Ok(())
-            })?;
+            let (det_int, det_err) = with_table(
+                &cpu,
+                shape,
+                bins,
+                crate::integration::InputOrder::Detector,
+                |table| {
+                    assert!(table.weights.is_some(), "{what}: splitting has weights");
+                    check_host_table(table, &cpu, &frame, shape, &what);
+                    let w = table.weights.unwrap();
+                    Ok(host_gather(
+                        table,
+                        table.columns.as_ref(),
+                        |k| w[k],
+                        |p| frame[p],
+                    ))
+                },
+            )?;
+            let flipped: Vec<f64> = frame
+                .chunks_exact(shape.1)
+                .rev()
+                .flatten()
+                .copied()
+                .collect();
+            with_table(
+                &cpu,
+                shape,
+                bins,
+                crate::integration::InputOrder::FlipVertical,
+                |table| {
+                    let w = table.weights.unwrap();
+                    let (flip_int, flip_err) =
+                        host_gather(table, table.columns.as_ref(), |k| w[k], |p| flipped[p]);
+                    assert_eq!(flip_int, det_int, "{what}: FlipVertical intensity mismatch");
+                    assert_eq!(flip_err, det_err, "{what}: FlipVertical sigma mismatch");
+                    Ok(())
+                },
+            )?;
         }
         Ok(())
     }

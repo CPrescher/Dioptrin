@@ -433,3 +433,88 @@ fn metal_readonly_static_memory_integrates_cleanly() {
         "readonly/err",
     );
 }
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn metal_flip_vertical_matches_flipped_detector_order() {
+    use crate::integration::InputOrder;
+
+    let shape = (65, 67);
+    let pixels = shape.0 * shape.1;
+    let bins = 120;
+    let (n_rad, n_azim) = (32, 18);
+
+    let ai = test_integrator(IntegrationMethod::PixelSplit, shape);
+    let det_1d = ai
+        .prepare_metal1d(shape, bins, &Metal1dOptions::new())
+        .expect("prepare_metal1d detector");
+    let flip_1d = ai
+        .prepare_metal1d(
+            shape,
+            bins,
+            &Metal1dOptions::new().with_input_order(InputOrder::FlipVertical),
+        )
+        .expect("prepare_metal1d flip");
+    let det_2d = ai
+        .prepare_metal2d(shape, n_rad, n_azim, None, &Metal2dOptions::new())
+        .expect("prepare_metal2d detector");
+    let flip_2d = ai
+        .prepare_metal2d(
+            shape,
+            n_rad,
+            n_azim,
+            None,
+            &Metal2dOptions::new().with_input_order(InputOrder::FlipVertical),
+        )
+        .expect("prepare_metal2d flip");
+
+    // Non-symmetric frame so vertical flip produces a genuinely different result if unmapped.
+    let frame_u16: Vec<u16> = (0..pixels)
+        .map(|i| {
+            let r = i / shape.1;
+            let c = i % shape.1;
+            ((r * 97 + c * 13 + 7) % 60_000) as u16
+        })
+        .collect();
+    let flipped_u16: Vec<u16> = frame_u16
+        .chunks_exact(shape.1)
+        .rev()
+        .flatten()
+        .copied()
+        .collect();
+
+    // 1D: flipped input with FlipVertical must be bit-identical to unflipped input with Detector.
+    let r_det_1d = det_1d.integrate_frame(&frame_u16, true).unwrap();
+    let r_flip_1d = flip_1d.integrate_frame(&flipped_u16, true).unwrap();
+    assert_eq!(r_flip_1d.intensity, r_det_1d.intensity);
+    assert_eq!(r_flip_1d.errors, r_det_1d.errors);
+    assert_ne!(
+        det_1d
+            .integrate_frame(&flipped_u16, false)
+            .unwrap()
+            .intensity,
+        r_det_1d.intensity,
+        "test frame should be vertically asymmetric"
+    );
+
+    // 2D: flipped input with FlipVertical must be bit-identical to unflipped input with Detector.
+    let r_det_2d = det_2d.integrate_frame(&frame_u16, true).unwrap();
+    let r_flip_2d = flip_2d.integrate_frame(&flipped_u16, true).unwrap();
+    assert_eq!(r_flip_2d.intensity, r_det_2d.intensity);
+    assert_eq!(r_flip_2d.errors, r_det_2d.errors);
+
+    // BSLZ4 1D + 2D on flipped raw chunk.
+    let raw_flipped: Vec<u8> = flipped_u16.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let chunk = encode_bslz4_literals(&raw_flipped, 2, 1024);
+    let b_1d = flip_1d
+        .integrate_bslz4(&[chunk.as_slice()], Bslz4Dtype::U16, true)
+        .unwrap();
+    assert_eq!(b_1d[0].intensity, r_det_1d.intensity);
+    assert_eq!(b_1d[0].errors, r_det_1d.errors);
+
+    let b_2d = flip_2d
+        .integrate_bslz4(&[chunk.as_slice()], Bslz4Dtype::U16, true)
+        .unwrap();
+    assert_eq!(b_2d[0].intensity, r_det_2d.intensity);
+    assert_eq!(b_2d[0].errors, r_det_2d.errors);
+}
