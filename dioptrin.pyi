@@ -431,11 +431,11 @@ class Integrator:
         """Experimental: upload the fixed-mask 1D table to a CUDA device.
 
         Supports ``mask_mode="fixed"`` with the ``counting``, ``pixel_split``,
-        ``pyfai_full`` and ``supersampled`` methods. The plan is a snapshot of the current
-        mask, corrections, method, unit and radial range; later changes to
-        this Integrator do not affect it. ``fast_math`` and ``sparse_layout``
-        are ignored. Results agree with ``integrate1d`` within the tolerance
-        of ``precision``, not bit for bit:
+        ``pyfai_full`` and ``supersampled`` methods. The plan is a snapshot of
+        the current mask, corrections, method, unit and radial range; later
+        changes to this Integrator do not affect it. ``fast_math`` and
+        ``sparse_layout`` are ignored. Results agree with ``integrate1d`` within
+        the tolerance of ``precision``, not bit for bit:
 
         - ``"f32"``: float32 pixels and weights, float32 accumulation.
         - ``"f32_compensated"`` (default): float32 pixels and weights,

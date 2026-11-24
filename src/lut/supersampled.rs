@@ -182,7 +182,8 @@ fn edge_grad_sign(p: [f64; 3], d: [f64; 3]) -> f64 {
 }
 
 /// Finds bin index `b` in `0..=n_bins` for `u` using a local `hint` first.
-/// Returns `0` if `u > c_edges[0]` when `clamped`, or `n_bins` if `u <= c_edges[n_bins]`.
+/// Unconditionally returns `0` if `u > c_edges[0]` and `n_bins` if
+/// `u <= c_edges[n_bins]`.
 #[inline(always)]
 fn find_bin_hint(c_edges: &[f64], u: f64, hint: usize) -> usize {
     let n_bins = c_edges.len() - 1;
@@ -1025,6 +1026,144 @@ mod tests {
                 expected_bins[bin] as f64 / (n_ss * n_ss) as f64,
                 "bin {bin}"
             );
+        }
+    }
+
+    #[test]
+    fn fast_1d_builder_matches_exact_across_edge_cases() {
+        let make_geo = |dim1: usize,
+                        dim2: usize,
+                        poni1: f64,
+                        poni2: f64,
+                        distance: f64,
+                        rot1: f64,
+                        rot2: f64,
+                        rot3: f64| {
+            let mut poni = Poni::new();
+            poni.pixel1 = 1e-4;
+            poni.pixel2 = 1.2e-4;
+            poni.distance = distance;
+            poni.poni1 = poni1;
+            poni.poni2 = poni2;
+            poni.rot1 = rot1;
+            poni.rot2 = rot2;
+            poni.rot3 = rot3;
+            poni.wavelength = 1e-10;
+            Geometry::new(dim1, dim2, poni)
+        };
+
+        // Cover: no tilt, strong tilt with rot3 != 0, beam inside / on pixel corner /
+        // on pixel edge / off detector, and a steep geometry with z <= 0 pixels.
+        let geometries = [
+            (
+                "untilted_inside",
+                make_geo(12, 13, 5.5e-4, 6.6e-4, 0.05, 0.0, 0.0, 0.0),
+            ),
+            (
+                "beam_on_corner",
+                make_geo(12, 13, 6.0e-4, 7.2e-4, 0.05, 0.0, 0.0, 0.0),
+            ),
+            (
+                "beam_on_edge",
+                make_geo(12, 13, 6.0e-4, 6.6e-4, 0.05, 0.0, 0.0, 0.0),
+            ),
+            (
+                "beam_off_det",
+                make_geo(12, 13, -3.0e-4, -2.0e-4, 0.05, 0.0, 0.0, 0.0),
+            ),
+            (
+                "tilted_rot3",
+                make_geo(12, 13, 5.2e-4, 6.1e-4, 0.04, 0.35, -0.28, 0.42),
+            ),
+            (
+                "z_non_positive",
+                make_geo(12, 13, 5.0e-4, 6.0e-4, 0.0004, 1.3, 0.2, -0.3),
+            ),
+        ];
+
+        let units = [
+            RadialUnit::TthRad,
+            RadialUnit::TthDeg,
+            RadialUnit::QAngstrom,
+            RadialUnit::QNm,
+        ];
+
+        // Verify the z <= 0 case actually exercises negative/zero z.
+        let z_geo = &geometries.last().unwrap().1;
+        let z_plane = z_geo.subpixel_transform().affine_plane().unwrap();
+        let has_non_pos_z = (0..=z_geo.dim1()).any(|r| {
+            (0..=z_geo.dim2())
+                .any(|c| z_plane.0[2] + r as f64 * z_plane.1[2] + c as f64 * z_plane.2[2] <= 0.0)
+        });
+        assert!(has_non_pos_z, "z_non_positive fixture must include z <= 0");
+
+        for (gname, geo) in &geometries {
+            let tth = geo.calc_tth_all();
+            let transform = geo.subpixel_transform();
+            for &unit in &units {
+                let radial = unit.convert_from_tth(&tth, geo.poni.wavelength);
+                let conversion = RadialConversion::new(unit, geo.poni.wavelength);
+                // n_points = 1, 2, 15, and 260 (hits single-bin, two-bin, span <= 16, and span >= 17).
+                for &n_points in &[1usize, 2, 15, 260] {
+                    for &n_ss in &[1usize, 2, 3, 8] {
+                        // Clamped mode
+                        let (hmin, _hmax, hstep) =
+                            histogram::ss_tth_min_max_step(geo, &radial, n_points, n_ss, unit);
+                        let sample_clamped = |d1: f64, d2: f64| {
+                            let r = conversion.convert(transform.tth(d1, d2));
+                            Some(histogram::get_bin_clamped(r, hmin, hstep, n_points))
+                        };
+                        let fast = build_counted_1d_csr(
+                            geo,
+                            n_ss,
+                            n_points,
+                            hmin,
+                            hstep,
+                            true,
+                            &conversion,
+                            sample_clamped,
+                        );
+                        let exact = build_counted_csr(geo, n_ss, n_points, false, sample_clamped);
+                        assert_eq!(
+                            fast, exact,
+                            "clamped mismatch: {gname} {unit:?} n_points={n_points} n_ss={n_ss}"
+                        );
+
+                        // Explicit range cutting through the detector + negative hist_min
+                        if n_ss <= 3 {
+                            let span = (hstep * n_points as f64).max(1e-6);
+                            let ranges = [
+                                (hmin + 0.2 * span, hmin + 0.8 * span),
+                                (-0.1 * span, hmin + 0.6 * span),
+                            ];
+                            for (rmin, rmax) in ranges {
+                                let (emin, emax, estep) =
+                                    histogram::min_max_step_from_range(rmin, rmax, n_points);
+                                let sample_range = |d1: f64, d2: f64| {
+                                    let r = conversion.convert(transform.tth(d1, d2));
+                                    histogram::get_bin_in_range(r, emin, emax, estep, n_points)
+                                };
+                                let fast_r = build_counted_1d_csr(
+                                    geo,
+                                    n_ss,
+                                    n_points,
+                                    emin,
+                                    estep,
+                                    false,
+                                    &conversion,
+                                    sample_range,
+                                );
+                                let exact_r =
+                                    build_counted_csr(geo, n_ss, n_points, false, sample_range);
+                                assert_eq!(
+                                    fast_r, exact_r,
+                                    "range mismatch: {gname} {unit:?} n_points={n_points} n_ss={n_ss} ({rmin}, {rmax})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -107,8 +107,9 @@ impl SubpixelTransform {
         (math::f_tth(&x, &y, &z), math::f_azimuth(&x, &y))
     }
 
-    /// Affine plane `(p0, d1_step, d2_step)` for flat detectors without spline
-    /// distortion, where `position(d1, d2) == p0 + d1 * d1_step + d2 * d2_step`.
+    /// Affine plane `(p0, d1_step, d2_step)` when no custom [`Detector`]
+    /// transform is attached (`self.detector.is_none()`), where
+    /// `position(d1, d2) == p0 + d1 * d1_step + d2 * d2_step`.
     pub(crate) fn affine_plane(&self) -> Option<([f64; 3], [f64; 3], [f64; 3])> {
         if self.detector.is_some() {
             return None;
