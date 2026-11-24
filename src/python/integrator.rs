@@ -655,152 +655,163 @@ impl PyIntegrator {
         use rayon::prelude::*;
         let integrator = &*self.integrator;
 
-        let run_fill =
-            |i_slice: &mut [f64], mut e_slice: Option<&mut [f64]>| -> Result<(), String> {
-                integrator.prepare2d(
+        let run_fill = |i_slice: &mut [f64],
+                        mut e_slice: Option<&mut [f64]>|
+         -> Result<(), String> {
+            integrator.prepare2d(
+                dim1,
+                dim2,
+                bins.n_radial,
+                bins.n_azimuthal,
+                bins.azimuthal_range,
+            );
+            let min_tiled = 4 * rayon::current_num_threads().max(1);
+            let use_tiled = frames.len() >= min_tiled
+                && integrator.can_integrate2d_batch4(
                     dim1,
                     dim2,
                     bins.n_radial,
                     bins.n_azimuthal,
                     bins.azimuthal_range,
+                    bins.errors,
                 );
-                let min_tiled = 4 * rayon::current_num_threads().max(1);
-                let use_tiled = frames.len() >= min_tiled
-                    && integrator.can_integrate2d_batch4(
-                        dim1,
-                        dim2,
-                        bins.n_radial,
-                        bins.n_azimuthal,
-                        bins.azimuthal_range,
-                        bins.errors,
-                    );
-                let n_tiled = if use_tiled { (frames.len() / 4) * 4 } else { 0 };
+            let n_tiled = if use_tiled { (frames.len() / 4) * 4 } else { 0 };
 
-                if n_tiled > 0 {
-                    let (i_tiled, i_tail) = i_slice.split_at_mut(n_tiled * total_bins);
-                    if let Some(e_all) = e_slice.as_deref_mut() {
-                        let (e_tiled, e_tail) = e_all.split_at_mut(n_tiled * total_bins);
-                        frames[..n_tiled]
-                            .par_chunks_exact(4)
-                            .zip(i_tiled.par_chunks_exact_mut(4 * total_bins))
-                            .zip(e_tiled.par_chunks_exact_mut(4 * total_bins))
-                            .for_each(|((f_chunk, i_chunk), e_chunk)| {
-                                let (y0, rest) = i_chunk.split_at_mut(total_bins);
-                                let (y1, rest) = rest.split_at_mut(total_bins);
-                                let (y2, y3) = rest.split_at_mut(total_bins);
-                                let (e0, rest) = e_chunk.split_at_mut(total_bins);
-                                let (e1, rest) = rest.split_at_mut(total_bins);
-                                let (e2, e3) = rest.split_at_mut(total_bins);
-                                let ok = integrator.try_integrate2d_batch4_into(
-                                    [f_chunk[0], f_chunk[1], f_chunk[2], f_chunk[3]],
+            if n_tiled > 0 {
+                let (i_tiled, i_tail) = i_slice.split_at_mut(n_tiled * total_bins);
+                if let Some(e_all) = e_slice.as_deref_mut() {
+                    let (e_tiled, e_tail) = e_all.split_at_mut(n_tiled * total_bins);
+                    frames[..n_tiled]
+                        .par_chunks_exact(4)
+                        .zip(i_tiled.par_chunks_exact_mut(4 * total_bins))
+                        .zip(e_tiled.par_chunks_exact_mut(4 * total_bins))
+                        .try_for_each(|((f_chunk, i_chunk), e_chunk)| -> Result<(), String> {
+                            let (y0, rest) = i_chunk.split_at_mut(total_bins);
+                            let (y1, rest) = rest.split_at_mut(total_bins);
+                            let (y2, y3) = rest.split_at_mut(total_bins);
+                            let (e0, rest) = e_chunk.split_at_mut(total_bins);
+                            let (e1, rest) = rest.split_at_mut(total_bins);
+                            let (e2, e3) = rest.split_at_mut(total_bins);
+                            let ok = integrator.try_integrate2d_batch4_into(
+                                [f_chunk[0], f_chunk[1], f_chunk[2], f_chunk[3]],
+                                dim1,
+                                dim2,
+                                bins.n_radial,
+                                bins.n_azimuthal,
+                                bins.azimuthal_range,
+                                [y0, y1, y2, y3],
+                                Some([e0, e1, e2, e3]),
+                            );
+                            if !ok {
+                                return Err(
+                                    "2D batch4 tiled kernel unexpectedly declined chunk".into()
+                                );
+                            }
+                            Ok(())
+                        })?;
+                    if n_tiled < frames.len() {
+                        frames[n_tiled..]
+                            .par_iter()
+                            .zip(i_tail.par_chunks_exact_mut(total_bins))
+                            .zip(e_tail.par_chunks_exact_mut(total_bins))
+                            .try_for_each(|((&data, dst_i), dst_e)| -> Result<(), String> {
+                                let (y, e, _) = integrator.integrate2d_pixels_from_slice(
+                                    data,
                                     dim1,
                                     dim2,
                                     bins.n_radial,
                                     bins.n_azimuthal,
                                     bins.azimuthal_range,
-                                    [y0, y1, y2, y3],
-                                    Some([e0, e1, e2, e3]),
-                                );
-                                debug_assert!(ok, "can_integrate2d_batch4 pre-checked eligibility");
-                            });
-                        if n_tiled < frames.len() {
-                            frames[n_tiled..]
-                                .par_iter()
-                                .zip(i_tail.par_chunks_exact_mut(total_bins))
-                                .zip(e_tail.par_chunks_exact_mut(total_bins))
-                                .try_for_each(|((&data, dst_i), dst_e)| -> Result<(), String> {
-                                    let (y, e, _) = integrator.integrate2d_pixels_from_slice(
-                                        data,
-                                        dim1,
-                                        dim2,
-                                        bins.n_radial,
-                                        bins.n_azimuthal,
-                                        bins.azimuthal_range,
-                                        true,
-                                    )?;
-                                    dst_i.copy_from_slice(&y);
-                                    dst_e.copy_from_slice(e.as_ref().expect("errors requested"));
-                                    Ok(())
-                                })?;
-                        }
-                    } else {
-                        frames[..n_tiled]
-                            .par_chunks_exact(4)
-                            .zip(i_tiled.par_chunks_exact_mut(4 * total_bins))
-                            .for_each(|(f_chunk, i_chunk)| {
-                                let (y0, rest) = i_chunk.split_at_mut(total_bins);
-                                let (y1, rest) = rest.split_at_mut(total_bins);
-                                let (y2, y3) = rest.split_at_mut(total_bins);
-                                let ok = integrator.try_integrate2d_batch4_into(
-                                    [f_chunk[0], f_chunk[1], f_chunk[2], f_chunk[3]],
-                                    dim1,
-                                    dim2,
-                                    bins.n_radial,
-                                    bins.n_azimuthal,
-                                    bins.azimuthal_range,
-                                    [y0, y1, y2, y3],
-                                    None,
-                                );
-                                debug_assert!(ok, "can_integrate2d_batch4 pre-checked eligibility");
-                            });
-                        if n_tiled < frames.len() {
-                            frames[n_tiled..]
-                                .par_iter()
-                                .zip(i_tail.par_chunks_exact_mut(total_bins))
-                                .try_for_each(|(&data, dst_i)| -> Result<(), String> {
-                                    let (y, _, _) = integrator.integrate2d_pixels_from_slice(
-                                        data,
-                                        dim1,
-                                        dim2,
-                                        bins.n_radial,
-                                        bins.n_azimuthal,
-                                        bins.azimuthal_range,
-                                        false,
-                                    )?;
-                                    dst_i.copy_from_slice(&y);
-                                    Ok(())
-                                })?;
-                        }
+                                    true,
+                                )?;
+                                dst_i.copy_from_slice(&y);
+                                dst_e.copy_from_slice(e.as_ref().expect("errors requested"));
+                                Ok(())
+                            })?;
                     }
-                } else if let Some(e_all) = e_slice.as_deref_mut() {
-                    frames
-                        .par_iter()
-                        .zip(i_slice.par_chunks_exact_mut(total_bins))
-                        .zip(e_all.par_chunks_exact_mut(total_bins))
-                        .try_for_each(|((&data, dst_i), dst_e)| -> Result<(), String> {
-                            let (y, e, _) = integrator.integrate2d_pixels_from_slice(
-                                data,
-                                dim1,
-                                dim2,
-                                bins.n_radial,
-                                bins.n_azimuthal,
-                                bins.azimuthal_range,
-                                true,
-                            )?;
-                            dst_i.copy_from_slice(&y);
-                            dst_e.copy_from_slice(e.as_ref().expect("errors requested"));
-                            Ok(())
-                        })?;
                 } else {
-                    frames
-                        .par_iter()
-                        .zip(i_slice.par_chunks_exact_mut(total_bins))
-                        .try_for_each(|(&data, dst_i)| -> Result<(), String> {
-                            let (y, _, _) = integrator.integrate2d_pixels_from_slice(
-                                data,
+                    frames[..n_tiled]
+                        .par_chunks_exact(4)
+                        .zip(i_tiled.par_chunks_exact_mut(4 * total_bins))
+                        .try_for_each(|(f_chunk, i_chunk)| -> Result<(), String> {
+                            let (y0, rest) = i_chunk.split_at_mut(total_bins);
+                            let (y1, rest) = rest.split_at_mut(total_bins);
+                            let (y2, y3) = rest.split_at_mut(total_bins);
+                            let ok = integrator.try_integrate2d_batch4_into(
+                                [f_chunk[0], f_chunk[1], f_chunk[2], f_chunk[3]],
                                 dim1,
                                 dim2,
                                 bins.n_radial,
                                 bins.n_azimuthal,
                                 bins.azimuthal_range,
-                                false,
-                            )?;
-                            dst_i.copy_from_slice(&y);
+                                [y0, y1, y2, y3],
+                                None,
+                            );
+                            if !ok {
+                                return Err(
+                                    "2D batch4 tiled kernel unexpectedly declined chunk".into()
+                                );
+                            }
                             Ok(())
                         })?;
+                    if n_tiled < frames.len() {
+                        frames[n_tiled..]
+                            .par_iter()
+                            .zip(i_tail.par_chunks_exact_mut(total_bins))
+                            .try_for_each(|(&data, dst_i)| -> Result<(), String> {
+                                let (y, _, _) = integrator.integrate2d_pixels_from_slice(
+                                    data,
+                                    dim1,
+                                    dim2,
+                                    bins.n_radial,
+                                    bins.n_azimuthal,
+                                    bins.azimuthal_range,
+                                    false,
+                                )?;
+                                dst_i.copy_from_slice(&y);
+                                Ok(())
+                            })?;
+                    }
                 }
-                Ok(())
-            };
+            } else if let Some(e_all) = e_slice.as_deref_mut() {
+                frames
+                    .par_iter()
+                    .zip(i_slice.par_chunks_exact_mut(total_bins))
+                    .zip(e_all.par_chunks_exact_mut(total_bins))
+                    .try_for_each(|((&data, dst_i), dst_e)| -> Result<(), String> {
+                        let (y, e, _) = integrator.integrate2d_pixels_from_slice(
+                            data,
+                            dim1,
+                            dim2,
+                            bins.n_radial,
+                            bins.n_azimuthal,
+                            bins.azimuthal_range,
+                            true,
+                        )?;
+                        dst_i.copy_from_slice(&y);
+                        dst_e.copy_from_slice(e.as_ref().expect("errors requested"));
+                        Ok(())
+                    })?;
+            } else {
+                frames
+                    .par_iter()
+                    .zip(i_slice.par_chunks_exact_mut(total_bins))
+                    .try_for_each(|(&data, dst_i)| -> Result<(), String> {
+                        let (y, _, _) = integrator.integrate2d_pixels_from_slice(
+                            data,
+                            dim1,
+                            dim2,
+                            bins.n_radial,
+                            bins.n_azimuthal,
+                            bins.azimuthal_range,
+                            false,
+                        )?;
+                        dst_i.copy_from_slice(&y);
+                        Ok(())
+                    })?;
+            }
+            Ok(())
+        };
 
         if bins.errors {
             let err_arr = unsafe {

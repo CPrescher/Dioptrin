@@ -966,7 +966,8 @@ class Integrator:
 
         Accepts a 3D `(n_frames, dim1, dim2)` C-contiguous NumPy array or a list
         of uniform-shape 2D C-contiguous NumPy arrays in `float64`, `float32`,
-        `uint16`, `uint32`, or `int32`.
+        `uint16`, `uint32`, or `int32`. Inputs are borrowed without copying
+        while the GIL is released; keep them unchanged until the call returns.
         """
         ...
 
