@@ -176,13 +176,20 @@ impl FixedRows {
 
 impl Csc {
     #[cfg(all(feature = "cuda", test))]
+    #[allow(clippy::type_complexity)]
     pub(crate) fn fixed_benchmark_parts(
         &self,
         active_pixels: usize,
-    ) -> (&[u32], &[u32], Option<&[f64]>, usize) {
+    ) -> (&[u32], std::borrow::Cow<'_, [u32]>, Option<&[f64]>, usize) {
+        let bins = match &self.bins {
+            BinIndices::U16(v) => {
+                std::borrow::Cow::Owned(v.iter().map(|&b| u32::from(b)).collect())
+            }
+            BinIndices::U32(v) => std::borrow::Cow::Borrowed(v.as_slice()),
+        };
         (
             &self.ptr,
-            &self.bins,
+            bins,
             self.weights.as_deref(),
             self.fixed_chunks(active_pixels),
         )

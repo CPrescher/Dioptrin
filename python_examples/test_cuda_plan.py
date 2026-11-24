@@ -115,7 +115,7 @@ class CudaApiTests(unittest.TestCase):
         each kind of non-finite bin occurs, NaN and -inf pixels add nothing
         to the variance, a +inf pixel makes it +inf."""
         image, mask = non_finite_image()
-        for method in ("counting", "pixel_split", "pyfai_full"):
+        for method in ("counting", "pixel_split", "pyfai_full", "supersampled"):
             with self.subTest(method=method):
                 ai = integrator(method)
                 ai.set_mask(mask)
@@ -141,9 +141,8 @@ class CudaApiTests(unittest.TestCase):
         ai = integrator()
         with self.assertRaises(ValueError):
             integrator(mask_mode="dynamic").prepare_cuda1d(SHAPE, 40)
-        for method in ("histogram", "supersampled"):
-            with self.subTest(method=method), self.assertRaises(ValueError):
-                integrator(method).prepare_cuda1d(SHAPE, 40)
+        with self.assertRaises(ValueError):
+            integrator("histogram").prepare_cuda1d(SHAPE, 40)
         with self.assertRaises(ValueError):
             ai.prepare_cuda1d(SHAPE, 0)
         with self.assertRaises(ValueError):
@@ -165,7 +164,7 @@ class CudaApiTests(unittest.TestCase):
         if available():
             self.skipTest("a CUDA device is usable")
         info = dioptrin.cuda_info()
-        for method in ("counting", "pixel_split", "pyfai_full"):
+        for method in ("counting", "pixel_split", "pyfai_full", "supersampled"):
             for precision in ("f32", "f32_compensated", "f64"):
                 with self.subTest(method=method, precision=precision):
                     with self.assertRaises(dioptrin.CudaUnavailableError) as raised:
@@ -338,7 +337,7 @@ class CudaDeviceTests(unittest.TestCase):
     def test_matches_cpu(self):
         frames = self.frames()
         mask = (frames[0] > 380).astype(np.uint8)
-        for method in ("counting", "pixel_split", "pyfai_full"):
+        for method in ("counting", "pixel_split", "pyfai_full", "supersampled"):
             for unit, radial_range in (("2th_deg", (0.2, 1.8)), ("q_A^-1", None)):
                 ai = integrator(method, unit=unit, radial_range=radial_range)
                 ai.set_mask(mask)
@@ -517,7 +516,7 @@ class CudaDeviceTests(unittest.TestCase):
         """NaN, +inf and -inf pixels give the same non-finite bins as the
         CPU, and the finite bins agree within the precision's tolerance."""
         base, mask = non_finite_image()
-        for method in ("counting", "pixel_split", "pyfai_full"):
+        for method in ("counting", "pixel_split", "pyfai_full", "supersampled"):
             ai = integrator(method)
             ai.set_mask(mask)
             for precision, rtol in (("f32", 2e-6), ("f32_compensated", 2e-6), ("f64", 1e-12)):

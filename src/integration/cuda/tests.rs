@@ -59,14 +59,9 @@ fn configuration_errors_precede_the_driver() {
     assert!(unsupported(dynamic.prepare_cuda1d(shape, 10, &options)));
     // Step 1 (sizes) is checked before step 2 (mask mode).
     assert!(invalid(dynamic.prepare_cuda1d(shape, 0, &options)));
-    for method in [
-        IntegrationMethod::Histogram,
-        IntegrationMethod::Supersampled { n_ss: 2 },
-    ] {
-        assert!(unsupported(
-            integrator(shape, method).prepare_cuda1d(shape, 10, &options)
-        ));
-    }
+    assert!(unsupported(
+        integrator(shape, IntegrationMethod::Histogram).prepare_cuda1d(shape, 10, &options)
+    ));
 
     let mask = Mask::from_vec(vec![0; 6 * 7], 6, 7).unwrap();
     let masked = integrator(shape, IntegrationMethod::PyfaiFull).with_mask(mask);
@@ -174,10 +169,11 @@ mod device {
         CudaPrecision::F32Compensated,
         CudaPrecision::F64,
     ];
-    const METHODS: [IntegrationMethod; 3] = [
+    const METHODS: [IntegrationMethod; 4] = [
         IntegrationMethod::Counting,
         IntegrationMethod::PixelSplit,
         IntegrationMethod::PyfaiFull,
+        IntegrationMethod::Supersampled { n_ss: 3 },
     ];
 
     /// Whether device 0 is usable; otherwise logs a skip, or fails when
