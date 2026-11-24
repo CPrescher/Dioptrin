@@ -4,6 +4,7 @@ pub mod calibration;
 pub mod cuda;
 pub mod dynamic;
 pub mod integrator;
+pub mod metal;
 pub mod multi_integrator;
 pub mod results;
 pub mod utils;
@@ -40,11 +41,19 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "CudaUnavailableError",
         m.py().get_type::<cuda::CudaUnavailableError>(),
     )?;
+    m.add_function(wrap_pyfunction!(metal::metal_available, m)?)?;
+    m.add_function(wrap_pyfunction!(metal::metal_info_py, m)?)?;
+    m.add(
+        "MetalUnavailableError",
+        m.py().get_type::<metal::MetalUnavailableError>(),
+    )?;
     m.add_class::<PyIntegrator>()?;
     m.add_class::<dynamic::PyDynamic1dPlan>()?;
     m.add_class::<dynamic::PyDynamic1dWorker>()?;
     m.add_class::<cuda::PyCuda1dPlan>()?;
     m.add_class::<cuda::PyCuda2dPlan>()?;
+    m.add_class::<metal::PyMetal1dPlan>()?;
+    m.add_class::<metal::PyMetal2dPlan>()?;
     m.add_class::<PyMultiIntegrator>()?;
     m.add_class::<PyIntegrationResult>()?;
     m.add_class::<PyBatchResult>()?;

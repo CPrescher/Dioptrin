@@ -9,6 +9,11 @@ pub use cuda::{
     Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, Cuda2dOptions, Cuda2dPlan, CudaError, CudaInfo,
     CudaPixel, CudaPrecision, Fixed2dResult, cuda_info,
 };
+pub mod metal;
+pub use metal::{
+    Metal1dOptions, Metal1dPlan, Metal2dOptions, Metal2dPlan, MetalError, MetalInfo, MetalPixel,
+    MetalPrecision, MetalSharedBytes, metal_info,
+};
 mod dynamic;
 pub(crate) mod grid;
 pub use grid::{AzimuthalRange2dResult, IntegrationGrid2d, PixelSplitMode, azimuthal_bracket_bins};
