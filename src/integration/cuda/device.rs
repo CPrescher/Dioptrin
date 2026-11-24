@@ -19,7 +19,7 @@ use cudarc::{
         CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceRepr, DriverError,
         LaunchConfig, PinnedHostSlice, PushKernelArg, ValidAsZeroBits, sys::CUresult,
     },
-    nvrtc::{CompileError, CompileOptions, compile_ptx_with_opts},
+    nvrtc::{CompileError, CompileOptions, Ptx, compile_ptx_with_opts},
 };
 use rayon::prelude::*;
 
@@ -175,6 +175,13 @@ pub(super) fn device(ordinal: usize) -> Result<Arc<Device>, CudaInfo> {
     }
 }
 
+/// Forward-compatible `compute_70` PTX compiled from `kernels.cu` by
+/// `scripts/build_cuda_ptx.sh`. Loaded directly via the NVIDIA driver so
+/// runtime NVRTC is not required on Volta+ GPUs.
+pub(super) const PRECOMPILED_PTX: &str = include_str!("kernels.ptx");
+/// Minimum compute capability supported by [`PRECOMPILED_PTX`].
+const PRECOMPILED_PTX_MIN_CC: (i32, i32) = (7, 0);
+
 fn initialise(ordinal: usize, info: &mut CudaInfo) -> Result<Device, String> {
     // Probing the libraries first avoids cudarc's missing-library panic.
     // SAFETY: only attempts to dlopen the driver library.
@@ -220,11 +227,54 @@ fn initialise(ordinal: usize, info: &mut CudaInfo) -> Result<Device, String> {
         .map_err(|error| format!("reading the compute capability failed: {error}"))?;
     info.compute_capability = Some((major, minor));
     info.total_memory_bytes = context.total_mem().ok();
+
+    let mut precompiled_err: Option<String> = None;
+    let (module, compile_ms, module_ms) = if (major, minor) >= PRECOMPILED_PTX_MIN_CC
+        && PRECOMPILED_PTX.contains(".version")
+    {
+        let start = Instant::now();
+        match context.load_module(Ptx::from_src(PRECOMPILED_PTX)) {
+            Ok(module) => (module, 0.0, elapsed_ms(start)),
+            Err(error) => {
+                precompiled_err = Some(format!(
+                    "loading precompiled PTX for compute capability {major}.{minor} failed ({error})"
+                ));
+                load_via_nvrtc(&context, info, nvrtc_present, major, minor, precompiled_err)?
+            }
+        }
+    } else {
+        load_via_nvrtc(&context, info, nvrtc_present, major, minor, precompiled_err)?
+    };
+    info.available = true;
+    info.reason = None;
+    Ok(Device {
+        context,
+        module,
+        info: info.clone(),
+        compile_ms,
+        module_ms,
+    })
+}
+
+fn load_via_nvrtc(
+    context: &Arc<CudaContext>,
+    info: &CudaInfo,
+    nvrtc_present: bool,
+    major: i32,
+    minor: i32,
+    precompiled_err: Option<String>,
+) -> Result<(Arc<CudaModule>, f64, f64), String> {
     if !nvrtc_present {
-        return Err(
-            "the NVRTC library (libnvrtc) was not found; put a CUDA toolkit's libnvrtc on the library path"
-                .into(),
-        );
+        return Err(match precompiled_err {
+            Some(err) => format!(
+                "{err}, and the NVRTC fallback library (libnvrtc) was not found; \
+                 update the NVIDIA driver or install a CUDA toolkit with libnvrtc"
+            ),
+            None => format!(
+                "GPU compute capability {major}.{minor} requires NVRTC fallback, \
+                 but libnvrtc was not found; put a CUDA toolkit's libnvrtc on the library path"
+            ),
+        });
     }
     let start = Instant::now();
     let architecture = format!("compute_{major}{minor}");
@@ -256,15 +306,7 @@ fn initialise(ordinal: usize, info: &mut CudaInfo) -> Result<Device, String> {
         )
     })?;
     let module_ms = elapsed_ms(start);
-    info.available = true;
-    info.reason = None;
-    Ok(Device {
-        context,
-        module,
-        info: info.clone(),
-        compile_ms,
-        module_ms,
-    })
+    Ok((module, compile_ms, module_ms))
 }
 
 /// A device and one stream on it. Cloning shares both.
