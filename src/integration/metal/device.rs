@@ -11,7 +11,8 @@ use std::{
 };
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2::sel;
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
@@ -40,17 +41,94 @@ const SLOT_BYTES: usize = 192 << 20;
 const SUBWARP_MAX_ENTRIES_PER_BIN: usize = 256;
 /// Maximum average entries per bin that still prefer `Layout::Warp` over `Layout::Block`.
 const WARP_MAX_ENTRIES_PER_BIN: usize = 5000;
-/// Apple Silicon VM page size (16 KiB) for `newBufferWithBytesNoCopy`.
-const PAGE_SIZE: usize = 16_384;
+/// macOS VM page size (16 KiB on Apple Silicon ARM64, 4 KiB on x86_64).
+const PAGE_SIZE: usize = if cfg!(target_arch = "aarch64") {
+    16_384
+} else {
+    4_096
+};
+
+/// Verifies via Mach `mach_vm_region` that every page in `[start, start + len)`
+/// is mapped and writable (`VM_PROT_READ | VM_PROT_WRITE`).
+///
+/// Metal's `newBufferWithBytesNoCopy` maps host pages RW into the GPU and raises
+/// `SIGBUS` on read-only pages (`.rodata`, `mmap_mode='r'`, `bytes`). Checking
+/// region protections here ensures read-only inputs fall back cleanly to staging.
+fn is_rw_mapped(start: usize, len: usize) -> bool {
+    const VM_REGION_BASIC_INFO_64: i32 = 9;
+    const VM_REGION_BASIC_INFO_COUNT_64: u32 = 9;
+    const VM_PROT_RW: i32 = 1 | 2; // VM_PROT_READ | VM_PROT_WRITE
+
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+        fn mach_vm_region(
+            target_task: u32,
+            address: *mut u64,
+            size: *mut u64,
+            flavor: i32,
+            info: *mut i32,
+            info_cnt: *mut u32,
+            object_name: *mut u32,
+        ) -> i32;
+    }
+
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    let mut cur = start as u64;
+    let end_u64 = end as u64;
+    while cur < end_u64 {
+        let mut region_addr = cur;
+        let mut region_size: u64 = 0;
+        let mut info = [0i32; 16];
+        let mut count = VM_REGION_BASIC_INFO_COUNT_64;
+        let mut object_name: u32 = 0;
+        // SAFETY: all out-pointers are valid stack variables; `mach_task_self_` is
+        // the current task's Mach port from libSystem.
+        let kr = unsafe {
+            mach_vm_region(
+                mach_task_self_,
+                &mut region_addr,
+                &mut region_size,
+                VM_REGION_BASIC_INFO_64,
+                info.as_mut_ptr(),
+                &mut count,
+                &mut object_name,
+            )
+        };
+        if kr != 0 || region_size == 0 || region_addr > cur {
+            return false;
+        }
+        let protection = info[0];
+        if (protection & VM_PROT_RW) != VM_PROT_RW {
+            return false;
+        }
+        cur = match region_addr.checked_add(region_size) {
+            Some(next) if next > cur => next,
+            _ => return false,
+        };
+    }
+    true
+}
+
+/// Marker trait restricting `MetalHandle`'s `Send + Sync` impl to Metal protocols
+/// that Apple documents as thread-safe (excluding command buffers and encoders).
+trait ThreadSafeMetalProtocol {}
+impl ThreadSafeMetalProtocol for dyn MTLDevice {}
+impl ThreadSafeMetalProtocol for dyn MTLCommandQueue {}
+impl ThreadSafeMetalProtocol for dyn MTLLibrary {}
+impl ThreadSafeMetalProtocol for dyn MTLComputePipelineState {}
+impl ThreadSafeMetalProtocol for dyn MTLBuffer {}
 
 /// Wrapper asserting `Send + Sync` for thread-safe Metal protocol objects.
 struct MetalHandle<T: ?Sized>(Retained<ProtocolObject<T>>);
 
-// SAFETY: Metal devices, command queues, libraries, pipelines, and buffers
-// are thread-safe per Apple's Metal framework specification. Mutable access
-// to scratch buffers is synchronised by the plan's mutex.
-unsafe impl<T: ?Sized> Send for MetalHandle<T> {}
-unsafe impl<T: ?Sized> Sync for MetalHandle<T> {}
+// SAFETY: `ThreadSafeMetalProtocol` is only implemented for Metal devices,
+// command queues, libraries, compute pipelines, and buffers, which are
+// thread-safe per Apple's Metal specification. Mutable access to scratch
+// buffers is synchronised by the plan's mutex.
+unsafe impl<T: ?Sized + ThreadSafeMetalProtocol> Send for MetalHandle<T> {}
+unsafe impl<T: ?Sized + ThreadSafeMetalProtocol> Sync for MetalHandle<T> {}
 
 impl<T: ?Sized> std::ops::Deref for MetalHandle<T> {
     type Target = ProtocolObject<T>;
@@ -359,15 +437,21 @@ impl Device {
                 }
             }
         }
-        // 2. General zero-copy path: wrap the enclosing 16 KiB VM page span.
+        // 2. General zero-copy path (Unified Memory only): wrap the enclosing VM page span.
+        if self.info.has_unified_memory != Some(true) {
+            return None;
+        }
         let aligned_start = addr & !(PAGE_SIZE - 1);
         let end = addr.checked_add(byte_len)?;
         let aligned_end = end.div_ceil(PAGE_SIZE).checked_mul(PAGE_SIZE)?;
         let aligned_len = aligned_end - aligned_start;
         let offset = addr - aligned_start;
+        if !is_rw_mapped(aligned_start, aligned_len) {
+            return None;
+        }
         // SAFETY: `[addr, end)` is an immutable borrowed slice valid until GPU completion;
-        // all pages in `[aligned_start, aligned_end)` are mapped and readable on macOS ARM64,
-        // and the GPU kernel only reads `[offset, offset + byte_len)`.
+        // `is_rw_mapped` verified every page in `[aligned_start, aligned_end)` is mapped
+        // RW, and the GPU kernel only reads `[offset, offset + byte_len)`.
         let buf = unsafe {
             self.device
                 .newBufferWithBytesNoCopy_length_options_deallocator(
@@ -480,7 +564,12 @@ fn initialise(ordinal: usize, info: &mut MetalInfo) -> Result<Device, String> {
 
     let start = Instant::now();
     let options = MTLCompileOptions::new();
-    options.setMathMode(MTLMathMode::Safe);
+    if options.respondsToSelector(sel!(setMathMode:)) {
+        options.setMathMode(MTLMathMode::Safe);
+    } else {
+        #[allow(deprecated)]
+        options.setFastMathEnabled(false);
+    }
     let source = NSString::from_str(include_str!("kernels.metal"));
     let library = mtl_device
         .newLibraryWithSource_options_error(&source, Some(&options))
@@ -1068,14 +1157,40 @@ impl Engine {
 
         let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
 
-        type PendingTile = (
-            Retained<ProtocolObject<dyn MTLCommandBuffer>>,
-            usize,
-            usize,
-            usize,
-            Option<Arc<MetalHandle<dyn MTLBuffer>>>,
-        );
-        let mut pending: Option<PendingTile> = None;
+        /// RAII guard for a committed command buffer: guarantees `waitUntilCompleted`
+        /// runs even on early `?` returns so GPU work can never outlive borrowed
+        /// zero-copy caller memory or the scratch mutex lock.
+        struct InFlightTile {
+            cmd_buf: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+            slot_idx: usize,
+            start_frame: usize,
+            count: usize,
+            _keep_alive: Option<Arc<MetalHandle<dyn MTLBuffer>>>,
+            waited: bool,
+        }
+
+        impl InFlightTile {
+            fn wait(mut self) -> Result<(usize, usize, usize), MetalError> {
+                self.cmd_buf.waitUntilCompleted();
+                self.waited = true;
+                if let Some(err) = self.cmd_buf.error() {
+                    return Err(MetalError::Device(format!(
+                        "Metal command buffer failed: {err}"
+                    )));
+                }
+                Ok((self.slot_idx, self.start_frame, self.count))
+            }
+        }
+
+        impl Drop for InFlightTile {
+            fn drop(&mut self) {
+                if !self.waited {
+                    self.cmd_buf.waitUntilCompleted();
+                }
+            }
+        }
+
+        let mut pending: Option<InFlightTile> = None;
 
         let mut offset = 0usize;
         let mut slot_idx = 0usize;
@@ -1135,15 +1250,16 @@ impl Engine {
             };
             cmd_buf.commit();
 
-            if let Some((prev_cmd, prev_slot, prev_off, prev_count, _prev_zc)) =
-                pending.replace((cmd_buf, slot_idx, offset, count, kept_zc))
-            {
-                prev_cmd.waitUntilCompleted();
-                if let Some(err) = prev_cmd.error() {
-                    return Err(MetalError::Device(format!(
-                        "Metal command buffer failed: {err}"
-                    )));
-                }
+            let next_tile = InFlightTile {
+                cmd_buf,
+                slot_idx,
+                start_frame: offset,
+                count,
+                _keep_alive: kept_zc,
+                waited: false,
+            };
+            if let Some(prev) = pending.replace(next_tile) {
+                let (prev_slot, prev_off, prev_count) = prev.wait()?;
                 let s_int =
                     &mut out_intensity[prev_off * self.bins..(prev_off + prev_count) * self.bins];
                 let s_err = out_errors
@@ -1162,13 +1278,8 @@ impl Engine {
             slot_idx ^= 1;
         }
 
-        if let Some((prev_cmd, prev_slot, prev_off, prev_count, _prev_zc)) = pending {
-            prev_cmd.waitUntilCompleted();
-            if let Some(err) = prev_cmd.error() {
-                return Err(MetalError::Device(format!(
-                    "Metal command buffer failed: {err}"
-                )));
-            }
+        if let Some(prev) = pending {
+            let (prev_slot, prev_off, prev_count) = prev.wait()?;
             let s_int =
                 &mut out_intensity[prev_off * self.bins..(prev_off + prev_count) * self.bins];
             let s_err = out_errors
@@ -1759,26 +1870,6 @@ pub(super) fn prepare_2d(
                 options.max_batch_bytes(),
                 true,
             )?;
-            let radial = radial_axis.unwrap_or_else(|| {
-                let view = integrator.for_shape(shape.0, shape.1);
-                let r_min = view
-                    .state
-                    .radial
-                    .iter()
-                    .copied()
-                    .fold(f64::INFINITY, f64::min);
-                let r_max = view
-                    .state
-                    .radial
-                    .iter()
-                    .copied()
-                    .fold(f64::NEG_INFINITY, f64::max);
-                crate::math::histogram::bins(n_radial, r_min, (r_max - r_min) / n_radial as f64)
-            });
-            let azimuthal = azimuthal_axis.unwrap_or_else(|| {
-                let step = 360.0 / n_azimuthal as f64;
-                crate::math::histogram::bins(n_azimuthal, -180.0, step)
-            });
             Ok(Metal2dPlan {
                 shape,
                 n_radial,
@@ -1786,8 +1877,8 @@ pub(super) fn prepare_2d(
                 precision: options.precision(),
                 device: options.device(),
                 device_name,
-                radial,
-                azimuthal,
+                radial: radial_axis,
+                azimuthal: azimuthal_axis,
                 max_batch_frames: engine.max_batch_frames,
                 table_entries: engine.entries,
                 engine,

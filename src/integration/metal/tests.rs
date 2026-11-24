@@ -401,3 +401,30 @@ fn metal_bslz4_decode_and_integrate_u16_and_u32() {
     assert_eq!(bslz4_2d[0].intensity, direct_2d.intensity);
     assert_eq!(bslz4_2d[0].errors, direct_2d.errors);
 }
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn metal_readonly_static_memory_integrates_cleanly() {
+    // Static `.rodata` array in read-only memory pages exercises
+    // `newBufferWithBytesNoCopy` (and fallback) on read-only input pages.
+    static READONLY_FRAME: [u16; 64 * 64] = [42u16; 64 * 64];
+    let shape = (64, 64);
+    let bins = 64;
+    let ai = test_integrator(IntegrationMethod::PixelSplit, shape);
+    let plan = ai
+        .prepare_metal1d(shape, bins, &Metal1dOptions::new())
+        .expect("prepare_metal1d");
+    let res = plan
+        .integrate_frame(&READONLY_FRAME[..], true)
+        .expect("readonly frame integration");
+    let cpu_frame = make_frame(READONLY_FRAME.iter().map(|&v| v as f64).collect(), shape);
+    let (_, cpu_int, cpu_err) = ai.integrate1d_with_errors(&cpu_frame, bins);
+    assert_close(&res.intensity, &cpu_int, 2e-6, 1e-5, "readonly/int");
+    assert_close(
+        res.errors.as_ref().unwrap(),
+        &cpu_err,
+        2e-6,
+        1e-5,
+        "readonly/err",
+    );
+}

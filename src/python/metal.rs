@@ -236,6 +236,16 @@ fn collect_bslz4_buffers(obj: &Bound<'_, PyAny>) -> PyResult<Vec<PyBuffer<u8>>> 
     Ok(bufs)
 }
 
+fn pybuffer_slice(buf: &PyBuffer<u8>) -> &[u8] {
+    let len = buf.len_bytes();
+    if len == 0 {
+        &[]
+    } else {
+        // SAFETY: `buf` is C-contiguous and remains alive for the lifetime of the borrow.
+        unsafe { std::slice::from_raw_parts(buf.buf_ptr().cast::<u8>(), len) }
+    }
+}
+
 #[pyclass(name = "_MetalSharedBuffer")]
 struct MetalSharedOwner {
     buf: Mutex<MetalSharedBytes>,
@@ -254,8 +264,11 @@ impl MetalSharedOwner {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("shared buffer lock poisoned"))?;
         let ptr = guard.as_mut_ptr();
-        unsafe {
-            ffi::PyBuffer_FillInfo(view, slf.as_ptr(), ptr.cast(), slf.len as isize, 0, flags);
+        let rc = unsafe {
+            ffi::PyBuffer_FillInfo(view, slf.as_ptr(), ptr.cast(), slf.len as isize, 0, flags)
+        };
+        if rc != 0 {
+            return Err(PyErr::fetch(slf.py()));
         }
         Ok(())
     }
@@ -466,10 +479,7 @@ impl PyMetal1dPlan {
     ) -> PyResult<Vec<PyIntegrationResult>> {
         let dt = parse_bslz4_dtype(dtype)?;
         let bufs = collect_bslz4_buffers(chunks)?;
-        let slices: Vec<&[u8]> = bufs
-            .iter()
-            .map(|b| unsafe { std::slice::from_raw_parts(b.buf_ptr().cast::<u8>(), b.len_bytes()) })
-            .collect();
+        let slices: Vec<&[u8]> = bufs.iter().map(pybuffer_slice).collect();
         let results = py
             .detach(|| self.plan.integrate_bslz4(&slices, dt, errors))
             .map_err(metal_error)?;
@@ -588,12 +598,12 @@ impl PyMetal2dPlan {
         self.plan.n_azimuthal()
     }
     #[getter]
-    fn radial(&self) -> Vec<f64> {
-        self.plan.radial().to_vec()
+    fn radial(&self) -> Option<Vec<f64>> {
+        self.plan.radial().map(|s| s.to_vec())
     }
     #[getter]
-    fn azimuthal(&self) -> Vec<f64> {
-        self.plan.azimuthal().to_vec()
+    fn azimuthal(&self) -> Option<Vec<f64>> {
+        self.plan.azimuthal().map(|s| s.to_vec())
     }
     #[getter]
     fn precision(&self) -> &'static str {
@@ -717,10 +727,7 @@ impl PyMetal2dPlan {
     ) -> PyResult<Vec<PyIntegrationResult>> {
         let dt = parse_bslz4_dtype(dtype)?;
         let bufs = collect_bslz4_buffers(chunks)?;
-        let slices: Vec<&[u8]> = bufs
-            .iter()
-            .map(|b| unsafe { std::slice::from_raw_parts(b.buf_ptr().cast::<u8>(), b.len_bytes()) })
-            .collect();
+        let slices: Vec<&[u8]> = bufs.iter().map(pybuffer_slice).collect();
         let results = py
             .detach(|| self.plan.integrate_bslz4(&slices, dt, errors))
             .map_err(metal_error)?;

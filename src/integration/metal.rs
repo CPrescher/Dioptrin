@@ -651,8 +651,8 @@ pub struct Metal2dPlan {
     precision: MetalPrecision,
     device: usize,
     device_name: String,
-    radial: Vec<f64>,
-    azimuthal: Vec<f64>,
+    radial: Option<Vec<f64>>,
+    azimuthal: Option<Vec<f64>>,
     max_batch_frames: usize,
     table_entries: usize,
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -701,12 +701,12 @@ impl Metal2dPlan {
         &self.device_name
     }
 
-    pub fn radial(&self) -> &[f64] {
-        &self.radial
+    pub fn radial(&self) -> Option<&[f64]> {
+        self.radial.as_deref()
     }
 
-    pub fn azimuthal(&self) -> &[f64] {
-        &self.azimuthal
+    pub fn azimuthal(&self) -> Option<&[f64]> {
+        self.azimuthal.as_deref()
     }
 
     pub fn max_batch_frames(&self) -> usize {
@@ -832,8 +832,8 @@ impl Metal2dPlan {
     fn wrap_results(&self, raw: Vec<(Vec<f64>, Option<Vec<f64>>)>) -> Vec<Fixed2dResult> {
         raw.into_iter()
             .map(|(intensity, errors)| Fixed2dResult {
-                radial: Some(self.radial.clone()),
-                azimuthal: Some(self.azimuthal.clone()),
+                radial: self.radial.clone(),
+                azimuthal: self.azimuthal.clone(),
                 intensity,
                 errors,
                 n_radial: self.n_radial,
