@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-24
+
+### Added
+
+- Embedded precompiled forward-compatible `compute_70` PTX
+  (`src/integration/cuda/kernels.ptx.gz`, PTX 8.0, 775 KiB) for the `cuda`
+  feature. Volta and newer NVIDIA GPUs now load kernels directly via the
+  NVIDIA display driver (`nvcuda.dll` / `libcuda.so.1`) with zero runtime
+  NVRTC / CUDA Toolkit requirement; NVRTC remains an automatic fallback for
+  older GPUs or drivers.
+
 ## [0.15.0] - 2026-11-24
 
 ### Added
