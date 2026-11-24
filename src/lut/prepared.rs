@@ -375,22 +375,31 @@ impl PreparedCsr {
         }
     }
 
-    /// 4-frame SIMD-tiled fixed-mask CSR integration (mask already compacted).
-    /// Bit-identical to 1-frame `cached_results` for both `FAST = true` and
-    /// `FAST = false`.
-    fn cached_results_batch4<const FAST: bool, const VAR: bool, P: Pixel>(
+    /// 4-frame SIMD-tiled fixed-mask CSR integration writing directly into
+    /// caller-provided output slices. Bit-identical to 1-frame `cached_results`.
+    fn cached_results_batch4_into<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
         signals: [&[P]; 4],
         norm: &[f64],
-    ) -> [(Vec<f64>, Vec<f64>); 4] {
+        out_y: [&mut [f64]; 4],
+        mut out_e: Option<[&mut [f64]; 4]>,
+    ) {
         let cached = self.normalization::<FAST>(None, norm);
         for s in signals {
             self.check_pixels("image", s.len());
         }
         let nbins = self.row_ptr.len() - 1;
-        let mut intensities: [Vec<f64>; 4] = std::array::from_fn(|_| Vec::with_capacity(nbins));
-        let mut errors: [Vec<f64>; 4] =
-            std::array::from_fn(|_| Vec::with_capacity(if VAR { nbins } else { 0 }));
+        for y in &out_y {
+            assert_eq!(y.len(), nbins, "output intensity slice length mismatch");
+        }
+        if VAR {
+            let errs = out_e
+                .as_ref()
+                .expect("VAR=true requires output error slices");
+            for e in errs {
+                assert_eq!(e.len(), nbins, "output error slice length mismatch");
+            }
+        }
         macro_rules! run_rows {
             ($cols:expr, $weights:expr, $weighted:expr) => {{
                 for i in 0..nbins {
@@ -401,10 +410,10 @@ impl PreparedCsr {
                     );
                     let n = cached[i];
                     for f in 0..4 {
-                        intensities[f].push(if n == 0.0 { 0.0 } else { sig[f] / n });
+                        out_y[f][i] = if n == 0.0 { 0.0 } else { sig[f] / n };
                         if VAR {
                             let v = if n == 0.0 { 0.0 } else { var[f] / (n * n) };
-                            errors[f].push(v.max(0.0).sqrt());
+                            out_e.as_mut().unwrap()[f][i] = v.max(0.0).sqrt();
                         }
                     }
                 }
@@ -415,6 +424,41 @@ impl PreparedCsr {
             (Columns::Compact(c), None) => run_rows!(c, &[], false),
             (Columns::Wide(c), Some(w)) => run_rows!(c, w, true),
             (Columns::Wide(c), None) => run_rows!(c, &[], false),
+        }
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask CSR integration (mask already compacted).
+    /// Bit-identical to 1-frame `cached_results` for both `FAST = true` and
+    /// `FAST = false`.
+    fn cached_results_batch4<const FAST: bool, const VAR: bool, P: Pixel>(
+        &self,
+        signals: [&[P]; 4],
+        norm: &[f64],
+    ) -> [(Vec<f64>, Vec<f64>); 4] {
+        let nbins = self.row_ptr.len() - 1;
+        let mut intensities: [Vec<f64>; 4] = std::array::from_fn(|_| vec![0.0; nbins]);
+        let mut errors: [Vec<f64>; 4] =
+            std::array::from_fn(|_| if VAR { vec![0.0; nbins] } else { Vec::new() });
+        {
+            let [y0, y1, y2, y3] = &mut intensities;
+            let [e0, e1, e2, e3] = &mut errors;
+            let out_e = VAR.then_some([
+                e0.as_mut_slice(),
+                e1.as_mut_slice(),
+                e2.as_mut_slice(),
+                e3.as_mut_slice(),
+            ]);
+            self.cached_results_batch4_into::<FAST, VAR, P>(
+                signals,
+                norm,
+                [
+                    y0.as_mut_slice(),
+                    y1.as_mut_slice(),
+                    y2.as_mut_slice(),
+                    y3.as_mut_slice(),
+                ],
+                out_e,
+            );
         }
         let mut it_i = intensities.into_iter();
         let mut it_e = errors.into_iter();
@@ -846,6 +890,24 @@ impl Prepared2d {
     /// for `(fast, var)`.
     pub(crate) fn can_batch4(&self, fast: bool, var: bool) -> bool {
         self.csr.mode == MaskMode::Fixed && !(fast && var)
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration writing directly into
+    /// caller-provided output slices. Returns `false` if ineligible.
+    pub(crate) fn integrate_batch4_into<const FAST: bool, const VAR: bool, P: Pixel>(
+        &self,
+        signals: [&[P]; 4],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+        out_y: [&mut [f64]; 4],
+        out_e: Option<[&mut [f64]; 4]>,
+    ) -> bool {
+        if !self.can_batch4(FAST, VAR) {
+            return false;
+        }
+        let table = self.csr.fixed_table(mask);
+        table.cached_results_batch4_into::<FAST, VAR, P>(signals, norm, out_y, out_e);
+        true
     }
 
     /// 4-frame SIMD-tiled fixed-mask 2D CSR integration (fast intensity or

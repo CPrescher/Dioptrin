@@ -215,6 +215,52 @@ class Batch2dArrayTests(unittest.TestCase):
                             self.assertTrue(got.is_ok(), got.error)
                             self.same(got.result, ref.result, f"{dtype.__name__} {count} {errors}")
 
+                        # batch2d_stack: both 3D stack and list of 2D arrays
+                        stack_arr = np.ascontiguousarray(np.stack(typed))
+                        expected_i = np.stack(
+                            [np.asarray(r.result.intensity).reshape(16, 20) for r in r2_ref]
+                        )
+                        expected_e = (
+                            np.stack(
+                                [np.asarray(r.result.errors).reshape(16, 20) for r in r2_ref]
+                            )
+                            if errors
+                            else None
+                        )
+                        for kind, inp in (("3d", stack_arr), ("list", typed)):
+                            out = ai.batch2d_stack(inp, 20, 16, errors=errors)
+                            if errors:
+                                got_i, got_e = out
+                                assert_array_equal(got_i, expected_i)
+                                assert_array_equal(got_e, expected_e)
+                            else:
+                                assert_array_equal(out, expected_i)
+
+            # Single-frame integrate1d / integrate2d and streaming batch*_iter
+            for errors in (False, True):
+                ref1 = ai.integrate1d(f64_all[0], 24, errors=errors)
+                got1 = ai.integrate1d(typed_all[0], 24, errors=errors)
+                assert_array_equal(got1.radial, ref1.radial)
+                assert_array_equal(got1.intensity, ref1.intensity)
+                if errors:
+                    assert_array_equal(got1.errors, ref1.errors)
+
+                ref2 = ai.integrate2d(f64_all[0], 20, 16, errors=errors)
+                got2 = ai.integrate2d(typed_all[0], 20, 16, errors=errors)
+                self.same(got2, ref2, f"single 2d {dtype.__name__} {errors}")
+
+            it1_ref = list(ai.batch1d_iter(f64_all[:3], 24))
+            it1_got = list(ai.batch1d_iter(typed_all[:3], 24))
+            for got, ref in zip(it1_got, it1_ref):
+                self.assertTrue(got.is_ok(), got.error)
+                assert_array_equal(got.result.intensity, ref.result.intensity)
+
+            it2_ref = list(ai.batch2d_iter(f64_all[:3], 20, 16))
+            it2_got = list(ai.batch2d_iter(typed_all[:3], 20, 16))
+            for got, ref in zip(it2_got, it2_ref):
+                self.assertTrue(got.is_ok(), got.error)
+                self.same(got.result, ref.result, f"iter 2d {dtype.__name__}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -908,6 +908,80 @@ impl Integrator {
         Some(results.map(|(y, e)| (y, errors.then_some(e))))
     }
 
+    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration writing directly into
+    /// caller-provided frame slices. Returns `false` if ineligible.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub(crate) fn try_integrate2d_batch4_into<P: crate::frame::Pixel>(
+        &self,
+        signals: [&[P]; 4],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: Option<(f64, f64)>,
+        out_y: [&mut [f64]; 4],
+        out_e: Option<[&mut [f64]; 4]>,
+    ) -> bool {
+        let Some(len) = dim1.checked_mul(dim2) else {
+            return false;
+        };
+        if n_radial == 0
+            || n_azimuthal == 0
+            || self.validate_2d_setup(dim1, dim2, len).is_err()
+            || signals.iter().any(|s| s.len() != len)
+        {
+            return false;
+        }
+        let view = self.for_shape(dim1, dim2);
+        let key = match azimuthal_range {
+            None => match self.try_lut2d_key(&view, n_radial, n_azimuthal, None) {
+                Ok(k) => k,
+                Err(_) => return false,
+            },
+            Some(range) => match self.azimuthal_range_grid(&view, n_radial, n_azimuthal, range) {
+                Ok(grid) => self.shared_grid_key(grid),
+                Err(_) => return false,
+            },
+        };
+        let normalization = view.normalization();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let lut = view.ensure_lut2d(key);
+        let errors = out_e.is_some();
+        match (self.fast_math, errors) {
+            (true, false) => lut.integrate_batch4_into::<true, false, P>(
+                signals,
+                mask_data,
+                &normalization,
+                out_y,
+                None,
+            ),
+            (true, true) => lut.integrate_batch4_into::<true, true, P>(
+                signals,
+                mask_data,
+                &normalization,
+                out_y,
+                out_e,
+            ),
+            (false, false) => lut.integrate_batch4_into::<false, false, P>(
+                signals,
+                mask_data,
+                &normalization,
+                out_y,
+                None,
+            ),
+            (false, true) => lut.integrate_batch4_into::<false, true, P>(
+                signals,
+                mask_data,
+                &normalization,
+                out_y,
+                out_e,
+            ),
+        }
+    }
+
     #[allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
     pub(crate) fn integrate2d_pixels_from_slice<P: crate::frame::Pixel>(
         &self,

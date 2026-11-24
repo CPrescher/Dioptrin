@@ -1,4 +1,4 @@
-use numpy::{PyArray2, PyArrayMethods, PyReadonlyArray2};
+use numpy::{PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray2, PyReadonlyArray3};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
@@ -24,11 +24,11 @@ use super::results::{
     BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult, StreamError, panic_message,
 };
 use super::utils::{
-    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, batch_images, batch2d_images,
-    check_mask_shape, check_method_radial_range, check_polarization_factor, check_positive,
-    check_unit_wavelength, classify_batch_input, extract_array_dims, extract_frame_from_pyany,
-    extract_item_dims, mask_shape, parse_method, parse_unit, poni_from_dict,
-    resolve_workers_threads, validate_integrator_options,
+    BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, StackImageInput, batch_images,
+    batch2d_images, check_mask_shape, check_method_radial_range, check_polarization_factor,
+    check_positive, check_unit_wavelength, classify_batch_input, extract_array_dims,
+    extract_frame_from_pyany, extract_item_dims, mask_shape, parse_method, parse_unit,
+    poni_from_dict, resolve_workers_threads, validate_integrator_options,
 };
 
 /// Raise ValueError for an invalid `azimuthal_range=(min, max)` before a batch
@@ -528,6 +528,384 @@ impl PyIntegrator {
             stream_error,
             control,
         })
+    }
+
+    /// Single-frame native-pixel (`f32`/`u16`/`u32`/`i32`) 1D integration.
+    fn integrate1d_array_pixels<P: crate::frame::Pixel + numpy::Element>(
+        &self,
+        py: Python<'_>,
+        array: &PyReadonlyArray2<'_, P>,
+        type_name: &str,
+        n_points: usize,
+        errors: bool,
+        azimuthal_std: bool,
+    ) -> PyResult<PyIntegrationResult> {
+        let (dim1, dim2) = extract_array_dims(array, type_name)?;
+        let slice = array
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
+        self.check_mask((dim1, dim2), "image")?;
+        let integrator = &*self.integrator;
+        Ok(py.detach(|| {
+            if azimuthal_std {
+                let converted: Vec<f64> = slice.iter().map(|&x| x.to_f64()).collect();
+                PyIntegrationResult::from_azimuthal(
+                    integrator.integrate1d_with_azimuthal_std_from_slice(
+                        &converted, dim1, dim2, n_points, errors,
+                    ),
+                )
+            } else {
+                let (radial, intensity, errs) =
+                    integrator.integrate1d_pixels_from_slice(slice, dim1, dim2, n_points, errors);
+                match errs {
+                    Some(e) => PyIntegrationResult::from_1d_with_errors(radial, intensity, e),
+                    None => PyIntegrationResult::from_1d(radial, intensity),
+                }
+            }
+        }))
+    }
+
+    /// Single-frame native-pixel (`f32`/`u16`/`u32`/`i32`) 2D integration.
+    fn integrate2d_array_pixels<P: crate::frame::Pixel + numpy::Element>(
+        &self,
+        py: Python<'_>,
+        array: &PyReadonlyArray2<'_, P>,
+        type_name: &str,
+        bins: Bins2d,
+        radial: Option<Vec<f64>>,
+    ) -> PyResult<PyIntegrationResult> {
+        let (dim1, dim2) = extract_array_dims(array, type_name)?;
+        let slice = array
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(format!("Array must be contiguous: {}", err)))?;
+        self.check_mask((dim1, dim2), "image")?;
+        let integrator = &*self.integrator;
+        py.detach(|| -> Result<PyIntegrationResult, String> {
+            let (intensity, errs, axes) = integrator.integrate2d_pixels_from_slice(
+                slice,
+                dim1,
+                dim2,
+                bins.n_radial,
+                bins.n_azimuthal,
+                bins.azimuthal_range,
+                bins.errors,
+            )?;
+            let result = if let Some((rad, az)) = axes {
+                PyIntegrationResult::from_azimuthal_range_2d(
+                    crate::integration::AzimuthalRange2dResult {
+                        intensity,
+                        errors: errs,
+                        radial: rad,
+                        azimuthal: az,
+                    },
+                    bins.n_radial,
+                    bins.n_azimuthal,
+                )
+            } else {
+                match errs {
+                    Some(e) => PyIntegrationResult::from_2d_with_errors(
+                        intensity,
+                        e,
+                        bins.n_radial,
+                        bins.n_azimuthal,
+                    )
+                    .with_radial(radial),
+                    None => {
+                        PyIntegrationResult::from_2d(intensity, bins.n_radial, bins.n_azimuthal)
+                            .with_radial(radial)
+                    }
+                }
+            };
+            Ok(result)
+        })
+        .map_err(PyValueError::new_err)
+    }
+
+    /// Zero-intermediate-copy 2D batch integration directly into a contiguous
+    /// `(n_frames, n_azimuthal, n_radial)` NumPy array (and optional errors array).
+    fn batch2d_stack_slices<P: crate::frame::Pixel>(
+        &self,
+        py: Python<'_>,
+        frames: &[&[P]],
+        dim1: usize,
+        dim2: usize,
+        bins: Bins2d,
+    ) -> PyResult<Py<PyAny>> {
+        let n_frames = frames.len();
+        let total_bins = bins
+            .n_radial
+            .checked_mul(bins.n_azimuthal)
+            .ok_or_else(|| PyValueError::new_err("n_radial * n_azimuthal overflows usize"))?;
+        let intensity =
+            unsafe { PyArray3::<f64>::new(py, [n_frames, bins.n_azimuthal, bins.n_radial], false) };
+        if n_frames == 0 {
+            return if bins.errors {
+                let err_arr = unsafe {
+                    PyArray3::<f64>::new(py, [0, bins.n_azimuthal, bins.n_radial], false)
+                };
+                Ok((intensity.unbind(), err_arr.unbind())
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind())
+            } else {
+                Ok(intensity.unbind().into_any())
+            };
+        }
+
+        use rayon::prelude::*;
+        let integrator = &*self.integrator;
+
+        let run_fill = |i_slice: &mut [f64],
+                        mut e_slice: Option<&mut [f64]>|
+         -> Result<(), String> {
+            integrator.prepare2d(
+                dim1,
+                dim2,
+                bins.n_radial,
+                bins.n_azimuthal,
+                bins.azimuthal_range,
+            );
+            let min_tiled = 4 * rayon::current_num_threads().max(1);
+            let use_tiled = frames.len() >= min_tiled
+                && integrator.can_integrate2d_batch4(
+                    dim1,
+                    dim2,
+                    bins.n_radial,
+                    bins.n_azimuthal,
+                    bins.azimuthal_range,
+                    bins.errors,
+                );
+            let n_tiled = if use_tiled { (frames.len() / 4) * 4 } else { 0 };
+
+            if n_tiled > 0 {
+                let (i_tiled, i_tail) = i_slice.split_at_mut(n_tiled * total_bins);
+                if let Some(e_all) = e_slice.as_deref_mut() {
+                    let (e_tiled, e_tail) = e_all.split_at_mut(n_tiled * total_bins);
+                    frames[..n_tiled]
+                        .par_chunks_exact(4)
+                        .zip(i_tiled.par_chunks_exact_mut(4 * total_bins))
+                        .zip(e_tiled.par_chunks_exact_mut(4 * total_bins))
+                        .try_for_each(|((f_chunk, i_chunk), e_chunk)| -> Result<(), String> {
+                            let (y0, rest) = i_chunk.split_at_mut(total_bins);
+                            let (y1, rest) = rest.split_at_mut(total_bins);
+                            let (y2, y3) = rest.split_at_mut(total_bins);
+                            let (e0, rest) = e_chunk.split_at_mut(total_bins);
+                            let (e1, rest) = rest.split_at_mut(total_bins);
+                            let (e2, e3) = rest.split_at_mut(total_bins);
+                            let ok = integrator.try_integrate2d_batch4_into(
+                                [f_chunk[0], f_chunk[1], f_chunk[2], f_chunk[3]],
+                                dim1,
+                                dim2,
+                                bins.n_radial,
+                                bins.n_azimuthal,
+                                bins.azimuthal_range,
+                                [y0, y1, y2, y3],
+                                Some([e0, e1, e2, e3]),
+                            );
+                            if !ok {
+                                return Err(
+                                    "2D batch4 tiled kernel unexpectedly declined chunk".into()
+                                );
+                            }
+                            Ok(())
+                        })?;
+                    if n_tiled < frames.len() {
+                        frames[n_tiled..]
+                            .par_iter()
+                            .zip(i_tail.par_chunks_exact_mut(total_bins))
+                            .zip(e_tail.par_chunks_exact_mut(total_bins))
+                            .try_for_each(|((&data, dst_i), dst_e)| -> Result<(), String> {
+                                let (y, e, _) = integrator.integrate2d_pixels_from_slice(
+                                    data,
+                                    dim1,
+                                    dim2,
+                                    bins.n_radial,
+                                    bins.n_azimuthal,
+                                    bins.azimuthal_range,
+                                    true,
+                                )?;
+                                dst_i.copy_from_slice(&y);
+                                dst_e.copy_from_slice(e.as_ref().expect("errors requested"));
+                                Ok(())
+                            })?;
+                    }
+                } else {
+                    frames[..n_tiled]
+                        .par_chunks_exact(4)
+                        .zip(i_tiled.par_chunks_exact_mut(4 * total_bins))
+                        .try_for_each(|(f_chunk, i_chunk)| -> Result<(), String> {
+                            let (y0, rest) = i_chunk.split_at_mut(total_bins);
+                            let (y1, rest) = rest.split_at_mut(total_bins);
+                            let (y2, y3) = rest.split_at_mut(total_bins);
+                            let ok = integrator.try_integrate2d_batch4_into(
+                                [f_chunk[0], f_chunk[1], f_chunk[2], f_chunk[3]],
+                                dim1,
+                                dim2,
+                                bins.n_radial,
+                                bins.n_azimuthal,
+                                bins.azimuthal_range,
+                                [y0, y1, y2, y3],
+                                None,
+                            );
+                            if !ok {
+                                return Err(
+                                    "2D batch4 tiled kernel unexpectedly declined chunk".into()
+                                );
+                            }
+                            Ok(())
+                        })?;
+                    if n_tiled < frames.len() {
+                        frames[n_tiled..]
+                            .par_iter()
+                            .zip(i_tail.par_chunks_exact_mut(total_bins))
+                            .try_for_each(|(&data, dst_i)| -> Result<(), String> {
+                                let (y, _, _) = integrator.integrate2d_pixels_from_slice(
+                                    data,
+                                    dim1,
+                                    dim2,
+                                    bins.n_radial,
+                                    bins.n_azimuthal,
+                                    bins.azimuthal_range,
+                                    false,
+                                )?;
+                                dst_i.copy_from_slice(&y);
+                                Ok(())
+                            })?;
+                    }
+                }
+            } else if let Some(e_all) = e_slice.as_deref_mut() {
+                frames
+                    .par_iter()
+                    .zip(i_slice.par_chunks_exact_mut(total_bins))
+                    .zip(e_all.par_chunks_exact_mut(total_bins))
+                    .try_for_each(|((&data, dst_i), dst_e)| -> Result<(), String> {
+                        let (y, e, _) = integrator.integrate2d_pixels_from_slice(
+                            data,
+                            dim1,
+                            dim2,
+                            bins.n_radial,
+                            bins.n_azimuthal,
+                            bins.azimuthal_range,
+                            true,
+                        )?;
+                        dst_i.copy_from_slice(&y);
+                        dst_e.copy_from_slice(e.as_ref().expect("errors requested"));
+                        Ok(())
+                    })?;
+            } else {
+                frames
+                    .par_iter()
+                    .zip(i_slice.par_chunks_exact_mut(total_bins))
+                    .try_for_each(|(&data, dst_i)| -> Result<(), String> {
+                        let (y, _, _) = integrator.integrate2d_pixels_from_slice(
+                            data,
+                            dim1,
+                            dim2,
+                            bins.n_radial,
+                            bins.n_azimuthal,
+                            bins.azimuthal_range,
+                            false,
+                        )?;
+                        dst_i.copy_from_slice(&y);
+                        Ok(())
+                    })?;
+            }
+            Ok(())
+        };
+
+        if bins.errors {
+            let err_arr = unsafe {
+                PyArray3::<f64>::new(py, [n_frames, bins.n_azimuthal, bins.n_radial], false)
+            };
+            {
+                let mut i_rw = intensity.readwrite();
+                let mut e_rw = err_arr.readwrite();
+                let i_slice = i_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("intensity output not contiguous: {e}"))
+                })?;
+                let e_slice = e_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("errors output not contiguous: {e}"))
+                })?;
+                py.detach(|| run_fill(i_slice, Some(e_slice)))
+                    .map_err(PyValueError::new_err)?;
+            }
+            Ok((intensity.unbind(), err_arr.unbind())
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        } else {
+            {
+                let mut i_rw = intensity.readwrite();
+                let i_slice = i_rw.as_slice_mut().map_err(|e| {
+                    PyRuntimeError::new_err(format!("intensity output not contiguous: {e}"))
+                })?;
+                py.detach(|| run_fill(i_slice, None))
+                    .map_err(PyValueError::new_err)?;
+            }
+            Ok(intensity.unbind().into_any())
+        }
+    }
+
+    fn batch2d_stack_3d<P: crate::frame::Pixel + numpy::Element>(
+        &self,
+        py: Python<'_>,
+        stack: &PyReadonlyArray3<'_, P>,
+        bins: Bins2d,
+    ) -> PyResult<Py<PyAny>> {
+        let view = stack.as_array();
+        if !view.is_standard_layout() {
+            return Err(PyValueError::new_err(
+                "3D image stack must be C-contiguous (row-major)",
+            ));
+        }
+        let shape = view.shape();
+        let (n_frames, dim1, dim2) = (shape[0], shape[1], shape[2]);
+        if dim1 == 0 || dim2 == 0 {
+            return Err(PyValueError::new_err(format!(
+                "Image frames must be non-empty, got shape ({dim1}, {dim2})"
+            )));
+        }
+        self.check_mask((dim1, dim2), "images")?;
+        let raw = stack
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(format!("Stack must be contiguous: {err}")))?;
+        let frame_len = dim1 * dim2;
+        let frames: Vec<&[P]> = (0..n_frames)
+            .map(|i| &raw[i * frame_len..(i + 1) * frame_len])
+            .collect();
+        self.batch2d_stack_slices(py, &frames, dim1, dim2, bins)
+    }
+
+    fn batch2d_stack_list<P: crate::frame::Pixel + numpy::Element>(
+        &self,
+        py: Python<'_>,
+        arrays: &[PyReadonlyArray2<'_, P>],
+        bins: Bins2d,
+    ) -> PyResult<Py<PyAny>> {
+        if arrays.is_empty() {
+            return self.batch2d_stack_slices::<P>(py, &[], 0, 0, bins);
+        }
+        let mut frames = Vec::with_capacity(arrays.len());
+        let mut first_shape: Option<(usize, usize)> = None;
+        for (i, array) in arrays.iter().enumerate() {
+            let (dim1, dim2) = extract_item_dims(array, i)?;
+            let slice = array.as_slice().map_err(|err| {
+                PyValueError::new_err(format!("Array {} must be contiguous: {}", i, err))
+            })?;
+            self.check_mask((dim1, dim2), &format!("images[{i}]"))?;
+            if let Some((h, w)) = first_shape {
+                if (dim1, dim2) != (h, w) {
+                    return Err(PyValueError::new_err(format!(
+                        "images[{i}] has shape ({dim1}, {dim2}), expected uniform shape ({h}, {w})"
+                    )));
+                }
+            } else {
+                first_shape = Some((dim1, dim2));
+            }
+            frames.push(slice);
+        }
+        let (dim1, dim2) = first_shape.unwrap();
+        self.batch2d_stack_slices(py, &frames, dim1, dim2, bins)
     }
 
     /// Native-pixel (`f32`/`u16`/`u32`/`i32`) 1D array batch path.
@@ -1260,6 +1638,23 @@ impl PyIntegrator {
                     )
                 }))
             }
+            ImageInput::ArrayF32(array) => self.integrate1d_array_pixels(
+                py,
+                &array,
+                "float32",
+                n_points,
+                errors,
+                azimuthal_std,
+            ),
+            ImageInput::ArrayU16(array) => {
+                self.integrate1d_array_pixels(py, &array, "uint16", n_points, errors, azimuthal_std)
+            }
+            ImageInput::ArrayU32(array) => {
+                self.integrate1d_array_pixels(py, &array, "uint32", n_points, errors, azimuthal_std)
+            }
+            ImageInput::ArrayI32(array) => {
+                self.integrate1d_array_pixels(py, &array, "int32", n_points, errors, azimuthal_std)
+            }
         }
     }
 
@@ -1383,6 +1778,18 @@ impl PyIntegrator {
                 // returns; the array must not be mutated concurrently.
                 py.detach(|| integrate2d_slice(integrator, slice, dim1, dim2, bins, radial))
                     .map_err(PyValueError::new_err)
+            }
+            ImageInput::ArrayF32(array) => {
+                self.integrate2d_array_pixels(py, &array, "float32", bins, radial)
+            }
+            ImageInput::ArrayU16(array) => {
+                self.integrate2d_array_pixels(py, &array, "uint16", bins, radial)
+            }
+            ImageInput::ArrayU32(array) => {
+                self.integrate2d_array_pixels(py, &array, "uint32", bins, radial)
+            }
+            ImageInput::ArrayI32(array) => {
+                self.integrate2d_array_pixels(py, &array, "int32", bins, radial)
             }
         }
     }
@@ -2398,6 +2805,53 @@ impl PyIntegrator {
                     })
                     .collect())
             }
+        }
+    }
+
+    /// Perform batch 2D integration into a contiguous 3D NumPy array
+    /// `(n_frames, n_azimuthal, n_radial)` (or `(intensity, errors)` when
+    /// `errors=True`).
+    ///
+    /// Accepts a 3D `(n_frames, dim1, dim2)` C-contiguous NumPy array or a list
+    /// of uniform-shape 2D C-contiguous NumPy arrays in `float64`, `float32`,
+    /// `uint16`, `uint32`, or `int32`. Writes directly into the output array
+    /// without per-frame allocations.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (images, n_radial, n_azimuthal=None, errors=false, azimuthal_range=None, *, azimuthal_bracket=None))]
+    fn batch2d_stack(
+        &self,
+        py: Python<'_>,
+        images: StackImageInput<'_>,
+        n_radial: usize,
+        n_azimuthal: Option<usize>,
+        errors: bool,
+        azimuthal_range: Option<(f64, f64)>,
+        azimuthal_bracket: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        self.reject_histogram_2d("batch2d_stack")?;
+        check_positive("n_radial", n_radial)?;
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        check_positive("n_azimuthal", n_azimuthal)?;
+        let _radial = self.radial_axis_2d(n_radial)?;
+        validate_azimuthal_range(azimuthal_range, n_azimuthal)?;
+        let bins = Bins2d {
+            n_radial,
+            n_azimuthal,
+            errors,
+            azimuthal_range,
+        };
+        match images {
+            StackImageInput::StackF64(s) => self.batch2d_stack_3d(py, &s, bins),
+            StackImageInput::StackF32(s) => self.batch2d_stack_3d(py, &s, bins),
+            StackImageInput::StackU16(s) => self.batch2d_stack_3d(py, &s, bins),
+            StackImageInput::StackU32(s) => self.batch2d_stack_3d(py, &s, bins),
+            StackImageInput::StackI32(s) => self.batch2d_stack_3d(py, &s, bins),
+            StackImageInput::ListF64(a) => self.batch2d_stack_list(py, &a, bins),
+            StackImageInput::ListF32(a) => self.batch2d_stack_list(py, &a, bins),
+            StackImageInput::ListU16(a) => self.batch2d_stack_list(py, &a, bins),
+            StackImageInput::ListU32(a) => self.batch2d_stack_list(py, &a, bins),
+            StackImageInput::ListI32(a) => self.batch2d_stack_list(py, &a, bins),
         }
     }
 

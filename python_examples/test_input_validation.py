@@ -17,7 +17,7 @@ PONI = dict(pixel1=1e-4, pixel2=1e-4, distance=0.1, poni1=0.0032, poni2=0.0048, 
 SHAPE = (64, 96)
 IMAGE = np.random.default_rng(0).random(SHAPE) * 100
 GOOD = IMAGE
-BAD = IMAGE.astype(np.int32)
+BAD = IMAGE.astype(np.int64)
 
 
 def integrator(poni=PONI, **kw):
@@ -56,7 +56,7 @@ class StreamingBatchErrorTests(unittest.TestCase):
 
     def test_list_of_wrong_dtype_raises_up_front(self):
         ai = integrator()
-        with self.assertRaisesRegex(TypeError, r"images\[0\].*float64.*int32"):
+        with self.assertRaisesRegex(TypeError, r"images\[0\].*float64.*int64"):
             ai.batch1d_iter([BAD, BAD], 10)
         with self.assertRaisesRegex(TypeError, r"images\[1\].*float64"):
             ai.batch2d_iter([GOOD, BAD], 10, 8)
@@ -75,7 +75,7 @@ class StreamingBatchErrorTests(unittest.TestCase):
         it = make_iter(frames())
         first = [next(it), next(it)]
         self.assertTrue(all(r.is_ok() for r in first), [r.error for r in first])
-        with self.assertRaisesRegex(TypeError, r"images\[2\].*float64.*int32"):
+        with self.assertRaisesRegex(TypeError, r"images\[2\].*float64.*int64"):
             next(it)
         with self.assertRaises(StopIteration):
             next(it)

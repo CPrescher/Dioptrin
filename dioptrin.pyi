@@ -949,6 +949,28 @@ class Integrator:
         """
         ...
 
+    def batch2d_stack(
+        self,
+        images: Union[np.ndarray, list[np.ndarray]],
+        n_radial: int,
+        n_azimuthal: Optional[int] = None,
+        errors: bool = False,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
+        *,
+        azimuthal_bracket: Optional[float] = None,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Perform batch 2D integration directly into a contiguous 3D NumPy array
+        of shape `(n_frames, n_azimuthal, n_radial)` (or `(intensity, errors)`
+        when `errors=True`), avoiding per-frame allocations.
+
+        Accepts a 3D `(n_frames, dim1, dim2)` C-contiguous NumPy array or a list
+        of uniform-shape 2D C-contiguous NumPy arrays in `float64`, `float32`,
+        `uint16`, `uint32`, or `int32`. Inputs are borrowed without copying
+        while the GIL is released; keep them unchanged until the call returns.
+        """
+        ...
+
     def batch2d_iter(
         self,
         images: Union[list[str], list[np.ndarray], Iterable[Union[str, np.ndarray]]],

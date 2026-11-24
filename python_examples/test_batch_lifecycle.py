@@ -192,13 +192,13 @@ class FailedStreamTests(LifecycleTestCase):
         def frames():
             yield ARRAYS[0]
             yield ARRAYS[1]
-            yield ARRAYS[2].astype(np.int32)
+            yield ARRAYS[2].astype(np.int64)
             yield ARRAYS[3]
 
         ai = integrator()
         for kind, make in STREAMS.items():
             with self.subTest(stream=kind):
-                self.check_failure(ai, make, frames, TypeError, r"images\[2\].*int32")
+                self.check_failure(ai, make, frames, TypeError, r"images\[2\].*int64")
         self.assert_usable(ai)
 
     def test_mask_shape_mismatch(self):
