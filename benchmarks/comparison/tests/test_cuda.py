@@ -743,5 +743,113 @@ class CudaBuildTests(unittest.TestCase):
         compile(cuda_check, "<check>", "exec")
 
 
+class GpuReviewFixesTests(unittest.TestCase):
+    def test_gpu_agreement_2d_respects_precision_and_backend(self):
+        rad = np.linspace(1.0, 10.0, 4)
+        azi = np.linspace(-180.0, 180.0, 3, endpoint=False)
+        cpu_i = np.full((3, 4), 100.0)
+        cpu_s = np.full((3, 4), 10.0)
+        gpu_i_loose = cpu_i + 1e-4  # 1e-6 relative: passes f32_compensated, fails f64
+        gpu = [(rad, azi, gpu_i_loose, cpu_s)]
+        cpu = [(rad, azi, cpu_i, cpu_s)]
+        result = compare.gpu_agreement_2d(
+            gpu, cpu, errors=True, precision="f32_compensated", backend="metal", input_dtype="float32"
+        )
+        self.assertIn("float32 frames", result["reference"])
+        self.assertTrue(result["radial_exactly_equal"])
+        self.assertTrue(result["azimuthal_exactly_equal"])
+        with self.assertRaisesRegex(AssertionError, "METAL 2D intensity"):
+            compare.gpu_agreement_2d(
+                gpu, cpu, errors=True, precision="f64", backend="metal"
+            )
+
+    def test_metal_unified_memory_and_embedded_ptx_summary_lines(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / "environment.json").write_text(
+                json.dumps(
+                    dict(
+                        arguments=dict(gpu_precision="f32_compensated"),
+                        variant_probes=dict(
+                            cuda=dict(
+                                available=True,
+                                device_name="RTX 5070 Ti",
+                                compute_capability=[12, 0],
+                                driver_version=13040,
+                                nvrtc_version=None,
+                            ),
+                            metal=dict(
+                                available=True,
+                                device_name="Apple M4 Pro",
+                                has_unified_memory=True,
+                                recommended_max_working_set_size=36 * 2**30,
+                            ),
+                        ),
+                    )
+                )
+            )
+            lines = "\n".join(compare.extra_lines(output))
+        self.assertIn("NVRTC none (embedded PTX)", lines)
+        self.assertIn("Apple M4 Pro, unified memory yes, precision f32_compensated", lines)
+
+    def test_float32_input_dtype_in_summary_and_csv(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            cases_dir = output / "cases"
+            cases_dir.mkdir()
+            path = cases_dir / "toy-repeated-dioptrin-pixel_split-cuda-w1-intensity-t0.result.json"
+            np.savez_compressed(
+                path.with_suffix(".npz"),
+                radial=np.linspace(1.0, 5.0, 5),
+                intensity=np.full((1, 5), 2.0),
+                sigma=np.array([]),
+            )
+            path.write_text(
+                json.dumps(
+                    dict(
+                        dataset="toy",
+                        workload="repeated",
+                        variant="dioptrin-pixel_split-cuda",
+                        workers=1,
+                        processes=1,
+                        errors=False,
+                        error_mode="intensity",
+                        trial=0,
+                        frames_per_s=10.0,
+                        input_dtype="float32",
+                        gpu_precision="f32_compensated",
+                        result=str(path),
+                    )
+                )
+            )
+            (output / "environment.json").write_text("{}")
+            summarize(output)
+            summary = (output / "summary.md").read_text()
+            csv_text = (output / "results.csv").read_text()
+        self.assertIn("1D, preloaded float32 inputs;", summary)
+        self.assertIn("input_dtype,gpu_precision", csv_text)
+        self.assertIn("float32,f32_compensated", csv_text)
+
+    def test_f64_with_metal_is_rejected(self):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "compare.py",
+                    "--gpu-precision",
+                    "f64",
+                    "--variants",
+                    "dioptrin-pixel_split-metal",
+                ],
+            ),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            compare.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("not supported by Metal", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

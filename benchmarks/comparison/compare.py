@@ -62,8 +62,13 @@ DIOPTRIN_GPU_VARIANTS = {**CUDA_VARIANTS, **METAL_VARIANTS}
 CUDA_PRECISION = "f32_compensated"
 GPU_PRECISIONS = ("f32_compensated", "f32", "f64")
 INPUT_DTYPES = ("float64", "float32")
-# Untimed agreement of every GPU output with CPU Integrator.integrate1d.
+# Untimed agreement tolerances of GPU output with CPU Integrator by precision.
 CUDA_AGREEMENT = dict(radial_rtol=1e-12, rtol=1e-5, atol_of_max=1e-5)
+GPU_AGREEMENT_TOLERANCES = {
+    "f64": dict(radial_rtol=1e-12, rtol=1e-11, atol_of_max=1e-11),
+    "f32_compensated": CUDA_AGREEMENT,
+    "f32": dict(radial_rtol=1e-12, rtol=1e-4, atol_of_max=1e-4),
+}
 CUDA_NO_API = "installed dioptrin has no CUDA API"
 METAL_NO_API = "installed dioptrin has no Metal API"
 # The default variant list; the CUDA/Metal rows are opt-in (--variants), so a
@@ -207,21 +212,31 @@ def cuda_version(value):
     return f"{value // 1000}.{value % 1000 // 10}"
 
 
-def cuda_agreement(gpu, cpu, errors):
-    """Compare CUDA outputs with CPU Integrator.integrate1d of the same frames.
+def cuda_agreement(
+    gpu,
+    cpu,
+    errors,
+    *,
+    precision=CUDA_PRECISION,
+    backend="cuda",
+    input_dtype="float64",
+):
+    """Compare GPU 1D outputs with CPU Integrator.integrate1d of the same frames.
 
     gpu and cpu are lists of (radial, intensity, sigma) per frame. Raises
-    AssertionError beyond CUDA_AGREEMENT; returns the observed differences.
+    AssertionError beyond GPU_AGREEMENT_TOLERANCES[precision]; returns the
+    observed differences.
     """
     import numpy as np
 
-    tolerance = CUDA_AGREEMENT
+    label = backend.upper()
+    tolerance = GPU_AGREEMENT_TOLERANCES.get(precision, CUDA_AGREEMENT)
     radial_exact = True
     found = {key: dict(max_abs=0.0, max_rel_nonzero=None) for key in ("intensity", "sigma")}
     for (g_radial, *g_values), (c_radial, *c_values) in zip(gpu, cpu, strict=True):
         np.testing.assert_allclose(
             g_radial, c_radial, rtol=tolerance["radial_rtol"], atol=0,
-            err_msg="CUDA radial axis differs from CPU integrate1d",
+            err_msg=f"{label} radial axis differs from CPU integrate1d",
         )
         radial_exact &= bool(np.array_equal(g_radial, c_radial))
         for key, g, c in zip(("intensity", "sigma"), g_values, c_values):
@@ -231,7 +246,7 @@ def cuda_agreement(gpu, cpu, errors):
             scale = float(np.max(np.abs(c))) if c.size else 0.0
             np.testing.assert_allclose(
                 g, c, rtol=tolerance["rtol"], atol=tolerance["atol_of_max"] * scale,
-                err_msg=f"CUDA {key} differs from CPU integrate1d",
+                err_msg=f"{label} {key} differs from CPU integrate1d",
             )
             difference = np.abs(g - c)
             entry = found[key]
@@ -243,10 +258,69 @@ def cuda_agreement(gpu, cpu, errors):
     if not errors:
         found.pop("sigma")
     return dict(
-        reference="CPU Integrator.integrate1d (same Integrator, float64 frames)",
+        reference=f"CPU Integrator.integrate1d (same Integrator, {input_dtype} frames)",
         frames_checked=len(gpu),
         tolerances=dict(tolerance),
         radial_exactly_equal=radial_exact,
+        **found,
+    )
+
+
+def gpu_agreement_2d(
+    gpu,
+    cpu,
+    errors,
+    *,
+    precision=CUDA_PRECISION,
+    backend="cuda",
+    input_dtype="float64",
+):
+    """Compare GPU 2D outputs with CPU Integrator.integrate2d of the same frames.
+
+    gpu and cpu are lists of (radial, azimuthal, intensity, sigma) per frame.
+    """
+    import numpy as np
+
+    label = backend.upper()
+    tolerance = GPU_AGREEMENT_TOLERANCES.get(precision, CUDA_AGREEMENT)
+    radial_exact = True
+    azimuthal_exact = True
+    found = {key: dict(max_abs=0.0, max_rel_nonzero=None) for key in ("intensity", "sigma")}
+    for (g_rad, g_azi, *g_values), (c_rad, c_azi, *c_values) in zip(gpu, cpu, strict=True):
+        np.testing.assert_allclose(
+            g_rad, c_rad, rtol=tolerance["radial_rtol"], atol=0,
+            err_msg=f"{label} 2D radial axis differs from CPU integrate2d",
+        )
+        np.testing.assert_allclose(
+            g_azi, c_azi, rtol=tolerance["radial_rtol"], atol=1e-12,
+            err_msg=f"{label} 2D azimuthal axis differs from CPU integrate2d",
+        )
+        radial_exact &= bool(np.array_equal(g_rad, c_rad))
+        azimuthal_exact &= bool(np.array_equal(g_azi, c_azi))
+        for key, g, c in zip(("intensity", "sigma"), g_values, c_values):
+            if key == "sigma" and not errors:
+                continue
+            g, c = np.asarray(g, dtype=float), np.asarray(c, dtype=float)
+            scale = float(np.max(np.abs(c))) if c.size else 0.0
+            np.testing.assert_allclose(
+                g, c, rtol=tolerance["rtol"], atol=tolerance["atol_of_max"] * scale,
+                err_msg=f"{label} 2D {key} differs from CPU integrate2d",
+            )
+            difference = np.abs(g - c)
+            entry = found[key]
+            entry["max_abs"] = max(entry["max_abs"], float(difference.max(initial=0.0)))
+            nonzero = c != 0
+            if nonzero.any():
+                relative = float(np.max(difference[nonzero] / np.abs(c[nonzero])))
+                entry["max_rel_nonzero"] = max(entry["max_rel_nonzero"] or 0.0, relative)
+    if not errors:
+        found.pop("sigma")
+    return dict(
+        reference=f"CPU Integrator.integrate2d (same Integrator, {input_dtype} frames)",
+        frames_checked=len(gpu),
+        tolerances=dict(tolerance),
+        radial_exactly_equal=radial_exact,
+        azimuthal_exactly_equal=azimuthal_exact,
         **found,
     )
 
@@ -346,9 +420,10 @@ def estimate_memory_mib(case, meta, estimates):
     else:
         engines = 1
     model = MEMORY_MODEL
+    pixel_bytes = 4 if case.get("input_dtype") == "float32" else 8
     one = (
         model["base_mib"] * 2**20
-        + held * pixels * 8
+        + held * pixels * pixel_bytes
         + pixels * model["geometry_bytes_per_pixel"][lib]
         + engines * nnz * model["table_bytes_per_nnz"][lib]
         + frames * bins * model["output_bytes_per_bin"][lib] * layers
@@ -419,7 +494,14 @@ def process_share(total, processes, rank):
     return list(range(rank * share, (rank + 1) * share))
 
 
-OPENMP_SYMBOLS = (b"GOMP_parallel", b"__kmpc_fork_call", b"omp_get_max_threads")
+OPENMP_SYMBOLS = (
+    b"GOMP_parallel",
+    b"__kmpc_fork_call",
+    b"omp_get_max_threads",
+    b"vcomp140",
+    b"vcomp140d",
+    b"_vcomp_fork",
+)
 
 
 def pyfai_openmp():
@@ -880,7 +962,15 @@ def setup_case(case, rank=None):
         unique = {u: np.array(stack[u]) for u in needed}
     del stack
     if case.get("input_dtype") == "float32":
-        unique = {u: np.ascontiguousarray(frame, dtype=np.float32) for u, frame in unique.items()}
+        cast = {}
+        for u, frame in unique.items():
+            f32 = np.ascontiguousarray(frame, dtype=np.float32)
+            if not np.array_equal(f32.astype(frame.dtype), frame):
+                raise AssertionError(
+                    f"Casting frame {u} from {frame.dtype} to float32 was not lossless"
+                )
+            cast[u] = f32
+        unique = cast
     image = unique[needed[0]]
     mask = np.load(fixture / "mask.npy")
     frames = [unique[i % distinct] for i in logical]
@@ -1004,7 +1094,14 @@ def setup_case(case, rank=None):
                 max_batch_frames=plan.max_batch_frames,
                 table_entries=plan.table_entries,
                 input_dtype=str(np.asarray(image).dtype),
-                cpu_agreement=cuda_agreement(gpu, cpu, errors),
+                cpu_agreement=cuda_agreement(
+                    gpu,
+                    cpu,
+                    errors,
+                    precision=precision,
+                    backend=backend,
+                    input_dtype=str(np.asarray(image).dtype),
+                ),
                 batch_bit_identical=identical,
             )
             if backend == "cuda":
@@ -1017,9 +1114,9 @@ def setup_case(case, rank=None):
                 )
             else:
                 backend_info.update(
-                    unified_memory=device.get("unified_memory"),
-                    recommended_max_working_set_bytes=device.get(
-                        "recommended_max_working_set_bytes"
+                    has_unified_memory=device.get("has_unified_memory"),
+                    recommended_max_working_set_size=device.get(
+                        "recommended_max_working_set_size"
                     ),
                 )
             info[backend] = jsonable(backend_info)
@@ -1283,7 +1380,15 @@ def load_inputs(case, rank):
         unique = {u: np.array(stack[u]) for u in needed}
     del stack
     if case.get("input_dtype") == "float32":
-        unique = {u: np.ascontiguousarray(frame, dtype=np.float32) for u, frame in unique.items()}
+        cast = {}
+        for u, frame in unique.items():
+            f32 = np.ascontiguousarray(frame, dtype=np.float32)
+            if not np.array_equal(f32.astype(frame.dtype), frame):
+                raise AssertionError(
+                    f"Casting frame {u} from {frame.dtype} to float32 was not lossless"
+                )
+            cast[u] = f32
+        unique = cast
     mask = np.load(fixture / "mask.npy")
     frames = [unique[i % distinct] for i in logical]
     for frame in unique.values():
@@ -1351,6 +1456,7 @@ def setup_case_2d(case, rank=None):
     subpixels = case.get("subpixels")
     pool = None
     stock_check = None
+    gpu_check_2d = None
     unwrap_batch_result = None
     info = dict(rss_inputs_mib=peak_rss(), uncertainty_support=UNCERTAINTY_2D[lib])
     started = time.perf_counter()
@@ -1430,8 +1536,51 @@ def setup_case_2d(case, rank=None):
             engines = [plan]
             info["table_nnz"] = plan.table_entries
             info["table_nnz_source"] = f"dioptrin.{backend}_2d_plan.table_entries"
-            info[backend] = jsonable(
-                dict(
+
+            def gpu_check_2d(sample):
+                """Untimed, after setup_ready: device facts, agreement with CPU
+                Integrator.integrate2d and, for batch rows, batch2d == integrate2d."""
+                device = (
+                    dioptrin.cuda_info(plan.device)
+                    if backend == "cuda"
+                    else dioptrin.metal_info(plan.device)
+                )
+                gpu_frames = [
+                    (
+                        sample["radial"],
+                        sample["azimuthal"],
+                        sample["intensity"][i],
+                        sample["sigma"][i] if errors else None,
+                    )
+                    for i in range(len(needed))
+                ]
+                cpu_frames = [
+                    extract(
+                        ai.integrate2d(
+                            np.ascontiguousarray(unique[u]),
+                            nr,
+                            na,
+                            errors=errors,
+                            azimuthal_range=span,
+                        )
+                    )
+                    for u in needed
+                ]
+                identical = None
+                if kind == "batch":
+                    images = [unique[u] for u in needed]
+                    batched = plan.batch2d(images, errors=errors)
+                    single = [integrate(plan, frame) for frame in images]
+                    identical = len(batched) == len(single) and all(
+                        same_bits(a, b)
+                        for x, y in zip(batched, single)
+                        for a, b in zip(extract(x), extract(y))
+                    )
+                    if not identical:
+                        raise AssertionError(
+                            f"{backend.upper()} batch2d differs from per-frame integrate2d"
+                        )
+                backend_info = dict(
                     call="plan.integrate2d per frame"
                     if kind == "frame"
                     else "plan.batch2d over all frames",
@@ -1442,8 +1591,36 @@ def setup_case_2d(case, rank=None):
                     max_batch_frames=plan.max_batch_frames,
                     table_entries=plan.table_entries,
                     input_dtype=str(np.asarray(image).dtype),
+                    cpu_agreement=gpu_agreement_2d(
+                        gpu_frames,
+                        cpu_frames,
+                        errors,
+                        precision=precision,
+                        backend=backend,
+                        input_dtype=str(np.asarray(image).dtype),
+                    ),
+                    batch_bit_identical=identical,
                 )
-            )
+                if backend == "cuda":
+                    backend_info.update(
+                        compute_capability=device.get("compute_capability"),
+                        total_memory_bytes=device.get("total_memory_bytes"),
+                        driver_version=device.get("driver_version"),
+                        nvrtc_version=device.get("nvrtc_version"),
+                        bindings_version=device.get("bindings_version"),
+                    )
+                else:
+                    backend_info.update(
+                        has_unified_memory=device.get("has_unified_memory"),
+                        recommended_max_working_set_size=device.get(
+                            "recommended_max_working_set_size"
+                        ),
+                    )
+                info[backend] = jsonable(backend_info)
+                if info[backend]["precision"] != precision:
+                    raise AssertionError(
+                        f"{backend.upper()} 2D plan precision {plan.precision!r}, expected {precision!r}"
+                    )
         else:
             def integrate(engine, frame):
                 return engine.integrate2d(
@@ -1711,6 +1888,10 @@ def setup_case_2d(case, rank=None):
         "sigma": np.stack([outputs[u][3] for u in needed]) if errors else np.array([]),
     }
     del outputs
+    if gpu_check_2d is not None:
+        gpu_check_2d(sample)
+        # Re-warm the GPU plan after the untimed CPU comparison, matching 1D.
+        run()
     row = {u: position for position, u in enumerate(needed)}.__getitem__
     baseline = sample
     if case.get("reference"):
@@ -2089,20 +2270,28 @@ def extra_lines(output):
         gpu_precision = (environment.get("arguments") or {}).get(
             "gpu_precision", CUDA_PRECISION
         )
+        nvrtc = (
+            "none (embedded PTX)"
+            if cuda.get("nvrtc_version") is None
+            else cuda_version(cuda.get("nvrtc_version"))
+        )
         lines.append(
             f"Dioptrin CUDA device: {cuda.get('device_name')} (compute "
             f"{cuda_version(capability)}), driver "
             f"{cuda_version(cuda.get('driver_version'))}, NVRTC "
-            f"{cuda_version(cuda.get('nvrtc_version'))}, precision {gpu_precision}"
+            f"{nvrtc}, precision {gpu_precision}"
         )
     metal = (environment.get("variant_probes") or {}).get("metal") or {}
     if metal.get("available"):
         gpu_precision = (environment.get("arguments") or {}).get(
             "gpu_precision", CUDA_PRECISION
         )
+        unified = metal.get("has_unified_memory")
+        if unified is None:
+            unified = metal.get("unified_memory")
         lines.append(
             f"Dioptrin Metal device: {metal.get('device_name')}, "
-            f"unified memory {'yes' if metal.get('unified_memory') else 'no'}, "
+            f"unified memory {'yes' if unified else 'no'}, "
             f"precision {gpu_precision}"
         )
     for fixture in sorted(output.glob("*/fixture.json")):
@@ -2149,12 +2338,16 @@ def summarize(output):
         "beam_pixels_added",
         # 2D (cake) columns; empty for 1D rows.
         *CSV_2D_FIELDS,
+        # Input dtype and GPU accumulation precision (appended).
+        "input_dtype",
+        "gpu_precision",
     ]
     for row in rows:
         row.setdefault("processes", 1)
         row.setdefault("workers_per_process", row["workers"])
         row.setdefault("binding", "none")
         row.setdefault("dimension", "1d")
+        row.setdefault("input_dtype", "float64")
     with (output / "results.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -2303,10 +2496,18 @@ def summarize(output):
         if gpu_rows
         else []
     )
+    input_dtypes = sorted({r.get("input_dtype", "float64") for r in rows + rows_2d} or {"float64"})
+    dtype_label = "/".join(input_dtypes)
+    if rows and rows_2d:
+        dim_label = "1D and 2D"
+    elif rows_2d:
+        dim_label = "2D"
+    else:
+        dim_label = "1D"
     lines = [
         "# CPU and GPU integration benchmark" if gpu_rows else "# CPU integration benchmark",
         "",
-        "1D, preloaded float64 inputs; generation, decoding, and output writing excluded.",
+        f"{dim_label}, preloaded {dtype_label} inputs; generation, decoding, and output writing excluded.",
         *gpu_lines,
         "Repeated reuses one image; frames cycles through distinct generated images.",
         "Cross-library algorithms, precision, and normalization differ; see numerical.json.",
@@ -3363,10 +3564,16 @@ def main():
             arguments={
                 k: str(v) if isinstance(v, Path) else v
                 for k, v in vars(args).items()
-                # CUDA options only when a CUDA row was requested, so other
-                # runs record the same arguments as before the CUDA rows.
-                if k not in ("cuda_device", "probe_cuda")
-                or any(v in CUDA_VARIANTS for v in args.variants)
+                # CUDA/Metal options only when a matching row was requested, so
+                # other runs record the same arguments as before.
+                if (
+                    k not in ("cuda_device", "probe_cuda")
+                    or any(v in CUDA_VARIANTS for v in args.variants)
+                )
+                and (
+                    k not in ("metal_device", "probe_metal")
+                    or any(v in METAL_VARIANTS for v in args.variants)
+                )
             },
             source=provenance,
             manifest_sha256=sha256(MANIFEST),
@@ -3604,8 +3811,7 @@ def main():
                                     elif variant in METAL_VARIANTS:
                                         case["metal_device"] = args.metal_device
                                         case["gpu_precision"] = args.gpu_precision
-                                    if args.input_dtype != "float64":
-                                        case["input_dtype"] = args.input_dtype
+                                    case["input_dtype"] = args.input_dtype
                                     case["threads"] = case_threads(
                                         variant, count, processes
                                     )
@@ -3701,8 +3907,7 @@ def main():
                                         elif variant in METAL_VARIANTS:
                                             case["metal_device"] = args.metal_device
                                             case["gpu_precision"] = args.gpu_precision
-                                        if args.input_dtype != "float64":
-                                            case["input_dtype"] = args.input_dtype
+                                        case["input_dtype"] = args.input_dtype
                                         if variant.startswith("dioptrin-"):
                                             key = method + (
                                                 f"-ss{subpixels}" if subpixels else ""

@@ -15,9 +15,11 @@
 # node pass your GPU partition: sbatch --partition=<gpu-partition> ...
 # PYFAI_WHEEL selects a local pyFAI wheel for a separate cached environment.
 # WITH_CUDA=1 builds Dioptrin with the 'cuda' feature (separate cached
-# environment) for the dioptrin-*-cuda variants. The build needs no CUDA
-# toolkit; at run time NVRTC must be found, so put a CUDA toolkit module no
-# newer than the node's driver (nvidia-smi "CUDA Version") into EXTRA_MODULES.
+# environment) for the dioptrin-*-cuda variants. Starting with v0.15.1,
+# embedded compute_70 PTX loads directly via the node's NVIDIA driver on
+# Volta+ GPUs with no CUDA toolkit / NVRTC module required; on pre-Volta
+# GPUs (e.g. P100) load a CUDA toolkit module no newer than the node's
+# driver (nvidia-smi "CUDA Version") via EXTRA_MODULES for NVRTC fallback.
 set -euo pipefail
 unset LD_PRELOAD PYTHONPATH
 export PYTHONNOUSERSITE=1
