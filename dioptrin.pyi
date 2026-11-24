@@ -723,15 +723,17 @@ class Integrator:
         Returns a list of BatchResult objects with IntegrationResult containing
         optional error estimates.
 
-        C-contiguous float64 NumPy images are borrowed without copying their
-        pixels for this synchronous call. Keep inputs unchanged until it returns;
-        they must not be mutated concurrently. Native workers finish before the
-        input borrow guards are released. Streaming APIs retain owned frames.
-        The GIL is released while the workers run, so other Python threads
-        (including a generator feeding a batch*_iter stream) keep running.
+        C-contiguous float64, float32, uint16, uint32, or int32 NumPy images are
+        borrowed without copying their pixels for this synchronous call. Keep
+        inputs unchanged until it returns; they must not be mutated
+        concurrently. Native workers finish before the input borrow guards are
+        released. Streaming APIs retain owned frames. The GIL is released while
+        the workers run, so other Python threads (including a generator feeding
+        a batch*_iter stream) keep running.
 
         Args:
-            images: List of TIFF file paths or 2D float64 NumPy arrays
+            images: List of TIFF file paths or 2D NumPy arrays (float64,
+                float32, uint16, uint32, or int32)
             n_points: Number of bins for the 1D integration output
             errors: Whether to compute Poisson error estimates (default: False)
             azimuthal_std: Also compute weighted population spread (default: False)
@@ -846,8 +848,9 @@ class Integrator:
         optional error estimates.
 
         Args:
-            tiff_paths: List of TIFF file paths or list of 2D float64 NumPy arrays
-                (the parameter keeps its historical name)
+            tiff_paths: List of TIFF file paths or list of 2D NumPy arrays
+                (float64, float32, uint16, uint32, or int32; the parameter keeps
+                its historical name)
             n_radial: Number of radial bins
             n_azimuthal: Number of azimuthal bins. Give either this or
                 azimuthal_bracket.

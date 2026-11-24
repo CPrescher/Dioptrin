@@ -378,9 +378,9 @@ impl PreparedCsr {
     /// 4-frame SIMD-tiled fixed-mask CSR integration (mask already compacted).
     /// Bit-identical to 1-frame `cached_results` for both `FAST = true` and
     /// `FAST = false`.
-    fn cached_results_batch4<const FAST: bool, const VAR: bool>(
+    fn cached_results_batch4<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
-        signals: [&[f64]; 4],
+        signals: [&[P]; 4],
         norm: &[f64],
     ) -> [(Vec<f64>, Vec<f64>); 4] {
         let cached = self.normalization::<FAST>(None, norm);
@@ -396,8 +396,9 @@ impl PreparedCsr {
                 for i in 0..nbins {
                     let start = self.row_ptr[i];
                     let end = self.row_ptr[i + 1];
-                    let (sig, var) =
-                        row_batch4::<_, FAST, VAR, $weighted>(start, end, $cols, $weights, signals);
+                    let (sig, var) = row_batch4::<_, P, FAST, VAR, $weighted>(
+                        start, end, $cols, $weights, signals,
+                    );
                     let n = cached[i];
                     for f in 0..4 {
                         intensities[f].push(if n == 0.0 { 0.0 } else { sig[f] / n });
@@ -658,9 +659,9 @@ impl Prepared1d {
     /// 4-frame SIMD-tiled fixed-mask 1D integration on both fast CSC and CSR
     /// (fast or strict) paths. Returns `None` for dynamic masks or CSR `fast && var`.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool>(
+    pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
-        signals: [&[f64]; 4],
+        signals: [&[P]; 4],
         mask: Option<&[u8]>,
         norm: &[f64],
     ) -> Option<[(Vec<f64>, Vec<f64>, Vec<f64>); 4]> {
@@ -678,7 +679,7 @@ impl Prepared1d {
                 .fixed_pixels
                 .get_or_init(|| csc.active_pixels(mask));
             let cached_norm = self.csr.normalization::<true>(mask, norm);
-            let out = csc.fixed_results_batch4::<VAR>(signals, pixels, cached_norm);
+            let out = csc.fixed_results_batch4::<VAR, P>(signals, pixels, cached_norm);
             return Some(out.map(|(y, e)| (bins.clone(), y, e)));
         }
         if FAST && VAR {
@@ -687,7 +688,7 @@ impl Prepared1d {
             return None;
         }
         let table = self.csr.fixed_table(mask);
-        let out = table.cached_results_batch4::<FAST, VAR>(signals, norm);
+        let out = table.cached_results_batch4::<FAST, VAR, P>(signals, norm);
         Some(out.map(|(y, e)| (bins.clone(), y, e)))
     }
     /// Strict CSR fallback for independently supplied variances. Preserve every
@@ -839,6 +840,29 @@ impl Prepared2d {
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
+    }
+
+    /// Returns whether `integrate_batch4` will take the 4-frame tiled CSR path
+    /// for `(fast, var)`.
+    pub(crate) fn can_batch4(&self, fast: bool, var: bool) -> bool {
+        self.csr.mode == MaskMode::Fixed && !(fast && var)
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration (fast intensity or
+    /// strict intensity/errors). Returns `None` for dynamic masks or CSR
+    /// `fast && var`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool, P: Pixel>(
+        &self,
+        signals: [&[P]; 4],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> Option<[(Vec<f64>, Vec<f64>); 4]> {
+        if !self.can_batch4(FAST, VAR) {
+            return None;
+        }
+        let table = self.csr.fixed_table(mask);
+        Some(table.cached_results_batch4::<FAST, VAR, P>(signals, norm))
     }
     pub(crate) fn integrate_pixels<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
@@ -993,12 +1017,12 @@ fn row<
 }
 
 #[inline(always)]
-fn row_batch4<I: PixelIndex, const FAST: bool, const VAR: bool, const WEIGHT: bool>(
+fn row_batch4<I: PixelIndex, P: Pixel, const FAST: bool, const VAR: bool, const WEIGHT: bool>(
     start: usize,
     end: usize,
     cols: &[I],
     weights: &[f64],
-    signals: [&[f64]; 4],
+    signals: [&[P]; 4],
 ) -> ([f64; 4], [f64; 4]) {
     let mut s = [[0.0f64; 4]; 4];
     let mut v = [[0.0f64; 4]; 4];
@@ -1014,7 +1038,12 @@ fn row_batch4<I: PixelIndex, const FAST: bool, const VAR: bool, const WEIGHT: bo
             ($lane:expr, $at:expr) => {{
                 let lane = $lane;
                 let j = cols.get_unchecked($at).pixel();
-                let x = [*s0.add(j), *s1.add(j), *s2.add(j), *s3.add(j)];
+                let x = [
+                    (*s0.add(j)).to_f64(),
+                    (*s1.add(j)).to_f64(),
+                    (*s2.add(j)).to_f64(),
+                    (*s3.add(j)).to_f64(),
+                ];
                 if WEIGHT {
                     let w = *weights.get_unchecked($at);
                     for f in 0..4 {

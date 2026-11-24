@@ -348,9 +348,9 @@ impl Csc {
     /// 4-frame SIMD-tiled fixed-mask 1D integration. Reads the CSC table once
     /// per 4 frames and accumulates `[f64; 4]` per bin/lane in the exact same
     /// chunk and lane reduction order as 1-frame `fixed_results` (bit-identical).
-    pub(super) fn fixed_results_batch4<const VAR: bool>(
+    pub(super) fn fixed_results_batch4<const VAR: bool, P: Pixel>(
         &self,
-        signals: [&[f64]; 4],
+        signals: [&[P]; 4],
         pixels: &[u32],
         normalization: &[f64],
     ) -> [(Vec<f64>, Vec<f64>); 4] {
@@ -386,10 +386,10 @@ impl Csc {
                 let cv = chunk_var.as_mut_ptr();
                 for &pixel in $pix_slice {
                     let p = pixel as usize;
-                    let x0 = *s0.add(p);
-                    let x1 = *s1.add(p);
-                    let x2 = *s2.add(p);
-                    let x3 = *s3.add(p);
+                    let x0 = (*s0.add(p)).to_f64();
+                    let x1 = (*s1.add(p)).to_f64();
+                    let x2 = (*s2.add(p)).to_f64();
+                    let x3 = (*s3.add(p)).to_f64();
                     let xp0 = if VAR { x0.max(0.0) } else { 0.0 };
                     let xp1 = if VAR { x1.max(0.0) } else { 0.0 };
                     let xp2 = if VAR { x2.max(0.0) } else { 0.0 };
@@ -1065,8 +1065,8 @@ mod fixed_partition_tests {
                 let s3: Vec<f64> = (0..npix).map(|p| ((p * 7) % 79) as f64 * 0.5).collect();
                 let signals = [s0.as_slice(), s1.as_slice(), s2.as_slice(), s3.as_slice()];
 
-                let batch_i = table.fixed_results_batch4::<false>(signals, &pixels, &norm);
-                let batch_p = table.fixed_results_batch4::<true>(signals, &pixels, &norm);
+                let batch_i = table.fixed_results_batch4::<false, _>(signals, &pixels, &norm);
+                let batch_p = table.fixed_results_batch4::<true, _>(signals, &pixels, &norm);
                 for f in 0..4 {
                     let ref_i = table.fixed_results::<false, false, _>(signals[f], &pixels, &norm);
                     let ref_p = table.fixed_results::<true, false, _>(signals[f], &pixels, &norm);

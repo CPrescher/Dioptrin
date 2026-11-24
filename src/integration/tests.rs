@@ -1781,3 +1781,97 @@ fn pixel_split_cake_is_bit_identical_across_thread_counts() {
         );
     }
 }
+
+#[test]
+fn integrate2d_batch4_matches_single_frame_bit_for_bit() {
+    let (dim1, dim2) = (24, 28);
+    let npix = dim1 * dim2;
+    let mut poni = Poni::new();
+    poni.pixel1 = 1e-4;
+    poni.pixel2 = 1e-4;
+    poni.distance = 0.08;
+    poni.poni1 = 0.0012;
+    poni.poni2 = 0.0014;
+    poni.rot1 = 0.03;
+    poni.wavelength = 1e-10;
+    let geom = Geometry::new(dim1, dim2, poni);
+    let make_mask = || {
+        Mask::from_vec(
+            (0..npix).map(|i| u8::from(i % 11 == 0)).collect(),
+            dim1,
+            dim2,
+        )
+        .expect("mask")
+    };
+    let frames: [Vec<f64>; 4] = std::array::from_fn(|f| {
+        (0..npix)
+            .map(|i| ((i * (17 + f * 7) % 101) as f64) - 5.0)
+            .collect()
+    });
+    let slices: [&[f64]; 4] = [
+        frames[0].as_slice(),
+        frames[1].as_slice(),
+        frames[2].as_slice(),
+        frames[3].as_slice(),
+    ];
+
+    for method in [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::PyfaiFull,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+    ] {
+        for fast_math in [true, false] {
+            for errors in [false, true] {
+                for az_range in [None, Some((-1.0, 1.5))] {
+                    let ai = Integrator::new(geom.clone())
+                        .with_method(method)
+                        .with_fast_math(fast_math)
+                        .with_mask(make_mask())
+                        .with_polarization_factor(0.8);
+                    let eligible = ai.can_integrate2d_batch4(dim1, dim2, 16, 12, az_range, errors);
+                    let batch =
+                        ai.try_integrate2d_batch4(slices, dim1, dim2, 16, 12, az_range, errors);
+                    assert_eq!(eligible, !(fast_math && errors));
+                    assert_eq!(batch.is_some(), eligible);
+                    let Some(batch) = batch else {
+                        continue;
+                    };
+                    for (f, (intensity, errs)) in batch.into_iter().enumerate() {
+                        let (want_i, want_e) = match az_range {
+                            None if errors => {
+                                let (i, e) = ai.integrate2d_with_errors_from_slice(
+                                    slices[f], dim1, dim2, 16, 12,
+                                );
+                                (i, Some(e))
+                            }
+                            None => (
+                                ai.integrate2d_from_slice(slices[f], dim1, dim2, 16, 12),
+                                None,
+                            ),
+                            Some(r) => {
+                                let res = ai
+                                    .integrate2d_on_azimuthal_range_from_slice(
+                                        slices[f], dim1, dim2, 16, 12, r, errors,
+                                    )
+                                    .unwrap();
+                                (res.intensity, res.errors)
+                            }
+                        };
+                        let to_bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                        assert_eq!(
+                            to_bits(&intensity),
+                            to_bits(&want_i),
+                            "intensity mismatch: {method:?} fast={fast_math} err={errors} az={az_range:?} frame={f}"
+                        );
+                        assert_eq!(
+                            errs.as_deref().map(to_bits),
+                            want_e.as_deref().map(to_bits),
+                            "errors mismatch: {method:?} fast={fast_math} err={errors} az={az_range:?} frame={f}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
