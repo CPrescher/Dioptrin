@@ -28,14 +28,19 @@ def run(command, **kwargs):
     subprocess.run(list(map(str, command)), check=True, **kwargs)
 
 
-def cargo_features(with_cuda=False):
-    """Cargo features of the Dioptrin wheel ('cuda' adds the CUDA 1D plan)."""
-    return ["python", "cuda"] if with_cuda else ["python"]
+def cargo_features(with_cuda=False, with_metal=False):
+    """Cargo features of the Dioptrin wheel ('cuda'/'metal' add GPU plans)."""
+    features = ["python"]
+    if with_cuda:
+        features.append("cuda")
+    if with_metal:
+        features.append("metal")
+    return features
 
 
-def maturin_command(python, wheels, with_cuda=False, locked=()):
-    """Release wheel build. The 'cuda' feature needs only the Rust toolchain:
-    cudarc loads libcuda and NVRTC at run time (no CUDA toolkit, no nvcc)."""
+def maturin_command(python, wheels, with_cuda=False, locked=(), with_metal=False):
+    """Release wheel build. 'cuda' uses dynamic loading + embedded PTX (no CUDA
+    toolkit needed); 'metal' links macOS Metal.framework."""
     return [
         python,
         "-m",
@@ -43,7 +48,7 @@ def maturin_command(python, wheels, with_cuda=False, locked=()):
         "build",
         "--release",
         "--features",
-        ",".join(cargo_features(with_cuda)),
+        ",".join(cargo_features(with_cuda, with_metal)),
         *locked,
         "--interpreter",
         python,
@@ -185,8 +190,14 @@ def main():
         "--with-cuda",
         action="store_true",
         help="Build Dioptrin with the 'cuda' Cargo feature (features python,cuda) "
-        "for the dioptrin-*-cuda variants; running them needs an NVIDIA driver "
-        "and NVRTC at run time, not at build time",
+        "for the dioptrin-*-cuda variants; uses embedded PTX (NVIDIA display "
+        "driver only on Volta+ GPUs, no CUDA toolkit needed)",
+    )
+    parser.add_argument(
+        "--with-metal",
+        action="store_true",
+        help="Build Dioptrin with the 'metal' Cargo feature (features python,metal) "
+        "for the dioptrin-*-metal variants on macOS",
     )
     parser.add_argument(
         "--azint-only",
@@ -200,6 +211,10 @@ def main():
         parser.error("--pyfai-wheel requires a full environment build")
     if args.with_cuda and args.azint_only:
         parser.error("--with-cuda requires a full environment build")
+    if args.with_metal and args.azint_only:
+        parser.error("--with-metal requires a full environment build")
+    if args.with_metal and sys.platform != "darwin":
+        parser.error("--with-metal is only supported on macOS")
     windows = sys.platform == "win32"
     if sys.platform not in ("linux", "darwin", "win32"):
         parser.error("Use Linux, macOS, or Windows")
@@ -295,7 +310,7 @@ def main():
                 )
             locked = ["--locked"] if (ROOT / "Cargo.lock").is_file() else []
             run(
-                maturin_command(python, wheels, args.with_cuda, locked),
+                maturin_command(python, wheels, args.with_cuda, locked, args.with_metal),
                 cwd=ROOT,
                 env=env,
             )
@@ -437,7 +452,8 @@ def main():
                     portable=args.portable,
                     opencl=OPENCL_REQUIREMENT if args.with_opencl else None,
                     cuda=args.with_cuda,
-                    cargo_features=cargo_features(args.with_cuda),
+                    metal=args.with_metal,
+                    cargo_features=cargo_features(args.with_cuda, args.with_metal),
                     pyfai_wheel=pyfai_wheel,
                     flags={
                         k: env[k]

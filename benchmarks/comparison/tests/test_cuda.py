@@ -185,7 +185,10 @@ class CudaVariantTests(unittest.TestCase):
                 "pyfai-full-opencl",
             ),
         )
-        self.assertEqual(VARIANTS, DEFAULT_VARIANTS + tuple(CUDA_VARIANTS))
+        self.assertEqual(
+            VARIANTS,
+            DEFAULT_VARIANTS + tuple(CUDA_VARIANTS) + tuple(compare.METAL_VARIANTS),
+        )
         with (
             patch.object(sys, "argv", ["compare.py", "--list-datasets"]),
             patch("argparse.ArgumentParser.parse_args", autospec=True) as parse,
@@ -196,8 +199,13 @@ class CudaVariantTests(unittest.TestCase):
             parser = parse.call_args.args[0]
         defaults = parser.parse_args([])
         self.assertEqual(tuple(defaults.variants), DEFAULT_VARIANTS)
-        chosen = parser.parse_args(["--variants", "dioptrin-pyfai_full-cuda"])
-        self.assertEqual(chosen.variants, ["dioptrin-pyfai_full-cuda"])
+        self.assertEqual(defaults.gpu_precision, "f32_compensated")
+        self.assertEqual(defaults.input_dtype, "float64")
+        chosen = parser.parse_args(
+            ["--variants", "dioptrin-pyfai_full-cuda", "dioptrin-pyfai_full-metal", "--input-dtype", "float32"]
+        )
+        self.assertEqual(chosen.variants, ["dioptrin-pyfai_full-cuda", "dioptrin-pyfai_full-metal"])
+        self.assertEqual(chosen.input_dtype, "float32")
 
     def test_threads_at_budget_one(self):
         for variant in CUDA_VARIANTS:
@@ -602,7 +610,8 @@ class CudaSchedulingTests(unittest.TestCase):
                             radial_range_2d=[0.5, 20.0],
                             convention=dict(passed=True, libraries={}),
                             dioptrin_radial_axes={
-                                "pixel_split": {"8": list(np.linspace(1, 2, 8))}
+                                "pixel_split": {"8": list(np.linspace(1, 2, 8))},
+                                "pyfai_full": {"8": list(np.linspace(1, 2, 8))},
                             },
                             table_estimates={
                                 "8x4": dict(polygon_nnz=10.0, subpixel_nnz={"10": 10.0})
@@ -641,14 +650,18 @@ class CudaSchedulingTests(unittest.TestCase):
             environment = json.loads((output / "environment.json").read_text())
             self.assertEqual(environment["variant_probes"]["cuda"]["device_name"], "Fake GPU")
             self.assertEqual(json.loads((output / "skipped.json").read_text()), [])
-        self.assertEqual(preflight_variants, ["dioptrin-pixel_split"])
+        self.assertEqual(
+            preflight_variants,
+            ["dioptrin-pixel_split", "dioptrin-pyfai_full-cuda", "dioptrin-pixel_split-cuda-batch"],
+        )
         cuda = [c for c in cases if c["variant"] in CUDA_VARIANTS]
-        self.assertEqual(len(cuda), 4)  # two variants x intensity/Poisson
+        self.assertEqual(len(cuda), 8)  # two variants x intensity/Poisson x 1D/2D
         for case in cuda:
             self.assertEqual((case["workers"], case["processes"]), (1, 1))
-            self.assertNotEqual(case.get("dimension"), "2d")
             self.assertEqual(case["cuda_device"], 3)
+            self.assertEqual(case["gpu_precision"], "f32_compensated")
             self.assertEqual(case["threads"]["RAYON_NUM_THREADS"], "1")
+        self.assertEqual(sum(1 for c in cuda if c.get("dimension") == "2d"), 4)
         cpu = [c for c in cases if c["variant"] == "dioptrin-pixel_split"]
         self.assertTrue(any(c.get("dimension") == "2d" for c in cpu))
         self.assertTrue(any(c["workers"] == 2 for c in cpu))

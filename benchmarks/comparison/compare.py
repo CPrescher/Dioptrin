@@ -12,7 +12,10 @@ import math
 import os
 from pathlib import Path
 import platform
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None
 import shutil
 import signal
 import subprocess
@@ -37,29 +40,39 @@ VARIANTS = (
     "pyfai-full-omp",
     "pyfai-full-opencl",
 )
-# Dioptrin's CUDA 1D plan (Integrator.prepare_cuda1d): (method, call). "frame"
-# submits one frame per public call, like pyFAI's OpenCL engine; "batch" uses
-# the plan's multi-frame batch1d. 1D only.
+# Dioptrin's CUDA 1D/2D plans (Integrator.prepare_cuda1d / prepare_cuda2d):
+# (method, call). "frame" submits one frame per public call, like pyFAI's
+# OpenCL engine; "batch" uses the plan's multi-frame batch1d / batch2d.
 CUDA_VARIANTS = {
     "dioptrin-pixel_split-cuda": ("pixel_split", "frame"),
     "dioptrin-pyfai_full-cuda": ("pyfai_full", "frame"),
     "dioptrin-pixel_split-cuda-batch": ("pixel_split", "batch"),
     "dioptrin-pyfai_full-cuda-batch": ("pyfai_full", "batch"),
 }
+# Dioptrin's Metal 1D/2D plans on macOS (Integrator.prepare_metal1d / prepare_metal2d).
+METAL_VARIANTS = {
+    "dioptrin-pixel_split-metal": ("pixel_split", "frame"),
+    "dioptrin-pyfai_full-metal": ("pyfai_full", "frame"),
+    "dioptrin-pixel_split-metal-batch": ("pixel_split", "batch"),
+    "dioptrin-pyfai_full-metal-batch": ("pyfai_full", "batch"),
+}
+DIOPTRIN_GPU_VARIANTS = {**CUDA_VARIANTS, **METAL_VARIANTS}
 # f32 pixels and weights with double-word compensated sums, f64 denominators,
 # division and output: the counterpart of pyFAI's OpenCL CSR engine.
 CUDA_PRECISION = "f32_compensated"
-# Untimed agreement of every CUDA output with CPU Integrator.integrate1d.
+GPU_PRECISIONS = ("f32_compensated", "f32", "f64")
+INPUT_DTYPES = ("float64", "float32")
+# Untimed agreement of every GPU output with CPU Integrator.integrate1d.
 CUDA_AGREEMENT = dict(radial_rtol=1e-12, rtol=1e-5, atol_of_max=1e-5)
 CUDA_NO_API = "installed dioptrin has no CUDA API"
-# The default variant list; the CUDA rows are opt-in (--variants), so a default
-# run never initialises a CUDA device or NVRTC.
+METAL_NO_API = "installed dioptrin has no Metal API"
+# The default variant list; the CUDA/Metal rows are opt-in (--variants), so a
+# default run never initialises a GPU device.
 DEFAULT_VARIANTS = VARIANTS
 # Every selectable variant.
-VARIANTS += tuple(CUDA_VARIANTS)
-# The CUDA probe (device initialisation and NVRTC compilation) runs in its own
-# child process; a crash, signal or a child running longer than this marks
-# CUDA unavailable instead of stopping the run.
+VARIANTS += tuple(CUDA_VARIANTS) + tuple(METAL_VARIANTS)
+# The GPU probe (device initialisation) runs in its own child process; a crash,
+# signal or a child running longer than this marks the backend unavailable.
 CUDA_PROBE_TIMEOUT_S = 600
 
 
@@ -81,8 +94,8 @@ PYFAI_METHODS = {
 }
 # One engine integrating frames in sequence: pyFAI parallelises inside the
 # CSR kernel (OpenMP threads, or the OpenCL device) instead of over frames.
-SEQUENTIAL_VARIANTS = ("pyfai-full-omp", "pyfai-full-opencl", *CUDA_VARIANTS)
-GPU_VARIANTS = ("pyfai-full-opencl", *CUDA_VARIANTS)
+SEQUENTIAL_VARIANTS = ("pyfai-full-omp", "pyfai-full-opencl", *DIOPTRIN_GPU_VARIANTS)
+GPU_VARIANTS = ("pyfai-full-opencl", *DIOPTRIN_GPU_VARIANTS)
 CONTROL = "@@"
 # Multi-process blocks start this long after the parent sends the command.
 START_LEAD_SECONDS = 0.1
@@ -109,6 +122,14 @@ COUNTERPARTS_2D = (
     ("pyfai-full-opencl", "pyfai-full"),
     ("azint", "dioptrin-supersampled"),
     ("azint-cached", "dioptrin-supersampled"),
+    ("dioptrin-pixel_split-cuda", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-cuda", "dioptrin-pyfai_full"),
+    ("dioptrin-pixel_split-cuda-batch", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-cuda-batch", "dioptrin-pyfai_full"),
+    ("dioptrin-pixel_split-metal", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-metal", "dioptrin-pyfai_full"),
+    ("dioptrin-pixel_split-metal-batch", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-metal-batch", "dioptrin-pyfai_full"),
 )
 # 1D (variant, counterpart) pairs in numerical.json besides the
 # dioptrin-pixel_split reference: GPU rows against their CPU method.
@@ -117,6 +138,10 @@ COUNTERPARTS_1D = (
     ("dioptrin-pyfai_full-cuda", "dioptrin-pyfai_full"),
     ("dioptrin-pixel_split-cuda-batch", "dioptrin-pixel_split"),
     ("dioptrin-pyfai_full-cuda-batch", "dioptrin-pyfai_full"),
+    ("dioptrin-pixel_split-metal", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-metal", "dioptrin-pyfai_full"),
+    ("dioptrin-pixel_split-metal-batch", "dioptrin-pixel_split"),
+    ("dioptrin-pyfai_full-metal-batch", "dioptrin-pyfai_full"),
     ("pyfai-full-opencl", "pyfai-full"),
 )
 # What each library does when 2D Poisson uncertainties are requested.
@@ -156,9 +181,9 @@ def library(variant):
 
 
 def dioptrin_method(variant):
-    """Integrator method of a Dioptrin variant (CPU or CUDA)."""
-    if variant in CUDA_VARIANTS:
-        return CUDA_VARIANTS[variant][0]
+    """Integrator method of a Dioptrin variant (CPU, CUDA, or Metal)."""
+    if variant in DIOPTRIN_GPU_VARIANTS:
+        return DIOPTRIN_GPU_VARIANTS[variant][0]
     if not variant.startswith("dioptrin-"):
         raise ValueError(f"{variant!r} is not a Dioptrin variant")
     return variant.removeprefix("dioptrin-")
@@ -265,6 +290,27 @@ def azint_azimuth_axis(axis, n_azimuthal):
 
 def total_memory_bytes():
     """Physical RAM, or a smaller cgroup (Slurm) limit when one is readable."""
+    if sys.platform == "win32" or not hasattr(os, "sysconf"):
+        import ctypes
+
+        class MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            raise OSError("GlobalMemoryStatusEx failed")
+        return int(status.ullTotalPhys)
     total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     for path in (
         "/sys/fs/cgroup/memory.max",
@@ -472,6 +518,29 @@ def cuda_probe(device):
             compiled=True,
             available=False,
             reason=f"dioptrin.cuda_info failed: {error!r}",
+            device=device,
+        )
+    info = jsonable(dict(info))
+    if not info.get("available") and not info.get("reason"):
+        info["reason"] = "no reason reported"
+    return info
+
+
+def metal_probe(device):
+    """dioptrin.metal_info(device) with tuples as lists; never raises."""
+    try:
+        import dioptrin
+
+        info = dioptrin.metal_info(device)
+    except (ImportError, AttributeError):
+        return dict(compiled=False, available=False, reason=METAL_NO_API, device=device)
+    except BaseException as error:  # a Rust panic surfaces as a BaseException
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        return dict(
+            compiled=True,
+            available=False,
+            reason=f"dioptrin.metal_info failed: {error!r}",
             device=device,
         )
     info = jsonable(dict(info))
@@ -733,7 +802,7 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
 
     radial_axes = {}
     methods = {
-        v.removeprefix("dioptrin-") for v in variants if v.startswith("dioptrin-")
+        dioptrin_method(v) for v in variants if v.startswith("dioptrin-")
     }
     radial_counts = sorted({parse_cake(c)[0] for c in cakes})
     if methods:
@@ -810,6 +879,8 @@ def setup_case(case, rank=None):
         needed = sorted({i % distinct for i in logical})
         unique = {u: np.array(stack[u]) for u in needed}
     del stack
+    if case.get("input_dtype") == "float32":
+        unique = {u: np.ascontiguousarray(frame, dtype=np.float32) for u, frame in unique.items()}
     image = unique[needed[0]]
     mask = np.load(fixture / "mask.npy")
     frames = [unique[i % distinct] for i in logical]
@@ -848,18 +919,22 @@ def setup_case(case, rank=None):
                 "Dioptrin Rayon pool does not match requested CPU budget"
             )
 
-    if variant in CUDA_VARIANTS:
+    if variant in DIOPTRIN_GPU_VARIANTS:
         # One host thread drives one device (w1, p1). The plan snapshots the
         # Integrator's mask, corrections, method, unit and radial range and
-        # holds the table on the device. Every timed call copies each float64
-        # frame, unchanged, host to device, casts it to float32 there,
-        # integrates, copies the pattern back and synchronises; the results are
-        # host-resident (IntegrationResult). List-to-NumPy conversion happens in
+        # holds the table on the device. List-to-NumPy conversion happens in
         # extract/validate, outside timing, as for the CPU Dioptrin rows.
-        kind = CUDA_VARIANTS[variant][1]
-        plan = ai.prepare_cuda1d(
-            image.shape, n, precision=CUDA_PRECISION, device=case["cuda_device"]
-        )
+        backend = "cuda" if variant in CUDA_VARIANTS else "metal"
+        kind = DIOPTRIN_GPU_VARIANTS[variant][1]
+        precision = case.get("gpu_precision", CUDA_PRECISION)
+        if backend == "cuda":
+            plan = ai.prepare_cuda1d(
+                image.shape, n, precision=precision, device=case["cuda_device"]
+            )
+        else:
+            plan = ai.prepare_metal1d(
+                image.shape, n, precision=precision, device=case["metal_device"]
+            )
 
         def integrate_one(frame):
             return plan.integrate1d(frame, errors=errors)
@@ -891,7 +966,11 @@ def setup_case(case, rank=None):
         def cuda_check(sample):
             """Untimed, after setup_ready: device facts, agreement with the CPU
             Integrator and, for batch rows, batch1d == per-frame integrate1d."""
-            device = dioptrin.cuda_info(plan.device)
+            device = (
+                dioptrin.cuda_info(plan.device)
+                if backend == "cuda"
+                else dioptrin.metal_info(plan.device)
+            )
             gpu = [
                 (sample[0][i], sample[1][i], sample[2][i] if errors else None)
                 for i in range(len(needed))
@@ -912,32 +991,41 @@ def setup_case(case, rank=None):
                 )
                 if not identical:
                     raise AssertionError(
-                        "CUDA batch1d differs from per-frame integrate1d"
+                        f"{backend.upper()} batch1d differs from per-frame integrate1d"
                     )
-            info["cuda"] = jsonable(
-                dict(
-                    call="plan.integrate1d per frame"
-                    if kind == "frame"
-                    else "plan.batch1d over all frames",
-                    precision=plan.precision,
-                    requested_precision=CUDA_PRECISION,
-                    device=plan.device,
-                    device_name=plan.device_name,
+            backend_info = dict(
+                call="plan.integrate1d per frame"
+                if kind == "frame"
+                else "plan.batch1d over all frames",
+                precision=plan.precision,
+                requested_precision=precision,
+                device=plan.device,
+                device_name=plan.device_name,
+                max_batch_frames=plan.max_batch_frames,
+                table_entries=plan.table_entries,
+                input_dtype=str(np.asarray(image).dtype),
+                cpu_agreement=cuda_agreement(gpu, cpu, errors),
+                batch_bit_identical=identical,
+            )
+            if backend == "cuda":
+                backend_info.update(
                     compute_capability=device.get("compute_capability"),
                     total_memory_bytes=device.get("total_memory_bytes"),
                     driver_version=device.get("driver_version"),
                     nvrtc_version=device.get("nvrtc_version"),
                     bindings_version=device.get("bindings_version"),
-                    max_batch_frames=plan.max_batch_frames,
-                    table_entries=plan.table_entries,
-                    input_dtype=str(np.asarray(image).dtype),
-                    cpu_agreement=cuda_agreement(gpu, cpu, errors),
-                    batch_bit_identical=identical,
                 )
-            )
-            if info["cuda"]["precision"] != CUDA_PRECISION:
+            else:
+                backend_info.update(
+                    unified_memory=device.get("unified_memory"),
+                    recommended_max_working_set_bytes=device.get(
+                        "recommended_max_working_set_bytes"
+                    ),
+                )
+            info[backend] = jsonable(backend_info)
+            if info[backend]["precision"] != precision:
                 raise AssertionError(
-                    f"CUDA plan precision {plan.precision!r}, expected {CUDA_PRECISION!r}"
+                    f"{backend.upper()} plan precision {plan.precision!r}, expected {precision!r}"
                 )
 
     elif variant.startswith("dioptrin-"):
@@ -1194,6 +1282,8 @@ def load_inputs(case, rank):
         needed = sorted({i % distinct for i in logical})
         unique = {u: np.array(stack[u]) for u in needed}
     del stack
+    if case.get("input_dtype") == "float32":
+        unique = {u: np.ascontiguousarray(frame, dtype=np.float32) for u, frame in unique.items()}
     mask = np.load(fixture / "mask.npy")
     frames = [unique[i % distinct] for i in logical]
     for frame in unique.values():
@@ -1268,7 +1358,7 @@ def setup_case_2d(case, rank=None):
     if lib == "dioptrin":
         import dioptrin
 
-        method = variant.removeprefix("dioptrin-")
+        method = dioptrin_method(variant)
         ai = dioptrin.Integrator(
             str(fixture / "geometry.poni"),
             method=method,
@@ -1285,104 +1375,174 @@ def setup_case_2d(case, rank=None):
         span = tuple(math.radians(v) for v in AZIMUTH_RANGE_DEG)
         fallback_radial_axis = np.asarray(case["dioptrin_radial_axis"])
 
-        def integrate(engine, frame):
-            return engine.integrate2d(
-                frame, nr, na, errors=errors, azimuthal_range=span
-            )
-
-        if case["dioptrin_2d_path"] == "sequential":
-            # One frame at a time; each integrate2d runs its row-parallel SpMV
-            # on the Rayon pool (RAYON_NUM_THREADS = CPU budget), no copies.
-            def run():
-                return [integrate(ai, frame) for frame in frames]
-
-        elif case["dioptrin_2d_path"] == "batch":
-            # One synchronous batch2d call over the array list (Dioptrin builds
-            # whose batch2d accepts arrays); the arrays are borrowed, not
-            # copied. "frames": `workers` frames at a time, each in a Rayon pool
-            # of one thread built by the call (needs a build that honours
-            # num_workers/num_threads for arrays; older array builds ignored
-            # them). "nested": neither argument, so all frames run on the global
-            # pool (RAYON_NUM_THREADS = CPU budget, checked above). Either way
-            # the process computes on `workers` threads.
-            split = case["dioptrin_2d_batch_split"]
-            if split == "frames":
-                shape = dict(num_workers=workers, num_threads=1)
-            elif split == "nested":
-                shape = {}
-            else:
-                raise ValueError(f"Unknown Dioptrin 2D batch split {split!r}")
-
-            def batch(images):
-                return ai.batch2d(
-                    images, nr, na, errors=errors, azimuthal_range=span, **shape
-                )
-
-            def check_path():
-                try:
-                    batch([image])
-                except TypeError as error:
-                    raise Unsupported(
-                        "--dioptrin-2d-path batch needs Integrator.batch2d over "
-                        "NumPy arrays; the installed Dioptrin "
-                        f"{importlib.metadata.version('dioptrin')} accepts TIFF "
-                        f"paths only ({error})"
-                    ) from None
-
-            def run():
-                return batch(frames)
-
-            def unwrap_batch_result(index, item):
-                if item.filename != f"array[{index}]":
-                    raise RuntimeError(f"batch2d result {index} is {item.filename!r}")
-                if not item.is_ok():
-                    raise RuntimeError(item.error)
-                return item.result
-
-        elif case["dioptrin_2d_path"] == "stream":
-            # Frame-parallel stream: num_workers frames at once, one thread
-            # each. The stream copies every array once before integrating it.
-            def run():
-                results = [None] * len(frames)
-                for item in ai.batch2d_iter(
-                    frames,
+        if variant in DIOPTRIN_GPU_VARIANTS:
+            backend = "cuda" if variant in CUDA_VARIANTS else "metal"
+            kind = DIOPTRIN_GPU_VARIANTS[variant][1]
+            precision = case.get("gpu_precision", CUDA_PRECISION)
+            if backend == "cuda":
+                plan = ai.prepare_cuda2d(
+                    image.shape,
                     nr,
                     na,
-                    errors=errors,
                     azimuthal_range=span,
-                    num_workers=workers,
-                    num_threads=1,
-                ):
+                    precision=precision,
+                    device=case["cuda_device"],
+                )
+            else:
+                plan = ai.prepare_metal2d(
+                    image.shape,
+                    nr,
+                    na,
+                    azimuthal_range=span,
+                    precision=precision,
+                    device=case["metal_device"],
+                )
+
+            def integrate(engine, frame):
+                return engine.integrate2d(frame, errors=errors)
+
+            if kind == "frame":
+
+                def run():
+                    return [plan.integrate2d(frame, errors=errors) for frame in frames]
+
+            else:
+
+                def run():
+                    return plan.batch2d(frames, errors=errors)
+
+            def extract(result):
+                radial = result.radial
+                sigma = None
+                if errors:
+                    if result.errors is None:
+                        raise Unsupported("Dioptrin GPU returned no 2D errors")
+                    sigma = np.asarray(result.errors).reshape(na, nr)
+                return (
+                    fallback_radial_axis if radial is None else np.asarray(radial),
+                    np.degrees(np.asarray(result.azimuthal)),
+                    np.asarray(result.intensity).reshape(na, nr),
+                    sigma,
+                )
+
+            first = integrate(plan, image)
+            setup_first = time.perf_counter() - started
+            engines = [plan]
+            info["table_nnz"] = plan.table_entries
+            info["table_nnz_source"] = f"dioptrin.{backend}_2d_plan.table_entries"
+            info[backend] = jsonable(
+                dict(
+                    call="plan.integrate2d per frame"
+                    if kind == "frame"
+                    else "plan.batch2d over all frames",
+                    precision=plan.precision,
+                    requested_precision=precision,
+                    device=plan.device,
+                    device_name=plan.device_name,
+                    max_batch_frames=plan.max_batch_frames,
+                    table_entries=plan.table_entries,
+                    input_dtype=str(np.asarray(image).dtype),
+                )
+            )
+        else:
+            def integrate(engine, frame):
+                return engine.integrate2d(
+                    frame, nr, na, errors=errors, azimuthal_range=span
+                )
+
+            if case["dioptrin_2d_path"] == "sequential":
+                # One frame at a time; each integrate2d runs its row-parallel SpMV
+                # on the Rayon pool (RAYON_NUM_THREADS = CPU budget), no copies.
+                def run():
+                    return [integrate(ai, frame) for frame in frames]
+
+            elif case["dioptrin_2d_path"] == "batch":
+                # One synchronous batch2d call over the array list (Dioptrin builds
+                # whose batch2d accepts arrays); the arrays are borrowed, not
+                # copied. "frames": `workers` frames at a time, each in a Rayon pool
+                # of one thread built by the call (needs a build that honours
+                # num_workers/num_threads for arrays; older array builds ignored
+                # them). "nested": neither argument, so all frames run on the global
+                # pool (RAYON_NUM_THREADS = CPU budget, checked above). Either way
+                # the process computes on `workers` threads.
+                split = case["dioptrin_2d_batch_split"]
+                if split == "frames":
+                    shape = dict(num_workers=workers, num_threads=1)
+                elif split == "nested":
+                    shape = {}
+                else:
+                    raise ValueError(f"Unknown Dioptrin 2D batch split {split!r}")
+
+                def batch(images):
+                    return ai.batch2d(
+                        images, nr, na, errors=errors, azimuthal_range=span, **shape
+                    )
+
+                def check_path():
+                    try:
+                        batch([image])
+                    except TypeError as error:
+                        raise Unsupported(
+                            "--dioptrin-2d-path batch needs Integrator.batch2d over "
+                            "NumPy arrays; the installed Dioptrin "
+                            f"{importlib.metadata.version('dioptrin')} accepts TIFF "
+                            f"paths only ({error})"
+                        ) from None
+
+                def run():
+                    return batch(frames)
+
+                def unwrap_batch_result(index, item):
+                    if item.filename != f"array[{index}]":
+                        raise RuntimeError(f"batch2d result {index} is {item.filename!r}")
                     if not item.is_ok():
                         raise RuntimeError(item.error)
-                    results[int(item.filename.removeprefix("array[")[:-1])] = (
-                        item.result
-                    )
-                return results
+                    return item.result
 
-        else:
-            raise ValueError(f"Unknown Dioptrin 2D path {case['dioptrin_2d_path']!r}")
+            elif case["dioptrin_2d_path"] == "stream":
+                # Frame-parallel stream: num_workers frames at once, one thread
+                # each. The stream copies every array once before integrating it.
+                def run():
+                    results = [None] * len(frames)
+                    for item in ai.batch2d_iter(
+                        frames,
+                        nr,
+                        na,
+                        errors=errors,
+                        azimuthal_range=span,
+                        num_workers=workers,
+                        num_threads=1,
+                    ):
+                        if not item.is_ok():
+                            raise RuntimeError(item.error)
+                        results[int(item.filename.removeprefix("array[")[:-1])] = (
+                            item.result
+                        )
+                    return results
 
-        def extract(result):
-            radial = result.radial
-            sigma = None
-            if errors:
-                if result.errors is None:
-                    raise Unsupported("Dioptrin returned no 2D errors")
-                sigma = np.asarray(result.errors).reshape(na, nr)
-            return (
-                fallback_radial_axis if radial is None else np.asarray(radial),
-                np.degrees(np.asarray(result.azimuthal)),
-                np.asarray(result.intensity).reshape(na, nr),
-                sigma,
-            )
+            else:
+                raise ValueError(f"Unknown Dioptrin 2D path {case['dioptrin_2d_path']!r}")
 
-        first = integrate(ai, image)
-        setup_first = time.perf_counter() - started
-        if case["dioptrin_2d_path"] == "batch":
-            check_path()  # unsupported builds are skipped, never substituted
-        engines = [ai]
-        info["table_nnz_source"] = "not exposed by the Dioptrin Python API"
+            def extract(result):
+                radial = result.radial
+                sigma = None
+                if errors:
+                    if result.errors is None:
+                        raise Unsupported("Dioptrin returned no 2D errors")
+                    sigma = np.asarray(result.errors).reshape(na, nr)
+                return (
+                    fallback_radial_axis if radial is None else np.asarray(radial),
+                    np.degrees(np.asarray(result.azimuthal)),
+                    np.asarray(result.intensity).reshape(na, nr),
+                    sigma,
+                )
+
+            first = integrate(ai, image)
+            setup_first = time.perf_counter() - started
+            if case["dioptrin_2d_path"] == "batch":
+                check_path()  # unsupported builds are skipped, never substituted
+            engines = [ai]
+            info["table_nnz_source"] = "not exposed by the Dioptrin Python API"
     else:
         if lib == "azint":
             import azint
@@ -1651,12 +1811,48 @@ def setup_case_2d(case, rank=None):
 
 
 def peak_rss():
+    if resource is None:
+        import ctypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi = ctypes.windll.psapi
+        psapi.GetProcessMemoryInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+        ]
+        psapi.GetProcessMemoryInfo.restype = ctypes.c_bool
+        handle = kernel32.GetCurrentProcess()
+        if psapi.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), counters.cb
+        ):
+            return counters.PeakWorkingSetSize / 2**20
+        return 0.0
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak * (1 if sys.platform == "darwin" else 1024) / 2**20
 
 
 def cpu_time():
     """User + system CPU seconds of this process (all threads)."""
+    if resource is None:
+        return time.process_time()
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return usage.ru_utime + usage.ru_stime
 
@@ -1890,11 +2086,24 @@ def extra_lines(output):
     cuda = (environment.get("variant_probes") or {}).get("cuda") or {}
     if cuda.get("available"):
         capability = cuda.get("compute_capability")
+        gpu_precision = (environment.get("arguments") or {}).get(
+            "gpu_precision", CUDA_PRECISION
+        )
         lines.append(
             f"Dioptrin CUDA device: {cuda.get('device_name')} (compute "
             f"{cuda_version(capability)}), driver "
             f"{cuda_version(cuda.get('driver_version'))}, NVRTC "
-            f"{cuda_version(cuda.get('nvrtc_version'))}, precision {CUDA_PRECISION}"
+            f"{cuda_version(cuda.get('nvrtc_version'))}, precision {gpu_precision}"
+        )
+    metal = (environment.get("variant_probes") or {}).get("metal") or {}
+    if metal.get("available"):
+        gpu_precision = (environment.get("arguments") or {}).get(
+            "gpu_precision", CUDA_PRECISION
+        )
+        lines.append(
+            f"Dioptrin Metal device: {metal.get('device_name')}, "
+            f"unified memory {'yes' if metal.get('unified_memory') else 'no'}, "
+            f"precision {gpu_precision}"
         )
     for fixture in sorted(output.glob("*/fixture.json")):
         meta = json.loads(fixture.read_text())
@@ -2067,13 +2276,26 @@ def summarize(output):
     identity += azint_identity_2d(rows_2d)
     dump(output / "numerical.json", numerical)
     dump(output / "azint_cached_identity.json", identity)
-    # Runs without Dioptrin CUDA rows keep the original wording byte for byte
-    # (pyfai-full-opencl predates the CUDA rows and may use a CPU device).
+    # Runs without Dioptrin GPU rows keep the original wording byte for byte
+    # (pyfai-full-opencl predates the Dioptrin GPU rows and may use a CPU device).
     present = {r["variant"] for r in rows + rows_2d}
-    gpu_rows = sorted(present & set(GPU_VARIANTS)) if present & set(CUDA_VARIANTS) else []
+    gpu_rows = (
+        sorted(present & set(GPU_VARIANTS))
+        if present & set(DIOPTRIN_GPU_VARIANTS)
+        else []
+    )
+    gpu_label = (
+        "GPU rows"
+        if (present & set(CUDA_VARIANTS)) and (present & set(METAL_VARIANTS))
+        else (
+            "Metal and OpenCL rows"
+            if present & set(METAL_VARIANTS)
+            else "CUDA and OpenCL rows"
+        )
+    )
     gpu_lines = (
         [
-            "CUDA and OpenCL rows (" + ", ".join(gpu_rows) + ")",
+            f"{gpu_label} (" + ", ".join(gpu_rows) + ")",
             "use one host thread driving one device at CPU budget 1 in one process; their",
             "timed calls include the host-to-device frame transfers and the transfer of",
             "the results back.",
@@ -2581,13 +2803,13 @@ def run_processes(case, case_path, env, prefixes):
     )
 
 
-def probe_variants(variants, opencl_device, cuda_device=0):
+def probe_variants(variants, opencl_device, cuda_device=0, metal_device=0):
     """Run the availability probes in fresh processes (same flags as cases).
 
-    The pyFAI probe never touches CUDA. CUDA is probed (and initialised) only
-    when a CUDA variant is requested, in a separate child with a timeout, so a
-    crash or hang there skips only the CUDA variants; this parent never
-    touches the device.
+    The pyFAI probe never touches CUDA or Metal. CUDA/Metal are probed (and
+    initialised) only when a matching variant is requested, in a separate child
+    with a timeout, so a crash or hang skips only those variants; this parent
+    never touches the device.
     """
     result = {}
     if any(v in ("pyfai-full-omp", "pyfai-full-opencl") for v in variants):
@@ -2611,7 +2833,56 @@ def probe_variants(variants, opencl_device, cuda_device=0):
         result.update(json.loads(lines[-1]))
     if any(v in CUDA_VARIANTS for v in variants):
         result["cuda"] = probe_cuda_child(cuda_device)
+    if any(v in METAL_VARIANTS for v in variants):
+        result["metal"] = probe_metal_child(metal_device)
     return result
+
+
+def probe_metal_child(device, timeout=CUDA_PROBE_TIMEOUT_S):
+    """metal_probe(device) in its own child process; never raises."""
+    command = [
+        sys.executable,
+        "-E",
+        "-s",
+        __file__,
+        "--probe-metal",
+        "--metal-device",
+        str(device),
+    ]
+    failed = dict(compiled=None, available=False, probe_failed=True, device=device)
+    try:
+        child = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=os.environ | case_threads("dioptrin-pixel_split-metal", 1),
+        )
+    except subprocess.TimeoutExpired:
+        return dict(failed, reason=f"Metal probe timed out after {timeout:g} s (killed)")
+    tail = (child.stderr or "").strip()[-500:]
+    if child.returncode:
+        if child.returncode < 0:
+            try:
+                name = signal.Signals(-child.returncode).name
+            except ValueError:
+                name = f"signal {-child.returncode}"
+            status = f"killed by {name} (exit status {child.returncode})"
+        else:
+            status = f"exit status {child.returncode}"
+        return dict(
+            failed,
+            reason=f"Metal probe child failed: {status}" + (f"; {tail}" if tail else ""),
+        )
+    lines = [line for line in child.stdout.splitlines() if line.startswith("{")]
+    try:
+        return json.loads(lines[-1])
+    except (IndexError, json.JSONDecodeError):
+        return dict(
+            failed,
+            reason="Metal probe child printed no result (exit status 0)"
+            + (f"; {tail}" if tail else ""),
+        )
 
 
 def probe_cuda_child(device, timeout=CUDA_PROBE_TIMEOUT_S):
@@ -2703,6 +2974,27 @@ def skipped_variants(variants, probes):
                 f"{cuda.get('reason') or 'no reason reported'}"
             )
         skipped.append(dict(variant=variant, reason=reason))
+    metal = probes.get("metal") or dict(
+        compiled=False, available=False, reason="Metal was not probed"
+    )
+    for variant in (v for v in variants if v in METAL_VARIANTS):
+        if metal.get("available"):
+            continue
+        if metal.get("probe_failed"):
+            reason = metal.get("reason") or "Metal probe child failed"
+        elif not metal.get("compiled"):
+            reason = (
+                "Dioptrin was built without the 'metal' feature; rerun setup.py "
+                "--with-metal on macOS"
+            )
+            if metal.get("reason") == METAL_NO_API:
+                reason += f" ({METAL_NO_API})"
+        else:
+            reason = (
+                f"Metal unavailable on device {metal.get('device', 0)}: "
+                f"{metal.get('reason') or 'no reason reported'}"
+            )
+        skipped.append(dict(variant=variant, reason=reason))
     return skipped
 
 
@@ -2779,6 +3071,25 @@ def main():
         help="CUDA device ordinal for the dioptrin-*-cuda variants (after "
         "CUDA_VISIBLE_DEVICES). Default: 0",
     )
+    parser.add_argument(
+        "--metal-device",
+        type=int,
+        help="Metal device ordinal for the dioptrin-*-metal variants on macOS. "
+        "Default: 0",
+    )
+    parser.add_argument(
+        "--gpu-precision",
+        choices=GPU_PRECISIONS,
+        default=CUDA_PRECISION,
+        help="Accumulation precision for Dioptrin CUDA/Metal variants: "
+        "f32_compensated (default, matches pyFAI OpenCL), f32, or f64 (CUDA only)",
+    )
+    parser.add_argument(
+        "--input-dtype",
+        choices=INPUT_DTYPES,
+        default="float64",
+        help="Preloaded input frame dtype passed to all libraries (default: float64)",
+    )
     parser.add_argument("--datasets", nargs="+", choices=definition["datasets"])
     parser.add_argument(
         "--workloads",
@@ -2791,7 +3102,7 @@ def main():
         nargs="+",
         choices=VARIANTS,
         default=list(DEFAULT_VARIANTS),
-        help="Default: every variant except the opt-in dioptrin-*-cuda rows",
+        help="Default: every variant except the opt-in dioptrin-*-cuda / -metal rows",
     )
     parser.add_argument("--bins", type=int)
     parser.add_argument("--frames", type=int)
@@ -2857,6 +3168,7 @@ def main():
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--probe", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-cuda", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--probe-metal", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preflight-2d", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.case:
@@ -2867,12 +3179,22 @@ def main():
         return
     if args.cuda_device is None:
         args.cuda_device = 0
+    if args.metal_device is None:
+        args.metal_device = 0
     if args.probe_cuda:
-        # Own child process (probe_cuda_child): initialises CUDA and NVRTC.
+        # Own child process (probe_cuda_child): initialises CUDA.
         print(json.dumps(cuda_probe(args.cuda_device)), flush=True)
+        return
+    if args.probe_metal:
+        # Own child process (probe_metal_child): initialises Metal.
+        print(json.dumps(metal_probe(args.metal_device)), flush=True)
         return
     if args.cuda_device < 0:
         parser.error("--cuda-device must be a non-negative device ordinal")
+    if args.metal_device < 0:
+        parser.error("--metal-device must be a non-negative device ordinal")
+    if args.gpu_precision == "f64" and any(v in METAL_VARIANTS for v in args.variants):
+        parser.error("--gpu-precision f64 is not supported by Metal (use f32_compensated or f32)")
     if args.preflight_2d:
         preflight_2d(
             args.preflight_2d,
@@ -2989,7 +3311,9 @@ def main():
             )
         print("UNVERIFIED BUILD: " + message, file=sys.stderr, flush=True)
     try:
-        probes = probe_variants(args.variants, args.opencl_device, args.cuda_device)
+        probes = probe_variants(
+            args.variants, args.opencl_device, args.cuda_device, args.metal_device
+        )
     except RuntimeError as error:
         parser.error(str(error))
     skipped = skipped_variants(args.variants, probes)
@@ -3100,12 +3424,8 @@ def main():
     failures = []
     memory_limit = args.max_memory_fraction * total_memory_bytes() / 2**20
     preflights = {}
-    # The CUDA variants are 1D only: no 2D cases and no 2D preflight entries.
-    variants_2d = [v for v in variants_run if v not in CUDA_VARIANTS]
-    cuda_only = bool(variants_run) and not variants_2d
-    if "2d" in args.dimensions and len(variants_2d) < len(variants_run):
-        print("NOTE: the Dioptrin CUDA variants are 1D only; no 2D cases", flush=True)
-    if "2d" in args.dimensions and not cuda_only:
+    variants_2d = list(variants_run)
+    if "2d" in args.dimensions and variants_2d:
         for dataset in args.datasets:
             print(
                 f"2D preflight for {dataset} (azimuth convention, axes, estimates)...",
@@ -3280,6 +3600,12 @@ def main():
                                         )
                                     if variant in CUDA_VARIANTS:
                                         case["cuda_device"] = args.cuda_device
+                                        case["gpu_precision"] = args.gpu_precision
+                                    elif variant in METAL_VARIANTS:
+                                        case["metal_device"] = args.metal_device
+                                        case["gpu_precision"] = args.gpu_precision
+                                    if args.input_dtype != "float64":
+                                        case["input_dtype"] = args.input_dtype
                                     case["threads"] = case_threads(
                                         variant, count, processes
                                     )
@@ -3295,8 +3621,6 @@ def main():
                                 continue
                             for errors in (False, True):
                                 for variant in variants:
-                                    if variant in CUDA_VARIANTS:
-                                        continue  # 1D only
                                     if variant in GPU_VARIANTS and (
                                         count > 1 or processes > 1
                                     ):
@@ -3306,7 +3630,10 @@ def main():
                                         if variant in SUBPIXEL_VARIANTS
                                         else [None]
                                     )
-                                    dioptrin = variant.startswith("dioptrin-")
+                                    dioptrin = (
+                                        variant.startswith("dioptrin-")
+                                        and variant not in DIOPTRIN_GPU_VARIANTS
+                                    )
                                     path_2d = (
                                         args.dioptrin_2d_path if dioptrin else None
                                     )
@@ -3346,7 +3673,11 @@ def main():
                                             errors,
                                             trial,
                                         )
-                                        method = variant.removeprefix("dioptrin-")
+                                        method = (
+                                            dioptrin_method(variant)
+                                            if variant.startswith("dioptrin-")
+                                            else variant
+                                        )
                                         case.update(
                                             dimension="2d",
                                             bins=n_radial * n_azimuthal,
@@ -3364,6 +3695,14 @@ def main():
                                                 case_path.with_suffix(".result.json")
                                             ),
                                         )
+                                        if variant in CUDA_VARIANTS:
+                                            case["cuda_device"] = args.cuda_device
+                                            case["gpu_precision"] = args.gpu_precision
+                                        elif variant in METAL_VARIANTS:
+                                            case["metal_device"] = args.metal_device
+                                            case["gpu_precision"] = args.gpu_precision
+                                        if args.input_dtype != "float64":
+                                            case["input_dtype"] = args.input_dtype
                                         if variant.startswith("dioptrin-"):
                                             key = method + (
                                                 f"-ss{subpixels}" if subpixels else ""
