@@ -840,6 +840,29 @@ impl Prepared2d {
     ) -> (Vec<f64>, Vec<f64>) {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
     }
+
+    /// Returns whether `integrate_batch4` will take the 4-frame tiled CSR path
+    /// for `(fast, var)`.
+    pub(crate) fn can_batch4(&self, fast: bool, var: bool) -> bool {
+        self.csr.mode == MaskMode::Fixed && !(fast && var)
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration (fast intensity or
+    /// strict intensity/errors). Returns `None` for dynamic masks or CSR
+    /// `fast && var`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool>(
+        &self,
+        signals: [&[f64]; 4],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> Option<[(Vec<f64>, Vec<f64>); 4]> {
+        if !self.can_batch4(FAST, VAR) {
+            return None;
+        }
+        let table = self.csr.fixed_table(mask);
+        Some(table.cached_results_batch4::<FAST, VAR>(signals, norm))
+    }
     pub(crate) fn integrate_pixels<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
         s: &[P],

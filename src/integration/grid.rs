@@ -804,6 +804,108 @@ impl Integrator {
         }
     }
 
+    /// Returns whether `try_integrate2d_batch4` will take the 4-frame tiled CSR
+    /// path for these 2D arguments.
+    #[allow(dead_code)]
+    pub(crate) fn can_integrate2d_batch4(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: Option<(f64, f64)>,
+        errors: bool,
+    ) -> bool {
+        let Some(len) = dim1.checked_mul(dim2) else {
+            return false;
+        };
+        if n_radial == 0 || n_azimuthal == 0 || self.validate_2d_setup(dim1, dim2, len).is_err() {
+            return false;
+        }
+        let view = self.for_shape(dim1, dim2);
+        let key = match azimuthal_range {
+            None => self.try_lut2d_key(&view, n_radial, n_azimuthal, None),
+            Some(range) => self
+                .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
+                .map(|grid| self.shared_grid_key(grid)),
+        };
+        let Ok(key) = key else {
+            return false;
+        };
+        view.ensure_lut2d(key).can_batch4(self.fast_math, errors)
+    }
+
+    /// Radial and azimuthal bin centres for an explicit azimuthal-range 2D call.
+    #[allow(dead_code)]
+    pub(crate) fn azimuthal_range_axes_2d(
+        &self,
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: (f64, f64),
+    ) -> Option<(Vec<f64>, Vec<f64>)> {
+        let view = self.for_shape(dim1, dim2);
+        let grid = self
+            .azimuthal_range_grid(&view, n_radial, n_azimuthal, azimuthal_range)
+            .ok()?;
+        Some((grid.radial_centers(), grid.azimuthal_centers()))
+    }
+
+    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration. Returns `None` for
+    /// Histogram, dynamic masks, invalid arguments, or CSR `fast_math && errors`.
+    #[allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
+    pub(crate) fn try_integrate2d_batch4(
+        &self,
+        signals: [&[f64]; 4],
+        dim1: usize,
+        dim2: usize,
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: Option<(f64, f64)>,
+        errors: bool,
+    ) -> Option<[(Vec<f64>, Option<Vec<f64>>); 4]> {
+        let len = dim1.checked_mul(dim2)?;
+        if n_radial == 0
+            || n_azimuthal == 0
+            || self.validate_2d_setup(dim1, dim2, len).is_err()
+            || signals.iter().any(|s| s.len() != len)
+        {
+            return None;
+        }
+        let view = self.for_shape(dim1, dim2);
+        let key = match azimuthal_range {
+            None => self
+                .try_lut2d_key(&view, n_radial, n_azimuthal, None)
+                .ok()?,
+            Some(range) => {
+                let grid = self
+                    .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
+                    .ok()?;
+                self.shared_grid_key(grid)
+            }
+        };
+        let normalization = view.normalization();
+        let mask_data = self.mask.as_ref().map(|mask| {
+            mask.assert_compatible(dim1, dim2);
+            mask.data.as_slice()
+        });
+        let lut = view.ensure_lut2d(key);
+        let results = match (self.fast_math, errors) {
+            (true, false) => {
+                lut.integrate_batch4::<true, false>(signals, mask_data, &normalization)
+            }
+            (true, true) => lut.integrate_batch4::<true, true>(signals, mask_data, &normalization),
+            (false, false) => {
+                lut.integrate_batch4::<false, false>(signals, mask_data, &normalization)
+            }
+            (false, true) => {
+                lut.integrate_batch4::<false, true>(signals, mask_data, &normalization)
+            }
+        }?;
+        Some(results.map(|(y, e)| (y, errors.then_some(e))))
+    }
+
     /// Radial edges the default 2D path uses for this method, unit and size.
     /// Cached: computing them needs a pass over all pixels (or pixel corners).
     pub(super) fn default_radial_edges_2d(

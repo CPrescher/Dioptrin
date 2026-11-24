@@ -601,6 +601,99 @@ impl PyIntegrator {
         let Some((workers, threads)) = split else {
             return Ok(py.detach(|| {
                 prepare();
+                let uniform = frames
+                    .first()
+                    .filter(|&&(_, dim1, dim2)| {
+                        frames.iter().all(|&(_, h, w)| (h, w) == (dim1, dim2))
+                    })
+                    .map(|&(_, dim1, dim2)| (dim1, dim2));
+                if let Some((dim1, dim2)) = uniform {
+                    let min_tiled = 4 * rayon::current_num_threads().max(1);
+                    if frames.len() >= min_tiled
+                        && integrator.can_integrate2d_batch4(
+                            dim1,
+                            dim2,
+                            bins.n_radial,
+                            bins.n_azimuthal,
+                            bins.azimuthal_range,
+                            bins.errors,
+                        )
+                    {
+                        let az_axes = bins.azimuthal_range.and_then(|range| {
+                            integrator.azimuthal_range_axes_2d(
+                                dim1,
+                                dim2,
+                                bins.n_radial,
+                                bins.n_azimuthal,
+                                range,
+                            )
+                        });
+                        let n_tiled = (frames.len() / 4) * 4;
+                        let mut out: Vec<PyBatchResult> = frames[..n_tiled]
+                            .par_chunks_exact(4)
+                            .enumerate()
+                            .flat_map(|(chunk_idx, chunk)| {
+                                let base = chunk_idx * 4;
+                                let batch = integrator
+                                    .try_integrate2d_batch4(
+                                        [chunk[0].0, chunk[1].0, chunk[2].0, chunk[3].0],
+                                        dim1,
+                                        dim2,
+                                        bins.n_radial,
+                                        bins.n_azimuthal,
+                                        bins.azimuthal_range,
+                                        bins.errors,
+                                    )
+                                    .expect("can_integrate2d_batch4 pre-checked eligibility");
+                                batch
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(j, (intensity, errs))| {
+                                        let res = if let Some((ref rad, ref az)) = az_axes {
+                                            PyIntegrationResult::from_azimuthal_range_2d(
+                                                crate::integration::AzimuthalRange2dResult {
+                                                    intensity,
+                                                    errors: errs,
+                                                    radial: rad.clone(),
+                                                    azimuthal: az.clone(),
+                                                },
+                                                bins.n_radial,
+                                                bins.n_azimuthal,
+                                            )
+                                        } else {
+                                            match errs {
+                                                Some(e) => {
+                                                    PyIntegrationResult::from_2d_with_errors(
+                                                        intensity,
+                                                        e,
+                                                        bins.n_radial,
+                                                        bins.n_azimuthal,
+                                                    )
+                                                    .with_radial(radial.clone())
+                                                }
+                                                None => PyIntegrationResult::from_2d(
+                                                    intensity,
+                                                    bins.n_radial,
+                                                    bins.n_azimuthal,
+                                                )
+                                                .with_radial(radial.clone()),
+                                            }
+                                        };
+                                        PyBatchResult {
+                                            filename: format!("array[{}]", base + j),
+                                            result: Some(res),
+                                            error: None,
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .collect();
+                        if n_tiled < frames.len() {
+                            out.par_extend((n_tiled..frames.len()).into_par_iter().map(integrate));
+                        }
+                        return out;
+                    }
+                }
                 (0..frames.len()).into_par_iter().map(integrate).collect()
             }));
         };
