@@ -1888,10 +1888,6 @@ def setup_case_2d(case, rank=None):
         "sigma": np.stack([outputs[u][3] for u in needed]) if errors else np.array([]),
     }
     del outputs
-    if gpu_check_2d is not None:
-        gpu_check_2d(sample)
-        # Re-warm the GPU plan after the untimed CPU comparison, matching 1D.
-        run()
     row = {u: position for position, u in enumerate(needed)}.__getitem__
     baseline = sample
     if case.get("reference"):
@@ -1932,6 +1928,10 @@ def setup_case_2d(case, rank=None):
         checked = min(len(needed), len(frames))
         stock_check(frames[:checked], warm_result[:checked])
     del warm_result
+    if gpu_check_2d is not None:
+        gpu_check_2d(sample)
+        # Re-warm the GPU plan after the untimed CPU comparison, matching 1D.
+        run()
     negative = np.argwhere(sample["sigma"] < 0).tolist() if errors else []
 
     def save(result_path):
