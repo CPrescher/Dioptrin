@@ -31,7 +31,7 @@ python test_examples.py            # Test all Python examples
 **Core modules in `src/`:**
 - `frame.rs` - TIFF image loading with automatic format conversion and coordinate flip
 - `geometry.rs` - Detector geometry calculations (two-theta, azimuth, solid angle) using Rayon parallelization
-- `poni.rs` - PONI calibration file parsing (v1 `PixelSize1/2`; v2/v2.1 `Detector_config`, of which only `pixel1`/`pixel2` are read)
+- `poni.rs` - PONI calibration file parsing (v1 `PixelSize1/2`; v2/v2.1 `Detector` + `Detector_config` `pixel1`/`pixel2`/`binning`, resolving missing pixel sizes from the built-in detector catalog)
 - `fit2d.rs` - Fit2D <-> PONI geometry conversion
 - `detector.rs`, `detector/` - Detector models (bundled catalog, binning, orientation, Fit2D spline distortion) used optionally by `Geometry`
 - `mask.rs` - Binary pixel masking
