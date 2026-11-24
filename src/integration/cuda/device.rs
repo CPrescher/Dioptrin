@@ -26,7 +26,7 @@ use rayon::prelude::*;
 use super::{
     Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, CudaError, CudaInfo, CudaPrecision, sealed::Frames,
 };
-use crate::integration::{Fixed1dResult, Integrator};
+use crate::integration::{Fixed1dResult, InputOrder, Integrator};
 use crate::lut::prepared::Columns;
 #[cfg(test)]
 use {super::check_configuration, cudarc::driver::HostSlice};
@@ -314,9 +314,13 @@ impl Cuda {
         bins: u32,
     ) -> Result<Plan, CudaError> {
         check_configuration(integrator, shape, bins as usize, None)?;
-        with_table(integrator, shape, bins as usize, |table| {
-            self.upload(table, [1.0_f32], encode_f32)
-        })
+        with_table(
+            integrator,
+            shape,
+            bins as usize,
+            InputOrder::Detector,
+            |table| self.upload(table, [1.0_f32], encode_f32),
+        )
     }
 
     #[cfg(test)]
@@ -327,9 +331,13 @@ impl Cuda {
         bins: u32,
     ) -> Result<Plan<f64>, CudaError> {
         check_configuration(integrator, shape, bins as usize, None)?;
-        with_table(integrator, shape, bins as usize, |table| {
-            self.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights))
-        })
+        with_table(
+            integrator,
+            shape,
+            bins as usize,
+            InputOrder::Detector,
+            |table| self.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights)),
+        )
     }
 
     fn upload<T: DeviceRepr + Clone>(
@@ -428,6 +436,30 @@ pub(super) struct HostTable<'a> {
     pub(super) radial: Vec<f64>,
 }
 
+fn remap_columns_for_order<'a>(
+    columns: Cow<'a, [u32]>,
+    shape: (usize, usize),
+    order: InputOrder,
+) -> Cow<'a, [u32]> {
+    match order {
+        InputOrder::Detector => columns,
+        InputOrder::FlipVertical => {
+            let rows = shape.0 as u32;
+            let cols = shape.1 as u32;
+            Cow::Owned(
+                columns
+                    .iter()
+                    .map(|&idx| {
+                        let r = idx / cols;
+                        let c = idx % cols;
+                        (rows - 1 - r) * cols + c
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
 /// Builds (or reuses) the integrator's masked 1D CSR table and strict `f64`
 /// denominators, and passes them to `use_table`. The configuration must
 /// already have passed `check_configuration`.
@@ -435,6 +467,7 @@ pub(super) fn with_table<R>(
     integrator: &Integrator,
     shape: (usize, usize),
     bins: usize,
+    order: InputOrder,
     use_table: impl FnOnce(&HostTable<'_>) -> Result<R, CudaError>,
 ) -> Result<R, CudaError> {
     let too_large = || CudaError::Unsupported("the CUDA table exceeds 32-bit indices".into());
@@ -469,16 +502,20 @@ pub(super) fn with_table<R>(
             "the CUDA table does not match the requested bins".into(),
         ));
     }
-    let columns = match &table.col_idx {
-        Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
-        Columns::Wide(columns) => Cow::Owned(
-            columns
-                .iter()
-                .map(|&column| u32::try_from(column))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| too_large())?,
-        ),
-    };
+    let columns = remap_columns_for_order(
+        match &table.col_idx {
+            Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
+            Columns::Wide(columns) => Cow::Owned(
+                columns
+                    .iter()
+                    .map(|&column| u32::try_from(column))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| too_large())?,
+            ),
+        },
+        shape,
+        order,
+    );
     use_table(&HostTable {
         pixels,
         bins: n_bins,
@@ -499,6 +536,7 @@ pub(super) fn with_table_2d<R>(
     n_radial: usize,
     n_azimuthal: usize,
     azimuthal_range: Option<(f64, f64)>,
+    order: InputOrder,
     use_table: impl FnOnce(&HostTable<'_>, Option<Vec<f64>>, Option<Vec<f64>>) -> Result<R, CudaError>,
 ) -> Result<R, CudaError> {
     let too_large = || CudaError::Unsupported("the CUDA table exceeds 32-bit indices".into());
@@ -550,16 +588,20 @@ pub(super) fn with_table_2d<R>(
             "the CUDA table does not match the requested 2D bins".into(),
         ));
     }
-    let columns = match &table.col_idx {
-        Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
-        Columns::Wide(columns) => Cow::Owned(
-            columns
-                .iter()
-                .map(|&column| u32::try_from(column))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| too_large())?,
-        ),
-    };
+    let columns = remap_columns_for_order(
+        match &table.col_idx {
+            Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
+            Columns::Wide(columns) => Cow::Owned(
+                columns
+                    .iter()
+                    .map(|&column| u32::try_from(column))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| too_large())?,
+            ),
+        },
+        shape,
+        order,
+    );
     use_table(
         &HostTable {
             pixels,
@@ -2367,12 +2409,17 @@ pub(super) fn prepare(
     options: &Cuda1dOptions,
 ) -> Result<Cuda1dPlan, CudaError> {
     let cuda = Cuda::open(options.device())?;
-    let (engine, entries, max_batch_frames, radial) =
-        with_table(integrator, shape, n_points, |table| {
+    let (engine, entries, max_batch_frames, radial) = with_table(
+        integrator,
+        shape,
+        n_points,
+        options.input_order(),
+        |table| {
             let (engine, entries, max_batch_frames) =
                 build_engine(&cuda, table, pixels, n_points, options, false)?;
             Ok((engine, entries, max_batch_frames, table.radial.clone()))
-        })?;
+        },
+    )?;
     Ok(Cuda1dPlan {
         shape,
         n_points,
@@ -2406,6 +2453,7 @@ pub(super) fn prepare_2d(
         n_radial,
         n_azimuthal,
         azimuthal_range,
+        options.input_order(),
         |table, radial, azimuthal| {
             let (engine, entries, max_batch_frames) =
                 build_engine(&cuda, table, pixels, total_bins, options, true)?;

@@ -40,7 +40,7 @@
 #![warn(dead_code)]
 use std::{fmt, str::FromStr};
 
-use super::{Fixed1dResult, IntegrationMethod, Integrator, MaskMode};
+use super::{Fixed1dResult, InputOrder, IntegrationMethod, Integrator, MaskMode};
 
 #[cfg(feature = "cuda")]
 mod device;
@@ -119,6 +119,7 @@ pub struct Cuda1dOptions {
     precision: CudaPrecision,
     device: usize,
     max_batch_bytes: Option<usize>,
+    input_order: InputOrder,
 }
 
 impl Cuda1dOptions {
@@ -170,6 +171,16 @@ impl Cuda1dOptions {
         self
     }
 
+    /// Selects the row order of incoming frames (e.g. [`InputOrder::FlipVertical`]
+    /// for top-to-bottom raw HDF5 frames). Applied once to the uploaded CSR column
+    /// indices at plan preparation time with zero per-frame overhead.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn with_input_order(mut self, input_order: InputOrder) -> Self {
+        self.input_order = input_order;
+        self
+    }
+
     /// The selected precision.
     ///
     /// **Experimental:** excluded from semver guarantees until stabilised.
@@ -189,6 +200,13 @@ impl Cuda1dOptions {
     /// **Experimental:** excluded from semver guarantees until stabilised.
     pub fn max_batch_bytes(&self) -> Option<usize> {
         self.max_batch_bytes
+    }
+
+    /// The selected incoming frame row order.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn input_order(&self) -> InputOrder {
+        self.input_order
     }
 }
 

@@ -26,7 +26,7 @@ use super::{
     Metal1dOptions, Metal1dPlan, Metal2dOptions, Metal2dPlan, MetalError, MetalInfo,
     MetalPrecision, sealed::Frames,
 };
-use crate::integration::{Bslz4Dtype, Fixed1dResult, Integrator};
+use crate::integration::{Bslz4Dtype, Fixed1dResult, InputOrder, Integrator};
 use crate::lut::prepared::Columns;
 
 /// Default chunk budget cap (1 GiB).
@@ -602,10 +602,35 @@ struct HostTable<'a> {
     radial: Vec<f64>,
 }
 
+fn remap_columns_for_order<'a>(
+    columns: Cow<'a, [u32]>,
+    shape: (usize, usize),
+    order: InputOrder,
+) -> Cow<'a, [u32]> {
+    match order {
+        InputOrder::Detector => columns,
+        InputOrder::FlipVertical => {
+            let rows = shape.0 as u32;
+            let cols = shape.1 as u32;
+            Cow::Owned(
+                columns
+                    .iter()
+                    .map(|&idx| {
+                        let r = idx / cols;
+                        let c = idx % cols;
+                        (rows - 1 - r) * cols + c
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
 fn with_table_1d<R>(
     integrator: &Integrator,
     shape: (usize, usize),
     bins: usize,
+    order: InputOrder,
     use_table: impl FnOnce(&HostTable<'_>) -> Result<R, MetalError>,
 ) -> Result<R, MetalError> {
     let too_large = || MetalError::Unsupported("the Metal table exceeds 32-bit indices".into());
@@ -635,15 +660,19 @@ fn with_table_1d<R>(
             u32::MAX - 128
         )));
     }
-    let columns = match &table.col_idx {
-        Columns::Compact(c) => Cow::Borrowed(c.as_slice()),
-        Columns::Wide(c) => Cow::Owned(
-            c.iter()
-                .map(|&col| u32::try_from(col))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| too_large())?,
-        ),
-    };
+    let columns = remap_columns_for_order(
+        match &table.col_idx {
+            Columns::Compact(c) => Cow::Borrowed(c.as_slice()),
+            Columns::Wide(c) => Cow::Owned(
+                c.iter()
+                    .map(|&col| u32::try_from(col))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| too_large())?,
+            ),
+        },
+        shape,
+        order,
+    );
     use_table(&HostTable {
         pixels,
         bins: n_bins,
@@ -662,6 +691,7 @@ fn with_table_2d<R>(
     n_radial: usize,
     n_azimuthal: usize,
     azimuthal_range: Option<(f64, f64)>,
+    order: InputOrder,
     use_table: impl FnOnce(&HostTable<'_>, Option<Vec<f64>>, Option<Vec<f64>>) -> Result<R, MetalError>,
 ) -> Result<R, MetalError> {
     let too_large = || MetalError::Unsupported("the Metal table exceeds 32-bit indices".into());
@@ -708,15 +738,19 @@ fn with_table_2d<R>(
             u32::MAX - 128
         )));
     }
-    let columns = match &table.col_idx {
-        Columns::Compact(c) => Cow::Borrowed(c.as_slice()),
-        Columns::Wide(c) => Cow::Owned(
-            c.iter()
-                .map(|&col| u32::try_from(col))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| too_large())?,
-        ),
-    };
+    let columns = remap_columns_for_order(
+        match &table.col_idx {
+            Columns::Compact(c) => Cow::Borrowed(c.as_slice()),
+            Columns::Wide(c) => Cow::Owned(
+                c.iter()
+                    .map(|&col| u32::try_from(col))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| too_large())?,
+            ),
+        },
+        shape,
+        order,
+    );
     use_table(
         &HostTable {
             pixels,
@@ -1821,26 +1855,32 @@ pub(super) fn prepare(
         MetalError::Unavailable(info.reason.unwrap_or_else(|| "unknown reason".into()))
     })?;
     let device_name = dev.info.device_name.clone().unwrap_or_default();
-    with_table_1d(integrator, shape, n_points, |table| {
-        let engine = Engine::build(
-            Arc::clone(&dev),
-            table,
-            options.precision(),
-            options.max_batch_bytes(),
-            false,
-        )?;
-        Ok(Metal1dPlan {
-            shape,
-            n_points,
-            precision: options.precision(),
-            device: options.device(),
-            device_name,
-            radial: table.radial.clone(),
-            max_batch_frames: engine.max_batch_frames,
-            table_entries: engine.entries,
-            engine,
-        })
-    })
+    with_table_1d(
+        integrator,
+        shape,
+        n_points,
+        options.input_order(),
+        |table| {
+            let engine = Engine::build(
+                Arc::clone(&dev),
+                table,
+                options.precision(),
+                options.max_batch_bytes(),
+                false,
+            )?;
+            Ok(Metal1dPlan {
+                shape,
+                n_points,
+                precision: options.precision(),
+                device: options.device(),
+                device_name,
+                radial: table.radial.clone(),
+                max_batch_frames: engine.max_batch_frames,
+                table_entries: engine.entries,
+                engine,
+            })
+        },
+    )
 }
 
 pub(super) fn prepare_2d(
@@ -1862,6 +1902,7 @@ pub(super) fn prepare_2d(
         n_radial,
         n_azimuthal,
         azimuthal_range,
+        options.input_order(),
         |table, radial_axis, azimuthal_axis| {
             let engine = Engine::build(
                 Arc::clone(&dev),
