@@ -1,6 +1,6 @@
 [project]
 name = "dioptrin"
-version = "0.15.1"
+version = "0.15.2"
 description = "Fast open-source diffraction integration powered by Rust"
 readme = "README-pypi.md"
 license = "MIT"

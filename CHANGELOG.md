@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-11-24
+
+### Changed
+
+- Prebuilt Python release wheels now enable the experimental GPU backends out
+  of the box: `cuda` (with embedded `compute_70` PTX, zero CUDA Toolkit /
+  NVRTC runtime requirement on Volta+ GPUs) on Linux x86-64, Linux ARM64, and
+  Windows x64; and `metal` on macOS (Apple Silicon and Intel). Windows ARM64
+  wheels remain CPU-only.
+- Release wheel installation checks now verify `cuda_info()["compiled"]` and
+  `metal_info()["compiled"]` match each target platform's expected GPU feature.
+
 ## [0.15.1] - 2026-11-24
 
 ### Added

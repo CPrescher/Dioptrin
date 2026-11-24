@@ -9,10 +9,23 @@ import tempfile
 PROBE = r"""
 from pathlib import Path
 import importlib.metadata
+import os
 import numpy as np
 import dioptrin
 
 assert importlib.metadata.metadata("dioptrin")["License-Expression"] == "MIT"
+cuda_info = dioptrin.cuda_info()
+metal_info = dioptrin.metal_info()
+assert isinstance(cuda_info["compiled"], bool) and isinstance(cuda_info["available"], bool)
+assert isinstance(metal_info["compiled"], bool) and isinstance(metal_info["available"], bool)
+expect_cuda = os.environ.get("DIOPTRIN_EXPECT_CUDA")
+if expect_cuda is not None:
+    expected = expect_cuda == "1"
+    assert cuda_info["compiled"] is expected, f"Expected cuda compiled={expected}, got {cuda_info}"
+expect_metal = os.environ.get("DIOPTRIN_EXPECT_METAL")
+if expect_metal is not None:
+    expected = expect_metal == "1"
+    assert metal_info["compiled"] is expected, f"Expected metal compiled={expected}, got {metal_info}"
 poni = dict(pixel1=1e-4, pixel2=1e-4, distance=0.2, poni1=0.0032,
             poni2=0.0032, rot1=0., rot2=0., rot3=0., wavelength=1e-10)
 path = Path("release-check.poni")
