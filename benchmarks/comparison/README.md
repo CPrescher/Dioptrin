@@ -35,8 +35,13 @@ Dioptrin runtime dependencies are changed. Setup records wheels, compiler flags,
 Rust versions, Cargo.lock, and resolved Python packages in the environment's
 `build-record/` directory. Don't reuse native wheels on a different CPU model.
 `setup.py --with-cuda` builds Dioptrin with its `cuda` feature for the
-CUDA rows (see "Dioptrin CUDA"); `build.json` records `cuda` and
-`cargo_features`.
+CUDA rows (see "Dioptrin CUDA"), and `setup.py --with-metal` builds with the
+`metal` feature on macOS for the `dioptrin-*-metal` rows; `build.json` records
+`cuda`, `metal`, and `cargo_features`. Both CUDA and Metal rows support 1D and
+2D cakes (`--dimensions 1d 2d`), `--gpu-precision {f32_compensated,f32,f64}`,
+and `--input-dtype {float64,float32}`. For the unified Windows / Maxwell /
+macOS paper replay commands, see
+[docs/benchmarks/2026-11-24-paper-final/README.md](../../docs/benchmarks/2026-11-24-paper-final/README.md).
 CI uses `setup.py --portable` to omit native CPU flags, making shared Cargo
 caches safe across runner CPU models. This mode checks functionality rather
 than native CPU performance.
