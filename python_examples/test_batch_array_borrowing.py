@@ -76,7 +76,7 @@ class BatchArrayBorrowingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contiguous"):
             ai.batch1d([image, image[:, ::2]], 40)
         with self.assertRaises(TypeError):
-            ai.batch1d([image.astype(np.float32)], 40)
+            ai.batch1d([image.astype(np.int64)], 40)
         actual = ai.batch1d([image], 40)[0]
         self.assertTrue(actual.is_ok(), actual.error)
         self.compare_results(actual.result, ai.integrate1d(image, 40))
