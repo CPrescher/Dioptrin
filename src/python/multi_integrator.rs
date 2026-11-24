@@ -227,6 +227,21 @@ impl PyMultiIntegrator {
 type ImageBuffer = (Vec<f64>, usize, usize);
 
 impl PyMultiIntegrator {
+    fn extract_pixels<P: crate::frame::Pixel + numpy::Element>(
+        array: &numpy::PyReadonlyArray2<'_, P>,
+        type_name: &str,
+        context: &str,
+        i: usize,
+    ) -> PyResult<ImageBuffer> {
+        let (dim1, dim2) = extract_array_dims(array, type_name)?;
+        let data = array.as_slice().map_err(|err| {
+            PyValueError::new_err(format!(
+                "{context}detector {i}: array must be contiguous: {err}"
+            ))
+        })?;
+        Ok((data.iter().map(|&x| x.to_f64()).collect(), dim1, dim2))
+    }
+
     /// Load one image per detector (TIFF paths and arrays may be mixed) and
     /// check each against its detector's mask. `context` prefixes messages.
     fn load_images(&self, images: Vec<ImageInput>, context: &str) -> PyResult<Vec<ImageBuffer>> {
@@ -252,6 +267,18 @@ impl PyMultiIntegrator {
                             ))
                         })?;
                         (data.to_vec(), dim1, dim2)
+                    }
+                    ImageInput::ArrayF32(array) => {
+                        Self::extract_pixels(&array, "float32", context, i)?
+                    }
+                    ImageInput::ArrayU16(array) => {
+                        Self::extract_pixels(&array, "uint16", context, i)?
+                    }
+                    ImageInput::ArrayU32(array) => {
+                        Self::extract_pixels(&array, "uint32", context, i)?
+                    }
+                    ImageInput::ArrayI32(array) => {
+                        Self::extract_pixels(&array, "int32", context, i)?
                     }
                 };
                 check_mask_shape(

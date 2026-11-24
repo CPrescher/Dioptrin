@@ -13,6 +13,10 @@ use crate::poni::Poni;
 pub enum ImageInput<'p> {
     Path(String),
     Array(PyReadonlyArray2<'p, f64>),
+    ArrayF32(PyReadonlyArray2<'p, f32>),
+    ArrayU16(PyReadonlyArray2<'p, u16>),
+    ArrayU32(PyReadonlyArray2<'p, u32>),
+    ArrayI32(PyReadonlyArray2<'p, i32>),
 }
 
 #[derive(FromPyObject)]
@@ -23,6 +27,23 @@ pub enum BatchImageInput<'p> {
     ArraysU16(Vec<PyReadonlyArray2<'p, u16>>),
     ArraysU32(Vec<PyReadonlyArray2<'p, u32>>),
     ArraysI32(Vec<PyReadonlyArray2<'p, i32>>),
+}
+
+/// Array-only batch input for `batch2d_stack`: accepts either a 3D `(N, H, W)`
+/// C-contiguous stack or a list of 2D `(H, W)` C-contiguous arrays in any
+/// supported numeric dtype (`float64`, `float32`, `uint16`, `uint32`, `int32`).
+#[derive(FromPyObject)]
+pub enum StackImageInput<'p> {
+    StackF64(numpy::PyReadonlyArray3<'p, f64>),
+    StackF32(numpy::PyReadonlyArray3<'p, f32>),
+    StackU16(numpy::PyReadonlyArray3<'p, u16>),
+    StackU32(numpy::PyReadonlyArray3<'p, u32>),
+    StackI32(numpy::PyReadonlyArray3<'p, i32>),
+    ListF64(Vec<PyReadonlyArray2<'p, f64>>),
+    ListF32(Vec<PyReadonlyArray2<'p, f32>>),
+    ListU16(Vec<PyReadonlyArray2<'p, u16>>),
+    ListU32(Vec<PyReadonlyArray2<'p, u32>>),
+    ListI32(Vec<PyReadonlyArray2<'p, i32>>),
 }
 
 pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<IntegrationMethod, PyErr> {
@@ -399,13 +420,10 @@ fn item_type_error(obj: &Bound<'_, PyAny>, index: usize) -> PyErr {
     ))
 }
 
-/// Check that a batch item is a path or a 2D C-contiguous float64 array.
-fn check_batch_item(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<()> {
-    if obj.extract::<String>().is_ok() {
-        return Ok(());
-    }
-    let array: PyReadonlyArray2<'_, f64> =
-        obj.extract().map_err(|_| item_type_error(obj, index))?;
+fn check_array_item<T: numpy::Element>(
+    array: &PyReadonlyArray2<'_, T>,
+    index: usize,
+) -> PyResult<()> {
     let view = array.as_array();
     if !view.is_standard_layout() {
         return Err(PyValueError::new_err(format!(
@@ -423,25 +441,79 @@ fn check_batch_item(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<()> {
     Ok(())
 }
 
-/// Extract a Frame from a Python object (str path or numpy array).
-pub fn extract_frame_from_pyany(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<FrameOrPath> {
-    // Try string first (file path)
-    if let Ok(path) = obj.extract::<String>() {
-        return Ok(FrameOrPath::Path(path));
+/// Check that a batch item is a path or a 2D C-contiguous numeric array
+/// (`float64`, `float32`, `uint16`, `uint32`, or `int32`).
+fn check_batch_item(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<()> {
+    if obj.extract::<String>().is_ok() {
+        return Ok(());
     }
-    // Try numpy array
-    let array: PyReadonlyArray2<'_, f64> =
-        obj.extract().map_err(|_| item_type_error(obj, index))?;
-    let (dim1, dim2) = extract_item_dims(&array, index)?;
+    if let Ok(a) = obj.extract::<PyReadonlyArray2<'_, f64>>() {
+        return check_array_item(&a, index);
+    }
+    if let Ok(a) = obj.extract::<PyReadonlyArray2<'_, f32>>() {
+        return check_array_item(&a, index);
+    }
+    if let Ok(a) = obj.extract::<PyReadonlyArray2<'_, u16>>() {
+        return check_array_item(&a, index);
+    }
+    if let Ok(a) = obj.extract::<PyReadonlyArray2<'_, u32>>() {
+        return check_array_item(&a, index);
+    }
+    if let Ok(a) = obj.extract::<PyReadonlyArray2<'_, i32>>() {
+        return check_array_item(&a, index);
+    }
+    Err(item_type_error(obj, index))
+}
+
+fn extract_frame_from_array<T: crate::frame::Pixel + numpy::Element>(
+    array: &PyReadonlyArray2<'_, T>,
+    index: usize,
+) -> PyResult<FrameOrPath> {
+    let (dim1, dim2) = extract_item_dims(array, index)?;
     let slice = array.as_slice().map_err(|err| {
         PyValueError::new_err(format!("images[{}] must be contiguous: {}", index, err))
     })?;
     Ok(FrameOrPath::Frame(Frame {
         name: format!("iter[{}]", index),
-        data: slice.to_vec(),
+        data: slice.iter().map(|&x| x.to_f64()).collect(),
         dim1,
         dim2,
     }))
+}
+
+/// Extract a Frame from a Python object (str path or 2D C-contiguous
+/// `float64`/`float32`/`uint16`/`uint32`/`int32` numpy array).
+pub fn extract_frame_from_pyany(obj: &Bound<'_, PyAny>, index: usize) -> PyResult<FrameOrPath> {
+    // Try string first (file path)
+    if let Ok(path) = obj.extract::<String>() {
+        return Ok(FrameOrPath::Path(path));
+    }
+    // Try supported numeric numpy arrays
+    if let Ok(array) = obj.extract::<PyReadonlyArray2<'_, f64>>() {
+        let (dim1, dim2) = extract_item_dims(&array, index)?;
+        let slice = array.as_slice().map_err(|err| {
+            PyValueError::new_err(format!("images[{}] must be contiguous: {}", index, err))
+        })?;
+        return Ok(FrameOrPath::Frame(Frame {
+            name: format!("iter[{}]", index),
+            data: slice.to_vec(),
+            dim1,
+            dim2,
+        }));
+    }
+    if let Ok(array) = obj.extract::<PyReadonlyArray2<'_, f32>>() {
+        return extract_frame_from_array(&array, index);
+    }
+    if let Ok(array) = obj.extract::<PyReadonlyArray2<'_, u16>>() {
+        return extract_frame_from_array(&array, index);
+    }
+    if let Ok(array) = obj.extract::<PyReadonlyArray2<'_, u32>>() {
+        return extract_frame_from_array(&array, index);
+    }
+    if let Ok(array) = obj.extract::<PyReadonlyArray2<'_, i32>>() {
+        return extract_frame_from_array(&array, index);
+    }
+    Err(item_type_error(obj, index))
 }
 
 /// Result of extracting a frame from a Python object.
