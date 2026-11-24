@@ -430,12 +430,12 @@ class Integrator:
     ) -> Cuda1dPlan:
         """Experimental: upload the fixed-mask 1D table to a CUDA device.
 
-        Supports ``mask_mode="fixed"`` with the ``counting``, ``pixel_split``
-        and ``pyfai_full`` methods. The plan is a snapshot of the current
-        mask, corrections, method, unit and radial range; later changes to
-        this Integrator do not affect it. ``fast_math`` and ``sparse_layout``
-        are ignored. Results agree with ``integrate1d`` within the tolerance
-        of ``precision``, not bit for bit:
+        Supports ``mask_mode="fixed"`` with the ``counting``, ``pixel_split``,
+        ``pyfai_full`` and ``supersampled`` methods. The plan is a snapshot of
+        the current mask, corrections, method, unit and radial range; later
+        changes to this Integrator do not affect it. ``fast_math`` and
+        ``sparse_layout`` are ignored. Results agree with ``integrate1d`` within
+        the tolerance of ``precision``, not bit for bit:
 
         - ``"f32"``: float32 pixels and weights, float32 accumulation.
         - ``"f32_compensated"`` (default): float32 pixels and weights,
@@ -459,7 +459,7 @@ class Integrator:
         Raises:
             CudaUnavailableError: Built without the ``cuda`` feature, or the
                 driver, NVRTC or device cannot be used.
-            ValueError: Dynamic mask mode, histogram or supersampled method,
+            ValueError: Dynamic mask mode, histogram method,
                 ``n_points == 0``, a shape that does not match the mask or
                 detector, an unknown precision, or a budget too small for one
                 frame.

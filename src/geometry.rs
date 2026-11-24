@@ -106,6 +106,23 @@ impl SubpixelTransform {
         let (x, y, z) = self.position(d1, d2);
         (math::f_tth(&x, &y, &z), math::f_azimuth(&x, &y))
     }
+
+    /// Affine plane `(p0, d1_step, d2_step)` when no custom [`Detector`]
+    /// transform is attached (`self.detector.is_none()`), where
+    /// `position(d1, d2) == p0 + d1 * d1_step + d2 * d2_step`.
+    pub(crate) fn affine_plane(&self) -> Option<([f64; 3], [f64; 3], [f64; 3])> {
+        if self.detector.is_some() {
+            return None;
+        }
+        let (x0, y0, z0) = self.position(0.0, 0.0);
+        let (x1, y1, z1) = self.position(1.0, 0.0);
+        let (x2, y2, z2) = self.position(0.0, 1.0);
+        Some((
+            [x0, y0, z0],
+            [x1 - x0, y1 - y0, z1 - z0],
+            [x2 - x0, y2 - y0, z2 - z0],
+        ))
+    }
 }
 
 impl Geometry {
