@@ -44,6 +44,7 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<dynamic::PyDynamic1dPlan>()?;
     m.add_class::<dynamic::PyDynamic1dWorker>()?;
     m.add_class::<cuda::PyCuda1dPlan>()?;
+    m.add_class::<cuda::PyCuda2dPlan>()?;
     m.add_class::<PyMultiIntegrator>()?;
     m.add_class::<PyIntegrationResult>()?;
     m.add_class::<PyBatchResult>()?;

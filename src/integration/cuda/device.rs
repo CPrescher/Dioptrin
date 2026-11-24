@@ -43,6 +43,8 @@ const FRAMES_PER_LAUNCH: u32 = 256;
 const PARALLEL_STAGE_THRESHOLD: usize = 65_536;
 /// Target pinned staging size per pipeline slot (192 MiB: holds 4 Eiger 9M f32 frames).
 const PINNED_SLOT_BYTES: usize = 192 << 20;
+/// Maximum average entries per bin that prefer `Layout::Thread` (1 thread/bin, ideal for 2D).
+const THREAD_MAX_ENTRIES_PER_BIN: usize = 128;
 /// Maximum average entries per bin that still prefer `Layout::Warp` over `Layout::Block`.
 const WARP_MAX_ENTRIES_PER_BIN: usize = 5000;
 
@@ -97,6 +99,7 @@ impl Accumulation {
 pub(super) enum Layout {
     Block,
     Warp,
+    Thread,
 }
 
 impl Layout {
@@ -107,6 +110,7 @@ impl Layout {
         match self {
             Self::Block => "block",
             Self::Warp => "warp",
+            Self::Thread => "thread",
         }
     }
 
@@ -114,6 +118,7 @@ impl Layout {
         match self {
             Self::Block => 1,
             Self::Warp => 4,
+            Self::Thread => 128,
         }
     }
 }
@@ -484,6 +489,91 @@ pub(super) fn with_table<R>(
         denominator,
         radial: lut.bins(),
     })
+}
+
+/// Builds (or reuses) the integrator's masked 2D CSR table and strict `f64`
+/// denominators, and passes them to `use_table`.
+pub(super) fn with_table_2d<R>(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    n_radial: usize,
+    n_azimuthal: usize,
+    azimuthal_range: Option<(f64, f64)>,
+    use_table: impl FnOnce(&HostTable<'_>, Option<Vec<f64>>, Option<Vec<f64>>) -> Result<R, CudaError>,
+) -> Result<R, CudaError> {
+    let too_large = || CudaError::Unsupported("the CUDA table exceeds 32-bit indices".into());
+    let pixels = u32::try_from(shape.0 * shape.1).map_err(|_| too_large())?;
+    let total_bins = n_radial.checked_mul(n_azimuthal).ok_or_else(too_large)?;
+    let n_bins = u32::try_from(total_bins).map_err(|_| too_large())?;
+    let view = integrator.for_shape(shape.0, shape.1);
+    let norm = view.normalization();
+    let (key, radial_axis, azimuthal_axis) = match azimuthal_range {
+        None => {
+            let key = integrator
+                .try_lut2d_key(&view, n_radial, n_azimuthal, None)
+                .map_err(CudaError::InvalidInput)?;
+            let radial = integrator.radial_range().map(|(lo, hi)| {
+                crate::math::histogram::bins(n_radial, lo, (hi - lo) / n_radial as f64)
+            });
+            (key, radial, None)
+        }
+        Some(range) => {
+            let grid = integrator
+                .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
+                .map_err(CudaError::InvalidInput)?;
+            let rad = grid.radial_centers();
+            let az = grid.azimuthal_centers();
+            (integrator.shared_grid_key(grid), Some(rad), Some(az))
+        }
+    };
+    let lut = view.ensure_lut2d(key);
+    let mask = integrator.mask.as_ref().map(|mask| mask.data.as_slice());
+    let (table, denominator) = lut.fixed_csr_parts(mask, &norm);
+    let rows = table
+        .row_ptr
+        .iter()
+        .map(|&row| u32::try_from(row))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| too_large())?;
+    let entries = rows
+        .last()
+        .copied()
+        .ok_or_else(|| CudaError::Device("the CUDA table has no rows".into()))?;
+    if entries > u32::MAX - 128 {
+        return Err(CudaError::Unsupported(format!(
+            "the CUDA table has {entries} entries; at most {} are supported",
+            u32::MAX - 128
+        )));
+    }
+    if rows.len() != total_bins + 1 || denominator.len() != total_bins {
+        return Err(CudaError::Device(
+            "the CUDA table does not match the requested 2D bins".into(),
+        ));
+    }
+    let columns = match &table.col_idx {
+        Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
+        Columns::Wide(columns) => Cow::Owned(
+            columns
+                .iter()
+                .map(|&column| u32::try_from(column))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| too_large())?,
+        ),
+    };
+    use_table(
+        &HostTable {
+            pixels,
+            bins: n_bins,
+            entries,
+            rows,
+            columns,
+            weights: table.values.as_deref(),
+            denominator,
+            radial: Vec::new(),
+        },
+        radial_axis,
+        azimuthal_axis,
+    )
 }
 
 pub(super) struct Plan<T = f32> {
@@ -1214,17 +1304,15 @@ impl Engine {
         })
     }
 
-    /// Integrates frames in double-buffered pinned tiles across two streams.
-    /// Without `stacked`, `frames` holds non-empty frames of the plan's length;
-    /// with it, `frames` holds one non-empty contiguous stack of whole frames
-    /// (both checked by the caller).
-    pub(super) fn run(
+    /// Integrates frames in double-buffered pinned tiles across two streams,
+    /// returning `(intensity, optional_errors)` per frame.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_raw(
         &self,
         frames: Frames<'_, '_>,
         stacked: bool,
         errors: bool,
-        radial: &[f64],
-    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
         let count = match frames {
             Frames::U16(frames) if stacked => frame_count(frames, self.pixels)?,
             Frames::U32(frames) if stacked => frame_count(frames, self.pixels)?,
@@ -1387,10 +1475,29 @@ impl Engine {
         }
         Ok(host
             .chunks_exact(per_frame)
-            .map(|frame| Fixed1dResult {
+            .map(|frame| {
+                (
+                    frame.iter().step_by(stride).copied().collect(),
+                    errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+                )
+            })
+            .collect())
+    }
+
+    pub(super) fn run(
+        &self,
+        frames: Frames<'_, '_>,
+        stacked: bool,
+        errors: bool,
+        radial: &[f64],
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        Ok(self
+            .run_raw(frames, stacked, errors)?
+            .into_iter()
+            .map(|(intensity, errors)| Fixed1dResult {
                 radial: radial.to_vec(),
-                intensity: frame.iter().step_by(stride).copied().collect(),
-                errors: errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+                intensity,
+                errors,
             })
             .collect())
     }
@@ -1587,13 +1694,13 @@ impl Engine {
 
     /// Decompresses raw Bitshuffle+LZ4 HDF5 chunks on the GPU and integrates
     /// them in VRAM across two double-buffered streams.
-    pub(super) fn run_bslz4(
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_bslz4_raw(
         &self,
         chunks: &[&[u8]],
         dtype: Bslz4Dtype,
         errors: bool,
-        radial: &[f64],
-    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
         let count = chunks.len();
         let stride = 1 + usize::from(errors);
         let per_frame = self.bins * stride;
@@ -1669,10 +1776,29 @@ impl Engine {
         }
         Ok(host
             .chunks_exact(per_frame)
-            .map(|frame| Fixed1dResult {
+            .map(|frame| {
+                (
+                    frame.iter().step_by(stride).copied().collect(),
+                    errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+                )
+            })
+            .collect())
+    }
+
+    pub(super) fn run_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+        radial: &[f64],
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        Ok(self
+            .run_bslz4_raw(chunks, dtype, errors)?
+            .into_iter()
+            .map(|(intensity, errors)| Fixed1dResult {
                 radial: radial.to_vec(),
-                intensity: frame.iter().step_by(stride).copied().collect(),
-                errors: errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+                intensity,
+                errors,
             })
             .collect())
     }
@@ -1992,64 +2118,61 @@ impl Engine {
     }
 }
 
-/// Steps 6 to 8 of [`Integrator::prepare_cuda1d`]; steps 1 to 4 have passed.
-pub(super) fn prepare(
-    integrator: &Integrator,
-    shape: (usize, usize),
+fn build_engine(
+    cuda: &Cuda,
+    table: &HostTable<'_>,
     pixels: usize,
-    n_points: usize,
+    bins: usize,
     options: &Cuda1dOptions,
-) -> Result<Cuda1dPlan, CudaError> {
-    let cuda = Cuda::open(options.device())?;
+) -> Result<(Engine, usize, usize), CudaError> {
     let stream1 = guarded(|| Ok(cuda.context.new_stream()?))?;
     let streams = [Arc::clone(&cuda.stream), stream1];
     let precision = options.precision();
-    let (tables, entries, radial) = with_table(integrator, shape, n_points, |table| {
-        let layout = if table.entries as usize <= n_points.saturating_mul(WARP_MAX_ENTRIES_PER_BIN)
-        {
-            Layout::Warp
-        } else {
-            Layout::Block
-        };
-        let tables = match precision {
-            CudaPrecision::F32 | CudaPrecision::F32Compensated => {
-                let plan = cuda.upload(table, [1.0_f32], encode_f32)?;
-                let mode = if precision == CudaPrecision::F32 {
-                    Accumulation::Plain
-                } else {
-                    Accumulation::Compensated
-                };
-                let gather = both(|errors| plan.kernel(mode, layout, errors))?;
-                let u16 = both(|errors| plan.kernel_u16(mode, layout, errors))?;
-                let u32 = both(|errors| plan.kernel_u32(mode, layout, errors))?;
-                let i32 = both(|errors| plan.kernel_i32(mode, layout, errors))?;
-                Tables::Single {
-                    plan,
-                    gather,
-                    u16,
-                    u32,
-                    i32,
-                }
+    let layout = if table.entries as usize <= bins.saturating_mul(THREAD_MAX_ENTRIES_PER_BIN) {
+        Layout::Thread
+    } else if table.entries as usize <= bins.saturating_mul(WARP_MAX_ENTRIES_PER_BIN) {
+        Layout::Warp
+    } else {
+        Layout::Block
+    };
+    let tables = match precision {
+        CudaPrecision::F32 | CudaPrecision::F32Compensated => {
+            let plan = cuda.upload(table, [1.0_f32], encode_f32)?;
+            let mode = if precision == CudaPrecision::F32 {
+                Accumulation::Plain
+            } else {
+                Accumulation::Compensated
+            };
+            let gather = both(|errors| plan.kernel(mode, layout, errors))?;
+            let u16 = both(|errors| plan.kernel_u16(mode, layout, errors))?;
+            let u32 = both(|errors| plan.kernel_u32(mode, layout, errors))?;
+            let i32 = both(|errors| plan.kernel_i32(mode, layout, errors))?;
+            Tables::Single {
+                plan,
+                gather,
+                u16,
+                u32,
+                i32,
             }
-            CudaPrecision::F64 => {
-                let plan = cuda.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights))?;
-                let wide = both(|errors| plan.kernel(layout, errors))?;
-                let narrow = both(|errors| plan.kernel_f32(layout, errors))?;
-                let u16 = both(|errors| plan.kernel_u16(layout, errors))?;
-                let u32 = both(|errors| plan.kernel_u32(layout, errors))?;
-                let i32 = both(|errors| plan.kernel_i32(layout, errors))?;
-                Tables::Double {
-                    plan,
-                    wide,
-                    narrow,
-                    u16,
-                    u32,
-                    i32,
-                }
+        }
+        CudaPrecision::F64 => {
+            let plan = cuda.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights))?;
+            let wide = both(|errors| plan.kernel(layout, errors))?;
+            let narrow = both(|errors| plan.kernel_f32(layout, errors))?;
+            let u16 = both(|errors| plan.kernel_u16(layout, errors))?;
+            let u32 = both(|errors| plan.kernel_u32(layout, errors))?;
+            let i32 = both(|errors| plan.kernel_i32(layout, errors))?;
+            Tables::Double {
+                plan,
+                wide,
+                narrow,
+                u16,
+                u32,
+                i32,
             }
-        };
-        Ok((tables, table.entries as usize, table.radial.clone()))
-    })?;
+        }
+    };
+    let entries = table.entries as usize;
     let storage = if precision == CudaPrecision::F64 {
         size_of::<f64>()
     } else {
@@ -2057,7 +2180,7 @@ pub(super) fn prepare(
     };
     let frame_bytes = pixels
         .checked_mul(storage)
-        .and_then(|bytes| bytes.checked_add(n_points.checked_mul(2 * size_of::<f64>())?))
+        .and_then(|bytes| bytes.checked_add(bins.checked_mul(2 * size_of::<f64>())?))
         .ok_or_else(|| CudaError::InvalidInput("one CUDA frame exceeds usize bytes".into()))?;
     let explicit_budget = options.max_batch_bytes().is_some();
     let max_batch_frames = match options.max_batch_bytes() {
@@ -2085,7 +2208,6 @@ pub(super) fn prepare(
     };
     // Chunks are counted in u32 by the launch code.
     let max_batch_frames = max_batch_frames.min(u32::MAX as usize);
-    let bins = n_points;
     let decode_u16 = cuda
         .module
         .load_function("bshuf_lz4_decode_u16")
@@ -2102,27 +2224,87 @@ pub(super) fn prepare(
                 "CUDA kernel bshuf_lz4_decode_u32 is missing: {error}"
             ))
         })?;
+    let engine = Engine {
+        tables,
+        decode_u16,
+        decode_u32,
+        streams,
+        pixels,
+        bins,
+        frame_bytes,
+        max_batch_frames,
+        explicit_budget,
+        scratch: Mutex::new(Scratch::default()),
+    };
+    Ok((engine, entries, max_batch_frames))
+}
+
+/// Steps 6 to 8 of [`Integrator::prepare_cuda1d`]; steps 1 to 4 have passed.
+pub(super) fn prepare(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    pixels: usize,
+    n_points: usize,
+    options: &Cuda1dOptions,
+) -> Result<Cuda1dPlan, CudaError> {
+    let cuda = Cuda::open(options.device())?;
+    let (engine, entries, max_batch_frames, radial) =
+        with_table(integrator, shape, n_points, |table| {
+            let (engine, entries, max_batch_frames) =
+                build_engine(&cuda, table, pixels, n_points, options)?;
+            Ok((engine, entries, max_batch_frames, table.radial.clone()))
+        })?;
     Ok(Cuda1dPlan {
         shape,
         n_points,
-        precision,
+        precision: options.precision(),
         device: options.device(),
         device_name: cuda.info.device_name.clone().unwrap_or_default(),
         radial,
         table_entries: entries,
         max_batch_frames,
-        engine: Engine {
-            tables,
-            decode_u16,
-            decode_u32,
-            streams,
-            pixels,
-            bins,
-            frame_bytes,
-            max_batch_frames,
-            explicit_budget,
-            scratch: Mutex::new(Scratch::default()),
+        engine,
+    })
+}
+
+/// Steps 6 to 8 of [`Integrator::prepare_cuda2d`]; steps 1 to 4 have passed.
+pub(super) fn prepare_2d(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    pixels: usize,
+    n_radial: usize,
+    n_azimuthal: usize,
+    azimuthal_range: Option<(f64, f64)>,
+    options: &Cuda1dOptions,
+) -> Result<super::Cuda2dPlan, CudaError> {
+    let cuda = Cuda::open(options.device())?;
+    let total_bins = n_radial
+        .checked_mul(n_azimuthal)
+        .ok_or_else(|| CudaError::InvalidInput("2D bin count overflows usize".into()))?;
+    let (engine, entries, max_batch_frames, radial, azimuthal) = with_table_2d(
+        integrator,
+        shape,
+        n_radial,
+        n_azimuthal,
+        azimuthal_range,
+        |table, radial, azimuthal| {
+            let (engine, entries, max_batch_frames) =
+                build_engine(&cuda, table, pixels, total_bins, options)?;
+            Ok((engine, entries, max_batch_frames, radial, azimuthal))
         },
+    )?;
+    Ok(super::Cuda2dPlan {
+        shape,
+        n_radial,
+        n_azimuthal,
+        precision: options.precision(),
+        device: options.device(),
+        device_name: cuda.info.device_name.clone().unwrap_or_default(),
+        radial,
+        azimuthal,
+        table_entries: entries,
+        max_batch_frames,
+        engine,
     })
 }
 

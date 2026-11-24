@@ -746,6 +746,39 @@ class CudaDeviceTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             plan.batch1d_bslz4([b"0" * 16], dtype="float32")
 
+    def test_cuda2d_matches_cpu_and_pinned_batch(self):
+        rng = np.random.default_rng(31)
+        frames = rng.integers(0, 4000, size=(5, *SHAPE), dtype=np.uint32)
+        mask = (frames[0] > 3800).astype(np.uint8)
+        for method in ("counting", "pixel_split", "pyfai_full", "supersampled"):
+            for az_range in (None, (-1.0, 1.5)):
+                ai = integrator(method, unit="2th_deg")
+                ai.set_mask(mask)
+                plan = ai.prepare_cuda2d(
+                    SHAPE, 20, 16, azimuthal_range=az_range, precision="f32_compensated"
+                )
+                self.assertEqual(plan.shape, SHAPE)
+                self.assertEqual((plan.n_radial, plan.n_azimuthal), (20, 16))
+                self.assertIn("Cuda2dPlan", repr(plan))
+                single = [plan.integrate2d(f, errors=True) for f in frames]
+                batch = plan.batch2d(frames, errors=True)
+                pinned = plan.alloc_pinned_batch(len(frames), dtype=np.uint32)
+                pinned[:] = frames
+                from_pinned = plan.batch2d(pinned, errors=True)
+                self.assert_identical(batch, single)
+                self.assert_identical(from_pinned, single)
+                for gpu, f in zip(batch, frames):
+                    cpu = ai.integrate2d(
+                        f.astype(np.float64), 20, 16, errors=True, azimuthal_range=az_range
+                    )
+                    self.assertEqual((gpu.n_radial, gpu.n_azimuthal), (20, 16))
+                    self.assertEqual(gpu.radial, cpu.radial)
+                    self.assertEqual(gpu.azimuthal, cpu.azimuthal)
+                    self.assert_close(gpu.intensity, cpu.intensity, 2e-5)
+                    self.assert_close(gpu.errors, cpu.errors, 2e-5)
+        self.assertEqual(plan.batch2d([]), [])
+        self.assertEqual(plan.batch2d_bslz4([], dtype="uint32"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

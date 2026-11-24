@@ -9,6 +9,7 @@ __all__ = [
     "Dynamic1dPlan",
     "Dynamic1dWorker",
     "Cuda1dPlan",
+    "Cuda2dPlan",
     "CudaUnavailableError",
     "cuda_available",
     "cuda_info",
@@ -467,6 +468,27 @@ class Integrator:
             OverflowError: A negative ``device``.
 
         The GIL is released while preparing.
+        """
+        ...
+
+    def prepare_cuda2d(
+        self,
+        shape: Tuple[int, int],
+        n_radial: int,
+        n_azimuthal: Optional[int] = None,
+        *,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
+        azimuthal_bracket: Optional[float] = None,
+        precision: Literal["f32", "f32_compensated", "f64"] = "f32_compensated",
+        device: int = 0,
+        max_batch_bytes: Optional[int] = None,
+    ) -> Cuda2dPlan:
+        """Experimental: upload the fixed-mask 2D table to a CUDA device.
+
+        Supports ``mask_mode="fixed"`` with the ``counting``, ``pixel_split``,
+        ``pyfai_full`` and ``supersampled`` methods, with optional
+        ``radial_range`` and ``azimuthal_range`` / ``azimuthal_bracket``.
+        Mirrors ``prepare_cuda1d`` for 2D cakes.
         """
         ...
 
@@ -1301,6 +1323,65 @@ class Cuda1dPlan:
         compressed frame chunk (for example from
         ``h5py.Dataset.id.read_direct_chunk`` or ``dioptrin-io``).
         """
+        ...
+
+
+class Cuda2dPlan:
+    """Experimental: a fixed-mask 2D table uploaded to one CUDA device.
+
+    Created by ``Integrator.prepare_cuda2d``. Mirrors ``Cuda1dPlan`` for 2D
+    azimuthal integration (``n_radial × n_azimuthal`` cakes).
+    """
+    @property
+    def shape(self) -> Tuple[int, int]: ...
+    @property
+    def n_radial(self) -> int: ...
+    @property
+    def n_azimuthal(self) -> int: ...
+    @property
+    def precision(self) -> Literal["f32", "f32_compensated", "f64"]: ...
+    @property
+    def device(self) -> int: ...
+    @property
+    def device_name(self) -> str: ...
+    @property
+    def radial(self) -> Optional[list[float]]: ...
+    @property
+    def azimuthal(self) -> Optional[list[float]]: ...
+    @property
+    def max_batch_frames(self) -> int: ...
+    @property
+    def table_entries(self) -> int: ...
+
+    def integrate2d(self, image: np.ndarray, *, errors: bool = False) -> IntegrationResult:
+        """Integrate one C-contiguous float64, float32, uint16, uint32 or int32 image of ``shape``."""
+        ...
+
+    def batch2d(
+        self,
+        images: Union[list[np.ndarray], tuple[np.ndarray, ...], np.ndarray],
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]:
+        """Integrate a list or tuple of 2D images, or one C-contiguous 3D array."""
+        ...
+
+    def alloc_pinned_batch(
+        self,
+        n_frames: int,
+        dtype: Any = "float32",
+    ) -> np.ndarray:
+        """Allocate a writable 3D NumPy array ``(n_frames, dim1, dim2)`` in CUDA pinned host memory."""
+        ...
+
+    def batch2d_bslz4(
+        self,
+        chunks: Union[list[Any], tuple[Any, ...]],
+        dtype: Literal["uint16", "uint32", "int32"] = "uint32",
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]:
+        """Decompress raw HDF5 Bitshuffle+LZ4 chunks on the GPU and integrate them to 2D in VRAM."""
         ...
 
 

@@ -77,9 +77,11 @@ __device__ __forceinline__ void reduce_and_store(
     Acc signal, Acc variance, unsigned thread, double denominator,
     double * __restrict__ result, Acc *shared_sig, Acc *shared_var) {
     constexpr unsigned Warps = 128 / 32;
-    for (int offset = 16; offset > 0; offset /= 2) {
-        signal.combine(signal.shuffle(offset));
-        if constexpr (Variance) variance.combine(variance.shuffle(offset));
+    if constexpr (BinsPerBlock < 128) {
+        for (int offset = 16; offset > 0; offset /= 2) {
+            signal.combine(signal.shuffle(offset));
+            if constexpr (Variance) variance.combine(variance.shuffle(offset));
+        }
     }
     if constexpr (BinsPerBlock == 1) {
         if (thread % 32 == 0) {
@@ -248,11 +250,19 @@ KERNEL(compensated_warp_i, 1, false, 4)
 KERNEL(compensated_warp_iv, 1, true, 4)
 KERNEL(double_warp_i, 2, false, 4)
 KERNEL(double_warp_iv, 2, true, 4)
+KERNEL(plain_thread_i, 0, false, 128)
+KERNEL(plain_thread_iv, 0, true, 128)
+KERNEL(compensated_thread_i, 1, false, 128)
+KERNEL(compensated_thread_iv, 1, true, 128)
+KERNEL(double_thread_i, 2, false, 128)
+KERNEL(double_thread_iv, 2, true, 128)
 #define TYPED_KERNELS(Prefix, Pixel, Mode) \
 STORED_KERNEL(Prefix##_block_i, float, Pixel, Mode, false, 1) \
 STORED_KERNEL(Prefix##_block_iv, float, Pixel, Mode, true, 1) \
 STORED_KERNEL(Prefix##_warp_i, float, Pixel, Mode, false, 4) \
-STORED_KERNEL(Prefix##_warp_iv, float, Pixel, Mode, true, 4)
+STORED_KERNEL(Prefix##_warp_iv, float, Pixel, Mode, true, 4) \
+STORED_KERNEL(Prefix##_thread_i, float, Pixel, Mode, false, 128) \
+STORED_KERNEL(Prefix##_thread_iv, float, Pixel, Mode, true, 128)
 
 TYPED_KERNELS(u16_plain, unsigned short, 0)
 TYPED_KERNELS(u32_plain, unsigned, 0)
@@ -265,7 +275,9 @@ TYPED_KERNELS(i32_compensated, int, 1)
 STORED_KERNEL(Prefix##_block_i, double, Pixel, 2, false, 1) \
 STORED_KERNEL(Prefix##_block_iv, double, Pixel, 2, true, 1) \
 STORED_KERNEL(Prefix##_warp_i, double, Pixel, 2, false, 4) \
-STORED_KERNEL(Prefix##_warp_iv, double, Pixel, 2, true, 4)
+STORED_KERNEL(Prefix##_warp_iv, double, Pixel, 2, true, 4) \
+STORED_KERNEL(Prefix##_thread_i, double, Pixel, 2, false, 128) \
+STORED_KERNEL(Prefix##_thread_iv, double, Pixel, 2, true, 128)
 
 F64_KERNELS(full_f64, double)
 F64_KERNELS(f32_f64, float)

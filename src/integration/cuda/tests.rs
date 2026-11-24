@@ -1291,4 +1291,78 @@ mod device {
         assert!(output[512] > output[510]);
         Ok(())
     }
+
+    #[test]
+    fn cuda2d_methods_precisions_and_azimuthal_range_match_cpu() -> TestResult {
+        if !device_available() {
+            return Ok(());
+        }
+        let shape = (32, 48);
+        let pixels = shape.0 * shape.1;
+        let (n_rad, n_az) = (20, 16);
+        let frames: Vec<f32> = (0..pixels * 5)
+            .map(|i| ((i * 271 % 293) as f32) + 5.0)
+            .collect();
+        let frames_f64: Vec<f64> = frames.iter().map(|&x| f64::from(x)).collect();
+        let mask = || {
+            Mask::from_vec(
+                (0..pixels).map(|i| u8::from(i % 17 == 0)).collect(),
+                shape.0,
+                shape.1,
+            )
+        };
+        for method in METHODS {
+            for az_range in [None, Some((-1.2, 1.8))] {
+                let cpu = integrator(shape, method)
+                    .with_radial_unit(RadialUnit::TthDeg)
+                    .with_mask(mask()?)
+                    .with_polarization_factor(0.75)
+                    .with_fast_math(false);
+                for precision in PRECISIONS {
+                    let plan =
+                        cpu.prepare_cuda2d(shape, n_rad, n_az, az_range, &options(precision))?;
+                    assert_eq!((plan.n_radial(), plan.n_azimuthal()), (n_rad, n_az));
+                    let stack = plan.integrate_stack(&frames, true)?;
+                    assert_eq!(stack.len(), 5);
+                    for (f, res) in stack.iter().enumerate() {
+                        let single =
+                            plan.integrate_frame(&frames[f * pixels..(f + 1) * pixels], true)?;
+                        assert_eq!(res.intensity, single.intensity);
+                        assert_eq!(res.errors, single.errors);
+                        let slice = &frames_f64[f * pixels..(f + 1) * pixels];
+                        let (want_i, want_e) = match az_range {
+                            None => {
+                                let (i, e) = cpu.integrate2d_with_errors_from_slice(
+                                    slice, shape.0, shape.1, n_rad, n_az,
+                                );
+                                (i, e)
+                            }
+                            Some(r) => {
+                                let out = cpu.integrate2d_on_azimuthal_range_from_slice(
+                                    slice, shape.0, shape.1, n_rad, n_az, r, true,
+                                )?;
+                                assert_eq!(res.radial.as_deref(), Some(out.radial.as_slice()));
+                                assert_eq!(
+                                    res.azimuthal.as_deref(),
+                                    Some(out.azimuthal.as_slice())
+                                );
+                                (out.intensity, out.errors.unwrap())
+                            }
+                        };
+                        let scale: Vec<f64> = want_i.iter().map(|x| x.abs().max(1.0)).collect();
+                        let what = format!("2d {method:?} {precision:?} az={az_range:?} frame={f}");
+                        assert_close(&res.intensity, &want_i, &scale, precision, &what);
+                        assert_close(
+                            res.errors.as_deref().unwrap(),
+                            &want_e,
+                            &want_e,
+                            precision,
+                            &what,
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }

@@ -712,6 +712,37 @@ impl PyIntegrator {
         )
     }
 
+    /// Experimental: upload this integrator's fixed-mask 2D table to a CUDA
+    /// device. Mirrors `prepare_cuda1d` for 2D azimuthal integration.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (shape, n_radial, n_azimuthal=None, *, azimuthal_range=None, azimuthal_bracket=None, precision="f32_compensated", device=0, max_batch_bytes=None))]
+    fn prepare_cuda2d(
+        &self,
+        py: Python<'_>,
+        shape: (usize, usize),
+        n_radial: usize,
+        n_azimuthal: Option<usize>,
+        azimuthal_range: Option<(f64, f64)>,
+        azimuthal_bracket: Option<f64>,
+        precision: &str,
+        device: usize,
+        max_batch_bytes: Option<usize>,
+    ) -> PyResult<super::cuda::PyCuda2dPlan> {
+        let (n_azimuthal, azimuthal_range) =
+            resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
+        super::cuda::prepare_2d(
+            py,
+            &self.integrator,
+            shape,
+            n_radial,
+            n_azimuthal,
+            azimuthal_range,
+            precision,
+            device,
+            max_batch_bytes,
+        )
+    }
+
     /// Release cached file workers and decoding buffers: the pool of the
     /// synchronous and list batches, and the workers kept from the last
     /// finished generator-fed stream for the next one. Admitted streaming work
