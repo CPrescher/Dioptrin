@@ -1403,4 +1403,75 @@ mod device {
         }
         Ok(())
     }
+
+    #[test]
+    fn precompiled_ptx_matches_kernels_cu_and_exports_all_entries() {
+        use sha2::{Digest, Sha256};
+
+        let ptx =
+            super::super::device::precompiled_ptx().expect("decompress precompiled kernels.ptx.gz");
+        let expected_sha: String = Sha256::digest(include_bytes!("kernels.cu"))
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let recorded_sha = ptx
+            .lines()
+            .find_map(|line| line.strip_prefix("// dioptrin-kernels-sha256: "))
+            .map(str::trim);
+        assert_eq!(
+            recorded_sha,
+            Some(expected_sha.as_str()),
+            "src/integration/cuda/kernels.ptx is out of date with kernels.cu; \
+             regenerate via scripts/build_cuda_ptx.sh or the CUDA PTX GitHub workflow"
+        );
+        assert!(ptx.contains(".version"), "kernels.ptx missing .version");
+        assert!(
+            ptx.contains(".target sm_70"),
+            "kernels.ptx missing sm_70 target"
+        );
+
+        let prefixes = [
+            "plain",
+            "compensated",
+            "double",
+            "u16_plain",
+            "u32_plain",
+            "i32_plain",
+            "u16_compensated",
+            "u32_compensated",
+            "i32_compensated",
+            "full_f64",
+            "f32_f64",
+            "u16_f64",
+            "u32_f64",
+            "i32_f64",
+        ];
+        for prefix in prefixes {
+            for suffix in [
+                "block_i",
+                "block_iv",
+                "warp_i",
+                "warp_iv",
+                "subwarp_i",
+                "subwarp_iv",
+            ] {
+                let entry = format!(".visible .entry {prefix}_{suffix}(");
+                assert!(
+                    ptx.contains(&entry),
+                    "kernels.ptx missing entry point {prefix}_{suffix}"
+                );
+            }
+        }
+        for util in [
+            "cast_f64_input",
+            "bshuf_lz4_decode_u16",
+            "bshuf_lz4_decode_u32",
+        ] {
+            let entry = format!(".visible .entry {util}(");
+            assert!(
+                ptx.contains(&entry),
+                "kernels.ptx missing entry point {util}"
+            );
+        }
+    }
 }
