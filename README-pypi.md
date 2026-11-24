@@ -194,3 +194,20 @@ Behaviour changes to check when upgrading:
 The Rust API has breaking changes (streaming batch functions, `Geometry`
 shape accessors, `histogram_parallel` removed); see the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.14.0/CHANGELOG.md)
 for these and the full list.
+
+### Native dtypes, tiled CPU batches, and optional GPU backends (0.15.0)
+
+- CPU `integrate1d`, `integrate2d`, `batch1d`, and `batch2d` accept native
+  `float32`, `uint16`, `uint32`, and `int32` arrays directly alongside
+  `float64`, and fixed-mask CSR batches use 4-frame SIMD tiling.
+- `radial_range` now applies to 2D integration across all methods, and
+  `integrate1d` / `integrate2d` release the GIL during integration.
+- Optional experimental **CUDA** (`--features cuda`) and macOS **Metal**
+  (`--features metal`) 1D/2D plans with native dtypes, 4-frame tiling,
+  `InputOrder::FlipVertical`, and GPU Bitshuffle/LZ4 decode are available for
+  source/Rust builds.
+- **Breaking:** the legacy no-op `validate_license()` and `License*Error`
+  names have been removed.
+
+See the [changelog](https://github.com/CPrescher/Dioptrin/blob/v0.15.0/CHANGELOG.md)
+for the full list.
