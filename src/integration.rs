@@ -6,7 +6,8 @@ pub mod cuda;
 #[cfg(feature = "python")]
 pub(crate) use cuda::CudaPinnedBytes;
 pub use cuda::{
-    Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, CudaError, CudaInfo, CudaPixel, CudaPrecision, cuda_info,
+    Bslz4Dtype, Cuda1dOptions, Cuda1dPlan, Cuda2dOptions, Cuda2dPlan, CudaError, CudaInfo,
+    CudaPixel, CudaPrecision, Fixed2dResult, cuda_info,
 };
 mod dynamic;
 pub(crate) mod grid;

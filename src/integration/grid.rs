@@ -588,7 +588,7 @@ impl Integrator {
     /// Grid of [`Integrator::integrate2d_on_azimuthal_range_from_slice`]: the
     /// explicit radial range if one is set (out-of-range values are dropped),
     /// otherwise the default path's radial edges with its clamping.
-    fn azimuthal_range_grid(
+    pub(super) fn azimuthal_range_grid(
         &self,
         view: &super::cache::ShapeView<'_>,
         n_radial: usize,

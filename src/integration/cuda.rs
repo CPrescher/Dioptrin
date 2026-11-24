@@ -642,6 +642,362 @@ impl Cuda1dPlan {
     }
 }
 
+/// Result of a fixed-mask CUDA 2D integration.
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+#[derive(Clone, Debug)]
+pub struct Fixed2dResult {
+    pub radial: Option<Vec<f64>>,
+    pub azimuthal: Option<Vec<f64>>,
+    pub intensity: Vec<f64>,
+    pub errors: Option<Vec<f64>>,
+    pub n_radial: usize,
+    pub n_azimuthal: usize,
+}
+
+/// Options for [`Integrator::prepare_cuda2d`].
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+pub type Cuda2dOptions = Cuda1dOptions;
+
+/// A fixed-mask 2D lookup table uploaded to one CUDA device.
+///
+/// **Experimental:** excluded from semver guarantees until stabilised.
+///
+/// Created by [`Integrator::prepare_cuda2d`]. Mirrors [`Cuda1dPlan`] for 2D
+/// azimuthal integration (`n_radial × n_azimuthal` cakes).
+pub struct Cuda2dPlan {
+    shape: (usize, usize),
+    n_radial: usize,
+    n_azimuthal: usize,
+    precision: CudaPrecision,
+    device: usize,
+    device_name: String,
+    radial: Option<Vec<f64>>,
+    azimuthal: Option<Vec<f64>>,
+    table_entries: usize,
+    max_batch_frames: usize,
+    engine: Engine,
+}
+
+impl fmt::Debug for Cuda2dPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cuda2dPlan")
+            .field("shape", &self.shape)
+            .field("n_radial", &self.n_radial)
+            .field("n_azimuthal", &self.n_azimuthal)
+            .field("precision", &self.precision)
+            .field("device", &self.device)
+            .field("device_name", &self.device_name)
+            .field("table_entries", &self.table_entries)
+            .field("max_batch_frames", &self.max_batch_frames)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Cuda2dPlan {
+    pub fn shape(&self) -> (usize, usize) {
+        self.shape
+    }
+    pub fn n_radial(&self) -> usize {
+        self.n_radial
+    }
+    pub fn n_azimuthal(&self) -> usize {
+        self.n_azimuthal
+    }
+    pub fn precision(&self) -> CudaPrecision {
+        self.precision
+    }
+    pub fn device(&self) -> usize {
+        self.device
+    }
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+    pub fn radial(&self) -> Option<&[f64]> {
+        self.radial.as_deref()
+    }
+    pub fn azimuthal(&self) -> Option<&[f64]> {
+        self.azimuthal.as_deref()
+    }
+    pub fn table_entries(&self) -> usize {
+        self.table_entries
+    }
+    pub fn max_batch_frames(&self) -> usize {
+        self.max_batch_frames
+    }
+
+    pub fn integrate_frame<P: CudaPixel>(
+        &self,
+        frame: &[P],
+        errors: bool,
+    ) -> Result<Fixed2dResult, CudaError> {
+        let mut results = self.integrate_frames(&[frame], errors)?;
+        results
+            .pop()
+            .ok_or_else(|| CudaError::Device("CUDA integration returned no result".into()))
+    }
+
+    pub fn integrate_frames<P: CudaPixel>(
+        &self,
+        frames: &[&[P]],
+        errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        if let Some((index, frame)) = frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.len() != pixels)
+        {
+            return Err(CudaError::InvalidInput(format!(
+                "frame {index} has {} pixels, but the CUDA plan expects {pixels} ({} x {})",
+                frame.len(),
+                self.shape.0,
+                self.shape.1
+            )));
+        }
+        if frames.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run(<P as sealed::Sealed>::frames(frames), false, errors)
+    }
+
+    pub fn integrate_stack<P: CudaPixel>(
+        &self,
+        stack: &[P],
+        errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        if !stack.len().is_multiple_of(pixels) {
+            return Err(CudaError::InvalidInput(format!(
+                "stack of {} values is not a whole number of {pixels}-pixel frames",
+                stack.len()
+            )));
+        }
+        if stack.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run(<P as sealed::Sealed>::frames(&[stack]), true, errors)
+    }
+
+    pub fn integrate_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run_bslz4(chunks, dtype, errors)
+    }
+
+    pub fn integrate_frames_into<P: CudaPixel>(
+        &self,
+        frames: &[&[P]],
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        let bins = self.n_radial * self.n_azimuthal;
+        if let Some((index, frame)) = frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.len() != pixels)
+        {
+            return Err(CudaError::InvalidInput(format!(
+                "frame {index} has {} pixels, but the CUDA plan expects {pixels} ({} x {})",
+                frame.len(),
+                self.shape.0,
+                self.shape.1
+            )));
+        }
+        let expected = frames.len() * bins;
+        if out_intensity.len() != expected
+            || out_errors.as_ref().is_some_and(|e| e.len() != expected)
+        {
+            return Err(CudaError::InvalidInput(
+                "output buffer length does not match frames * n_radial * n_azimuthal".into(),
+            ));
+        }
+        if frames.is_empty() {
+            return Ok(());
+        }
+        self.run_into(
+            <P as sealed::Sealed>::frames(frames),
+            false,
+            out_intensity,
+            out_errors,
+        )
+    }
+
+    pub fn integrate_stack_into<P: CudaPixel>(
+        &self,
+        stack: &[P],
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let pixels = self.shape.0 * self.shape.1;
+        let bins = self.n_radial * self.n_azimuthal;
+        if !stack.len().is_multiple_of(pixels) {
+            return Err(CudaError::InvalidInput(format!(
+                "stack of {} values is not a whole number of {pixels}-pixel frames",
+                stack.len()
+            )));
+        }
+        let count = stack.len() / pixels;
+        let expected = count * bins;
+        if out_intensity.len() != expected
+            || out_errors.as_ref().is_some_and(|e| e.len() != expected)
+        {
+            return Err(CudaError::InvalidInput(
+                "output buffer length does not match frames * n_radial * n_azimuthal".into(),
+            ));
+        }
+        if stack.is_empty() {
+            return Ok(());
+        }
+        self.run_into(
+            <P as sealed::Sealed>::frames(&[stack]),
+            true,
+            out_intensity,
+            out_errors,
+        )
+    }
+
+    pub fn integrate_bslz4_into(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let bins = self.n_radial * self.n_azimuthal;
+        let expected = chunks.len() * bins;
+        if out_intensity.len() != expected
+            || out_errors.as_ref().is_some_and(|e| e.len() != expected)
+        {
+            return Err(CudaError::InvalidInput(
+                "output buffer length does not match chunks * n_radial * n_azimuthal".into(),
+            ));
+        }
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        self.run_bslz4_into(chunks, dtype, out_intensity, out_errors)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_into(
+        &self,
+        frames: sealed::Frames<'_, '_>,
+        stacked: bool,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        self.engine
+            .run_into(frames, stacked, out_intensity, out_errors)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run_into(
+        &self,
+        _frames: sealed::Frames<'_, '_>,
+        _stacked: bool,
+        _out_intensity: &mut [f64],
+        _out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        match self.engine {}
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_bslz4_into(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        out_intensity: &mut [f64],
+        out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        self.engine
+            .run_bslz4_into(chunks, dtype, out_intensity, out_errors)
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run_bslz4_into(
+        &self,
+        _chunks: &[&[u8]],
+        _dtype: Bslz4Dtype,
+        _out_intensity: &mut [f64],
+        _out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        match self.engine {}
+    }
+
+    #[cfg(feature = "cuda")]
+    fn wrap_results(&self, raw: Vec<(Vec<f64>, Option<Vec<f64>>)>) -> Vec<Fixed2dResult> {
+        raw.into_iter()
+            .map(|(intensity, errors)| Fixed2dResult {
+                radial: self.radial.clone(),
+                azimuthal: self.azimuthal.clone(),
+                intensity,
+                errors,
+                n_radial: self.n_radial,
+                n_azimuthal: self.n_azimuthal,
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run(
+        &self,
+        frames: sealed::Frames<'_, '_>,
+        stacked: bool,
+        errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        Ok(self.wrap_results(self.engine.run_raw(frames, stacked, errors)?))
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run(
+        &self,
+        _frames: sealed::Frames<'_, '_>,
+        _stacked: bool,
+        _errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        match self.engine {}
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        Ok(self.wrap_results(self.engine.run_bslz4_raw(chunks, dtype, errors)?))
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn run_bslz4(
+        &self,
+        _chunks: &[&[u8]],
+        _dtype: Bslz4Dtype,
+        _errors: bool,
+    ) -> Result<Vec<Fixed2dResult>, CudaError> {
+        match self.engine {}
+    }
+
+    #[cfg(all(feature = "cuda", feature = "python"))]
+    pub(crate) fn alloc_pinned_bytes(&self, bytes: usize) -> Result<CudaPinnedBytes, CudaError> {
+        self.engine.alloc_pinned_bytes(bytes)
+    }
+
+    #[cfg(all(not(feature = "cuda"), feature = "python"))]
+    pub(crate) fn alloc_pinned_bytes(&self, _bytes: usize) -> Result<CudaPinnedBytes, CudaError> {
+        match self.engine {}
+    }
+}
+
 /// Owned page-locked host byte buffer allocated on a CUDA context.
 #[cfg(all(feature = "cuda", feature = "python"))]
 pub(crate) struct CudaPinnedBytes {
@@ -769,6 +1125,58 @@ impl Integrator {
         #[cfg(not(feature = "cuda"))]
         {
             let _ = pixels;
+            Err(CudaError::NotCompiled)
+        }
+    }
+
+    /// Uploads this integrator's fixed-mask 2D table for `shape`, `n_radial`
+    /// and `n_azimuthal` (with optional `azimuthal_range`) to a CUDA device.
+    ///
+    /// **Experimental:** excluded from semver guarantees until stabilised.
+    pub fn prepare_cuda2d(
+        &self,
+        shape: (usize, usize),
+        n_radial: usize,
+        n_azimuthal: usize,
+        azimuthal_range: Option<(f64, f64)>,
+        options: &Cuda2dOptions,
+    ) -> Result<Cuda2dPlan, CudaError> {
+        let total_bins = n_radial
+            .checked_mul(n_azimuthal)
+            .filter(|&b| b > 0 && b <= i32::MAX as usize)
+            .ok_or_else(|| {
+                CudaError::InvalidInput(format!(
+                    "2D bin count ({n_radial} x {n_azimuthal}) must be in 1..={}",
+                    i32::MAX
+                ))
+            })?;
+        let pixels = check_configuration(self, shape, total_bins, options.max_batch_bytes)?;
+        if let Some((min, _)) = self.radial_range()
+            && (!min.is_finite() || min < 0.0)
+        {
+            return Err(CudaError::InvalidInput(
+                "2D integration requires radial_range min >= 0".into(),
+            ));
+        }
+        if let Some(range) = azimuthal_range {
+            super::grid::IntegrationGrid2d::new(n_radial, n_azimuthal, (0.0, 1.0), range)
+                .map_err(CudaError::InvalidInput)?;
+        }
+        #[cfg(feature = "cuda")]
+        {
+            device::prepare_2d(
+                self,
+                shape,
+                pixels,
+                n_radial,
+                n_azimuthal,
+                azimuthal_range,
+                options,
+            )
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (pixels, azimuthal_range);
             Err(CudaError::NotCompiled)
         }
     }

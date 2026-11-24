@@ -43,6 +43,8 @@ const FRAMES_PER_LAUNCH: u32 = 256;
 const PARALLEL_STAGE_THRESHOLD: usize = 65_536;
 /// Target pinned staging size per pipeline slot (192 MiB: holds 4 Eiger 9M f32 frames).
 const PINNED_SLOT_BYTES: usize = 192 << 20;
+/// Maximum average entries per bin that prefer `Layout::SubWarp` (8 threads/bin, ideal for 2D).
+const SUBWARP_MAX_ENTRIES_PER_BIN: usize = 256;
 /// Maximum average entries per bin that still prefer `Layout::Warp` over `Layout::Block`.
 const WARP_MAX_ENTRIES_PER_BIN: usize = 5000;
 
@@ -97,6 +99,7 @@ impl Accumulation {
 pub(super) enum Layout {
     Block,
     Warp,
+    SubWarp,
 }
 
 impl Layout {
@@ -107,6 +110,7 @@ impl Layout {
         match self {
             Self::Block => "block",
             Self::Warp => "warp",
+            Self::SubWarp => "subwarp",
         }
     }
 
@@ -114,6 +118,7 @@ impl Layout {
         match self {
             Self::Block => 1,
             Self::Warp => 4,
+            Self::SubWarp => 16,
         }
     }
 }
@@ -484,6 +489,91 @@ pub(super) fn with_table<R>(
         denominator,
         radial: lut.bins(),
     })
+}
+
+/// Builds (or reuses) the integrator's masked 2D CSR table and strict `f64`
+/// denominators, and passes them to `use_table`.
+pub(super) fn with_table_2d<R>(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    n_radial: usize,
+    n_azimuthal: usize,
+    azimuthal_range: Option<(f64, f64)>,
+    use_table: impl FnOnce(&HostTable<'_>, Option<Vec<f64>>, Option<Vec<f64>>) -> Result<R, CudaError>,
+) -> Result<R, CudaError> {
+    let too_large = || CudaError::Unsupported("the CUDA table exceeds 32-bit indices".into());
+    let pixels = u32::try_from(shape.0 * shape.1).map_err(|_| too_large())?;
+    let total_bins = n_radial.checked_mul(n_azimuthal).ok_or_else(too_large)?;
+    let n_bins = u32::try_from(total_bins).map_err(|_| too_large())?;
+    let view = integrator.for_shape(shape.0, shape.1);
+    let norm = view.normalization();
+    let (key, radial_axis, azimuthal_axis) = match azimuthal_range {
+        None => {
+            let key = integrator
+                .try_lut2d_key(&view, n_radial, n_azimuthal, None)
+                .map_err(CudaError::InvalidInput)?;
+            let radial = integrator.radial_range().map(|(lo, hi)| {
+                crate::math::histogram::bins(n_radial, lo, (hi - lo) / n_radial as f64)
+            });
+            (key, radial, None)
+        }
+        Some(range) => {
+            let grid = integrator
+                .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
+                .map_err(CudaError::InvalidInput)?;
+            let rad = grid.radial_centers();
+            let az = grid.azimuthal_centers();
+            (integrator.shared_grid_key(grid), Some(rad), Some(az))
+        }
+    };
+    let lut = view.ensure_lut2d(key);
+    let mask = integrator.mask.as_ref().map(|mask| mask.data.as_slice());
+    let (table, denominator) = lut.fixed_csr_parts(mask, &norm);
+    let rows = table
+        .row_ptr
+        .iter()
+        .map(|&row| u32::try_from(row))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| too_large())?;
+    let entries = rows
+        .last()
+        .copied()
+        .ok_or_else(|| CudaError::Device("the CUDA table has no rows".into()))?;
+    if entries > u32::MAX - 128 {
+        return Err(CudaError::Unsupported(format!(
+            "the CUDA table has {entries} entries; at most {} are supported",
+            u32::MAX - 128
+        )));
+    }
+    if rows.len() != total_bins + 1 || denominator.len() != total_bins {
+        return Err(CudaError::Device(
+            "the CUDA table does not match the requested 2D bins".into(),
+        ));
+    }
+    let columns = match &table.col_idx {
+        Columns::Compact(columns) => Cow::Borrowed(columns.as_slice()),
+        Columns::Wide(columns) => Cow::Owned(
+            columns
+                .iter()
+                .map(|&column| u32::try_from(column))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| too_large())?,
+        ),
+    };
+    use_table(
+        &HostTable {
+            pixels,
+            bins: n_bins,
+            entries,
+            rows,
+            columns,
+            weights: table.values.as_deref(),
+            denominator,
+            radial: Vec::new(),
+        },
+        radial_axis,
+        azimuthal_axis,
+    )
 }
 
 pub(super) struct Plan<T = f32> {
@@ -1214,17 +1304,16 @@ impl Engine {
         })
     }
 
-    /// Integrates frames in double-buffered pinned tiles across two streams.
-    /// Without `stacked`, `frames` holds non-empty frames of the plan's length;
-    /// with it, `frames` holds one non-empty contiguous stack of whole frames
-    /// (both checked by the caller).
-    pub(super) fn run(
+    /// Integrates frames in double-buffered pinned tiles across two streams,
+    /// calling `drain(first_frame, end_frame, pinned_slice)` directly as each
+    /// tile finishes (avoiding any intermediate host copy).
+    fn run_with_sink(
         &self,
         frames: Frames<'_, '_>,
         stacked: bool,
         errors: bool,
-        radial: &[f64],
-    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        mut drain: impl FnMut(usize, usize, &[f64]),
+    ) -> Result<(), CudaError> {
         let count = match frames {
             Frames::U16(frames) if stacked => frame_count(frames, self.pixels)?,
             Frames::U32(frames) if stacked => frame_count(frames, self.pixels)?,
@@ -1251,7 +1340,6 @@ impl Engine {
             _ => size_of::<f32>(),
         };
         let tile = self.pipeline_tile(count, elem_bytes);
-        let mut host = vec![0.0; count * per_frame];
         {
             let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
             let outcome = guarded(|| {
@@ -1277,12 +1365,12 @@ impl Engine {
                     let stream = &self.streams[slot_idx];
                     if let Some((p_first, p_end)) = pending[slot_idx].take() {
                         stream.synchronize()?;
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                     let values = first * pixels..end * pixels;
                     let tile_frames = match frames {
@@ -1368,12 +1456,12 @@ impl Engine {
                 for (slot_idx, range) in pending.into_iter().enumerate() {
                     if let Some((p_first, p_end)) = range {
                         self.streams[slot_idx].synchronize()?;
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                 }
                 Ok(())
@@ -1385,12 +1473,124 @@ impl Engine {
             }
             outcome?;
         }
-        Ok(host
-            .chunks_exact(per_frame)
-            .map(|frame| Fixed1dResult {
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn drain_into_vecs(
+        bins: usize,
+        errors: bool,
+        out: &mut [Option<(Vec<f64>, Option<Vec<f64>>)>],
+        p_first: usize,
+        p_end: usize,
+        src: &[f64],
+    ) {
+        let stride = 1 + usize::from(errors);
+        let per_frame = bins * stride;
+        for (idx, frame) in src.chunks_exact(per_frame).enumerate() {
+            let slot = p_first + idx;
+            debug_assert!(slot < p_end);
+            if errors {
+                let mut intensity = Vec::with_capacity(bins);
+                let mut err = Vec::with_capacity(bins);
+                for &[i, e] in frame.as_chunks::<2>().0 {
+                    intensity.push(i);
+                    err.push(e);
+                }
+                out[slot] = Some((intensity, Some(err)));
+            } else {
+                out[slot] = Some((frame.to_vec(), None));
+            }
+        }
+    }
+
+    fn drain_into_slices(
+        bins: usize,
+        out_intensity: &mut [f64],
+        out_errors: &mut Option<&mut [f64]>,
+        p_first: usize,
+        p_end: usize,
+        src: &[f64],
+    ) {
+        let dst_i = &mut out_intensity[p_first * bins..p_end * bins];
+        if let Some(err_buf) = out_errors.as_deref_mut() {
+            let dst_e = &mut err_buf[p_first * bins..p_end * bins];
+            for ((oi, oe), &[i, e]) in dst_i
+                .iter_mut()
+                .zip(dst_e.iter_mut())
+                .zip(src.as_chunks::<2>().0)
+            {
+                *oi = i;
+                *oe = e;
+            }
+        } else {
+            dst_i.copy_from_slice(src);
+        }
+    }
+
+    /// Integrates frames in double-buffered pinned tiles across two streams,
+    /// returning `(intensity, optional_errors)` per frame with no intermediate
+    /// host copy.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_raw(
+        &self,
+        frames: Frames<'_, '_>,
+        stacked: bool,
+        errors: bool,
+    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
+        let count = match frames {
+            Frames::U16(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::U32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::I32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::F32(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::F64(frames) if stacked => frame_count(frames, self.pixels)?,
+            Frames::U16(frames) => frames.len(),
+            Frames::U32(frames) => frames.len(),
+            Frames::I32(frames) => frames.len(),
+            Frames::F32(frames) => frames.len(),
+            Frames::F64(frames) => frames.len(),
+        };
+        let mut out: Vec<Option<(Vec<f64>, Option<Vec<f64>>)>> = vec![None; count];
+        let bins = self.bins;
+        self.run_with_sink(frames, stacked, errors, |p_first, p_end, src| {
+            Self::drain_into_vecs(bins, errors, &mut out, p_first, p_end, src);
+        })?;
+        Ok(out
+            .into_iter()
+            .map(|x| x.expect("every frame drained"))
+            .collect())
+    }
+
+    /// Integrates frames directly into caller-provided contiguous output slices
+    /// (`out_intensity.len() == count * bins`, optional `out_errors.len() == count * bins`).
+    pub(super) fn run_into(
+        &self,
+        frames: Frames<'_, '_>,
+        stacked: bool,
+        out_intensity: &mut [f64],
+        mut out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let errors = out_errors.is_some();
+        let bins = self.bins;
+        self.run_with_sink(frames, stacked, errors, |p_first, p_end, src| {
+            Self::drain_into_slices(bins, out_intensity, &mut out_errors, p_first, p_end, src);
+        })
+    }
+
+    pub(super) fn run(
+        &self,
+        frames: Frames<'_, '_>,
+        stacked: bool,
+        errors: bool,
+        radial: &[f64],
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        Ok(self
+            .run_raw(frames, stacked, errors)?
+            .into_iter()
+            .map(|(intensity, errors)| Fixed1dResult {
                 radial: radial.to_vec(),
-                intensity: frame.iter().step_by(stride).copied().collect(),
-                errors: errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+                intensity,
+                errors,
             })
             .collect())
     }
@@ -1585,20 +1785,17 @@ impl Engine {
         Ok(count)
     }
 
-    /// Decompresses raw Bitshuffle+LZ4 HDF5 chunks on the GPU and integrates
-    /// them in VRAM across two double-buffered streams.
-    pub(super) fn run_bslz4(
+    fn run_bslz4_with_sink(
         &self,
         chunks: &[&[u8]],
         dtype: Bslz4Dtype,
         errors: bool,
-        radial: &[f64],
-    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        mut drain: impl FnMut(usize, usize, &[f64]),
+    ) -> Result<(), CudaError> {
         let count = chunks.len();
         let stride = 1 + usize::from(errors);
         let per_frame = self.bins * stride;
         let tile = self.pipeline_tile(count, dtype.elem_bytes());
-        let mut host = vec![0.0; count * per_frame];
         {
             let mut scratch = self.scratch.lock().unwrap_or_else(PoisonError::into_inner);
             let outcome = guarded(|| {
@@ -1622,12 +1819,12 @@ impl Engine {
                                 "corrupt or truncated Bitshuffle/LZ4 compressed block".into(),
                             ));
                         }
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                     self.enqueue_bslz4_tile(
                         &mut scratch.slots[slot_idx],
@@ -1650,12 +1847,12 @@ impl Engine {
                                 "corrupt or truncated Bitshuffle/LZ4 compressed block".into(),
                             ));
                         }
-                        let dst = &mut host[p_first * per_frame..p_end * per_frame];
+                        let len = (p_end - p_first) * per_frame;
                         let pinned = scratch.slots[slot_idx]
                             .pinned_out
                             .as_ref()
                             .ok_or_else(|| CudaError::Device("missing pinned output".into()))?;
-                        dst.copy_from_slice(&pinned.as_slice()?[..dst.len()]);
+                        drain(p_first, p_end, &pinned.as_slice()?[..len]);
                     }
                 }
                 Ok(())
@@ -1667,12 +1864,57 @@ impl Engine {
             }
             outcome?;
         }
-        Ok(host
-            .chunks_exact(per_frame)
-            .map(|frame| Fixed1dResult {
+        Ok(())
+    }
+
+    /// Decompresses raw Bitshuffle+LZ4 HDF5 chunks on the GPU and integrates
+    /// them in VRAM across two double-buffered streams.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_bslz4_raw(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+    ) -> Result<Vec<(Vec<f64>, Option<Vec<f64>>)>, CudaError> {
+        let mut out: Vec<Option<(Vec<f64>, Option<Vec<f64>>)>> = vec![None; chunks.len()];
+        let bins = self.bins;
+        self.run_bslz4_with_sink(chunks, dtype, errors, |p_first, p_end, src| {
+            Self::drain_into_vecs(bins, errors, &mut out, p_first, p_end, src);
+        })?;
+        Ok(out
+            .into_iter()
+            .map(|x| x.expect("every frame drained"))
+            .collect())
+    }
+
+    pub(super) fn run_bslz4_into(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        out_intensity: &mut [f64],
+        mut out_errors: Option<&mut [f64]>,
+    ) -> Result<(), CudaError> {
+        let errors = out_errors.is_some();
+        let bins = self.bins;
+        self.run_bslz4_with_sink(chunks, dtype, errors, |p_first, p_end, src| {
+            Self::drain_into_slices(bins, out_intensity, &mut out_errors, p_first, p_end, src);
+        })
+    }
+
+    pub(super) fn run_bslz4(
+        &self,
+        chunks: &[&[u8]],
+        dtype: Bslz4Dtype,
+        errors: bool,
+        radial: &[f64],
+    ) -> Result<Vec<Fixed1dResult>, CudaError> {
+        Ok(self
+            .run_bslz4_raw(chunks, dtype, errors)?
+            .into_iter()
+            .map(|(intensity, errors)| Fixed1dResult {
                 radial: radial.to_vec(),
-                intensity: frame.iter().step_by(stride).copied().collect(),
-                errors: errors.then(|| frame.iter().skip(1).step_by(stride).copied().collect()),
+                intensity,
+                errors,
             })
             .collect())
     }
@@ -1992,64 +2234,64 @@ impl Engine {
     }
 }
 
-/// Steps 6 to 8 of [`Integrator::prepare_cuda1d`]; steps 1 to 4 have passed.
-pub(super) fn prepare(
-    integrator: &Integrator,
-    shape: (usize, usize),
+fn build_engine(
+    cuda: &Cuda,
+    table: &HostTable<'_>,
     pixels: usize,
-    n_points: usize,
+    bins: usize,
     options: &Cuda1dOptions,
-) -> Result<Cuda1dPlan, CudaError> {
-    let cuda = Cuda::open(options.device())?;
+    allow_subwarp: bool,
+) -> Result<(Engine, usize, usize), CudaError> {
     let stream1 = guarded(|| Ok(cuda.context.new_stream()?))?;
     let streams = [Arc::clone(&cuda.stream), stream1];
     let precision = options.precision();
-    let (tables, entries, radial) = with_table(integrator, shape, n_points, |table| {
-        let layout = if table.entries as usize <= n_points.saturating_mul(WARP_MAX_ENTRIES_PER_BIN)
-        {
-            Layout::Warp
-        } else {
-            Layout::Block
-        };
-        let tables = match precision {
-            CudaPrecision::F32 | CudaPrecision::F32Compensated => {
-                let plan = cuda.upload(table, [1.0_f32], encode_f32)?;
-                let mode = if precision == CudaPrecision::F32 {
-                    Accumulation::Plain
-                } else {
-                    Accumulation::Compensated
-                };
-                let gather = both(|errors| plan.kernel(mode, layout, errors))?;
-                let u16 = both(|errors| plan.kernel_u16(mode, layout, errors))?;
-                let u32 = both(|errors| plan.kernel_u32(mode, layout, errors))?;
-                let i32 = both(|errors| plan.kernel_i32(mode, layout, errors))?;
-                Tables::Single {
-                    plan,
-                    gather,
-                    u16,
-                    u32,
-                    i32,
-                }
+    let layout = if allow_subwarp
+        && table.entries as usize <= bins.saturating_mul(SUBWARP_MAX_ENTRIES_PER_BIN)
+    {
+        Layout::SubWarp
+    } else if table.entries as usize <= bins.saturating_mul(WARP_MAX_ENTRIES_PER_BIN) {
+        Layout::Warp
+    } else {
+        Layout::Block
+    };
+    let tables = match precision {
+        CudaPrecision::F32 | CudaPrecision::F32Compensated => {
+            let plan = cuda.upload(table, [1.0_f32], encode_f32)?;
+            let mode = if precision == CudaPrecision::F32 {
+                Accumulation::Plain
+            } else {
+                Accumulation::Compensated
+            };
+            let gather = both(|errors| plan.kernel(mode, layout, errors))?;
+            let u16 = both(|errors| plan.kernel_u16(mode, layout, errors))?;
+            let u32 = both(|errors| plan.kernel_u32(mode, layout, errors))?;
+            let i32 = both(|errors| plan.kernel_i32(mode, layout, errors))?;
+            Tables::Single {
+                plan,
+                gather,
+                u16,
+                u32,
+                i32,
             }
-            CudaPrecision::F64 => {
-                let plan = cuda.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights))?;
-                let wide = both(|errors| plan.kernel(layout, errors))?;
-                let narrow = both(|errors| plan.kernel_f32(layout, errors))?;
-                let u16 = both(|errors| plan.kernel_u16(layout, errors))?;
-                let u32 = both(|errors| plan.kernel_u32(layout, errors))?;
-                let i32 = both(|errors| plan.kernel_i32(layout, errors))?;
-                Tables::Double {
-                    plan,
-                    wide,
-                    narrow,
-                    u16,
-                    u32,
-                    i32,
-                }
+        }
+        CudaPrecision::F64 => {
+            let plan = cuda.upload(table, [1.0_f64], |weights| Cow::Borrowed(weights))?;
+            let wide = both(|errors| plan.kernel(layout, errors))?;
+            let narrow = both(|errors| plan.kernel_f32(layout, errors))?;
+            let u16 = both(|errors| plan.kernel_u16(layout, errors))?;
+            let u32 = both(|errors| plan.kernel_u32(layout, errors))?;
+            let i32 = both(|errors| plan.kernel_i32(layout, errors))?;
+            Tables::Double {
+                plan,
+                wide,
+                narrow,
+                u16,
+                u32,
+                i32,
             }
-        };
-        Ok((tables, table.entries as usize, table.radial.clone()))
-    })?;
+        }
+    };
+    let entries = table.entries as usize;
     let storage = if precision == CudaPrecision::F64 {
         size_of::<f64>()
     } else {
@@ -2057,7 +2299,7 @@ pub(super) fn prepare(
     };
     let frame_bytes = pixels
         .checked_mul(storage)
-        .and_then(|bytes| bytes.checked_add(n_points.checked_mul(2 * size_of::<f64>())?))
+        .and_then(|bytes| bytes.checked_add(bins.checked_mul(2 * size_of::<f64>())?))
         .ok_or_else(|| CudaError::InvalidInput("one CUDA frame exceeds usize bytes".into()))?;
     let explicit_budget = options.max_batch_bytes().is_some();
     let max_batch_frames = match options.max_batch_bytes() {
@@ -2085,7 +2327,6 @@ pub(super) fn prepare(
     };
     // Chunks are counted in u32 by the launch code.
     let max_batch_frames = max_batch_frames.min(u32::MAX as usize);
-    let bins = n_points;
     let decode_u16 = cuda
         .module
         .load_function("bshuf_lz4_decode_u16")
@@ -2102,27 +2343,87 @@ pub(super) fn prepare(
                 "CUDA kernel bshuf_lz4_decode_u32 is missing: {error}"
             ))
         })?;
+    let engine = Engine {
+        tables,
+        decode_u16,
+        decode_u32,
+        streams,
+        pixels,
+        bins,
+        frame_bytes,
+        max_batch_frames,
+        explicit_budget,
+        scratch: Mutex::new(Scratch::default()),
+    };
+    Ok((engine, entries, max_batch_frames))
+}
+
+/// Steps 6 to 8 of [`Integrator::prepare_cuda1d`]; steps 1 to 4 have passed.
+pub(super) fn prepare(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    pixels: usize,
+    n_points: usize,
+    options: &Cuda1dOptions,
+) -> Result<Cuda1dPlan, CudaError> {
+    let cuda = Cuda::open(options.device())?;
+    let (engine, entries, max_batch_frames, radial) =
+        with_table(integrator, shape, n_points, |table| {
+            let (engine, entries, max_batch_frames) =
+                build_engine(&cuda, table, pixels, n_points, options, false)?;
+            Ok((engine, entries, max_batch_frames, table.radial.clone()))
+        })?;
     Ok(Cuda1dPlan {
         shape,
         n_points,
-        precision,
+        precision: options.precision(),
         device: options.device(),
         device_name: cuda.info.device_name.clone().unwrap_or_default(),
         radial,
         table_entries: entries,
         max_batch_frames,
-        engine: Engine {
-            tables,
-            decode_u16,
-            decode_u32,
-            streams,
-            pixels,
-            bins,
-            frame_bytes,
-            max_batch_frames,
-            explicit_budget,
-            scratch: Mutex::new(Scratch::default()),
+        engine,
+    })
+}
+
+/// Steps 6 to 8 of [`Integrator::prepare_cuda2d`]; steps 1 to 4 have passed.
+pub(super) fn prepare_2d(
+    integrator: &Integrator,
+    shape: (usize, usize),
+    pixels: usize,
+    n_radial: usize,
+    n_azimuthal: usize,
+    azimuthal_range: Option<(f64, f64)>,
+    options: &Cuda1dOptions,
+) -> Result<super::Cuda2dPlan, CudaError> {
+    let cuda = Cuda::open(options.device())?;
+    let total_bins = n_radial
+        .checked_mul(n_azimuthal)
+        .ok_or_else(|| CudaError::InvalidInput("2D bin count overflows usize".into()))?;
+    let (engine, entries, max_batch_frames, radial, azimuthal) = with_table_2d(
+        integrator,
+        shape,
+        n_radial,
+        n_azimuthal,
+        azimuthal_range,
+        |table, radial, azimuthal| {
+            let (engine, entries, max_batch_frames) =
+                build_engine(&cuda, table, pixels, total_bins, options, true)?;
+            Ok((engine, entries, max_batch_frames, radial, azimuthal))
         },
+    )?;
+    Ok(super::Cuda2dPlan {
+        shape,
+        n_radial,
+        n_azimuthal,
+        precision: options.precision(),
+        device: options.device(),
+        device_name: cuda.info.device_name.clone().unwrap_or_default(),
+        radial,
+        azimuthal,
+        table_entries: entries,
+        max_batch_frames,
+        engine,
     })
 }
 
