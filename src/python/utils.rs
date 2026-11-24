@@ -203,7 +203,15 @@ pub fn extract_item_dims<T: numpy::Element>(
     array: &PyReadonlyArray2<T>,
     index: usize,
 ) -> PyResult<(usize, usize)> {
-    extract_array_dims(array, "float64")
+    let dtype_name = match std::any::type_name::<T>() {
+        "f64" => "float64",
+        "f32" => "float32",
+        "u16" => "uint16",
+        "u32" => "uint32",
+        "i32" => "int32",
+        other => other,
+    };
+    extract_array_dims(array, dtype_name)
         .map_err(|err| PyValueError::new_err(format!("images[{index}]: {}", err.value(array.py()))))
 }
 

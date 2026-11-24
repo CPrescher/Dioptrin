@@ -530,14 +530,6 @@ impl PyIntegrator {
         })
     }
 
-    /// `batch2d` over a list of arrays: every array is checked first (dtype,
-    /// shape, contiguity, mask), then the frames are integrated without
-    /// copying and with the GIL released. The read-only borrow guards in
-    /// `arrays` outlive the workers; only plain slices cross into them. An
-    /// invalid azimuthal range never gets here: the caller
-    /// (`validate_azimuthal_range`) raises ValueError up front, as for TIFF
-    /// paths.
-    ///
     /// Native-pixel (`f32`/`u16`/`u32`/`i32`) 1D array batch path.
     ///
     /// Kept separate from `batch1d`'s `f64` arm to preserve fat-LTO inlining on
@@ -681,7 +673,13 @@ impl PyIntegrator {
         Ok(results)
     }
 
-    /// Borrow a list of 2D NumPy arrays and run 2D integration on them.
+    /// `batch2d` over a list of arrays: every array is checked first (dtype,
+    /// shape, contiguity, mask), then the frames are integrated without
+    /// copying and with the GIL released. The read-only borrow guards in
+    /// `arrays` outlive the workers; only plain slices cross into them. An
+    /// invalid azimuthal range never gets here: the caller
+    /// (`validate_azimuthal_range`) raises ValueError up front, as for TIFF
+    /// paths.
     ///
     /// `split` is `None` when the caller gave neither `num_workers` nor
     /// `num_threads`: the frames then run as in `batch1d`'s array branch, a

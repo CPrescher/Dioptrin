@@ -703,7 +703,7 @@ impl AzimuthalSegments {
 
     fn clamped(azimuthal_min: f64, azimuthal_step: f64, n_azimuthal: usize) -> Option<Self> {
         const PI: f64 = std::f64::consts::PI;
-        if n_azimuthal == 0 || !(azimuthal_step > 0.0 && azimuthal_step.is_finite()) {
+        if n_azimuthal == 0 || !(azimuthal_step > 1e-9 && azimuthal_step.is_finite()) {
             return None;
         }
         let mut breaks = Vec::with_capacity(n_azimuthal);
@@ -915,7 +915,7 @@ where
                             let hi_ok =
                                 rb_hi == n_radial - 1 || u_min - MARGIN > c_edges[rb_hi + 1];
 
-                            if lo_ok && hi_ok && rb_hi - rb_lo < 16 {
+                            if lo_ok && hi_ok && rb_hi >= rb_lo && rb_hi - rb_lo < 16 {
                                 let single_r = rb_lo == rb_hi;
                                 let two_r = rb_hi == rb_lo + 1;
                                 let single_a = ab0 == ab1;

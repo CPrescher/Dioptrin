@@ -338,6 +338,12 @@ impl Integrator {
         n_points: usize,
         errors: bool,
     ) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>) {
+        assert_eq!(
+            data.len(),
+            dim1 * dim2,
+            "data length ({}) does not match shape ({dim1}, {dim2})",
+            data.len()
+        );
         let Some(key) = self.one_d_key(n_points) else {
             let owned: Vec<f64> = data.iter().map(|&x| x.to_f64()).collect();
             return if errors {
