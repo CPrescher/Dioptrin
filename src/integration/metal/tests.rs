@@ -1,7 +1,9 @@
 use super::*;
+#[cfg(all(feature = "metal", target_os = "macos"))]
 use crate::frame::Frame;
 use crate::geometry::Geometry;
 use crate::integration::{IntegrationMethod, Integrator, MaskMode};
+#[cfg(all(feature = "metal", target_os = "macos"))]
 use crate::mask::Mask;
 use crate::poni::Poni;
 
@@ -15,6 +17,7 @@ fn test_integrator(method: IntegrationMethod, shape: (usize, usize)) -> Integrat
     ai
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn make_frame(data: Vec<f64>, shape: (usize, usize)) -> Frame {
     Frame {
         name: String::new(),
@@ -24,6 +27,7 @@ fn make_frame(data: Vec<f64>, shape: (usize, usize)) -> Frame {
     }
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn synthetic_frame_f64(rows: usize, cols: usize, seed: usize) -> Vec<f64> {
     (0..rows * cols)
         .map(|i| {
@@ -33,6 +37,7 @@ fn synthetic_frame_f64(rows: usize, cols: usize, seed: usize) -> Vec<f64> {
         .collect()
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn assert_close(actual: &[f64], expected: &[f64], rtol: f64, atol: f64, label: &str) {
     assert_eq!(actual.len(), expected.len(), "{label}: length mismatch");
     for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {

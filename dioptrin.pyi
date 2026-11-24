@@ -112,6 +112,25 @@ def cuda_info(device: int = 0) -> dict[str, object]:
     ...
 
 
+class MetalUnavailableError(RuntimeError):
+    """Experimental: Metal cannot be used.
+
+    Raised when dioptrin was built without the ``metal`` cargo feature, on
+    non-macOS platforms, or when the Metal device or kernels cannot be
+    initialised. A subclass of ``RuntimeError``.
+    """
+
+
+def metal_available(device: int = 0) -> bool:
+    """Experimental: whether Metal device ``device`` can be used by this build."""
+    ...
+
+
+def metal_info(device: int = 0) -> dict[str, object]:
+    """Experimental: describe the Metal build and device ``device``."""
+    ...
+
+
 class IntegrationResult:
     """
     Result of an integration operation.
@@ -490,6 +509,33 @@ class Integrator:
         ``radial_range`` and ``azimuthal_range`` / ``azimuthal_bracket``.
         Mirrors ``prepare_cuda1d`` for 2D cakes.
         """
+        ...
+
+    def prepare_metal1d(
+        self,
+        shape: Tuple[int, int],
+        n_points: int,
+        *,
+        precision: Literal["f32", "f32_compensated"] = "f32_compensated",
+        device: int = 0,
+        max_batch_bytes: Optional[int] = None,
+    ) -> Metal1dPlan:
+        """Experimental: upload the fixed-mask 1D table to a Metal GPU device on macOS."""
+        ...
+
+    def prepare_metal2d(
+        self,
+        shape: Tuple[int, int],
+        n_radial: int,
+        n_azimuthal: Optional[int] = None,
+        *,
+        azimuthal_range: Optional[Tuple[float, float]] = None,
+        azimuthal_bracket: Optional[float] = None,
+        precision: Literal["f32", "f32_compensated"] = "f32_compensated",
+        device: int = 0,
+        max_batch_bytes: Optional[int] = None,
+    ) -> Metal2dPlan:
+        """Experimental: upload the fixed-mask 2D table to a Metal GPU device on macOS."""
         ...
 
     def clear_file_workers(self) -> None:
@@ -1405,6 +1451,115 @@ class Cuda2dPlan:
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Decompress raw Bitshuffle+LZ4 chunks on the GPU directly into a 3D NumPy ``(n_frames, n_azimuthal, n_radial)`` array."""
         ...
+
+
+class Metal1dPlan:
+    """Experimental: prepared fixed-mask 1D integration plan on a Metal GPU device."""
+
+    @property
+    def shape(self) -> Tuple[int, int]: ...
+    @property
+    def n_points(self) -> int: ...
+    @property
+    def precision(self) -> str: ...
+    @property
+    def device(self) -> int: ...
+    @property
+    def device_name(self) -> str: ...
+    @property
+    def radial(self) -> list[float]: ...
+    @property
+    def max_batch_frames(self) -> int: ...
+    @property
+    def table_entries(self) -> int: ...
+
+    def integrate1d(
+        self,
+        image: np.ndarray,
+        *,
+        errors: bool = False,
+    ) -> IntegrationResult: ...
+
+    def batch1d(
+        self,
+        images: Union[list[np.ndarray], tuple[np.ndarray, ...], np.ndarray],
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]: ...
+
+    def batch1d_bslz4(
+        self,
+        chunks: Union[list[Any], tuple[Any, ...]],
+        dtype: Literal["uint16", "uint32", "int32"] = "uint32",
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]: ...
+
+    def alloc_shared_batch(
+        self,
+        n_frames: int,
+        dtype: Literal["float32", "uint16", "uint32", "int32", "float64"] = "float32",
+    ) -> np.ndarray: ...
+
+
+class Metal2dPlan:
+    """Experimental: prepared fixed-mask 2D integration plan on a Metal GPU device."""
+
+    @property
+    def shape(self) -> Tuple[int, int]: ...
+    @property
+    def n_radial(self) -> int: ...
+    @property
+    def n_azimuthal(self) -> int: ...
+    @property
+    def radial(self) -> Optional[list[float]]: ...
+    @property
+    def azimuthal(self) -> Optional[list[float]]: ...
+    @property
+    def precision(self) -> str: ...
+    @property
+    def device(self) -> int: ...
+    @property
+    def device_name(self) -> str: ...
+    @property
+    def max_batch_frames(self) -> int: ...
+    @property
+    def table_entries(self) -> int: ...
+
+    def integrate2d(
+        self,
+        image: np.ndarray,
+        *,
+        errors: bool = False,
+    ) -> IntegrationResult: ...
+
+    def batch2d(
+        self,
+        images: Union[list[np.ndarray], tuple[np.ndarray, ...], np.ndarray],
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]: ...
+
+    def batch2d_stack(
+        self,
+        images: np.ndarray,
+        *,
+        errors: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]: ...
+
+    def batch2d_bslz4(
+        self,
+        chunks: Union[list[Any], tuple[Any, ...]],
+        dtype: Literal["uint16", "uint32", "int32"] = "uint32",
+        *,
+        errors: bool = False,
+    ) -> list[IntegrationResult]: ...
+
+    def alloc_shared_batch(
+        self,
+        n_frames: int,
+        dtype: Literal["float32", "uint16", "uint32", "int32", "float64"] = "float32",
+    ) -> np.ndarray: ...
 
 
 # ---------------------------------------------------------------------------
