@@ -2240,11 +2240,14 @@ fn build_engine(
     pixels: usize,
     bins: usize,
     options: &Cuda1dOptions,
+    allow_subwarp: bool,
 ) -> Result<(Engine, usize, usize), CudaError> {
     let stream1 = guarded(|| Ok(cuda.context.new_stream()?))?;
     let streams = [Arc::clone(&cuda.stream), stream1];
     let precision = options.precision();
-    let layout = if table.entries as usize <= bins.saturating_mul(SUBWARP_MAX_ENTRIES_PER_BIN) {
+    let layout = if allow_subwarp
+        && table.entries as usize <= bins.saturating_mul(SUBWARP_MAX_ENTRIES_PER_BIN)
+    {
         Layout::SubWarp
     } else if table.entries as usize <= bins.saturating_mul(WARP_MAX_ENTRIES_PER_BIN) {
         Layout::Warp
@@ -2367,7 +2370,7 @@ pub(super) fn prepare(
     let (engine, entries, max_batch_frames, radial) =
         with_table(integrator, shape, n_points, |table| {
             let (engine, entries, max_batch_frames) =
-                build_engine(&cuda, table, pixels, n_points, options)?;
+                build_engine(&cuda, table, pixels, n_points, options, false)?;
             Ok((engine, entries, max_batch_frames, table.radial.clone()))
         })?;
     Ok(Cuda1dPlan {
@@ -2405,7 +2408,7 @@ pub(super) fn prepare_2d(
         azimuthal_range,
         |table, radial, azimuthal| {
             let (engine, entries, max_batch_frames) =
-                build_engine(&cuda, table, pixels, total_bins, options)?;
+                build_engine(&cuda, table, pixels, total_bins, options, true)?;
             Ok((engine, entries, max_batch_frames, radial, azimuthal))
         },
     )?;

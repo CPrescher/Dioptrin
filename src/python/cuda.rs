@@ -1211,8 +1211,10 @@ impl PyCuda2dPlan {
         let (n_az, n_rad) = (self.plan.n_azimuthal(), self.plan.n_radial());
         let slices: Vec<&[u8]> = buffers
             .iter()
-            .map(|buf| unsafe {
-                std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes())
+            .map(|buf| {
+                // SAFETY: `buf` holds a live Py_buffer lock for the duration of
+                // this synchronous call and is verified C-contiguous.
+                unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes()) }
             })
             .collect();
         let intensity = unsafe { PyArray3::<f64>::new(py, [n_frames, n_az, n_rad], false) };
