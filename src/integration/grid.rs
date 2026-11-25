@@ -409,9 +409,8 @@ impl Integrator {
     /// Cache key of the shared-grid table for this integrator's method and unit.
     pub(super) fn shared_grid_key(&self, grid: IntegrationGrid2d) -> super::cache::TwoDKey {
         let sampling = match LutSampling::from_method(self.method) {
-            Some(LutSampling::PixelSplit(_)) => LutSampling::PixelSplit(grid.pixel_split_mode),
-            Some(sampling) => sampling,
-            None => unreachable!("Histogram rejected before shared-grid key construction"),
+            LutSampling::PixelSplit(_) => LutSampling::PixelSplit(grid.pixel_split_mode),
+            sampling => sampling,
         };
         super::cache::TwoDKey::SharedGrid {
             grid,
@@ -485,7 +484,6 @@ impl Integrator {
     ///
     /// Non-finite pixels behave as on the default path: they are not rejected
     /// and make only the bins they contribute to NaN or infinite.
-    /// `IntegrationMethod::Histogram` is rejected.
     ///
     /// With `IntegrationMethod::PyfaiFull`, individual bins depend on how the
     /// range is written: a range and the same range shifted by 2π can differ,
@@ -849,7 +847,7 @@ impl Integrator {
     }
 
     /// 4-frame SIMD-tiled fixed-mask 2D CSR integration. Returns `None` for
-    /// Histogram, dynamic masks, invalid arguments, or CSR `fast_math && errors`.
+    /// dynamic masks, invalid arguments, or CSR `fast_math && errors`.
     #[allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
     pub(crate) fn try_integrate2d_batch4<P: crate::frame::Pixel>(
         &self,
@@ -1075,7 +1073,6 @@ impl Integrator {
                     histogram::ss_tth_min_max_step(&geom, &state.radial, n_radial, n_ss, unit);
                 (lo, hi)
             }
-            IntegrationMethod::Histogram => unreachable!(),
         };
         *cache.write().expect("radial edge cache lock poisoned") = Some((key, edges));
         edges
@@ -1141,19 +1138,13 @@ impl Integrator {
         {
             return Err("polarization_factor must be finite and in [-1, 1]".into());
         }
-        match self.method {
-            IntegrationMethod::Histogram => {
-                return Err("shared 2D integration does not support Histogram".into());
-            }
-            IntegrationMethod::Supersampled { n_ss }
-                if n_ss == 0
-                    || n_ss.checked_add(1).is_none()
-                    || n_ss.checked_mul(n_ss).is_none()
-                    || dim2.checked_mul(n_ss).is_none() =>
-            {
-                return Err("n_ss must be positive and fit sampling indices".into());
-            }
-            _ => (),
+        if let IntegrationMethod::Supersampled { n_ss } = self.method
+            && (n_ss == 0
+                || n_ss.checked_add(1).is_none()
+                || n_ss.checked_mul(n_ss).is_none()
+                || dim2.checked_mul(n_ss).is_none())
+        {
+            return Err("n_ss must be positive and fit sampling indices".into());
         }
         Ok(())
     }

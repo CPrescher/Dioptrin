@@ -542,9 +542,7 @@ pub(super) fn with_table<R>(
     let n_bins = u32::try_from(bins).map_err(|_| too_large())?;
     let view = integrator.for_shape(shape.0, shape.1);
     let norm = view.normalization();
-    let key = integrator.one_d_key(bins).ok_or_else(|| {
-        CudaError::Unsupported("the integration method has no 1D lookup table".into())
-    })?;
+    let key = integrator.one_d_key(bins);
     let lut = view.ensure_lut1d(key);
     let mask = integrator.mask.as_ref().map(|mask| mask.data.as_slice());
     let (table, denominator) = lut.fixed_csr_parts(mask, &norm);

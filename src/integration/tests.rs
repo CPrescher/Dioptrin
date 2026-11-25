@@ -120,10 +120,8 @@ fn test_integrator() {
     let poni: Poni = Poni::load("test_data/v1.poni").unwrap();
     let frame = Frame::from_tiff(String::from("test_data/CeO2_Pilatus1M.tif")).unwrap();
     let geometry = Geometry::new(0, 0, poni);
-    let integrator = Integrator::new(geometry)
-        .with_method(IntegrationMethod::Histogram)
-        .with_polarization_factor(0.99);
-    let (tth, int) = integrator.integrate1d(&frame, 850);
+    let integrator = Integrator::new(geometry).with_polarization_factor(0.99);
+    let (tth, int) = integrator.integrate1d_histogram(&frame, 850);
 
     util::save_vec2("pattern.txt", &tth, &int);
 
@@ -650,24 +648,6 @@ fn test_integrate1d_raw_with_variance_matches_integrate1d_with_errors() {
     }
 }
 
-#[test]
-#[should_panic(expected = "not supported for Histogram")]
-fn test_integrate1d_raw_panics_for_histogram() {
-    let mut poni = Poni::new();
-    poni.pixel1 = 1.0;
-    poni.pixel2 = 1.0;
-    poni.distance = 100.0;
-    let geometry = Geometry::new(10, 10, poni);
-    let frame = Frame {
-        name: String::from("test"),
-        data: vec![1.0; 100],
-        dim1: 10,
-        dim2: 10,
-    };
-    let integrator = Integrator::new(geometry).with_method(IntegrationMethod::Histogram);
-    let _ = integrator.integrate1d_raw(&frame, 20);
-}
-
 // ============================================================================
 // MultiIntegrator tests
 // ============================================================================
@@ -838,19 +818,6 @@ fn test_multi_integrator_from_slices() {
             i
         );
     }
-}
-
-#[test]
-#[should_panic(expected = "does not support Histogram")]
-fn test_multi_integrator_rejects_histogram() {
-    let mut poni = Poni::new();
-    poni.pixel1 = 1.0;
-    poni.pixel2 = 1.0;
-    poni.distance = 100.0;
-    let int1 = Integrator::new(Geometry::new(10, 10, poni))
-        .with_method(IntegrationMethod::Histogram)
-        .with_radial_range(0.0, 0.2);
-    let _ = crate::multi::MultiIntegrator::new(vec![int1]);
 }
 
 #[test]
@@ -1065,7 +1032,6 @@ fn azimuthal_std_preserves_patterns_errors_and_units() {
         IntegrationMethod::Counting,
         IntegrationMethod::PixelSplit,
         IntegrationMethod::Supersampled { n_ss: 3 },
-        IntegrationMethod::Histogram,
     ] {
         for unit in [
             RadialUnit::TthRad,
@@ -1361,122 +1327,26 @@ fn polarization_setter_reuses_unchanged_corrections_and_updates_changed_factors(
 }
 
 /// The outermost pixel can round to bin index `n_points`; it belongs to the last
-/// bin. The Histogram method used to index out of bounds here.
+/// bin. The legacy histogram helper used to index out of bounds here.
 #[test]
 fn histogram_method_keeps_the_outermost_pixel_in_range() {
     let (frame, poni) = small_radial_unit_fixture();
     let (rows, cols) = (frame.dim1, frame.dim2);
     let data = vec![1.0; rows * cols];
     for unit in [RadialUnit::TthDeg, RadialUnit::QNm] {
-        let integrator = Integrator::new(Geometry::new(rows, cols, poni.clone()))
-            .with_method(IntegrationMethod::Histogram)
-            .with_radial_unit(unit);
+        let integrator =
+            Integrator::new(Geometry::new(rows, cols, poni.clone())).with_radial_unit(unit);
         for n in [1000, 1500, 2000, 3000] {
-            let (x, y) = integrator.integrate1d_from_slice(&data, rows, cols, n);
+            let (x, y) = integrator.integrate1d_histogram_from_slice(&data, rows, cols, n);
             assert_eq!((x.len(), y.len()), (n, n));
             // The last bin holds the outermost pixel, so it is not empty.
             assert!(y[n - 1] > 0.0, "{unit:?}, n {n}");
-            let (_, y, sigma) = integrator.integrate1d_with_errors_from_slice(&data, rows, cols, n);
+            let (_, y, sigma) =
+                integrator.integrate1d_histogram_with_errors_from_slice(&data, rows, cols, n);
             assert_eq!((y.len(), sigma.len()), (n, n));
             assert!(y[n - 1] > 0.0 && sigma[n - 1] > 0.0, "{unit:?}, n {n}");
         }
     }
-}
-
-/// Histogram has no azimuthal binning. Every 2D entry point used to return the
-/// 1D radial profile (`n_radial` values instead of `n_radial * n_azimuthal`);
-/// they now panic with a clear message instead.
-#[test]
-fn histogram_method_is_rejected_by_every_2d_entry_point() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    let (rows, cols) = (8, 9);
-    let mut poni = Poni::new();
-    poni.pixel1 = 0.1;
-    poni.pixel2 = 0.1;
-    poni.distance = 1.0;
-    poni.poni1 = 0.4;
-    poni.poni2 = 0.45;
-    let data: Vec<f64> = (0..rows * cols).map(|i| 1.0 + (i % 5) as f64).collect();
-    let frame = Frame {
-        name: "hist2d".into(),
-        data: data.clone(),
-        dim1: rows,
-        dim2: cols,
-    };
-    let integrator =
-        Integrator::new(Geometry::new(rows, cols, poni)).with_method(IntegrationMethod::Histogram);
-    let (nr, na, start, step) = (6, 4, 0.0, PI / 2.0);
-
-    type Call<'a> = (&'a str, Box<dyn Fn() + 'a>);
-    let it = &integrator;
-    let (f, d) = (&frame, &data);
-    let calls: Vec<Call> = vec![
-        (
-            "integrate2d",
-            Box::new(move || drop(it.integrate2d(f, nr, na))),
-        ),
-        (
-            "integrate2d_from_slice",
-            Box::new(move || drop(it.integrate2d_from_slice(d, rows, cols, nr, na))),
-        ),
-        (
-            "integrate2d_with_azimuthal_range",
-            Box::new(move || {
-                drop(it.integrate2d_with_azimuthal_range(f, nr, na, start, step));
-            }),
-        ),
-        (
-            "integrate2d_with_azimuthal_range_from_slice",
-            Box::new(move || {
-                drop(it.integrate2d_with_azimuthal_range_from_slice(
-                    d, rows, cols, nr, na, start, step,
-                ));
-            }),
-        ),
-        (
-            "integrate2d_with_errors",
-            Box::new(move || drop(it.integrate2d_with_errors(f, nr, na))),
-        ),
-        (
-            "integrate2d_with_errors_from_slice",
-            Box::new(move || drop(it.integrate2d_with_errors_from_slice(d, rows, cols, nr, na))),
-        ),
-        (
-            "integrate2d_with_azimuthal_range_and_errors",
-            Box::new(move || {
-                drop(it.integrate2d_with_azimuthal_range_and_errors(f, nr, na, start, step));
-            }),
-        ),
-        (
-            "integrate2d_with_azimuthal_range_and_errors_from_slice",
-            Box::new(move || {
-                drop(it.integrate2d_with_azimuthal_range_and_errors_from_slice(
-                    d, rows, cols, nr, na, start, step,
-                ));
-            }),
-        ),
-    ];
-    for (name, call) in calls {
-        let payload = catch_unwind(AssertUnwindSafe(call))
-            .expect_err(&format!("{name} accepted the Histogram method"));
-        let message = payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or_default();
-        assert_eq!(
-            message,
-            format!("{name} is not supported for Histogram method")
-        );
-    }
-
-    // 1D Histogram integration is unaffected.
-    let (x, y) = integrator.integrate1d(&frame, nr);
-    assert_eq!((x.len(), y.len()), (nr, nr));
-    assert!(y.iter().any(|&v| v > 0.0));
-    let (x, y, sigma) = integrator.integrate1d_with_errors_from_slice(&data, rows, cols, nr);
-    assert_eq!((x.len(), y.len(), sigma.len()), (nr, nr, nr));
 }
 
 mod pyfai_full_legacy_azimuthal_range {

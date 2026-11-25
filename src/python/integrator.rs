@@ -11,9 +11,7 @@ use crate::batch::{
 };
 use crate::frame::{Frame, TiffFrame};
 use crate::geometry::Geometry;
-use crate::integration::{
-    IntegrationGrid2d, IntegrationMethod, Integrator, MaskMode, RadialUnit, SparseLayout,
-};
+use crate::integration::{IntegrationGrid2d, Integrator, MaskMode, RadialUnit, SparseLayout};
 use crate::mask::Mask;
 use crate::poni::Poni;
 
@@ -21,9 +19,9 @@ use super::results::{BatchEntry, BatchReceiver, PyBatchIterator, PyIntegrationRe
 use super::streaming::QueueStream;
 use super::utils::{
     BatchImageInput, ClassifiedInput, ImageInput, StackImageInput, batch_images, batch2d_images,
-    check_mask_shape, check_method_radial_range, check_polarization_factor, check_positive,
-    check_unit_wavelength, classify_batch_input, extract_array_dims, extract_item_dims, mask_shape,
-    parse_method, parse_unit, poni_from_dict, resolve_workers_threads, validate_integrator_options,
+    check_mask_shape, check_polarization_factor, check_positive, check_unit_wavelength,
+    classify_batch_input, extract_array_dims, extract_item_dims, mask_shape, parse_method,
+    parse_unit, poni_from_dict, resolve_workers_threads, validate_integrator_options,
 };
 
 /// Raise ValueError for an invalid `azimuthal_range=(min, max)` before a batch
@@ -199,18 +197,6 @@ impl PyIntegrator {
         &self.integrator
     }
 
-    /// The Histogram method has no azimuthal binning, so 2D integration rejects
-    /// it before any work starts instead of panicking inside Rust.
-    fn reject_histogram_2d(&self, function: &str) -> PyResult<()> {
-        if matches!(self.integrator.method(), IntegrationMethod::Histogram) {
-            return Err(PyValueError::new_err(format!(
-                "{function} is not supported for the 'histogram' method; \
-                 use 'counting', 'pixel_split', 'pyfai_full' or 'supersampled'"
-            )));
-        }
-        Ok(())
-    }
-
     /// Shared constructor body: validates options core would accept unchecked.
     #[allow(clippy::too_many_arguments)]
     fn build(
@@ -227,7 +213,6 @@ impl PyIntegrator {
         let unit = parse_unit(unit)?;
         validate_integrator_options(&poni, unit, polarization_factor, radial_range)?;
         let method = parse_method(method, n_ss)?;
-        check_method_radial_range(&method, radial_range)?;
         let geometry = Geometry::new(0, 0, poni);
         let mut integrator = Integrator::new(geometry)
             .with_method(method)
@@ -1161,7 +1146,7 @@ impl PyIntegrator {
     /// # Arguments
     ///
     /// * `poni_path` - Path to the PONI calibration file (v1 or v2 format)
-    /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
+    /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", or "supersampled"
     /// * `polarization_factor` - Optional polarization factor P in [-1, 1]: +1 fully
     ///   polarised along the horizontal axis (chi = 0, detector dim2; the usual
     ///   synchrotron case, typically 0.95-0.99), -1 vertical, 0 unpolarised
@@ -1226,7 +1211,7 @@ impl PyIntegrator {
     /// # Arguments
     ///
     /// * `poni_dict` - Dictionary containing PONI calibration parameters
-    /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
+    /// * `method` - Integration method: "pixel_split" (default), "pyfai_full", "counting", or "supersampled"
     /// * `polarization_factor` - Optional polarization factor P in [-1, 1]: +1 fully
     ///   polarised along the horizontal axis (chi = 0, detector dim2; the usual
     ///   synchrotron case, typically 0.95-0.99), -1 vertical, 0 unpolarised
@@ -1475,7 +1460,6 @@ impl PyIntegrator {
         azimuthal_range: Option<(f64, f64)>,
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyIntegrationResult> {
-        self.reject_histogram_2d("integrate2d")?;
         check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
@@ -1590,7 +1574,7 @@ impl PyIntegrator {
     }
 
     /// Changes the integration method used for subsequent integrations.
-    /// Available methods: "pixel_split", "pyfai_full", "counting", "histogram", or "supersampled".
+    /// Available methods: "pixel_split", "pyfai_full", "counting", or "supersampled".
     ///
     /// # Arguments
     ///
@@ -1610,7 +1594,6 @@ impl PyIntegrator {
     #[pyo3(signature = (method, n_ss=None))]
     fn set_method(&mut self, method: &str, n_ss: Option<usize>) -> PyResult<()> {
         let method = parse_method(Some(method), n_ss)?;
-        check_method_radial_range(&method, self.integrator.radial_range())?;
         let integrator = Arc::get_mut(&mut self.integrator)
             .ok_or_else(|| PyValueError::new_err("Integrator is in use by a batch operation"))?;
         integrator.set_method(method);
@@ -2385,7 +2368,6 @@ impl PyIntegrator {
         num_threads: Option<usize>,
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<Vec<BatchEntry>> {
-        self.reject_histogram_2d("batch2d")?;
         check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
@@ -2570,7 +2552,6 @@ impl PyIntegrator {
         azimuthal_range: Option<(f64, f64)>,
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        self.reject_histogram_2d("batch2d_stack")?;
         check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;
@@ -2669,7 +2650,6 @@ impl PyIntegrator {
         num_threads: Option<usize>,
         azimuthal_bracket: Option<f64>,
     ) -> PyResult<PyBatchIterator> {
-        self.reject_histogram_2d("batch2d_iter")?;
         check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
             resolve_azimuthal_bins(n_azimuthal, azimuthal_range, azimuthal_bracket)?;

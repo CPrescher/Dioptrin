@@ -46,7 +46,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::frame::{Frame, TiffFrame};
-use crate::integration::{IntegrationMethod, Integrator};
+use crate::integration::Integrator;
 
 mod bounded;
 mod file_workers;
@@ -100,15 +100,10 @@ pub trait IntegrationTask: Send + Sync {
     }
 }
 
-/// Error message for a task the integrator cannot run: a 2D task with the
-/// Histogram method (matching the `integrate2d*` panic message), or a 2D task
-/// whose explicit radial range or sector the 2D grid cannot use (see
-/// [`IntegrationTask::check_2d`]).
+/// Error message for a 2D task whose explicit radial range or sector the 2D
+/// grid cannot use (see [`IntegrationTask::check_2d`]).
 fn rejection<T: IntegrationTask>(integrator: &Integrator, task: &T) -> Option<String> {
     let method = task.integrate2d_method()?;
-    if matches!(integrator.method(), IntegrationMethod::Histogram) {
-        return Some(format!("{method} is not supported for Histogram method"));
-    }
     task.check_2d(integrator)
         .err()
         .map(|e| format!("{method}: {e}"))
@@ -795,19 +790,6 @@ mod tests {
             .collect()
     }
 
-    /// Every batch helper answers a 2D task with the Histogram method with one
-    /// error per input. Before, `process_files` and both streaming helpers
-    /// lost the inputs to worker panics and returned nothing.
-    fn check_histogram_2d_rejected<T>(task: T, expected: &str)
-    where
-        T: IntegrationTask + Clone + 'static,
-        T::Output: 'static,
-    {
-        let integrator = Integrator::new(Geometry::new(3, 3, test_poni()))
-            .with_method(IntegrationMethod::Histogram);
-        check_every_input_rejected(task, integrator, expected);
-    }
-
     /// `process_files`, `process_files_sequential` and `process_streaming`
     /// answer every input with `expected` (and run no worker that panics).
     fn check_every_input_rejected<T>(task: T, integrator: Integrator, expected: &str)
@@ -991,56 +973,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn batch_helpers_reject_histogram_for_every_2d_task() {
-        let (n_radial, n_azimuthal) = (5, 4);
-        let (azimuthal_min, azimuthal_max) = (0.0, 0.5);
-        check_histogram_2d_rejected(
-            Integration2D {
-                n_radial,
-                n_azimuthal,
-            },
-            "integrate2d is not supported for Histogram method",
-        );
-        check_histogram_2d_rejected(
-            Integration2DWithErrors {
-                n_radial,
-                n_azimuthal,
-            },
-            "integrate2d_with_errors is not supported for Histogram method",
-        );
-        check_histogram_2d_rejected(
-            Integration2DWithAzimuthalRange {
-                n_radial,
-                n_azimuthal,
-                azimuthal_min,
-                azimuthal_max,
-            },
-            "integrate2d_with_azimuthal_range is not supported for Histogram method",
-        );
-        check_histogram_2d_rejected(
-            Integration2DWithAzimuthalRangeAndErrors {
-                n_radial,
-                n_azimuthal,
-                azimuthal_min,
-                azimuthal_max,
-            },
-            "integrate2d_with_azimuthal_range_and_errors is not supported for Histogram method",
-        );
-        for errors in [false, true] {
-            check_histogram_2d_rejected(
-                Integration2DOnAzimuthalRange {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal_min,
-                    azimuthal_max,
-                    errors,
-                },
-                "integrate2d_on_azimuthal_range is not supported for Histogram method",
-            );
-        }
-    }
-
     /// Writes one `width x height` TIFF (an image of shape `(height, width)`).
     fn write_tiff(tag: &str, width: u32, height: u32) -> String {
         use tiff::encoder::{TiffEncoder, colortype};
@@ -1149,24 +1081,6 @@ mod tests {
             }
         }
         for file in [good, other] {
-            std::fs::remove_file(file).unwrap();
-        }
-    }
-
-    #[test]
-    fn batch_helpers_still_run_1d_histogram_tasks() {
-        let files = write_tiffs("hist1d", 3);
-        let integrator = Arc::new(
-            Integrator::new(Geometry::new(3, 3, test_poni()))
-                .with_method(IntegrationMethod::Histogram),
-        );
-        let results = process_files(&files, integrator, Integration1D { n_bins: 4 }, 2, 1);
-        assert_eq!(results.len(), 3);
-        for (_, result) in results {
-            let (x, y) = result.unwrap();
-            assert_eq!((x.len(), y.len()), (4, 4));
-        }
-        for file in files {
             std::fs::remove_file(file).unwrap();
         }
     }

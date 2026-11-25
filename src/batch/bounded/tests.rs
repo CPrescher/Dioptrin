@@ -2,7 +2,7 @@
 //! stream may hang a test; no assertion depends on a sleep.
 use super::*;
 use crate::geometry::Geometry;
-use crate::integration::MaskMode;
+use crate::integration::{IntegrationMethod, MaskMode};
 use crate::mask::Mask;
 use crate::poni::Poni;
 use std::sync::atomic::AtomicBool;
@@ -595,35 +595,6 @@ fn empty_input_ends_at_once() {
     .unwrap();
     assert!(results.next().is_none());
     assert!(results.next().is_none());
-    assert_eq!(Arc::strong_count(&integrator), 1);
-}
-
-#[test]
-fn histogram_2d_tasks_get_one_error_per_item() {
-    let integrator = Arc::new(
-        Integrator::new(Geometry::new(2, 2, small_poni()))
-            .with_method(IntegrationMethod::Histogram),
-    );
-    let task = Integration2D {
-        n_radial: 4,
-        n_azimuthal: 4,
-    };
-    let results: Vec<_> = process_streaming(
-        (0..5).map(small_frame),
-        Arc::clone(&integrator),
-        task,
-        StreamOptions::new(2, 1).read_ahead(2),
-    )
-    .unwrap()
-    .collect();
-    assert_eq!(results.len(), 5);
-    for (i, (index, name, result)) in results.into_iter().enumerate() {
-        assert_eq!((index, name), (i, format!("f{i}")));
-        assert_eq!(
-            result.err().as_deref(),
-            Some("integrate2d is not supported for Histogram method")
-        );
-    }
     assert_eq!(Arc::strong_count(&integrator), 1);
 }
 

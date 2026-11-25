@@ -375,8 +375,6 @@ fn default_radial_axis_matches_the_default_edges() {
             centers(edges, 20)
         );
     }
-    let ai = integrator(IntegrationMethod::Histogram);
-    assert!(ai.radial_centers_2d(ROWS, COLS, 20).is_err());
 }
 
 /// `prepare2d` (used by Python `batch2d` over arrays) builds exactly the table

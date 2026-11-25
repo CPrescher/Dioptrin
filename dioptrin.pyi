@@ -360,7 +360,7 @@ class Integrator:
 
         Args:
             poni_path: Path to the PONI calibration file (v1 or v2 format)
-            method: Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
+            method: Integration method: "pixel_split" (default), "pyfai_full", "counting", or "supersampled"
             polarization_factor: Optional polarization factor P in [-1, 1]: +1 fully
                 polarised along the horizontal axis (chi = 0, detector dim2; the
                 usual synchrotron case, typically 0.95-0.99), -1 vertical,
@@ -417,7 +417,7 @@ class Integrator:
 
         Args:
             poni_dict: Dictionary containing PONI calibration parameters
-            method: Integration method: "pixel_split" (default), "pyfai_full", "counting", "histogram", or "supersampled"
+            method: Integration method: "pixel_split" (default), "pyfai_full", "counting", or "supersampled"
             polarization_factor: Optional polarization factor P in [-1, 1], as for
                 Integrator(): +1 horizontal (chi = 0, detector dim2; typical
                 synchrotron values 0.95-0.99), -1 vertical, 0 unpolarised
@@ -707,7 +707,7 @@ class Integrator:
         Set the integration method.
 
         Changes the integration method used for subsequent integrations.
-        Available methods: "pixel_split", "pyfai_full", "counting", "histogram", or "supersampled".
+        Available methods: "pixel_split", "pyfai_full", "counting", or "supersampled".
 
         Args:
             method: Integration method name

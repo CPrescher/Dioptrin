@@ -1,6 +1,6 @@
 //! Typed TIFF adapters. Arithmetic is shared with the existing f64 CSR path.
+use super::Integrator;
 use super::cache::AzimuthalRangeKey;
-use super::{IntegrationMethod, Integrator};
 use crate::frame::TiffFrame;
 use tiff::decoder::DecodingResult;
 
@@ -27,7 +27,7 @@ impl Integrator {
         frame: &TiffFrame,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-        if frame.legacy().is_some() || matches!(self.method, IntegrationMethod::Histogram) {
+        if frame.legacy().is_some() {
             let f = frame.to_frame();
             return if ERRORS {
                 self.integrate1d_with_errors(&f, n_points)
@@ -40,10 +40,7 @@ impl Integrator {
         let view = self.for_shape(h, w);
         let norm = view.normalization();
         let mask = self.checked_mask(h, w);
-        let key = self
-            .one_d_key(n_points)
-            .expect("Histogram handled before LUT lookup");
-        let lut = view.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(self.one_d_key(n_points));
         pixels!(
             frame,
             data,
@@ -62,7 +59,7 @@ impl Integrator {
         n_azimuthal: usize,
         azimuthal: Option<(f64, f64)>,
     ) -> (Vec<f64>, Vec<f64>) {
-        if frame.legacy().is_some() || matches!(self.method, IntegrationMethod::Histogram) {
+        if frame.legacy().is_some() {
             let f = frame.to_frame();
             return match (ERRORS, azimuthal) {
                 (true, None) => self.integrate2d_with_errors(&f, n_radial, n_azimuthal),

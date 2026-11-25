@@ -51,31 +51,7 @@ impl Integrator {
         let normalization = view.normalization();
         let mask = self.checked_mask(dim1, dim2);
         let variance = errors.then(|| data.iter().map(|&s| s.max(0.0)).collect::<Vec<_>>());
-        let Some(key) = self.one_d_key(n_points) else {
-            // Preserve Histogram's legacy mean of pre-corrected intensities and
-            // its automatic radial range, rather than changing its weighting.
-            let radial = &view.state.radial;
-            let lut = crate::lut::build_lut1d_csr(radial, n_points);
-            let corrected: Vec<_> = data
-                .iter()
-                .zip(normalization.iter())
-                .map(|(&s, &n)| if n > 0.0 { s / n } else { f64::NAN })
-                .collect();
-            let corrected_variance = variance.map(|v| {
-                v.iter()
-                    .zip(normalization.iter())
-                    .map(|(&v, &n)| v / (n * n))
-                    .collect::<Vec<_>>()
-            });
-            return crate::lut::integrate1d_with_azimuthal_std(
-                &corrected,
-                &lut,
-                mask,
-                &vec![1.0; data.len()],
-                corrected_variance.as_deref(),
-            );
-        };
-        let lut = view.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(self.one_d_key(n_points));
         crate::lut::azimuthal::integrate_with_columns(
             data,
             &lut.row_ptr,
@@ -139,18 +115,14 @@ impl Integrator {
         n_points: usize,
         errors: bool,
     ) -> bool {
-        let Some(key) = self.one_d_key(n_points) else {
-            return false;
-        };
         let view = self.for_shape(dim1, dim2);
-        let lut = view.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(self.one_d_key(n_points));
         lut.can_batch4(self.fast_math, errors)
     }
 
     /// 4-frame SIMD-tiled fixed-mask 1D integration on both fast CSC and CSR
-    /// (fast intensity or strict) paths. Returns `None` for Histogram, dynamic
-    /// masks, or CSR `fast_math && errors`, so callers fall back to per-frame
-    /// integration.
+    /// (fast intensity or strict) paths. Returns `None` for dynamic masks or
+    /// CSR `fast_math && errors`, so callers fall back to per-frame integration.
     #[allow(dead_code, clippy::type_complexity)]
     pub(crate) fn try_integrate1d_batch4<P: crate::frame::Pixel>(
         &self,
@@ -160,11 +132,10 @@ impl Integrator {
         n_points: usize,
         errors: bool,
     ) -> Option<[(Vec<f64>, Vec<f64>, Option<Vec<f64>>); 4]> {
-        let key = self.one_d_key(n_points)?;
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let lut = view.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(self.one_d_key(n_points));
         let results = match (self.fast_math, errors) {
             (true, false) => {
                 lut.integrate_batch4::<true, false, P>(signals, mask_data, &normalization)
@@ -197,21 +168,10 @@ impl Integrator {
             "data length ({}) does not match shape ({dim1}, {dim2})",
             data.len()
         );
-        let Some(key) = self.one_d_key(n_points) else {
-            let owned: Vec<f64> = data.iter().map(|&x| x.to_f64()).collect();
-            return if errors {
-                let (r, y, e) =
-                    self.integrate1d_with_errors_from_slice(&owned, dim1, dim2, n_points);
-                (r, y, Some(e))
-            } else {
-                let (r, y) = self.integrate1d_from_slice(&owned, dim1, dim2, n_points);
-                (r, y, None)
-            };
-        };
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let lut = view.ensure_lut1d(key);
+        let lut = view.ensure_lut1d(self.one_d_key(n_points));
         let (r, y, e) = match (self.fast_math, errors) {
             (true, false) => {
                 lut.integrate_pixels::<true, false, P>(data, mask_data, &normalization)
@@ -237,17 +197,7 @@ impl Integrator {
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let Some(key) = self.one_d_key(n_points) else {
-            // Histogram uses pre-corrected intensity for backward compat
-            let radial = &view.state.radial;
-            let corrected: Vec<f64> = data
-                .iter()
-                .zip(normalization.iter())
-                .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                .collect();
-            return histogram::histogram(radial, &corrected, n_points, mask_data);
-        };
-        let lut1d = view.ensure_lut1d(key);
+        let lut1d = view.ensure_lut1d(self.one_d_key(n_points));
         self.lut_integrate1d(data, &lut1d, mask_data, &normalization[..])
     }
 
@@ -261,29 +211,79 @@ impl Integrator {
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let Some(key) = self.one_d_key(n_points) else {
-            let radial = &view.state.radial;
-            let corrected: Vec<f64> = data
-                .iter()
-                .zip(normalization.iter())
-                .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-                .collect();
-            let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
-            let corrected_var: Vec<f64> = variance
-                .iter()
-                .zip(normalization.iter())
-                .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
-                .collect();
-            return histogram::histogram_with_errors(
-                radial,
-                &corrected,
-                &corrected_var,
-                n_points,
-                mask_data,
-            );
-        };
-        let lut1d = view.ensure_lut1d(key);
+        let lut1d = view.ensure_lut1d(self.one_d_key(n_points));
         self.lut_integrate1d_with_errors(data, &lut1d, mask_data, &normalization[..])
+    }
+
+    /// Legacy unweighted 1D histogram integration of pre-corrected pixel intensities.
+    ///
+    /// Always bins over the automatic radial range of pixel centres (`radial_range`
+    /// is ignored) and does not use a cached LUT.
+    #[inline]
+    pub fn integrate1d_histogram(&self, frame: &Frame, n_points: usize) -> (Vec<f64>, Vec<f64>) {
+        self.integrate1d_histogram_from_slice(&frame.data, frame.dim1, frame.dim2, n_points)
+    }
+
+    /// Legacy unweighted 1D histogram integration from a flat slice of pre-corrected
+    /// pixel intensities.
+    pub fn integrate1d_histogram_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
+        let mask_data = self.checked_mask(dim1, dim2);
+        let radial = &view.state.radial;
+        let corrected: Vec<f64> = data
+            .iter()
+            .zip(normalization.iter())
+            .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+            .collect();
+        histogram::histogram(radial, &corrected, n_points, mask_data)
+    }
+
+    /// Legacy unweighted 1D histogram integration with Poisson error estimates.
+    #[inline]
+    pub fn integrate1d_histogram_with_errors(
+        &self,
+        frame: &Frame,
+        n_points: usize,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        self.integrate1d_histogram_with_errors_from_slice(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            n_points,
+        )
+    }
+
+    /// Legacy unweighted 1D histogram integration with Poisson error estimates from a slice.
+    pub fn integrate1d_histogram_with_errors_from_slice(
+        &self,
+        data: &[f64],
+        dim1: usize,
+        dim2: usize,
+        n_points: usize,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let view = self.for_shape(dim1, dim2);
+        let normalization = view.normalization();
+        let mask_data = self.checked_mask(dim1, dim2);
+        let radial = &view.state.radial;
+        let corrected: Vec<f64> = data
+            .iter()
+            .zip(normalization.iter())
+            .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+            .collect();
+        let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
+        let corrected_var: Vec<f64> = variance
+            .iter()
+            .zip(normalization.iter())
+            .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+            .collect();
+        histogram::histogram_with_errors(radial, &corrected, &corrected_var, n_points, mask_data)
     }
 
     fn integrate1d_raw_impl(
@@ -293,15 +293,11 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
         with_variance: bool,
-        caller: &str,
     ) -> crate::lut::IntermediateResult1d {
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let key = self
-            .one_d_key(n_points)
-            .unwrap_or_else(|| panic!("{caller} is not supported for Histogram method"));
-        let lut1d = view.ensure_lut1d(key);
+        let lut1d = view.ensure_lut1d(self.one_d_key(n_points));
         if with_variance {
             self.lut_integrate1d_raw_with_variance(data, &lut1d, mask_data, &normalization[..])
         } else {
@@ -310,43 +306,26 @@ impl Integrator {
     }
 
     /// Raw 1D integration returning intermediate sums (for multi-detector merging).
-    /// Panics if method is Histogram.
     #[inline]
     pub fn integrate1d_raw(
         &self,
         frame: &Frame,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.integrate1d_raw_impl(
-            &frame.data,
-            frame.dim1,
-            frame.dim2,
-            n_points,
-            false,
-            "integrate1d_raw",
-        )
+        self.integrate1d_raw_impl(&frame.data, frame.dim1, frame.dim2, n_points, false)
     }
 
     /// Raw 1D integration with variance returning intermediate sums (for multi-detector merging).
-    /// Panics if method is Histogram.
     #[inline]
     pub fn integrate1d_raw_with_variance(
         &self,
         frame: &Frame,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.integrate1d_raw_impl(
-            &frame.data,
-            frame.dim1,
-            frame.dim2,
-            n_points,
-            true,
-            "integrate1d_raw_with_variance",
-        )
+        self.integrate1d_raw_impl(&frame.data, frame.dim1, frame.dim2, n_points, true)
     }
 
     /// Raw 1D integration from slice returning intermediate sums (for multi-detector merging).
-    /// Panics if method is Histogram.
     #[inline]
     pub fn integrate1d_raw_from_slice(
         &self,
@@ -355,18 +334,10 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.integrate1d_raw_impl(
-            data,
-            dim1,
-            dim2,
-            n_points,
-            false,
-            "integrate1d_raw_from_slice",
-        )
+        self.integrate1d_raw_impl(data, dim1, dim2, n_points, false)
     }
 
     /// Raw 1D integration with variance from slice (for multi-detector merging).
-    /// Panics if method is Histogram.
     #[inline]
     pub fn integrate1d_raw_with_variance_from_slice(
         &self,
@@ -375,14 +346,7 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> crate::lut::IntermediateResult1d {
-        self.integrate1d_raw_impl(
-            data,
-            dim1,
-            dim2,
-            n_points,
-            true,
-            "integrate1d_raw_with_variance_from_slice",
-        )
+        self.integrate1d_raw_impl(data, dim1, dim2, n_points, true)
     }
 
     /// Cache key of the 2D table for `integrate2d*` and
@@ -400,9 +364,6 @@ impl Integrator {
     ) -> Result<TwoDKey, String> {
         let unit = self.radial_unit;
         Ok(match (self.method, self.radial_range, azimuthal) {
-            (IntegrationMethod::Histogram, _, _) => {
-                return Err("2D integration is not supported for Histogram method".into());
-            }
             (IntegrationMethod::PyfaiFull, _, _) | (IntegrationMethod::PixelSplit, None, _) => {
                 self.pixel_split2d_key(n_radial, n_azimuthal, azimuthal)
             }
@@ -451,9 +412,6 @@ impl Integrator {
         azimuthal: Option<AzimuthalRangeKey>,
         caller: &str,
     ) -> TwoDKey {
-        if matches!(self.method, IntegrationMethod::Histogram) {
-            panic!("{caller} is not supported for Histogram method");
-        }
         self.try_lut2d_key(view, n_radial, n_azimuthal, azimuthal)
             .unwrap_or_else(|e| panic!("{caller}: {e}"))
     }
@@ -522,10 +480,6 @@ impl Integrator {
     /// let y = integrator.integrate2d(&frame, 2, 2);
     /// assert_eq!(y.len(), 4);
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     #[inline]
     pub fn integrate2d(&self, frame: &Frame, n_radial: usize, n_azimuthal: usize) -> Vec<f64> {
         self.integrate2d_impl(
@@ -540,10 +494,6 @@ impl Integrator {
     }
 
     /// Like [`Self::integrate2d`], for a row-major `dim1 x dim2` slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     #[inline]
     pub fn integrate2d_from_slice(
         &self,
@@ -578,10 +528,6 @@ impl Integrator {
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
     /// and drop angles outside it instead of folding them into the bins. A sector whose lower
     /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
     /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
     /// positive, or if `azimuthal_start` is not finite.
@@ -612,10 +558,6 @@ impl Integrator {
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
     /// and drop angles outside it instead of folding them into the bins. A sector whose lower
     /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
     /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
     /// positive, or if `azimuthal_start` is not finite.
@@ -643,10 +585,6 @@ impl Integrator {
     }
 
     /// Integrate a frame to 2D and return per-bin errors (standard deviations).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     #[inline]
     pub fn integrate2d_with_errors(
         &self,
@@ -666,10 +604,6 @@ impl Integrator {
     }
 
     /// Like [`Self::integrate2d_with_errors`], for a row-major `dim1 x dim2` slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     #[inline]
     pub fn integrate2d_with_errors_from_slice(
         &self,
@@ -702,10 +636,6 @@ impl Integrator {
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
     /// and drop angles outside it instead of folding them into the bins. A sector whose lower
     /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
     /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
     /// positive, or if `azimuthal_start` is not finite.
@@ -737,10 +667,6 @@ impl Integrator {
     /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
     /// and drop angles outside it instead of folding them into the bins. A sector whose lower
     /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the method is `IntegrationMethod::Histogram`, which has no 2D binning.
     /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
     /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
     /// positive, or if `azimuthal_start` is not finite.

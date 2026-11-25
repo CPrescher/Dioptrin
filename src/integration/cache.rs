@@ -264,15 +264,14 @@ impl Integrator {
             .modify(|lut| lut.invalidate_mask());
     }
 
-    /// Build the 1D LUT cache key for the current method, or `None` for `Histogram`.
-    pub(super) fn one_d_key(&self, n_points: usize) -> Option<OneDKey> {
-        let sampling = LutSampling::from_method(self.method)?;
-        Some(OneDKey {
-            sampling,
+    /// Build the 1D LUT cache key for the current method.
+    pub(super) fn one_d_key(&self, n_points: usize) -> OneDKey {
+        OneDKey {
+            sampling: LutSampling::from_method(self.method),
             n_points,
             unit: self.radial_unit,
             radial_range: self.radial_range_key(),
-        })
+        }
     }
 
     /// Initialize a common batch geometry/LUT before entering parallel frame work.
@@ -283,9 +282,7 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
         }
         let view = self.for_shape(dim1, dim2);
-        if let Some(key) = self.one_d_key(n_points) {
-            drop(view.ensure_lut1d(key));
-        }
+        drop(view.ensure_lut1d(self.one_d_key(n_points)));
     }
 
     pub(super) fn pixel_split2d_key(

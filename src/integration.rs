@@ -225,12 +225,6 @@ impl RadialConverter {
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IntegrationMethod {
-    /// Histogram (unweighted) integration, 1D only.
-    ///
-    /// Always bins over the automatic range of the pixel centres: an explicit
-    /// radial range ([`Integrator::with_radial_range`]) is ignored. The raw
-    /// (`integrate1d_raw*`) and 2D methods do not support it.
-    Histogram,
     /// Average of contributing pixels per bin (unweighted).
     Counting,
     /// Pixel-splitting with fractional/bilinear weights.
@@ -241,11 +235,7 @@ pub enum IntegrationMethod {
     Supersampled { n_ss: usize },
 }
 
-/// LUT-backed sampling strategy (every [`IntegrationMethod`] except `Histogram`).
-///
-/// Unifies the method representation across 1D/2D cache keys and shared-grid
-/// table builders without magic integer encodings or `Histogram => unreachable!()`
-/// branches.
+/// Internal LUT sampling strategy used by cache keys and shared-grid builders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum LutSampling {
     Counting,
@@ -254,13 +244,12 @@ pub(crate) enum LutSampling {
 }
 
 impl LutSampling {
-    pub(crate) fn from_method(method: IntegrationMethod) -> Option<Self> {
+    pub(crate) fn from_method(method: IntegrationMethod) -> Self {
         match method {
-            IntegrationMethod::Histogram => None,
-            IntegrationMethod::Counting => Some(Self::Counting),
-            IntegrationMethod::PixelSplit => Some(Self::PixelSplit(PixelSplitMode::Fractional)),
-            IntegrationMethod::PyfaiFull => Some(Self::PixelSplit(PixelSplitMode::PyfaiHistogram)),
-            IntegrationMethod::Supersampled { n_ss } => Some(Self::Supersampled { n_ss }),
+            IntegrationMethod::Counting => Self::Counting,
+            IntegrationMethod::PixelSplit => Self::PixelSplit(PixelSplitMode::Fractional),
+            IntegrationMethod::PyfaiFull => Self::PixelSplit(PixelSplitMode::PyfaiHistogram),
+            IntegrationMethod::Supersampled { n_ss } => Self::Supersampled { n_ss },
         }
     }
 }
@@ -457,11 +446,10 @@ impl Integrator {
     ///
     /// Not every method and dimension honours it:
     /// - 1D (`integrate1d*`, `integrate1d_raw*`, `integrate1d_with_azimuthal_std`
-    ///   and batch integration): `Counting`, `PixelSplit`, `PyfaiFull` and
-    ///   `Supersampled` bin onto `n_points` equal bins between `min` and `max`
-    ///   and leave out pixels, subpixels or pixel fractions outside the range.
-    ///   [`IntegrationMethod::Histogram`] ignores it and always uses the
-    ///   automatic range of the pixel centres.
+    ///   and batch integration): every method bins onto `n_points` equal bins
+    ///   between `min` and `max` and leaves out pixels, subpixels or pixel
+    ///   fractions outside the range. Legacy [`Integrator::integrate1d_histogram`]
+    ///   ignores it and always uses the automatic range of the pixel centres.
     /// - 2D (`integrate2d*`, `integrate2d_with_azimuthal_range*`,
     ///   `integrate2d_on_azimuthal_range*`/`_brackets*` and batch
     ///   integration): every method bins onto `n_radial` equal bins between
@@ -483,7 +471,6 @@ impl Integrator {
     ///   `max` is dropped, while 1D includes both limits and computes its step
     ///   from `max + 10 ε`, so 1D and 2D bin centres for the same range are not
     ///   bit-equal.
-    ///   `Histogram` has no 2D integration.
     /// - `integrate2d_raw_on_grid*` takes its edges from the grid argument, not
     ///   from this range.
     /// - [`crate::multi::MultiIntegrator`] requires it: every detector must have

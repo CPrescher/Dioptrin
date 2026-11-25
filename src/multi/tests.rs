@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     geometry::Geometry,
-    integration::{MaskMode, RadialUnit},
+    integration::{IntegrationMethod, MaskMode, RadialUnit},
     mask::Mask,
     poni::Poni,
 };

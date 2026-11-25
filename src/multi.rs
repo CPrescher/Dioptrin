@@ -42,7 +42,7 @@ use crate::integration::PixelSplitMode;
 
 #[cfg(test)]
 mod tests;
-use crate::integration::{IntegrationMethod, Integrator};
+use crate::integration::Integrator;
 
 /// Denominator convention for the new shared-grid 2D path only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,12 +109,6 @@ fn validate_integrators(integrators: &[Arc<Integrator>]) -> Result<(), String> {
         .ok_or("All integrators must have a radial_range set for MultiIntegrator")?;
 
     for (i, integrator) in integrators.iter().enumerate() {
-        if matches!(integrator.method(), IntegrationMethod::Histogram) {
-            return Err(format!(
-                "MultiIntegrator does not support Histogram method (integrator {})",
-                i
-            ));
-        }
         if integrator.radial_unit() != unit {
             return Err(format!(
                 "All integrators must have the same radial_unit (integrator {} differs)",
@@ -327,7 +321,6 @@ impl MultiIntegrator {
     ///
     /// # Panics
     /// - If the list is empty
-    /// - If any integrator uses the Histogram method
     /// - If any integrator does not have a radial_range set
     /// - If the radial_unit or radial_range differs across integrators
     pub fn new(integrators: Vec<Integrator>) -> Self {

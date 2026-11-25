@@ -1,5 +1,5 @@
 //! Immutable 1D integration plans shared by independent frame workers.
-use super::{IntegrationMethod, Integrator, MaskMode, SparseLayout};
+use super::{Integrator, MaskMode, SparseLayout};
 use crate::lut::{Lut1d, csc::Sums, prepared::Prepared1d};
 use std::sync::Arc;
 
@@ -42,9 +42,6 @@ impl Integrator {
             .with_sparse_layout(self.sparse_layout);
         integrator.polarization_factor = self.polarization_factor;
         integrator.radial_range = self.radial_range;
-        if matches!(self.method, IntegrationMethod::Histogram) {
-            return Err("dynamic plans require counting, pixel_split or supersampled".into());
-        }
         self.check_image_shape(shape.0, shape.1)?;
         // Complete lazy geometry/CSR/CSC initialization ONCE, before any frame
         // workers start. There are no cache writers on the resulting plan.
@@ -266,6 +263,7 @@ impl Dynamic1dWorker<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integration::IntegrationMethod;
     use crate::{geometry::Geometry, mask::Mask, poni::Poni};
     use rayon::prelude::*;
     use std::sync::Arc;

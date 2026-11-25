@@ -524,9 +524,6 @@ fn invalid_ranges_and_histogram_are_rejected() {
     ] {
         assert!(run(&ai, &data, range, false).is_err(), "{range:?} accepted");
     }
-    let hist = integrator(IntegrationMethod::Histogram);
-    let err = run(&hist, &data, (-PI, PI), false).unwrap_err();
-    assert!(err.contains("Histogram"), "{err}");
 }
 
 fn nonfinite(v: &[f64]) -> Vec<usize> {

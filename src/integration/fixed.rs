@@ -74,10 +74,7 @@ impl Integrator {
         {
             return Err("fixed block plans require fixed masks, fast arithmetic and CSC".into());
         }
-        if matches!(
-            self.method,
-            IntegrationMethod::Histogram | IntegrationMethod::Supersampled { n_ss: 0 }
-        ) {
+        if matches!(self.method, IntegrationMethod::Supersampled { n_ss: 0 }) {
             return Err("unsupported fixed block integration method".into());
         }
         self.check_image_shape(shape.0, shape.1)?;

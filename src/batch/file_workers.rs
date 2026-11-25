@@ -435,6 +435,7 @@ pub(super) fn submit_queue_jobs<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integration::IntegrationMethod;
     use std::time::Duration;
 
     #[test]

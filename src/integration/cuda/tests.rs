@@ -59,9 +59,6 @@ fn configuration_errors_precede_the_driver() {
     assert!(unsupported(dynamic.prepare_cuda1d(shape, 10, &options)));
     // Step 1 (sizes) is checked before step 2 (mask mode).
     assert!(invalid(dynamic.prepare_cuda1d(shape, 0, &options)));
-    assert!(unsupported(
-        integrator(shape, IntegrationMethod::Histogram).prepare_cuda1d(shape, 10, &options)
-    ));
 
     let mask = Mask::from_vec(vec![0; 6 * 7], 6, 7).unwrap();
     let masked = integrator(shape, IntegrationMethod::PyfaiFull).with_mask(mask);

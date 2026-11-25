@@ -15,15 +15,14 @@ fn setup_integrator() -> (Integrator, Frame) {
 }
 
 pub fn integrator_1d_histogram_benchmark(c: &mut Criterion) {
-    let (mut integrator, frame) = setup_integrator();
-    integrator.set_method(IntegrationMethod::Histogram);
+    let (integrator, frame) = setup_integrator();
     let n_points = 1250;
 
     // Warm-up
-    let _ = integrator.integrate1d(&frame, n_points);
+    let _ = integrator.integrate1d_histogram(&frame, n_points);
 
     c.bench_function("integrator 1d histogram", |b| {
-        b.iter(|| integrator.integrate1d(&frame, n_points))
+        b.iter(|| integrator.integrate1d_histogram(&frame, n_points))
     });
 }
 

@@ -285,9 +285,9 @@ fn invalid_shapes_fail_on_every_entry_point() {
                     fixed.prepare_fixed1d((shape[0], shape[1]), 8).map(drop)
                 });
             }
-            let ai = integrator(&detector, IntegrationMethod::Histogram);
+            let ai = integrator(&detector, IntegrationMethod::Counting);
             assert_panics(shape, full, &format!("{name} Histogram {shape:?}"), || {
-                drop(ai.integrate1d(&f, 8))
+                drop(ai.integrate1d_histogram(&f, 8))
             });
         }
     }

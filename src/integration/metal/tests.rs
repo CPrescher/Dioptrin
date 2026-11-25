@@ -67,12 +67,6 @@ fn metal_info_does_not_panic() {
 
 #[test]
 fn configuration_validation_runs_before_device() {
-    let ai = test_integrator(IntegrationMethod::Histogram, (64, 64));
-    let err = ai
-        .prepare_metal1d((64, 64), 100, &Metal1dOptions::new())
-        .unwrap_err();
-    assert!(matches!(err, MetalError::Unsupported(_)));
-
     let ai =
         test_integrator(IntegrationMethod::PixelSplit, (64, 64)).with_mask_mode(MaskMode::Dynamic);
     let err = ai

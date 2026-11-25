@@ -51,7 +51,6 @@ pub fn parse_method(method: Option<&str>, n_ss: Option<usize>) -> Result<Integra
         "pixel_split" | "pixelsplit" | "ps" | "pixelsplitting" => Ok(IntegrationMethod::PixelSplit),
         "pyfai_full" | "pyfai" => Ok(IntegrationMethod::PyfaiFull),
         "counting" | "count" => Ok(IntegrationMethod::Counting),
-        "histogram" | "hist" => Ok(IntegrationMethod::Histogram),
         "supersampled" | "supersample" | "ss" => {
             let n_ss = n_ss.unwrap_or(5);
             if n_ss == 0 {
@@ -177,22 +176,6 @@ pub fn validate_integrator_options(
         return Err(PyValueError::new_err(format!(
             "radial_range must be finite with min < max, got ({min}, {max})"
         )));
-    }
-    Ok(())
-}
-
-/// Histogram always bins over the automatic radial range of the image, so a
-/// `radial_range` would be silently ignored; reject the combination instead.
-pub fn check_method_radial_range(
-    method: &IntegrationMethod,
-    radial_range: Option<(f64, f64)>,
-) -> PyResult<()> {
-    if matches!(method, IntegrationMethod::Histogram) && radial_range.is_some() {
-        return Err(PyValueError::new_err(
-            "radial_range is not supported by the 'histogram' method, which always \
-             uses the automatic radial range; use 'counting', 'pixel_split', \
-             'pyfai_full' or 'supersampled' for an explicit radial_range",
-        ));
     }
     Ok(())
 }

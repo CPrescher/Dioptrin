@@ -17,12 +17,11 @@ use crate::poni::Poni;
 /// Includes two shapes with the same pixel count, which a length check alone
 /// cannot tell apart.
 const SHAPES: [(usize, usize); 3] = [(16, 12), (8, 12), (12, 16)];
-const METHODS: [IntegrationMethod; 5] = [
+const METHODS: [IntegrationMethod; 4] = [
     IntegrationMethod::Counting,
     IntegrationMethod::PixelSplit,
     IntegrationMethod::PyfaiFull,
     IntegrationMethod::Supersampled { n_ss: 2 },
-    IntegrationMethod::Histogram,
 ];
 const N_POINTS: usize = 16;
 const N_RADIAL: usize = 8;
@@ -54,18 +53,16 @@ type Pattern = (Vec<f64>, Vec<f64>);
 /// A frame with its 1D pattern and 2D cake from a fresh integrator.
 type Reference = (Frame, (Pattern, Option<Vec<f64>>));
 
-/// 1D pattern and, except for Histogram (which has no 2D binning), 2D cake.
+/// 1D pattern and 2D cake.
 fn integrate(integrator: &Integrator, frame: &Frame) -> (Pattern, Option<Vec<f64>>) {
     let pattern = integrator.integrate1d_from_slice(&frame.data, frame.dim1, frame.dim2, N_POINTS);
-    let cake = (!matches!(integrator.method(), IntegrationMethod::Histogram)).then(|| {
-        integrator.integrate2d_from_slice(
-            &frame.data,
-            frame.dim1,
-            frame.dim2,
-            N_RADIAL,
-            N_AZIMUTHAL,
-        )
-    });
+    let cake = Some(integrator.integrate2d_from_slice(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        N_RADIAL,
+        N_AZIMUTHAL,
+    ));
     (pattern, cake)
 }
 
@@ -105,21 +102,6 @@ fn references(method: IntegrationMethod) -> Vec<Reference> {
             (frame, expected)
         })
         .collect()
-}
-
-#[test]
-fn histogram_preparation_warms_geometry_without_a_lookup_table() {
-    let ai = integrator(IntegrationMethod::Histogram);
-    assert!(ai.tth().is_empty());
-    ai.prepare1d(SHAPES[0].0, SHAPES[0].1, N_POINTS);
-    assert_eq!(ai.tth().len(), SHAPES[0].0 * SHAPES[0].1);
-    assert!(ai.cache_1d.read().unwrap().lut.is_none());
-    let prepared = ai.geometry_for(SHAPES[0].0, SHAPES[0].1);
-    ai.integrate1d(&frame(SHAPES[0]), N_POINTS);
-    assert!(Arc::ptr_eq(
-        &prepared,
-        &ai.geometry_for(SHAPES[0].0, SHAPES[0].1)
-    ));
 }
 
 #[test]
