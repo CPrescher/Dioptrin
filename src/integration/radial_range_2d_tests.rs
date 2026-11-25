@@ -1,5 +1,4 @@
 //! 2D integration on an explicit radial range (`Integrator::with_radial_range`).
-use super::cache::TwoDKey;
 use super::*;
 use crate::frame::Frame;
 use crate::mask::Mask;
@@ -210,8 +209,8 @@ fn contributions_outside_the_range_are_dropped() {
     }
 }
 
-/// (c) Without a radial range every 2D entry point keeps its default table:
-/// the same cache key as before, so the same builder and bit-identical bins.
+/// (c) Setting and clearing a radial range returns to the exact same default
+/// 2D table and bit-identical output.
 #[test]
 fn default_calls_keep_the_default_tables() {
     let data = image();
@@ -219,38 +218,14 @@ fn default_calls_keep_the_default_tables() {
         let ai = integrator(method);
         let key = |ai: &Integrator| ai.cache_2d.read().unwrap().key.unwrap();
         let plain = ai.integrate2d_from_slice(&data, ROWS, COLS, N_FULL, NA);
-        let expected = match method {
-            IntegrationMethod::Counting => TwoDKey::Counting {
-                n_radial: N_FULL,
-                n_azimuthal: NA,
-                unit: RadialUnit::TthDeg,
-            },
-            IntegrationMethod::PixelSplit => TwoDKey::PixelSplit {
-                n_radial: N_FULL,
-                n_azimuthal: NA,
-                unit: RadialUnit::TthDeg,
-            },
-            IntegrationMethod::Supersampled { n_ss } => TwoDKey::Supersampled {
-                n_radial: N_FULL,
-                n_azimuthal: NA,
-                n_ss,
-                unit: RadialUnit::TthDeg,
-            },
-            _ => TwoDKey::PyfaiFull {
-                n_radial: N_FULL,
-                n_azimuthal: NA,
-                unit: RadialUnit::TthDeg,
-                radial_range: None,
-            },
-        };
-        assert_eq!(key(&ai), expected, "{method:?}");
+        let expected = key(&ai);
         // Setting and clearing a range returns to the very same table.
         let mut toggled = integrator(method);
         toggled.set_radial_range(Some(SUB));
         let _ = toggled.integrate2d_from_slice(&data, ROWS, COLS, N_FULL, NA);
         toggled.set_radial_range(None);
         let again = toggled.integrate2d_from_slice(&data, ROWS, COLS, N_FULL, NA);
-        assert_eq!(key(&toggled), expected);
+        assert_eq!(key(&toggled), expected, "{method:?}");
         assert!(
             plain
                 .iter()

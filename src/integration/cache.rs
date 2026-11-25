@@ -29,34 +29,10 @@ pub(super) struct OneDKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TwoDKey {
-    PyfaiFull {
-        n_radial: usize,
-        n_azimuthal: usize,
-        unit: RadialUnit,
-        radial_range: Option<RadialRangeKey>,
-    },
-    SharedGrid {
-        grid: super::IntegrationGrid2d,
-        unit: RadialUnit,
-        sampling: LutSampling,
-    },
-    Counting {
-        n_radial: usize,
-        n_azimuthal: usize,
-        unit: RadialUnit,
-    },
-    PixelSplit {
-        n_radial: usize,
-        n_azimuthal: usize,
-        unit: RadialUnit,
-    },
-    Supersampled {
-        n_radial: usize,
-        n_azimuthal: usize,
-        n_ss: usize,
-        unit: RadialUnit,
-    },
+pub(super) struct TwoDKey {
+    pub(super) grid: super::IntegrationGrid2d,
+    pub(super) unit: RadialUnit,
+    pub(super) sampling: LutSampling,
 }
 
 /// One memoized lookup table, tagged with everything it was built from: the
@@ -187,23 +163,6 @@ impl Integrator {
         }
         let view = self.for_shape(dim1, dim2);
         drop(view.ensure_lut1d(self.one_d_key(n_points)));
-    }
-
-    pub(super) fn pixel_split2d_key(&self, n_radial: usize, n_azimuthal: usize) -> TwoDKey {
-        if matches!(self.method, super::IntegrationMethod::PyfaiFull) {
-            TwoDKey::PyfaiFull {
-                n_radial,
-                n_azimuthal,
-                unit: self.radial_unit,
-                radial_range: self.radial_range_key(),
-            }
-        } else {
-            TwoDKey::PixelSplit {
-                n_radial,
-                n_azimuthal,
-                unit: self.radial_unit,
-            }
-        }
     }
 }
 
@@ -358,63 +317,8 @@ impl ShapeView<'_> {
             let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
 
             // Build the LUT
-            let lut2d = match key {
-                TwoDKey::PyfaiFull {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                    radial_range,
-                } => {
-                    let [lo, hi] = radial_range
-                        .map(|r| [f64::from_bits(r.min_bits), f64::from_bits(r.max_bits)])
-                        .unwrap_or_else(|| lut::pyfai_radial_range(&geom, unit));
-                    let grid = super::IntegrationGrid2d::new(
-                        n_radial,
-                        n_azimuthal,
-                        (lo, hi),
-                        (-std::f64::consts::PI, std::f64::consts::PI),
-                    )
-                    .unwrap_or_else(|e| panic!("PyfaiFull 2D cake: {e}"))
-                    .with_pixel_split_mode(super::PixelSplitMode::PyfaiHistogram);
-                    lut::shared_grid::build(
-                        &geom,
-                        radial,
-                        azimuth,
-                        &grid,
-                        LutSampling::PixelSplit(PixelSplitMode::PyfaiHistogram),
-                        unit,
-                    )
-                }
-                TwoDKey::SharedGrid {
-                    grid,
-                    unit,
-                    sampling,
-                } => lut::shared_grid::build(&geom, radial, azimuth, &grid, sampling, unit),
-                TwoDKey::Counting {
-                    n_radial,
-                    n_azimuthal,
-                    unit: _,
-                } => lut::build_lut2d_csr(radial, azimuth, n_radial, n_azimuthal),
-                TwoDKey::PixelSplit {
-                    n_radial,
-                    n_azimuthal,
-                    unit,
-                } => lut::build_lut2d_ps_csr(&geom, radial, azimuth, n_radial, n_azimuthal, unit),
-                TwoDKey::Supersampled {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    unit,
-                } => lut::build_lut2d_ss_csr(
-                    &geom,
-                    radial,
-                    azimuth,
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    unit,
-                ),
-            };
+            let lut2d =
+                lut::shared_grid::build(&geom, radial, azimuth, &key.grid, key.sampling, key.unit);
 
             let mut prepared = Prepared2d::new(lut2d);
             prepared.set_mask_mode(integrator.mask_mode);

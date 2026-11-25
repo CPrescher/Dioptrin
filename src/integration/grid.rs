@@ -40,6 +40,9 @@ pub struct IntegrationGrid2d {
     /// supersampled table. Only valid when the edges are derived from the
     /// data itself, so nothing lies more than rounding outside them.
     clamp_radial_outside: bool,
+    /// Put every finite azimuthal value into a bin on the data-derived default
+    /// azimuthal edges of supersampling, matching `clamp_radial_outside`.
+    clamp_azimuthal_outside: bool,
 }
 
 impl IntegrationGrid2d {
@@ -102,6 +105,7 @@ impl IntegrationGrid2d {
             clamp_radial_end: false,
             clamp_index_rounding: false,
             clamp_radial_outside: false,
+            clamp_azimuthal_outside: false,
         })
     }
 
@@ -132,6 +136,11 @@ impl IntegrationGrid2d {
     /// edges; a user-chosen radial range must keep dropping values outside it.
     pub(crate) fn with_clamped_radial_outside(mut self) -> Self {
         self.clamp_radial_outside = true;
+        self
+    }
+
+    pub(crate) fn with_clamped_azimuthal_outside(mut self) -> Self {
+        self.clamp_azimuthal_outside = true;
         self
     }
     pub fn radial_range(&self) -> (f64, f64) {
@@ -171,7 +180,9 @@ impl IntegrationGrid2d {
         {
             return None;
         }
-        let offset = if self.clamp_index_rounding {
+        let offset = if self.clamp_azimuthal_outside {
+            (azimuthal - a0).clamp(0.0, a1 - a0)
+        } else if self.clamp_index_rounding {
             // Wrap only angles outside the edges, so a value just below `a1`
             // is not rounded onto it. In a full circle a wrapped value can
             // round up to `a1`; it lies just below `a0` and belongs to the
@@ -199,7 +210,7 @@ impl IntegrationGrid2d {
         if self.clamp_radial_end || self.clamp_index_rounding || self.clamp_radial_outside {
             r = r.min(self.n_radial - 1);
         }
-        if self.clamp_index_rounding {
+        if self.clamp_index_rounding || self.clamp_azimuthal_outside {
             a = a.min(self.n_azimuthal - 1);
         }
         (r < self.n_radial && a < self.n_azimuthal).then_some(a * self.n_radial + r)
@@ -412,7 +423,7 @@ impl Integrator {
             LutSampling::PixelSplit(_) => LutSampling::PixelSplit(grid.pixel_split_mode),
             sampling => sampling,
         };
-        super::cache::TwoDKey::SharedGrid {
+        super::cache::TwoDKey {
             grid,
             unit: self.radial_unit,
             sampling,
@@ -630,30 +641,13 @@ impl Integrator {
         Ok(grid)
     }
 
-    /// Shared grid that `integrate2d*` uses for `Counting`, `PixelSplit` and
-    /// `Supersampled` when an explicit radial range is set: `n_radial` equal
-    /// bins between its edges, values outside them dropped, with the default
-    /// tables' data-derived azimuthal edges.
-    pub(super) fn explicit_radial_grid_2d(
-        &self,
-        view: &super::cache::ShapeView<'_>,
-        n_radial: usize,
-        n_azimuthal: usize,
-        (lo, hi): (f64, f64),
-    ) -> Result<IntegrationGrid2d, String> {
-        let azimuthal_range = self.default_azimuthal_edges_2d(view);
-        // Index rounding keeps values inside the edges in the last bin, as
-        // the default tables do; it never moves a value from outside the
-        // radial range into a bin.
-        IntegrationGrid2d::new(n_radial, n_azimuthal, (lo, hi), azimuthal_range)
-            .map(|grid| grid.with_clamped_index_rounding())
-            .map_err(|e| format!("2D grid for radial_range ({lo}, {hi}): {e}"))
-    }
-
     /// Azimuthal edges (radians) of the default 2D tables of `Counting`,
     /// `PixelSplit` and `Supersampled`. Cached: computing them needs a pass
     /// over all pixels (or pixel corners).
-    fn default_azimuthal_edges_2d(&self, view: &super::cache::ShapeView<'_>) -> (f64, f64) {
+    pub(super) fn default_azimuthal_edges_2d(
+        &self,
+        view: &super::cache::ShapeView<'_>,
+    ) -> (f64, f64) {
         let (dim1, dim2) = (view.state.dim1, view.state.dim2);
         let key = AzimuthalEdgesKey {
             dim1,

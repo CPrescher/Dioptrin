@@ -349,39 +349,32 @@ impl Integrator {
         self.integrate1d_raw_impl(data, dim1, dim2, n_points, true)
     }
 
-    /// Cache key of the 2D table for `integrate2d*`. Without an explicit radial
-    /// range these are the default tables; with one, `Counting`, `PixelSplit`
-    /// and `Supersampled` use the shared grid of [`Self::explicit_radial_grid_2d`]
-    /// (`PyfaiFull` takes the range in its own key).
+    /// Cache key of the 2D table for `integrate2d*`. Every method uses the
+    /// unified shared-grid 2D builder with either the explicit `radial_range`
+    /// or the method's data-derived default edges.
     pub(super) fn try_lut2d_key(
         &self,
         view: &super::cache::ShapeView<'_>,
         n_radial: usize,
         n_azimuthal: usize,
     ) -> Result<TwoDKey, String> {
-        let unit = self.radial_unit;
-        Ok(match (self.method, self.radial_range) {
-            (IntegrationMethod::PyfaiFull, _) | (IntegrationMethod::PixelSplit, None) => {
-                self.pixel_split2d_key(n_radial, n_azimuthal)
-            }
-            (_, Some(range)) => self.shared_grid_key(self.explicit_radial_grid_2d(
-                view,
-                n_radial,
-                n_azimuthal,
-                range,
-            )?),
-            (IntegrationMethod::Counting, None) => TwoDKey::Counting {
-                n_radial,
-                n_azimuthal,
-                unit,
-            },
-            (IntegrationMethod::Supersampled { n_ss }, None) => TwoDKey::Supersampled {
-                n_radial,
-                n_azimuthal,
-                n_ss,
-                unit,
-            },
-        })
+        let azimuthal_range = match self.method {
+            IntegrationMethod::PyfaiFull => (-std::f64::consts::PI, std::f64::consts::PI),
+            _ => self.default_azimuthal_edges_2d(view),
+        };
+        let mut grid = self
+            .azimuthal_range_grid(view, n_radial, n_azimuthal, azimuthal_range)
+            .map_err(|e| {
+                if self.radial_range.is_some() {
+                    format!("2D grid for {e}")
+                } else {
+                    e
+                }
+            })?;
+        if matches!(self.method, IntegrationMethod::Supersampled { .. }) {
+            grid = grid.with_clamped_azimuthal_outside();
+        }
+        Ok(self.shared_grid_key(grid))
     }
 
     /// [`Self::try_lut2d_key`] for the panicking entry point `caller`.
