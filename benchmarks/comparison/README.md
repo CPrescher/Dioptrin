@@ -42,6 +42,9 @@ CUDA rows (see "Dioptrin CUDA"), and `setup.py --with-metal` builds with the
 and `--input-dtype {float64,float32}`. For the unified Windows / Maxwell /
 macOS paper replay commands, see
 [docs/benchmarks/2026-11-24-paper-final/README.md](../../docs/benchmarks/2026-11-24-paper-final/README.md).
+For the Dioptrin 0.16.0 rerun, one run script per machine is in
+[paper-0.16.0/](paper-0.16.0/), with the protocol in
+[docs/benchmarks/2026-11-25-paper-0.16.0/README.md](../../docs/benchmarks/2026-11-25-paper-0.16.0/README.md).
 CI uses `setup.py --portable` to omit native CPU flags, making shared Cargo
 caches safe across runner CPU models. This mode checks functionality rather
 than native CPU performance.
