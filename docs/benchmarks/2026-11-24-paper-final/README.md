@@ -122,6 +122,104 @@ Optional `float32` input pass (add `--input-dtype float32 --output benchmark-res
 
 ## Measured Results
 
+### Cross-Machine Snapshot (`float64`, Poisson, median frames/s)
+
+| Dataset / Mode | Machine | `dioptrin-pyfai_full` (8 CPU) | `dioptrin-pyfai_full-gpu` (per-frame) | `dioptrin-pyfai_full-gpu-batch` | `azint-cached` (8 CPU) | `pyfai-full` (8 CPU) | `pyfai-full-opencl` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pilatus` 1D | Windows (9800X3D + RTX 5070 Ti) | 1538.7 *(2061.2 @16w)* | 2858.9 | **4273.9** | 1717.0 *(2543.9 @16w)* | 243.2 | 707.9 |
+| `pilatus` 1D | Maxwell (EPYC 9475F + H200 NVL) | 1899.8 | 4602.6 | **8014.5** | 1395.8 | 487.0 | 1789.0 |
+| `pilatus` 1D | MacBook (M4 Pro + Metal) | 1931.6 | 1672.6 | **3842.9** | 1002.8 | 647.2 | 114.8 |
+| `synthetic-9m` 1D | Windows (9800X3D + RTX 5070 Ti) | 225.8 *(318.2 @16w)* | 277.6 | **300.6** | 149.5 *(207.8 @16w)* | 24.8 | 92.3 |
+| `synthetic-9m` 1D | Maxwell (EPYC 9475F + H200 NVL) | 390.4 | 378.0 | **434.4** | 103.0 | 55.5 | 200.9 |
+| `synthetic-9m` 1D | MacBook (M4 Pro + Metal) | 395.9 | 459.6 | **625.5** | 178.4 | 93.7 | 79.4 |
+| `synthetic-9m` 2D `2000x360` | Windows (9800X3D + RTX 5070 Ti) | 80.6 | 156.3 | **179.2** | 147.6 *(185.2 @16w)* | — *(bbox: 22.4)* | 60.3 |
+| `synthetic-9m` 2D `2000x360` | Maxwell (EPYC 9475F + H200 NVL) | 157.6 | 275.3 | **341.0** | 128.9 | 64.1* | 172.7 |
+| `synthetic-9m` 2D `2000x360` | MacBook (M4 Pro + Metal) | 257.6 | 249.4 | **346.6** | 271.0 | 81.3 | 55.6 |
+| `synthetic-9m` 2D `1000x72` | Windows (9800X3D + RTX 5070 Ti) | 174.7 | 260.1 | 285.3 | **316.3** *(327.8 @16w)* | — *(bbox: 26.7)* | 99.3 |
+| `synthetic-9m` 2D `1000x72` | Maxwell (EPYC 9475F + H200 NVL) | **452.1** | 368.8 | 420.8 | 273.5 | 95.1 | 205.6 |
+| `synthetic-9m` 2D `1000x72` | MacBook (M4 Pro + Metal) | 462.1 | 451.7 | **644.9** | 300.5 | 110.4 | 80.5 |
+
+*All three GPUs (RTX 5070 Ti CUDA, H200 NVL CUDA, Apple M4 Pro Metal) achieve identical `f32_compensated` accuracy vs CPU counterpart to 3 significant digits: max relative L2 ≤ `5.70e-9` (1D intensity), ≤ `1.77e-8` (1D sigma), ≤ `1.98e-8` (2D intensity), ≤ `1.90e-8` (2D sigma).*
+
+### Windows Workstation (AMD Ryzen 7 9800X3D + NVIDIA GeForce RTX 5070 Ti, native Windows)
+
+- **Revision:** `118a299` (`dioptrin 0.15.2`, `python,cuda` loading embedded `compute_70` PTX via display driver only — `nvrtc_version: null`, no CUDA Toolkit installed)
+- **Hardware / OS:** AMD Ryzen 7 9800X3D (8 physical cores / 16 logical CPUs with SMT), 31.2 GiB RAM, NVIDIA GeForce RTX 5070 Ti (16 GiB, Blackwell Compute Capability 12.0, driver `616.64`, CUDA 13.4), `Windows-11-10.0.26200`
+- **Toolchain & libraries:** Python 3.14.10, `rustc 1.100.0` (`RUSTFLAGS="-C target-cpu=x86-64-v3"`), MSVC `19.52.37029` (`CL="/arch:AVX2"`), `numpy 2.4.2`, `pyFAI 2026.9.0` (OpenMP via MSVC `_vcomp_fork`), `pyopencl 2026.1.5` (NVIDIA CUDA OpenCL 3.0), `azint 1.2.6.dev6+g4f78cc3b1` (`azint-cached` bit-identical to stock `azint`).
+- **Suite settings & completeness:** Split across 1D/2D + SMT extensions and ablations: `windows-f64-1d` (370 rows, 1–8w), `windows-f64-1d-smt` (240 rows, 1/12/16w), `windows-f64-2d` (580 rows, 1–8w), `windows-f64-2d-smt` (360 rows, 1/12/16w), `windows-f32-1d` (530 rows, 1–16w), `windows-f32-2d` (820 rows, 1–16w), and `windows-cuda-f64` (120 rows, 1D+2D GPU precision `f64`). **0 failures, 0 skips, and 0 non-`ok` numerical rows** across all 3,020 rows. In 2D (`windows-f64-2d`, `windows-f32-2d`), stock `pyfai-full` / `pyfai-full-omp` were omitted (leaving `pyfai-bbox` and `pyfai-full-opencl`).
+- **Accuracy (`f32_compensated` vs CPU counterpart):** Dioptrin CUDA max relative L2 ≤ `5.70e-9` (1D intensity), ≤ `1.77e-8` (1D sigma), ≤ `1.98e-8` (2D intensity), ≤ `1.90e-8` (2D sigma); `pyfai-full-opencl` 1D max relative L2 ≤ `6.67e-8` (intensity), ≤ `7.37e-8` (sigma).
+- **Compact records archive:** `2026-11-24-windows-{f64-1d,f64-1d-smt,f64-2d,f64-2d-smt,f32-1d,f32-2d,cuda-f64}` and `windows-build-record` saved outside Git (Dropbox `Science/4 - Scientific Projects/Software/Dioptrin/benchmarks/2026-11-24-paper-final/`).
+
+#### Windows `float64` pass — Poisson mode (median frames/s; CPU shown as `1w / 8w / 16w`)
+
+| Dataset (workload) | Mode | `dioptrin-pixel_split` | `dioptrin-pyfai_full` | `dioptrin-supersampled` | `azint` | `azint-cached` | `pyfai-full` | `pyfai-bbox` | `pyfai-full-omp` | `dioptrin-pixel_split-cuda` | `dioptrin-pyfai_full-cuda` | `dioptrin-pixel_split-cuda-batch` | `dioptrin-pyfai_full-cuda-batch` | `pyfai-full-opencl` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pilatus` (repeated) | 1D | 272.7 / 1608.6 / 2007.8 | 274.0 / 1538.7 / 2061.2 | 283.8 / 1641.6 / 2083.1 | 103.8 / 469.8 / 608.1 | 260.5 / 1717.0 / 2543.9 | 73.9 / 243.2 / 319.0 | 72.6 / 246.0 / 336.8 | 72.3 / 96.9 / 78.9 | 2905.5 | 2858.9 | 4222.6 | 4273.9 | 707.9 |
+| `synthetic-4m` (frames) | 1D | 84.0 / 474.2 / 636.8 | 85.7 / 469.8 / 643.4 | 93.5 / 514.2 / 680.8 | 27.5 / 127.3 / 154.6 | 40.5 / 351.0 / 451.3 | 12.9 / 62.2 / 76.2 | 12.7 / 64.8 / 78.6 | 12.7 / 22.8 / 18.4 | 673.4 | 665.0 | 782.4 | 773.4 | 234.5 |
+| `synthetic-9m` (frames) | 1D | 44.3 / 238.1 / 380.9 | 46.3 / 225.8 / 318.2 | 50.7 / 237.7 / 363.7 | 12.0 / 51.5 / 64.4 | 18.6 / 149.5 / 207.8 | 5.3 / 24.8 / 32.4 | 5.4 / 25.2 / 35.6 | 5.4 / 7.9 / 8.1 | 280.2 | 277.6 | 296.1 | 300.6 | 92.3 |
+| `pilatus` (repeated) | 2D `2000x360` | 70.3 / 156.3 / 167.9 | 70.5 / 159.6 / 165.0 | 72.8 / 158.6 / 167.9 | 52.7 / 206.6 / 245.0 | 94.0 / 382.4 / 469.7 | — | 35.6 / 126.2 / 158.0 | — | 299.7 | 296.1 | 356.9 | 345.0 | 123.6 |
+| `synthetic-4m` (frames) | 2D `2000x360` | 43.9 / 119.5 / 103.0 | 44.3 / 117.7 / 111.8 | 44.9 / 119.8 / 117.6 | 25.6 / 97.4 / 111.6 | 38.8 / 254.3 / 253.8 | — | 11.9 / 49.4 / 56.4 | — | 230.9 | 228.3 | 269.5 | 269.8 | 94.5 |
+| `synthetic-9m` (frames) | 2D `2000x360` | 30.3 / 80.6 / 79.8 | 31.6 / 80.6 / 81.3 | 31.9 / 81.7 / 80.2 | 13.8 / 49.3 / 56.4 | 21.9 / 147.6 / 185.2 | — | 5.7 / 22.4 / 27.8 | — | 161.3 | 156.3 | 182.6 | 179.2 | 60.3 |
+| `pilatus` (repeated) | 2D `1000x72` | 491.9 / 1210.3 / 1171.6 | 481.4 / 1226.3 / 1183.3 | 494.5 / 1243.0 / 1200.5 | 143.8 / 583.1 / 656.7 | 418.2 / 2277.0 / 2456.8 | — | 69.5 / 237.5 / 294.8 | — | 1417.5 | 1451.4 | 2185.6 | 2227.5 | 442.2 |
+| `synthetic-4m` (frames) | 2D `1000x72` | 135.6 / 370.8 / 383.0 | 132.8 / 374.2 / 379.0 | 136.4 / 381.7 / 390.3 | 47.5 / 153.6 / 173.6 | 91.8 / 691.3 / 773.4 | — | 16.4 / 64.3 / 72.0 | — | 547.2 | 503.8 | 639.4 | 649.0 | 210.8 |
+| `synthetic-9m` (frames) | 2D `1000x72` | 74.2 / 175.9 / 171.8 | 73.8 / 174.7 / 170.4 | 75.2 / 176.0 / 174.6 | 20.7 / 72.0 / 75.9 | 46.1 / 316.3 / 327.8 | — | 7.2 / 26.7 / 32.6 | — | 267.7 | 260.1 | 288.9 | 285.3 | 99.3 |
+
+#### Windows `float64` pass — Intensity-only mode (median frames/s; CPU shown as `1w / 8w / 16w`)
+
+| Dataset (workload) | Mode | `dioptrin-pixel_split` | `dioptrin-pyfai_full` | `dioptrin-supersampled` | `azint` | `azint-cached` | `pyfai-full` | `pyfai-bbox` | `pyfai-full-omp` | `dioptrin-pixel_split-cuda` | `dioptrin-pyfai_full-cuda` | `dioptrin-pixel_split-cuda-batch` | `dioptrin-pyfai_full-cuda-batch` | `pyfai-full-opencl` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pilatus` (repeated) | 1D | 357.5 / 2156.7 / 2700.8 | 358.9 / 2134.6 / 2750.7 | 380.7 / 2236.2 / 2828.0 | 148.5 / 670.0 / 799.2 | 536.9 / 3363.5 / 5021.2 | 75.5 / 237.6 / 327.5 | 76.2 / 256.7 / 308.1 | 74.7 / 97.1 / 77.1 | 2742.5 | 2935.3 | 4643.3 | 4465.6 | 706.0 |
+| `synthetic-4m` (frames) | 1D | 118.7 / 615.2 / 823.9 | 117.4 / 599.8 / 922.5 | 126.2 / 654.6 / 1050.2 | 39.7 / 175.1 / 207.2 | 76.0 / 698.3 / 907.8 | 12.9 / 59.2 / 73.6 | 13.1 / 64.1 / 81.2 | 13.2 / 21.8 / 17.9 | 678.2 | 669.7 | 787.5 | 785.2 | 232.3 |
+| `synthetic-9m` (frames) | 1D | 64.4 / 288.8 / 408.6 | 65.5 / 282.6 / 364.9 | 69.7 / 313.7 / 442.5 | 18.2 / 70.0 / 84.9 | 39.1 / 294.3 / 441.8 | 5.8 / 25.6 / 33.6 | 5.5 / 25.4 / 35.4 | 5.4 / 7.8 / 8.1 | 285.2 | 283.4 | 300.7 | 295.9 | 92.6 |
+| `pilatus` (repeated) | 2D `2000x360` | 143.5 / 806.2 / 956.8 | 168.8 / 795.2 / 898.1 | 153.3 / 772.5 / 890.9 | 78.2 / 363.5 / 477.2 | 211.7 / 978.2 / 1253.9 | — | 42.1 / 148.8 / 202.8 | — | 772.1 | 740.3 | 1002.7 | 945.4 | 121.0 |
+| `synthetic-4m` (frames) | 2D `2000x360` | 72.8 / 249.8 / 240.8 | 72.2 / 264.3 / 242.9 | 74.5 / 274.7 / 261.5 | 37.7 / 152.3 / 174.4 | 74.6 / 587.9 / 675.8 | — | 13.5 / 62.3 / 79.1 | — | 410.5 | 412.8 | 497.5 | 498.7 | 88.0 |
+| `synthetic-9m` (frames) | 2D `2000x360` | 45.7 / 129.3 / 124.4 | 45.3 / 130.4 / 130.2 | 47.2 / 133.9 / 128.0 | 19.8 / 71.2 / 80.9 | 43.4 / 330.5 / 400.6 | — | 6.4 / 28.8 / 38.6 | — | 233.3 | 234.1 | 260.0 | 259.1 | 62.3 |
+| `pilatus` (repeated) | 2D `1000x72` | 823.2 / 3850.7 / 3996.4 | 823.9 / 3847.3 / 3932.5 | 847.7 / 3806.7 / 3940.9 | 204.1 / 781.4 / 882.6 | 884.7 / 4602.0 / 5537.0 | — | 84.4 / 323.7 / 396.3 | — | 2129.2 | 2081.6 | 3282.1 | 3275.3 | 462.9 |
+| `synthetic-4m` (frames) | 2D `1000x72` | 162.8 / 483.8 / 505.1 | 160.6 / 500.7 / 505.8 | 164.9 / 504.2 / 521.8 | 60.3 / 203.2 / 235.7 | 151.5 / 1333.7 / 1519.4 | — | 19.4 / 89.8 / 94.2 | — | 609.1 | 616.3 | 721.1 | 728.5 | 219.3 |
+| `synthetic-9m` (frames) | 2D `1000x72` | 86.4 / 199.2 / 190.0 | 85.1 / 196.1 / 190.2 | 86.8 / 198.1 / 192.2 | 26.3 / 91.8 / 94.1 | 86.8 / 654.7 / 721.6 | — | 8.3 / 36.7 / 45.2 | — | 273.0 | 281.2 | 298.3 | 293.1 | 96.0 |
+
+#### Windows `float32` pass — Poisson mode (median frames/s; CPU shown as `1w / 8w / 16w`)
+
+| Dataset (workload) | Mode | `dioptrin-pixel_split` | `dioptrin-pyfai_full` | `dioptrin-supersampled` | `azint` | `azint-cached` | `pyfai-full` | `pyfai-bbox` | `pyfai-full-omp` | `dioptrin-pixel_split-cuda` | `dioptrin-pyfai_full-cuda` | `dioptrin-pixel_split-cuda-batch` | `dioptrin-pyfai_full-cuda-batch` | `pyfai-full-opencl` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pilatus` (repeated) | 1D | 275.1 / 1573.6 / 1925.3 | 272.1 / 1563.0 / 1926.3 | 284.2 / 1615.6 / 1946.6 | 126.6 / 603.4 / 872.1 | 187.8 / 1493.9 / 2439.1 | 62.8 / 277.1 / 357.8 | 67.2 / 278.3 / 357.6 | 59.5 / 102.1 / 84.0 | 3688.3 | 3641.8 | 4888.1 | 4857.5 | 1353.4 |
+| `synthetic-4m` (frames) | 1D | 83.9 / 477.8 / 684.8 | 86.3 / 479.5 / 668.3 | 94.3 / 519.7 / 774.6 | 34.7 / 177.3 / 209.4 | 51.8 / 442.6 / 648.3 | 15.1 / 70.3 / 88.1 | 15.1 / 72.6 / 88.4 | 15.0 / 26.1 / 19.6 | 967.8 | 958.0 | 1264.8 | 1273.5 | 564.6 |
+| `synthetic-9m` (frames) | 1D | 46.0 / 244.5 / 351.3 | 47.0 / 250.1 / 369.3 | 51.4 / 272.3 / 359.3 | 14.7 / 81.1 / 97.6 | 23.8 / 210.0 / 268.3 | 6.0 / 32.9 / 37.6 | 6.0 / 33.2 / 41.5 | 6.0 / 10.8 / 8.6 | 403.4 | 437.6 | 524.9 | 516.0 | 278.1 |
+| `pilatus` (repeated) | 2D `2000x360` | 79.8 / 174.2 / 172.9 | 76.4 / 176.7 / 179.5 | 74.6 / 177.4 / 175.4 | 58.7 / 265.7 / 297.6 | 93.8 / 440.2 / 419.1 | — | 43.7 / 166.0 / 167.5 | — | 316.3 | 325.1 | 401.9 | 397.8 | 141.1 |
+| `synthetic-4m` (frames) | 2D `2000x360` | 50.8 / 121.2 / 118.5 | 50.7 / 131.1 / 118.9 | 52.2 / 131.8 / 120.5 | 30.2 / 119.4 / 137.5 | 44.3 / 282.7 / 291.9 | — | 13.0 / 57.2 / 62.9 | — | 256.2 | 252.7 | 315.7 | 299.0 | 124.4 |
+| `synthetic-9m` (frames) | 2D `2000x360` | 35.2 / 94.2 / 90.0 | 35.6 / 94.0 / 85.1 | 36.0 / 97.1 / 90.4 | 15.0 / 59.9 / 83.9 | 25.0 / 185.9 / 183.5 | — | 6.5 / 30.1 / 34.0 | — | 198.7 | 200.3 | 236.4 | 234.5 | 101.0 |
+| `pilatus` (repeated) | 2D `1000x72` | 507.0 / 1237.1 / 1138.8 | 502.6 / 1252.8 / 1214.7 | 527.9 / 1263.0 / 1217.6 | 188.4 / 769.7 / 884.2 | 401.8 / 2176.6 / 2303.0 | — | 80.4 / 288.9 / 345.4 | — | 1549.2 | 1558.2 | 2049.4 | 1995.7 | 680.4 |
+| `synthetic-4m` (frames) | 2D `1000x72` | 148.1 / 492.8 / 489.2 | 147.9 / 490.4 / 482.8 | 151.4 / 501.4 / 485.1 | 51.1 / 244.5 / 269.1 | 92.1 / 688.5 / 900.9 | — | 18.0 / 84.7 / 90.1 | — | 699.0 | 724.5 | 882.5 | 898.6 | 420.6 |
+| `synthetic-9m` (frames) | 2D `1000x72` | 95.0 / 220.7 / 217.7 | 94.6 / 217.4 / 212.9 | 94.8 / 219.6 / 225.5 | 25.3 / 105.0 / 119.1 | 54.2 / 391.3 / 412.7 | — | 8.3 / 37.8 / 41.9 | — | 369.2 | 369.6 | 459.4 | 458.0 | 253.5 |
+
+#### Windows `float32` pass — Intensity-only mode (median frames/s; CPU shown as `1w / 8w / 16w`)
+
+| Dataset (workload) | Mode | `dioptrin-pixel_split` | `dioptrin-pyfai_full` | `dioptrin-supersampled` | `azint` | `azint-cached` | `pyfai-full` | `pyfai-bbox` | `pyfai-full-omp` | `dioptrin-pixel_split-cuda` | `dioptrin-pyfai_full-cuda` | `dioptrin-pixel_split-cuda-batch` | `dioptrin-pyfai_full-cuda-batch` | `pyfai-full-opencl` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pilatus` (repeated) | 1D | 380.6 / 2186.4 / 2633.7 | 374.5 / 2239.3 / 2737.5 | 394.1 / 2133.7 / 2838.3 | 175.0 / 868.2 / 1148.4 | 479.7 / 3109.9 / 4370.7 | 64.5 / 276.3 / 346.5 | 62.9 / 269.0 / 376.8 | 61.4 / 96.0 / 82.0 | 3168.6 | 3562.7 | 5004.6 | 5039.0 | 1229.2 |
+| `synthetic-4m` (frames) | 1D | 115.1 / 639.1 / 855.5 | 117.6 / 638.5 / 887.4 | 128.0 / 719.4 / 1047.9 | 46.8 / 242.6 / 299.2 | 90.7 / 834.9 / 1216.6 | 15.9 / 72.5 / 88.7 | 15.5 / 72.2 / 93.6 | 15.7 / 24.8 / 19.1 | 1004.2 | 958.4 | 1261.9 | 1287.7 | 527.7 |
+| `synthetic-9m` (frames) | 1D | 65.2 / 304.1 / 454.7 | 65.2 / 297.3 / 416.0 | 68.8 / 341.3 / 403.0 | 21.7 / 105.5 / 126.5 | 44.1 / 416.9 / 592.0 | 6.1 / 33.1 / 38.6 | 6.1 / 33.5 / 41.9 | 6.1 / 10.7 / 8.5 | 420.0 | 432.9 | 532.7 | 526.7 | 269.5 |
+| `pilatus` (repeated) | 2D `2000x360` | 187.8 / 870.7 / 883.7 | 188.1 / 910.2 / 924.6 | 194.1 / 903.6 / 936.8 | 92.8 / 470.8 / 547.0 | 238.4 / 1123.2 / 1265.5 | — | 48.1 / 193.3 / 207.6 | — | 821.5 | 813.2 | 1103.7 | 1037.9 | 142.3 |
+| `synthetic-4m` (frames) | 2D `2000x360` | 89.8 / 308.9 / 281.9 | 89.7 / 325.4 / 286.4 | 92.1 / 343.1 / 311.0 | 43.9 / 197.2 / 240.8 | 86.6 / 662.1 / 705.7 | — | 15.0 / 71.1 / 82.8 | — | 507.1 | 492.9 | 640.7 | 630.0 | 124.5 |
+| `synthetic-9m` (frames) | 2D `2000x360` | 52.4 / 154.7 / 149.0 | 52.5 / 158.1 / 152.5 | 53.7 / 161.0 / 154.6 | 22.1 / 104.1 / 110.1 | 47.3 / 413.6 / 409.1 | — | 7.1 / 36.3 / 43.6 | — | 314.2 | 318.8 | 383.0 | 384.3 | 99.4 |
+| `pilatus` (repeated) | 2D `1000x72` | 843.5 / 4074.7 / 3827.8 | 835.3 / 4130.0 / 3883.9 | 901.7 / 4361.0 / 4137.6 | 265.3 / 1085.6 / 1140.4 | 817.7 / 4362.1 / 5279.1 | — | 94.6 / 377.5 / 423.2 | — | 2326.3 | 2317.8 | 3304.3 | 3293.3 | 727.2 |
+| `synthetic-4m` (frames) | 2D `1000x72` | 178.9 / 742.7 / 722.3 | 178.1 / 745.1 / 733.1 | 182.0 / 777.7 / 779.9 | 65.0 / 340.0 / 361.0 | 170.9 / 1331.9 / 1778.5 | — | 21.7 / 99.3 / 118.2 | — | 823.1 | 841.2 | 1113.3 | 1098.7 | 412.7 |
+| `synthetic-9m` (frames) | 2D `1000x72` | 108.9 / 248.2 / 247.7 | 108.8 / 248.0 / 244.3 | 109.0 / 252.7 / 256.7 | 32.4 / 136.3 / 167.0 | 98.8 / 782.9 / 883.0 | — | 9.4 / 45.9 / 52.6 | — | 418.4 | 401.6 | 467.5 | 491.3 | 258.9 |
+
+#### Windows CUDA `f64` precision ablation (`float64` inputs, `f32_compensated` → `f64`, median frames/s)
+
+| Dataset (workload) | Mode | `pixel_split-cuda` (Poisson) | `pyfai_full-cuda` (Poisson) | `pixel_split-cuda-batch` (Poisson) | `pyfai_full-cuda-batch` (Poisson) | `pyfai_full-cuda-batch` (Intensity) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `pilatus` (repeated) | 1D | 2905.5 → 1865.4 | 2858.9 → 1841.7 | 4222.6 → 2572.9 | 4273.9 → 2495.3 | 4465.6 → 2664.5 |
+| `synthetic-4m` (frames) | 1D | 673.4 → 485.0 | 665.0 → 502.2 | 782.4 → 603.7 | 773.4 → 608.2 | 785.2 → 608.2 |
+| `synthetic-9m` (frames) | 1D | 280.2 → 209.4 | 277.6 → 226.9 | 296.1 → 261.8 | 300.6 → 270.8 | 295.9 → 269.4 |
+| `pilatus` (repeated) | 2D `2000x360` | 299.7 → 289.6 | 296.1 → 288.6 | 356.9 → 370.2 | 345.0 → 369.3 | 945.4 → 957.6 |
+| `synthetic-4m` (frames) | 2D `2000x360` | 230.9 → 193.6 | 228.3 → 195.5 | 269.5 → 245.6 | 269.8 → 245.3 | 498.7 → 412.3 |
+| `synthetic-9m` (frames) | 2D `2000x360` | 161.3 → 133.4 | 156.3 → 133.7 | 182.6 → 160.5 | 179.2 → 160.7 | 259.1 → 225.4 |
+| `pilatus` (repeated) | 2D `1000x72` | 1417.5 → 1110.1 | 1451.4 → 1132.6 | 2185.6 → 1528.7 | 2227.5 → 1556.8 | 3275.3 → 2120.7 |
+| `synthetic-4m` (frames) | 2D `1000x72` | 547.2 → 412.0 | 503.8 → 420.9 | 639.4 → 509.0 | 649.0 → 510.0 | 728.5 → 571.6 |
+| `synthetic-9m` (frames) | 2D `1000x72` | 267.7 → 208.2 | 260.1 → 207.5 | 288.9 → 246.9 | 285.3 → 250.4 | 293.1 → 261.0 |
+
 ### Maxwell Cluster (AMD EPYC 9475F + NVIDIA H200 NVL, Linux + CUDA)
 
 - **Revision:** `118a299` (`dioptrin 0.15.2`, `python,cuda` with embedded `compute_70` PTX)
