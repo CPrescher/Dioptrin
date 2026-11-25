@@ -603,6 +603,25 @@ def dioptrin_axis(result, name, conversion):
     return None if value is None else np.asarray(value, dtype=np.float64)
 
 
+def dioptrin_radial_2d(result, conversion, fallback):
+    """The radial axis of a Dioptrin 2D result (outside timing). Builds from
+    0.15.0 on return it with radial_range; only builds before 0.15.0, which
+    return None, are given a fallback axis by the preflight
+    (case["dioptrin_radial_axis"]). A missing axis without one is an error,
+    not silently replaced."""
+    import numpy as np
+
+    radial = dioptrin_axis(result, "radial", conversion)
+    if radial is not None:
+        return radial
+    if fallback is None:
+        raise AssertionError(
+            "Dioptrin 2D result has no radial axis, although the preflight "
+            "found that this build returns one"
+        )
+    return np.asarray(fallback, dtype=np.float64)
+
+
 def check_dioptrin_output(output, index, shape, errors):
     """What the timed call produced: float64 ndarrays of the expected shape,
     in frame order for batch calls. Missing sigma is left to the callers."""
@@ -891,10 +910,13 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
     ai = pyFAI.load(poni)
     ai.detector.mask = mask
     libraries = {library(v) for v in variants}
-    # Common 2D radial edges. Dioptrin's Integrator ignores radial_range in 2D
-    # for pixel_split and supersampled; pixel_split uses the extremes of the
-    # pixel-corner 2theta (plus 10 ulp), read here from its 1D default grid,
-    # which follows the same rule. Every other 2D case is given these edges.
+    # Common 2D radial edges: Dioptrin pixel_split's default edges, the
+    # extremes of the pixel-corner 2theta (plus 10 ulp), read from its 1D
+    # default grid. Every 2D case is given these edges. Since Dioptrin 0.15.0
+    # every method honours them as radial_range in 2D; builds before 0.15.0
+    # honoured radial_range in 2D only for pyfai_full, and pixel_split then
+    # used these same edges by default, so pixel_split cakes are on the common
+    # grid for every revision.
     corners = ai.array_from_unit(shape, typ="corner", unit="2th_deg")
     if "dioptrin" in libraries:
         import dioptrin
@@ -944,9 +966,14 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
         )
         store["pyfai"] = np.asarray(result.intensity)
         axes["pyfai"] = np.asarray(result.azimuthal)
+    # Whether this Dioptrin build returns the radial axis of a 2D result
+    # (0.15.0 and later, with radial_range or azimuthal_range); None without
+    # Dioptrin.
+    returns_2d_radial = None
     if "dioptrin" in libraries:
         import dioptrin
 
+        returns_2d_radial = True
         for method in ("pixel_split", "pyfai_full", "supersampled"):
             engine = dioptrin.Integrator(
                 poni,
@@ -964,6 +991,8 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
                 store[f"dioptrin-{method}"] = np.asarray(result.intensity).reshape(
                     na, nr
                 )
+                if getattr(result, "radial", None) is None:
+                    returns_2d_radial = False
             axes[f"dioptrin-{method}"] = np.degrees(np.asarray(result.azimuthal))
     if "azint" in libraries:
         import azint
@@ -1036,14 +1065,21 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
         )
         del engine
 
-    radial_axes = {}
+    # Fallback 2D radial axes, for Dioptrin builds before 0.15.0 only: they
+    # return no radial axis with a 2D result, and bin onto the radial_range in
+    # 2D only for pyfai_full; the other methods use their default edges, which
+    # their 1D default grid shares. Builds from 0.15.0 on return the axis of
+    # every 2D result (checked above), so none is computed and a 2D result
+    # without one fails the case (dioptrin_2d_radial_axis).
+    radial_axes = None
     methods = {
         dioptrin_method(v) for v in variants if v.startswith("dioptrin-")
     }
     radial_counts = sorted({parse_cake(c)[0] for c in cakes})
-    if methods:
+    if methods and not returns_2d_radial:
         import dioptrin
 
+        radial_axes = {}
         for method in sorted(methods):
             counts = subpixels if method == "supersampled" else [None]
             for n_ss in counts:
@@ -1052,7 +1088,6 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
                     method=method,
                     unit="2th_deg",
                     n_ss=n_ss or meta["n_splitting"],
-                    # Same rule as the 2D grid: only pyfai_full takes the range.
                     radial_range=(lo, hi) if method == "pyfai_full" else None,
                 )
                 engine.set_mask(mask)
@@ -1083,6 +1118,7 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
             radial_range_1d=meta["radial_range"],
             convention=convention,
             multiintegrator_check=multi_check,
+            dioptrin_returns_2d_radial_axis=returns_2d_radial,
             dioptrin_radial_axes=radial_axes,
             table_estimates=estimates,
             unmasked_pixels=int(valid.sum()),
@@ -1671,7 +1707,8 @@ def setup_case_2d(case, rank=None):
                 "Dioptrin Rayon pool does not match requested CPU budget"
             )
         span = tuple(math.radians(v) for v in AZIMUTH_RANGE_DEG)
-        fallback_radial_axis = np.asarray(case["dioptrin_radial_axis"])
+        # Builds before 0.15.0 only (see dioptrin_radial_2d).
+        fallback_radial_axis = case.get("dioptrin_radial_axis")
 
         if variant in DIOPTRIN_GPU_VARIANTS:
             backend = "cuda" if variant in CUDA_VARIANTS else "metal"
@@ -1720,14 +1757,16 @@ def setup_case_2d(case, rank=None):
 
             def extract(output):
                 check_dioptrin_output(output, None, (na, nr), errors)
-                radial = dioptrin_axis(output.result, "radial", conversion)
+                radial = dioptrin_radial_2d(
+                    output.result, conversion, fallback_radial_axis
+                )
                 sigma = None
                 if errors:
                     if output.sigma is None:
                         raise Unsupported("Dioptrin GPU returned no 2D errors")
                     sigma = output.sigma
                 return (
-                    fallback_radial_axis if radial is None else radial,
+                    radial,
                     np.degrees(dioptrin_axis(output.result, "azimuthal", conversion)),
                     output.intensity,
                     sigma,
@@ -1908,14 +1947,16 @@ def setup_case_2d(case, rank=None):
 
             def extract(output):
                 check_dioptrin_output(output, None, (na, nr), errors)
-                radial = dioptrin_axis(output.result, "radial", conversion)
+                radial = dioptrin_radial_2d(
+                    output.result, conversion, fallback_radial_axis
+                )
                 sigma = None
                 if errors:
                     if output.sigma is None:
                         raise Unsupported("Dioptrin returned no 2D errors")
                     sigma = output.sigma
                 return (
-                    fallback_radial_axis if radial is None else radial,
+                    radial,
                     np.degrees(dioptrin_axis(output.result, "azimuthal", conversion)),
                     output.intensity,
                     sigma,
@@ -2153,11 +2194,13 @@ def setup_case_2d(case, rank=None):
         np.savez_compressed(result_path.with_suffix(".cake0.npz"), **first_cake)
         np.savez(result_path.with_suffix(".npz"), **sample)
         if variant == "dioptrin-supersampled":
-            # Untimed, for numerical.json only: Integrator.integrate2d ignores
-            # radial_range for supersampled, so its cakes sit on their own
-            # radial grid. MultiIntegrator with this one integrator bins the
-            # same subpixels onto the common explicit edges (for pixel_split it
-            # reproduces Integrator.integrate2d; see preflight2d.json).
+            # Untimed, for numerical.json only: MultiIntegrator with this one
+            # integrator bins the same subpixels onto the common explicit
+            # edges (for pixel_split it reproduces Integrator.integrate2d; see
+            # preflight2d.json). Since Dioptrin 0.15.0 the timed cakes already
+            # use these edges (radial_range), so this cake is on the same grid;
+            # builds before 0.15.0 ignored radial_range in 2D for supersampled,
+            # and their timed cakes sit on supersampled's own default edges.
             import dioptrin
 
             common = dioptrin.MultiIntegrator([ai]).integrate2d(
@@ -2884,9 +2927,11 @@ def numerical_2d(rows):
     Each case is compared with dioptrin-pixel_split (polygon clipping) of the
     same dataset, workload, cake and error mode, and with its counterpart in
     COUNTERPARTS_2D (same subpixel count where both have one). Every pair is
-    compared as integrated ("grid": "native"). dioptrin-supersampled cakes sit
-    on their own radial grid; where one side is dioptrin-supersampled, a second
-    entry ("grid": "common") uses its MultiIntegrator cake on the common edges.
+    compared as integrated ("grid": "native"). Where one side is
+    dioptrin-supersampled, a second entry ("grid": "common") uses its
+    MultiIntegrator cake on the common edges: the same grid as its native
+    cakes since Dioptrin 0.15.0, but not before, when supersampled ignored
+    radial_range in 2D and its cakes sat on its own default edges.
     """
     import numpy as np
 
@@ -4235,13 +4280,15 @@ def main():
                                             case["metal_device"] = args.metal_device
                                             case["gpu_precision"] = args.gpu_precision
                                         case["input_dtype"] = args.input_dtype
-                                        if variant.startswith("dioptrin-"):
+                                        axes_2d = preflight["dioptrin_radial_axes"]
+                                        if variant.startswith("dioptrin-") and axes_2d:
+                                            # Builds before 0.15.0 only.
                                             key = method + (
                                                 f"-ss{subpixels}" if subpixels else ""
                                             )
-                                            case["dioptrin_radial_axis"] = preflight[
-                                                "dioptrin_radial_axes"
-                                            ][key][str(n_radial)]
+                                            case["dioptrin_radial_axis"] = axes_2d[key][
+                                                str(n_radial)
+                                            ]
                                         case.update(
                                             estimate_memory_mib(
                                                 case,

@@ -190,6 +190,15 @@ class CakeTests(unittest.TestCase):
                     results[0].filename = "array[1]"
                     with self.assertRaisesRegex(AssertionError, "array\\[1\\]"):
                         state["validate"](results)
+            # Builds from 0.15.0 on get no fallback axis from the preflight: a
+            # 2D result without a radial axis then fails, it is not replaced.
+            modern = {k: v for k, v in case.items() if k != "dioptrin_radial_axis"}
+            cake.radial = [1.0, 2.0]
+            state = setup_case_2d(modern)
+            np.testing.assert_array_equal(state["sample"]["radial"], [1.0, 2.0])
+            cake.radial = None
+            with self.assertRaisesRegex(AssertionError, "no radial axis"):
+                setup_case_2d(modern)
 
     def array_cake(self, intensity, errors=None):
         """Stand-in IntegrationResult of a build with the zero-copy accessors;
@@ -341,7 +350,8 @@ class CakeRunTests(unittest.TestCase):
             self.assertIn("seam_rows", pyfai["intensity"])
             self.assertIn("sigma", pyfai)
             # The common-grid companion (MultiIntegrator) lines up with azint.
-            # Older Dioptrin builds can use a different native radial grid.
+            # Dioptrin builds before 0.15.0 (no 2D radial axis) used a
+            # different native radial grid for supersampled; later ones do not.
             grids = {
                 e["grid"]: e
                 for e in numerical
@@ -352,6 +362,13 @@ class CakeRunTests(unittest.TestCase):
             }
             self.assertEqual(set(grids), {"native", "common"})
             self.assertLess(grids["common"]["max_radial_axis_difference_deg"], 1e-9)
+            if preflight["dioptrin_returns_2d_radial_axis"]:
+                self.assertIsNone(preflight["dioptrin_radial_axes"])
+                self.assertLess(
+                    grids["native"]["max_radial_axis_difference_deg"], 1e-9
+                )
+            else:
+                self.assertTrue(preflight["dioptrin_radial_axes"])
             self.assertEqual(
                 preflight["multiintegrator_check"]["max_relative_difference"], 0.0
             )

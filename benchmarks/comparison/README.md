@@ -662,9 +662,12 @@ edges), while `supersampled` used its own default edges (the extremes of the
 subpixel hull and pixel centres; on Pilatus the lower edge differs by 0.013
 degrees, most of a 2000-bin width), so its timed cakes were on their own
 radial grid, reported in `numerical.json` as `max_radial_axis_difference_deg`.
-Those builds also returned no 2D radial axis; the harness then uses the edges
-the preflight reads from each method's 1D default grid, which follows the old
-rule. For the numerical comparison only, the `supersampled` one-worker
+Those builds also returned no 2D radial axis. The preflight records whether the
+build returns one (`dioptrin_returns_2d_radial_axis` in `preflight2d.json`);
+only when it does not, it reads fallback axes from each method's 1D default grid
+(with the range for `pyfai_full` only, the old rule; `dioptrin_radial_axes`,
+otherwise null), and a 2D result without a radial axis from a build that
+returns one fails the case. For the numerical comparison only, the `supersampled` one-worker
 reference case also integrates the first frame, after timing, with
 `MultiIntegrator([integrator])`, which takes explicit edges, onto the common
 grid (`*.cake0common.npz`, entries with `"grid": "common"`); with 0.15.0 or
