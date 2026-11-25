@@ -18,8 +18,7 @@ pub(crate) fn build(
     unit: RadialUnit,
 ) -> Lut2d {
     let corners = if matches!(sampling, LutSampling::PixelSplit(_)) {
-        let (d1, d2) = geometry.corner_grid();
-        let (tth, azimuthal) = geometry.calc_tth_and_azimuth(&d1, &d2);
+        let (tth, azimuthal) = geometry.angular_corners();
         Some((
             unit.convert_from_tth(&tth, geometry.poni.wavelength),
             azimuthal,
@@ -29,12 +28,11 @@ pub(crate) fn build(
     };
     let corner_sign = match (&corners, sampling) {
         (Some((r, a)), LutSampling::PixelSplit(PixelSplitMode::PyfaiHistogram)) => {
-            let width = geometry.dim2() + 1;
             super::pyfai_1d::corner_sign(
                 geometry,
                 (0..radial.len()).into_par_iter().map(|pixel| {
-                    let base = pixel / geometry.dim2() * width + pixel % geometry.dim2();
-                    [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]))
+                    let [i00, i01, i11, i10] = geometry.corner_indices(pixel);
+                    [i00, i10, i11, i01].map(|i| (r[i], a[i]))
                 }),
             )
         }
@@ -67,9 +65,7 @@ pub(crate) fn build(
                 LutSampling::PixelSplit(split_mode) => {
                     debug_assert_eq!(split_mode, grid.pixel_split_mode);
                     let (r, a) = corners.as_ref().unwrap();
-                    let width = geometry.dim2() + 1;
-                    let base = pixel / geometry.dim2() * width + pixel % geometry.dim2();
-                    let indices = [base, base + 1, base + width + 1, base + width];
+                    let indices = geometry.corner_indices(pixel);
                     // A pixel enclosing/touching the polar origin has no single
                     // simple polar quad. Use detector-plane samples, coalesced by
                     // pixel/bin before the variance kernel squares each weight.
@@ -100,8 +96,8 @@ pub(crate) fn build(
                     }
                     if split_mode == PixelSplitMode::PyfaiHistogram {
                         // Reverse to pyFAI's corner order, preserving raw angles.
-                        let poly =
-                            [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]));
+                        let [i00, i01, i11, i10] = indices;
+                        let poly = [i00, i10, i11, i01].map(|i| (r[i], a[i]));
                         if let Some(entries) = super::pyfai_split::split(poly, grid, corner_sign) {
                             return entries;
                         }
@@ -237,4 +233,191 @@ fn sample_pixel(
         }
     }
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detector::{Detector, DetectorTransform, PixelMap};
+    use crate::integration::{IntegrationMethod, Integrator};
+    use crate::poni::Poni;
+    use std::sync::Arc;
+
+    fn test_geometry(dim1: usize, dim2: usize, detector: Detector) -> Geometry {
+        let mut poni = Poni::new();
+        poni.distance = 0.2;
+        poni.poni1 = 0.0;
+        poni.poni2 = 0.0;
+        poni.pixel1 = detector.pixel1;
+        poni.pixel2 = detector.pixel2;
+        poni.wavelength = 1e-10;
+        Geometry::new(dim1, dim2, poni)
+            .with_detector(Arc::new(detector))
+            .unwrap()
+    }
+
+    fn gapped_separable_detector() -> Detector {
+        let p = 1e-3;
+        let gap = 10.0 * p;
+        let slow: Vec<[[f64; 3]; 2]> = (0..8)
+            .map(|r| {
+                let shift = if r >= 4 { gap } else { 0.0 };
+                let lo = (r as f64 + 2.0) * p + shift;
+                let hi = lo + p;
+                [[0.0, lo, 0.0], [0.0, hi, 0.0]]
+            })
+            .collect();
+        let fast: Vec<[[f64; 3]; 2]> = (0..8)
+            .map(|c| {
+                let lo = (c as f64 + 2.0) * p;
+                let hi = lo + p;
+                [[0.0, 0.0, lo], [0.0, 0.0, hi]]
+            })
+            .collect();
+        let mut det = Detector::custom(p, p);
+        det.max_shape = Some([8, 8]);
+        det.map = PixelMap::Separable { slow, fast };
+        det
+    }
+
+    fn corners_detector() -> Detector {
+        let p = 1e-3;
+        let mut values = Vec::with_capacity(64);
+        for r in 0..8 {
+            for c in 0..8 {
+                let y0 = (r as f64 + 3.0) * p;
+                let y1 = y0 + p;
+                let x0 = (c as f64 + 3.0) * p;
+                let x1 = x0 + p;
+                // Slight parabolic curvature in z so pixels are non-coplanar.
+                let z = |y: f64, x: f64| 0.5 * (y * y + x * x);
+                values.push([
+                    [z(y0, x0), y0, x0],
+                    [z(y1, x0), y1, x0],
+                    [z(y1, x1), y1, x1],
+                    [z(y0, x1), y0, x1],
+                ]);
+            }
+        }
+        let mut det = Detector::custom(p, p);
+        det.max_shape = Some([8, 8]);
+        det.map = PixelMap::Corners {
+            shape: [8, 8],
+            values: Arc::new(values),
+        };
+        det
+    }
+
+    fn assert_2d_matches_1d_totals(detector: Detector, method: IntegrationMethod) {
+        assert!(!detector.is_contiguous());
+        let geometry = test_geometry(8, 8, detector);
+        let integrator = Integrator::new(geometry)
+            .with_method(method)
+            .with_radial_unit(RadialUnit::TthDeg);
+        let frame: Vec<f64> = (0..64).map(|i| 10.0 + (i as f64) * 0.5).collect();
+        let raw1d = integrator.integrate1d_raw_from_slice(&frame, 8, 8, 24);
+        let r_min = raw1d.bins[0] - 0.5 * (raw1d.bins[1] - raw1d.bins[0]);
+        let r_max = raw1d.bins[23] + 0.5 * (raw1d.bins[1] - raw1d.bins[0]);
+        let mut grid = IntegrationGrid2d::new(
+            24,
+            12,
+            (r_min, r_max),
+            (-std::f64::consts::PI, std::f64::consts::PI),
+        )
+        .unwrap();
+        if method == IntegrationMethod::PyfaiFull {
+            grid = grid.with_pixel_split_mode(PixelSplitMode::PyfaiHistogram);
+        }
+        let raw2d = integrator
+            .integrate2d_raw_on_grid_from_slice(&frame, 8, 8, &grid, false)
+            .unwrap();
+
+        let sum_sig_1d: f64 = raw1d.sum_signal.iter().sum();
+        let sum_sig_2d: f64 = raw2d.sum_signal.iter().sum();
+        let sum_norm_1d: f64 = raw1d.sum_norm.iter().sum();
+        let sum_norm_2d: f64 = raw2d.sum_norm.iter().sum();
+        let sum_count_2d: f64 = raw2d.count.iter().sum();
+        let expected_sig: f64 = frame.iter().sum();
+
+        assert!(
+            (sum_count_2d - 64.0).abs() < 1e-6,
+            "pixel count conservation failed for {method:?}: 2d={sum_count_2d}"
+        );
+        assert!(
+            (sum_norm_2d - sum_norm_1d).abs() < 1e-6,
+            "norm conservation failed for {method:?}: 2d={sum_norm_2d}, 1d={sum_norm_1d}"
+        );
+        assert!(
+            (sum_sig_2d - expected_sig).abs() < 1e-4,
+            "signal conservation failed for {method:?}: 2d={sum_sig_2d}, expected={expected_sig}"
+        );
+        assert!(
+            (sum_sig_2d - sum_sig_1d).abs() < 1e-4,
+            "2d vs 1d total signal mismatch for {method:?}: 2d={sum_sig_2d}, 1d={sum_sig_1d}"
+        );
+    }
+
+    #[test]
+    fn shared_grid_gapped_separable_conserves_and_leaves_gap_empty() {
+        for method in [IntegrationMethod::PixelSplit, IntegrationMethod::PyfaiFull] {
+            assert_2d_matches_1d_totals(gapped_separable_detector(), method);
+        }
+
+        // Verify no quad straddles the physical gap between rows 3 and 4 when
+        // cols are aligned near x=0 so radial distance cleanly separates modules.
+        let p = 1e-3;
+        let slow: Vec<[[f64; 3]; 2]> = (0..4)
+            .map(|r| {
+                let shift = if r >= 2 { 20.0 * p } else { 0.0 };
+                let lo = (r as f64 + 1.0) * p + shift;
+                [[0.0, lo, 0.0], [0.0, lo + p, 0.0]]
+            })
+            .collect();
+        let fast = vec![[[0.0, 0.0, 0.0], [0.0, 0.0, p]]];
+        let mut det = Detector::custom(p, p);
+        det.max_shape = Some([4, 1]);
+        det.map = PixelMap::Separable { slow, fast };
+        assert!(!det.is_contiguous());
+
+        let integrator = Integrator::new(test_geometry(4, 1, det))
+            .with_method(IntegrationMethod::PixelSplit)
+            .with_radial_unit(RadialUnit::TthRad);
+        // Module 0 covers y in [1mm, 3mm] (tth <= ~0.016 rad);
+        // Module 1 covers y in [23mm, 25mm] (tth >= ~0.114 rad).
+        // Bins in [0.04, 0.08] rad lie strictly inside the physical gap.
+        let grid = IntegrationGrid2d::new(
+            14,
+            4,
+            (0.0, 0.14),
+            (-std::f64::consts::PI, std::f64::consts::PI),
+        )
+        .unwrap();
+        let raw = integrator
+            .integrate2d_raw_on_grid_from_slice(&[1.0; 4], 4, 1, &grid, false)
+            .unwrap();
+        let sum_norm = &raw.sum_norm;
+        let gap_norm: f64 = (0..4)
+            .flat_map(|a| (4..8).map(move |r| sum_norm[a * 14 + r]))
+            .sum();
+        assert_eq!(gap_norm, 0.0, "gap bins must receive zero pixel weight");
+        let total_count: f64 = raw.count.iter().sum();
+        assert!((total_count - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shared_grid_corners_detector_conserves_intensity() {
+        for method in [IntegrationMethod::PixelSplit, IntegrationMethod::PyfaiFull] {
+            assert_2d_matches_1d_totals(corners_detector(), method);
+        }
+    }
+
+    #[test]
+    fn shared_grid_transformed_detectors_conserve_intensity() {
+        for op in [DetectorTransform::Right, DetectorTransform::Horizontal] {
+            for method in [IntegrationMethod::PixelSplit, IntegrationMethod::PyfaiFull] {
+                let det = gapped_separable_detector().transformed(op).unwrap();
+                assert_2d_matches_1d_totals(det, method);
+            }
+        }
+    }
 }
