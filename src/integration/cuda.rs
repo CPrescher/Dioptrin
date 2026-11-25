@@ -329,50 +329,7 @@ pub fn cuda_info(device: usize) -> CudaInfo {
 }
 
 mod sealed {
-    /// Borrowed frames of one supported pixel type.
-    pub enum Frames<'a, 'b> {
-        U16(&'a [&'b [u16]]),
-        U32(&'a [&'b [u32]]),
-        I32(&'a [&'b [i32]]),
-        F32(&'a [&'b [f32]]),
-        F64(&'a [&'b [f64]]),
-    }
-
-    pub trait Sealed {
-        fn frames<'a, 'b>(frames: &'a [&'b [Self]]) -> Frames<'a, 'b>
-        where
-            Self: Sized;
-    }
-
-    impl Sealed for u16 {
-        fn frames<'a, 'b>(frames: &'a [&'b [u16]]) -> Frames<'a, 'b> {
-            Frames::U16(frames)
-        }
-    }
-
-    impl Sealed for u32 {
-        fn frames<'a, 'b>(frames: &'a [&'b [u32]]) -> Frames<'a, 'b> {
-            Frames::U32(frames)
-        }
-    }
-
-    impl Sealed for i32 {
-        fn frames<'a, 'b>(frames: &'a [&'b [i32]]) -> Frames<'a, 'b> {
-            Frames::I32(frames)
-        }
-    }
-
-    impl Sealed for f32 {
-        fn frames<'a, 'b>(frames: &'a [&'b [f32]]) -> Frames<'a, 'b> {
-            Frames::F32(frames)
-        }
-    }
-
-    impl Sealed for f64 {
-        fn frames<'a, 'b>(frames: &'a [&'b [f64]]) -> Frames<'a, 'b> {
-            Frames::F64(frames)
-        }
-    }
+    pub(crate) use super::super::gpu_common::{Frames, Sealed};
 }
 
 /// Pixel element type of raw Bitshuffle+LZ4 HDF5 chunks passed to

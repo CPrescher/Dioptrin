@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;

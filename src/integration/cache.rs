@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::lut;
 use crate::lut::prepared::{Prepared1d, Prepared2d};
 
-use super::{GeometryState, Integrator, RadialUnit};
+use super::{GeometryState, Integrator, LutSampling, PixelSplitMode, RadialUnit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RadialRangeKey {
@@ -21,24 +21,11 @@ impl RadialRangeKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum OneDKey {
-    Counting {
-        n_points: usize,
-        unit: RadialUnit,
-        radial_range: Option<RadialRangeKey>,
-    },
-    PixelSplit {
-        pyfai: bool,
-        n_points: usize,
-        unit: RadialUnit,
-        radial_range: Option<RadialRangeKey>,
-    },
-    Supersampled {
-        n_points: usize,
-        n_ss: usize,
-        unit: RadialUnit,
-        radial_range: Option<RadialRangeKey>,
-    },
+pub(super) struct OneDKey {
+    pub(super) sampling: LutSampling,
+    pub(super) n_points: usize,
+    pub(super) unit: RadialUnit,
+    pub(super) radial_range: Option<RadialRangeKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +40,7 @@ pub(super) enum TwoDKey {
     SharedGrid {
         grid: super::IntegrationGrid2d,
         unit: RadialUnit,
-        sampling: usize,
+        sampling: LutSampling,
     },
     Counting {
         n_radial: usize,
@@ -277,6 +264,17 @@ impl Integrator {
             .modify(|lut| lut.invalidate_mask());
     }
 
+    /// Build the 1D LUT cache key for the current method, or `None` for `Histogram`.
+    pub(super) fn one_d_key(&self, n_points: usize) -> Option<OneDKey> {
+        let sampling = LutSampling::from_method(self.method)?;
+        Some(OneDKey {
+            sampling,
+            n_points,
+            unit: self.radial_unit,
+            radial_range: self.radial_range_key(),
+        })
+    }
+
     /// Initialize a common batch geometry/LUT before entering parallel frame work.
     /// Workers that find the cache cold would each build the same geometry and
     /// table; completing it first lets all of them share one.
@@ -285,36 +283,9 @@ impl Integrator {
             mask.assert_compatible(dim1, dim2);
         }
         let view = self.for_shape(dim1, dim2);
-        if let Some(key) = self.one_d_table_key(n_points) {
+        if let Some(key) = self.one_d_key(n_points) {
             drop(view.ensure_lut1d(key));
         }
-    }
-
-    pub(super) fn one_d_table_key(&self, n_points: usize) -> Option<OneDKey> {
-        let unit = self.radial_unit;
-        let radial_range = self.radial_range_key();
-        Some(match self.method {
-            super::IntegrationMethod::Counting => OneDKey::Counting {
-                n_points,
-                unit,
-                radial_range,
-            },
-            super::IntegrationMethod::PixelSplit | super::IntegrationMethod::PyfaiFull => {
-                OneDKey::PixelSplit {
-                    pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
-                    n_points,
-                    unit,
-                    radial_range,
-                }
-            }
-            super::IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
-                n_points,
-                n_ss,
-                unit,
-                radial_range,
-            },
-            super::IntegrationMethod::Histogram => return None,
-        })
     }
 
     pub(super) fn pixel_split2d_key(
@@ -405,12 +376,14 @@ impl ShapeView<'_> {
             let radial = &state.radial;
 
             // Build the LUT (this can take time, but we're not holding the cache lock)
-            let lut1d = match key {
-                OneDKey::Counting {
-                    n_points,
-                    unit: _,
-                    radial_range,
-                } => match radial_range {
+            let OneDKey {
+                sampling,
+                n_points,
+                unit,
+                radial_range,
+            } = key;
+            let lut1d = match sampling {
+                LutSampling::Counting => match radial_range {
                     Some(rr) => lut::build_lut1d_csr_with_range(
                         radial,
                         n_points,
@@ -419,44 +392,33 @@ impl ShapeView<'_> {
                     ),
                     None => lut::build_lut1d_csr(radial, n_points),
                 },
-                OneDKey::PixelSplit {
-                    pyfai,
-                    n_points,
-                    unit,
-                    radial_range,
-                } => {
+                LutSampling::PixelSplit(PixelSplitMode::PyfaiHistogram) => {
                     let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
-                    if pyfai {
-                        lut::build_lut1d_pyfai_csr(
+                    lut::build_lut1d_pyfai_csr(
+                        &geom,
+                        unit,
+                        n_points,
+                        None,
+                        radial_range
+                            .map(|rr| [f64::from_bits(rr.min_bits), f64::from_bits(rr.max_bits)]),
+                    )
+                    .expect("valid pyFAI full-splitting grid")
+                }
+                LutSampling::PixelSplit(PixelSplitMode::Fractional) => {
+                    let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
+                    match radial_range {
+                        Some(rr) => lut::build_lut1d_ps_csr_with_range(
                             &geom,
-                            unit,
+                            radial,
                             n_points,
-                            None,
-                            radial_range.map(|rr| {
-                                [f64::from_bits(rr.min_bits), f64::from_bits(rr.max_bits)]
-                            }),
-                        )
-                        .expect("valid pyFAI full-splitting grid")
-                    } else {
-                        match radial_range {
-                            Some(rr) => lut::build_lut1d_ps_csr_with_range(
-                                &geom,
-                                radial,
-                                n_points,
-                                unit,
-                                f64::from_bits(rr.min_bits),
-                                f64::from_bits(rr.max_bits),
-                            ),
-                            None => lut::build_lut1d_ps_csr(&geom, radial, n_points, unit),
-                        }
+                            unit,
+                            f64::from_bits(rr.min_bits),
+                            f64::from_bits(rr.max_bits),
+                        ),
+                        None => lut::build_lut1d_ps_csr(&geom, radial, n_points, unit),
                     }
                 }
-                OneDKey::Supersampled {
-                    n_points,
-                    n_ss,
-                    unit,
-                    radial_range,
-                } => {
+                LutSampling::Supersampled { n_ss } => {
                     let geom = integrator.geometry.reshaped(state.dim1, state.dim2);
                     match radial_range {
                         Some(rr) => lut::build_lut1d_ss_csr_with_range(
@@ -538,7 +500,7 @@ impl ShapeView<'_> {
                         radial,
                         azimuth,
                         &grid,
-                        super::IntegrationMethod::PixelSplit,
+                        LutSampling::PixelSplit(PixelSplitMode::PyfaiHistogram),
                         unit,
                     )
                 }
@@ -546,14 +508,7 @@ impl ShapeView<'_> {
                     grid,
                     unit,
                     sampling,
-                } => {
-                    let method = match sampling {
-                        0 => super::IntegrationMethod::Counting,
-                        1 => super::IntegrationMethod::PixelSplit,
-                        n => super::IntegrationMethod::Supersampled { n_ss: n - 1 },
-                    };
-                    lut::shared_grid::build(&geom, radial, azimuth, &grid, method, unit)
-                }
+                } => lut::shared_grid::build(&geom, radial, azimuth, &grid, sampling, unit),
                 TwoDKey::Counting {
                     n_radial,
                     n_azimuthal,

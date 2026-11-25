@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use std::fmt::Display;
 use std::ops::Mul;
 
@@ -26,6 +27,10 @@ use crate::math::sparse::csr::CsrMatrix;
 /// matrix.set(2, 2, 1.0); // inserts a new element
 /// matrix.set(3, 100, 20.0); // inserts a new element
 ///```
+#[deprecated(
+    since = "0.15.3",
+    note = "Legacy prototype unused by Dioptrin (use `dioptrin::lut` instead); will be removed in a future release."
+)]
 pub struct CooMatrix {
     row_indices: Vec<usize>,
     col_indices: Vec<usize>,

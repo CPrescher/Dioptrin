@@ -4,7 +4,7 @@
 use rayon::prelude::*;
 
 use crate::geometry::Geometry;
-use crate::integration::RadialUnit;
+use crate::integration::{RadialConverter, RadialUnit};
 use crate::lut::counting_csr::{Lut1d, Lut2d};
 use crate::math::histogram;
 
@@ -13,41 +13,6 @@ struct Contribution {
     bin: usize,
     pixel: usize,
     count: usize,
-}
-
-struct RadialConversion {
-    unit: RadialUnit,
-    q_scale: f64,
-}
-
-impl RadialConversion {
-    fn new(unit: RadialUnit, wavelength: f64) -> Self {
-        let q_scale = match unit {
-            RadialUnit::QAngstrom | RadialUnit::QNm => {
-                assert!(
-                    wavelength > 0.0,
-                    "Wavelength must be positive for q conversion"
-                );
-                let wavelength = wavelength
-                    * if unit == RadialUnit::QAngstrom {
-                        1e10
-                    } else {
-                        1e9
-                    };
-                4.0 * std::f64::consts::PI / wavelength
-            }
-            _ => 0.0,
-        };
-        Self { unit, q_scale }
-    }
-
-    fn convert(&self, tth: f64) -> f64 {
-        match self.unit {
-            RadialUnit::TthRad => tth,
-            RadialUnit::TthDeg => tth.to_degrees(),
-            RadialUnit::QAngstrom | RadialUnit::QNm => self.q_scale * (tth / 2.0).sin(),
-        }
-    }
 }
 
 /// Count samples per pixel/bin immediately, then transpose the compact records
@@ -144,25 +109,12 @@ fn radial_edge_cos2(
     hist_min: f64,
     hist_step: f64,
     n_bins: usize,
-    conversion: &RadialConversion,
+    conversion: &RadialConverter,
 ) -> Vec<f64> {
     (0..=n_bins)
         .map(|b| {
             let r_edge = hist_min + (b as f64) * hist_step;
-            let tth = match conversion.unit {
-                RadialUnit::TthRad => r_edge,
-                RadialUnit::TthDeg => r_edge.to_radians(),
-                RadialUnit::QAngstrom | RadialUnit::QNm => {
-                    let s = r_edge / conversion.q_scale;
-                    if s <= 0.0 {
-                        -1.0
-                    } else if s >= 1.0 {
-                        std::f64::consts::PI + 1.0
-                    } else {
-                        2.0 * s.asin()
-                    }
-                }
-            };
+            let tth = conversion.invert_to_tth(r_edge);
             if tth <= 0.0 {
                 2.0
             } else if tth >= std::f64::consts::PI {
@@ -223,7 +175,7 @@ fn build_counted_1d_csr<F>(
     hist_min: f64,
     hist_step: f64,
     clamped: bool,
-    conversion: &RadialConversion,
+    conversion: &RadialConverter,
     sample_bin: F,
 ) -> (Vec<usize>, Vec<usize>, Vec<f64>)
 where
@@ -573,7 +525,7 @@ pub fn build_lut1d_ss_csr(
         histogram::ss_tth_min_max_step(geometry, radial, n_points, n_ss, unit);
 
     let transform = geometry.subpixel_transform();
-    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let conversion = RadialConverter::new(unit, geometry.poni.wavelength);
     let (row_ptr, col_idx, values) = build_counted_1d_csr(
         geometry,
         n_ss,
@@ -616,7 +568,7 @@ pub fn build_lut1d_ss_csr_with_range(
         histogram::min_max_step_from_range(radial_min, radial_max, n_points);
 
     let transform = geometry.subpixel_transform();
-    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let conversion = RadialConverter::new(unit, geometry.poni.wavelength);
     let (row_ptr, col_idx, values) = build_counted_1d_csr(
         geometry,
         n_ss,
@@ -783,7 +735,7 @@ fn build_counted_2d_csr<F>(
     n_azimuthal: usize,
     radial_min: f64,
     radial_step: f64,
-    conversion: &RadialConversion,
+    conversion: &RadialConverter,
     az_segs: Option<AzimuthalSegments>,
     sample_bin: F,
 ) -> (Vec<usize>, Vec<usize>, Vec<f64>)
@@ -1437,7 +1389,7 @@ pub fn build_lut2d_ss_csr(
         histogram::supersampled_azimuthal_min_max_step(geometry, azimuthal, n_azimuthal, n_ss);
 
     let transform = geometry.subpixel_transform();
-    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let conversion = RadialConverter::new(unit, geometry.poni.wavelength);
     let az_segs = AzimuthalSegments::clamped(azimuthal_min, azimuthal_step, n_azimuthal);
     let (row_ptr, col_idx, values) = build_counted_2d_csr(
         geometry,
@@ -1866,7 +1818,7 @@ mod tests {
             let transform = geo.subpixel_transform();
             for &unit in &units {
                 let radial = unit.convert_from_tth(&tth, geo.poni.wavelength);
-                let conversion = RadialConversion::new(unit, geo.poni.wavelength);
+                let conversion = RadialConverter::new(unit, geo.poni.wavelength);
                 // n_points = 1, 2, 15, and 260 (hits single-bin, two-bin, span <= 16, and span >= 17).
                 for &n_points in &[1usize, 2, 15, 260] {
                     for &n_ss in &[1usize, 2, 3, 8] {
@@ -1994,7 +1946,7 @@ mod tests {
             let transform = geo.subpixel_transform();
             for &unit in &units {
                 let radial = unit.convert_from_tth(&tth, geo.poni.wavelength);
-                let conversion = RadialConversion::new(unit, geo.poni.wavelength);
+                let conversion = RadialConverter::new(unit, geo.poni.wavelength);
                 for &(n_radial, n_azimuthal) in &[(1usize, 1usize), (2, 2), (11, 13), (40, 36)] {
                     for &n_ss in &[1usize, 2, 3, 5] {
                         // Clamped 2D mode
@@ -2106,7 +2058,7 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
     let min_azimuthal = azimuthal_start - 0.5 * azimuthal_step;
 
     let transform = geometry.subpixel_transform();
-    let conversion = RadialConversion::new(unit, geometry.poni.wavelength);
+    let conversion = RadialConverter::new(unit, geometry.poni.wavelength);
     let az_segs = AzimuthalSegments::wrapped(min_azimuthal, azimuthal_step, n_azimuthal);
     let (row_ptr, col_idx, values) = build_counted_2d_csr(
         geometry,

@@ -7,6 +7,7 @@ pub mod integrator;
 pub mod metal;
 pub mod multi_integrator;
 pub mod results;
+mod streaming;
 pub mod utils;
 
 use calibration::{

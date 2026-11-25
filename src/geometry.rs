@@ -1,6 +1,4 @@
 //! Geometry calculations for each pixel in the detector
-//!
-#![allow(dead_code)]
 
 use crate::detector::Detector;
 use crate::poni::Poni;
@@ -727,7 +725,6 @@ mod tests {
     static DIM1: usize = 10;
     static DIM2: usize = 20;
     static SIZE: usize = DIM1 * DIM2;
-    static TEST_INDEX: usize = 65;
 
     #[test]
     fn create_geometry() {

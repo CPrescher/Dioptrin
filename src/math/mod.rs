@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub mod histogram;
 pub mod matrix;
 pub mod sparse;
@@ -63,12 +62,13 @@ mod tests {
         assert_eq!(min(&v), 'a');
     }
 
+    #[test]
     fn test_max() {
         let v = vec![3.0, 1.0, 3.0, 4.0, 5.0];
-        assert_eq!(min(&v), 5.0);
+        assert_eq!(max(&v), 5.0);
         let v = vec![3, 2, 4, 1, 5, 6, 7, 8, 9, 10];
-        assert_eq!(min(&v), 10);
+        assert_eq!(max(&v), 10);
         let v = vec!['a', 'b', 'z', 'm'];
-        assert_eq!(min(&v), 'z');
+        assert_eq!(max(&v), 'z');
     }
 }

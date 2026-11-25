@@ -3,7 +3,9 @@
 use super::Lut2d;
 use super::pixel_split::{clip_polygon_rect_scratch, polygon_area};
 use crate::geometry::Geometry;
-use crate::integration::{IntegrationGrid2d, IntegrationMethod, PixelSplitMode, RadialUnit};
+use crate::integration::{
+    IntegrationGrid2d, LutSampling, PixelSplitMode, RadialConverter, RadialUnit,
+};
 use rayon::prelude::*;
 use std::f64::consts::TAU;
 
@@ -12,13 +14,10 @@ pub(crate) fn build(
     radial: &[f64],
     azimuthal: &[f64],
     grid: &IntegrationGrid2d,
-    method: IntegrationMethod,
+    sampling: LutSampling,
     unit: RadialUnit,
 ) -> Lut2d {
-    let corners = if matches!(
-        method,
-        IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull
-    ) {
+    let corners = if matches!(sampling, LutSampling::PixelSplit(_)) {
         let (d1, d2) = geometry.corner_grid();
         let (tth, azimuthal) = geometry.calc_tth_and_azimuth(&d1, &d2);
         Some((
@@ -28,8 +27,8 @@ pub(crate) fn build(
     } else {
         None
     };
-    let corner_sign = match &corners {
-        Some((r, a)) if grid.pixel_split_mode == PixelSplitMode::PyfaiHistogram => {
+    let corner_sign = match (&corners, sampling) {
+        (Some((r, a)), LutSampling::PixelSplit(PixelSplitMode::PyfaiHistogram)) => {
             let width = geometry.dim2() + 1;
             super::pyfai_1d::corner_sign(
                 geometry,
@@ -42,27 +41,19 @@ pub(crate) fn build(
         _ => 1.0,
     };
     let transform = geometry.subpixel_transform();
-    let convert = |tth: f64| match unit {
-        RadialUnit::TthRad => tth,
-        RadialUnit::TthDeg => tth.to_degrees(),
-        RadialUnit::QAngstrom => {
-            4.0 * std::f64::consts::PI / (geometry.poni.wavelength * 1e10) * (tth * 0.5).sin()
-        }
-        RadialUnit::QNm => {
-            4.0 * std::f64::consts::PI / (geometry.poni.wavelength * 1e9) * (tth * 0.5).sin()
-        }
-    };
+    let converter = (!matches!(sampling, LutSampling::Counting))
+        .then(|| RadialConverter::new(unit, geometry.poni.wavelength));
     let pixels: Vec<Vec<(usize, f64)>> = (0..radial.len())
         .into_par_iter()
         .map(|pixel| {
             let mut entries = Vec::new();
-            match method {
-                IntegrationMethod::Counting => {
+            match sampling {
+                LutSampling::Counting => {
                     if let Some(bin) = grid.bin(radial[pixel], azimuthal[pixel]) {
                         entries.push((bin, 1.0));
                     }
                 }
-                IntegrationMethod::Supersampled { n_ss } => {
+                LutSampling::Supersampled { n_ss } => {
                     entries = sample_pixel(
                         geometry,
                         &transform,
@@ -70,10 +61,11 @@ pub(crate) fn build(
                         grid,
                         n_ss,
                         &[(0.5, 0.5)],
-                        &convert,
+                        converter.as_ref().unwrap(),
                     );
                 }
-                IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => {
+                LutSampling::PixelSplit(split_mode) => {
+                    debug_assert_eq!(split_mode, grid.pixel_split_mode);
                     let (r, a) = corners.as_ref().unwrap();
                     let width = geometry.dim2() + 1;
                     let base = pixel / geometry.dim2() * width + pixel % geometry.dim2();
@@ -103,10 +95,10 @@ pub(crate) fn build(
                             grid,
                             128,
                             &[(0.25, 0.5), (0.5, 0.25), (0.75, 0.5), (0.5, 0.75)],
-                            &convert,
+                            converter.as_ref().unwrap(),
                         );
                     }
-                    if grid.pixel_split_mode == PixelSplitMode::PyfaiHistogram {
+                    if split_mode == PixelSplitMode::PyfaiHistogram {
                         // Reverse to pyFAI's corner order, preserving raw angles.
                         let poly =
                             [base, base + width, base + width + 1, base + 1].map(|i| (r[i], a[i]));
@@ -130,7 +122,6 @@ pub(crate) fn build(
                         entries.push((bin, 1.0));
                     }
                 }
-                IntegrationMethod::Histogram => unreachable!("validated before LUT construction"),
             }
             entries
         })
@@ -216,14 +207,14 @@ fn split_polygon(
     }
 }
 
-fn sample_pixel<F: Fn(f64) -> f64>(
+fn sample_pixel(
     geometry: &Geometry,
     transform: &crate::geometry::SubpixelTransform,
     pixel: usize,
     grid: &IntegrationGrid2d,
     n_ss: usize,
     offsets: &[(f64, f64)],
-    convert: &F,
+    converter: &crate::integration::RadialConverter,
 ) -> Vec<(usize, f64)> {
     let row = pixel / geometry.dim2();
     let col = pixel % geometry.dim2();
@@ -235,7 +226,7 @@ fn sample_pixel<F: Fn(f64) -> f64>(
                 let d1 = row as f64 + (i as f64 + off1) / n_ss as f64;
                 let d2 = ((col * n_ss + j) as f64 + off2) / n_ss as f64;
                 let (tth, azimuthal) = transform.tth_and_azimuth(d1, d2);
-                if let Some(bin) = grid.bin(convert(tth), azimuthal) {
+                if let Some(bin) = grid.bin(converter.convert(tth), azimuthal) {
                     if let Some((_, w)) = entries.iter_mut().find(|(b, _)| *b == bin) {
                         *w += weight;
                     } else {

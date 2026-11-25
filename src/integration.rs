@@ -1,8 +1,29 @@
-#![allow(dead_code)]
+//! High-level 1D and 2D diffraction integration, caching, and prepared plans.
+//!
+//! # Choosing an entry point
+//!
+//! - [`Integrator`]: general-purpose, thread-safe interface with lazy geometry
+//!   and LUT caching (`integrate1d*`, `integrate2d*`, `integrate2d_on_azimuthal_range*`).
+//!   Supports changing masks, corrections, methods, and mixed image shapes safely.
+//! - [`Fixed1dPlan`] (`Integrator::prepare_fixed1d`): immutable fast-CSC 1D
+//!   snapshot for fixed masks; supports streaming native pixel blocks
+//!   ([`Fixed1dWorker`]) and resident frames with optional auto/gather layout.
+//! - [`FixedCsr1dPlan`] / [`FixedCsr1dInputPlan`]: immutable strict-order CSR 1D
+//!   snapshots preserving exact IEEE-754 summation order (including direct
+//!   `u16`/`u32` inputs and vertical flips).
+//! - [`FixedGrid2dPlan`] (`Integrator::prepare_fixed2d_on_grid`): immutable
+//!   fixed-mask CSR 2D snapshot on explicit [`IntegrationGrid2d`] edges.
+//! - [`Dynamic1dPlan`] / [`Dynamic1dWorker`] (`Integrator::prepare_dynamic1d`):
+//!   immutable geometry-only 1D snapshot for per-frame changing masks with
+//!   reusable worker-local accumulators.
+//! - [`Cuda1dPlan`] / [`Cuda2dPlan`] and [`Metal1dPlan`] / [`Metal2dPlan`]:
+//!   experimental fixed-mask GPU plans with native integer/float inputs and
+//!   on-GPU Bitshuffle+LZ4 decompression.
 mod arithmetic;
 mod cache;
 mod corrections;
 pub mod cuda;
+mod gpu_common;
 #[cfg(feature = "python")]
 pub(crate) use cuda::CudaPinnedBytes;
 pub use cuda::{
@@ -109,37 +130,71 @@ impl RadialUnit {
     /// For q units, requires the wavelength in meters.
     /// Panics if wavelength is required but not provided or is zero/negative.
     pub fn convert_from_tth(&self, tth_rad: &[f64], wavelength: f64) -> Vec<f64> {
-        match self {
-            RadialUnit::TthRad => tth_rad.to_vec(),
-            RadialUnit::TthDeg => tth_rad.iter().map(|&t| t.to_degrees()).collect(),
-            RadialUnit::QAngstrom => {
-                assert!(
-                    wavelength > 0.0,
-                    "Wavelength must be positive for q conversion"
-                );
-                // q = 4π sin(θ) / λ, where θ = tth/2
-                // wavelength in meters, convert to Angstroms (1e10)
-                let wl_angstrom = wavelength * 1e10;
-                let factor = 4.0 * PI / wl_angstrom;
-                tth_rad.iter().map(|&t| factor * (t / 2.0).sin()).collect()
-            }
-            RadialUnit::QNm => {
-                assert!(
-                    wavelength > 0.0,
-                    "Wavelength must be positive for q conversion"
-                );
-                // q = 4π sin(θ) / λ, where θ = tth/2
-                // wavelength in meters, convert to nm (1e9)
-                let wl_nm = wavelength * 1e9;
-                let factor = 4.0 * PI / wl_nm;
-                tth_rad.iter().map(|&t| factor * (t / 2.0).sin()).collect()
-            }
+        let converter = RadialConverter::new(*self, wavelength);
+        if *self == RadialUnit::TthRad {
+            return tth_rad.to_vec();
         }
+        tth_rad.iter().map(|&t| converter.convert(t)).collect()
     }
 
     /// Returns true if this unit requires a wavelength for conversion.
     pub fn requires_wavelength(&self) -> bool {
         matches!(self, RadialUnit::QAngstrom | RadialUnit::QNm)
+    }
+}
+
+/// Precomputed scalar converter from two-theta (radians) to a [`RadialUnit`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RadialConverter {
+    unit: RadialUnit,
+    q_scale: f64,
+}
+
+impl RadialConverter {
+    pub(crate) fn new(unit: RadialUnit, wavelength: f64) -> Self {
+        let q_scale = match unit {
+            RadialUnit::QAngstrom | RadialUnit::QNm => {
+                assert!(
+                    wavelength > 0.0,
+                    "Wavelength must be positive for q conversion"
+                );
+                let scale = if unit == RadialUnit::QAngstrom {
+                    1e10
+                } else {
+                    1e9
+                };
+                4.0 * PI / (wavelength * scale)
+            }
+            RadialUnit::TthRad | RadialUnit::TthDeg => 0.0,
+        };
+        Self { unit, q_scale }
+    }
+
+    #[inline(always)]
+    pub(crate) fn convert(&self, tth: f64) -> f64 {
+        match self.unit {
+            RadialUnit::TthRad => tth,
+            RadialUnit::TthDeg => tth.to_degrees(),
+            RadialUnit::QAngstrom | RadialUnit::QNm => self.q_scale * (tth * 0.5).sin(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn invert_to_tth(&self, radial: f64) -> f64 {
+        match self.unit {
+            RadialUnit::TthRad => radial,
+            RadialUnit::TthDeg => radial.to_radians(),
+            RadialUnit::QAngstrom | RadialUnit::QNm => {
+                let s = radial / self.q_scale;
+                if s <= 0.0 {
+                    -1.0
+                } else if s >= 1.0 {
+                    PI + 1.0
+                } else {
+                    2.0 * s.asin()
+                }
+            }
+        }
     }
 }
 
@@ -168,7 +223,7 @@ impl RadialUnit {
 /// let (_x, y) = integrator.integrate1d(&frame, 4);
 /// assert_eq!(y.len(), 4);
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IntegrationMethod {
     /// Histogram (unweighted) integration, 1D only.
     ///
@@ -184,6 +239,30 @@ pub enum IntegrationMethod {
     PyfaiFull,
     /// Supersampling with `n_ss x n_ss` subpixels per pixel.
     Supersampled { n_ss: usize },
+}
+
+/// LUT-backed sampling strategy (every [`IntegrationMethod`] except `Histogram`).
+///
+/// Unifies the method representation across 1D/2D cache keys and shared-grid
+/// table builders without magic integer encodings or `Histogram => unreachable!()`
+/// branches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum LutSampling {
+    Counting,
+    PixelSplit(PixelSplitMode),
+    Supersampled { n_ss: usize },
+}
+
+impl LutSampling {
+    pub(crate) fn from_method(method: IntegrationMethod) -> Option<Self> {
+        match method {
+            IntegrationMethod::Histogram => None,
+            IntegrationMethod::Counting => Some(Self::Counting),
+            IntegrationMethod::PixelSplit => Some(Self::PixelSplit(PixelSplitMode::Fractional)),
+            IntegrationMethod::PyfaiFull => Some(Self::PixelSplit(PixelSplitMode::PyfaiHistogram)),
+            IntegrationMethod::Supersampled { n_ss } => Some(Self::Supersampled { n_ss }),
+        }
+    }
 }
 
 /// How masks are expected to change between frames. Both modes use float64.

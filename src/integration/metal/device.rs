@@ -638,7 +638,7 @@ fn with_table_1d<R>(
     let n_bins = u32::try_from(bins).map_err(|_| too_large())?;
     let view = integrator.for_shape(shape.0, shape.1);
     let norm = view.normalization();
-    let key = integrator.one_d_table_key(bins).ok_or_else(|| {
+    let key = integrator.one_d_key(bins).ok_or_else(|| {
         MetalError::Unsupported("the integration method has no 1D lookup table".into())
     })?;
     let lut = view.ensure_lut1d(key);
@@ -1174,7 +1174,9 @@ impl Engine {
         mut out_errors: Option<&mut [f64]>,
         layout_override: Option<Layout>,
     ) -> Result<(), MetalError> {
-        let total = frames.count(self.pixels, stacked)?;
+        let total = frames
+            .count(self.pixels, stacked)
+            .map_err(MetalError::InvalidInput)?;
         if total == 0 {
             return Ok(());
         }
@@ -1336,7 +1338,9 @@ impl Engine {
         stacked: bool,
         errors: bool,
     ) -> Result<RawFrameResults, MetalError> {
-        let total = frames.count(self.pixels, stacked)?;
+        let total = frames
+            .count(self.pixels, stacked)
+            .map_err(MetalError::InvalidInput)?;
         if total == 0 {
             return Ok(Vec::new());
         }

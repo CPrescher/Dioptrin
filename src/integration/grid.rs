@@ -1,4 +1,4 @@
-use super::{IntegrationMethod, Integrator, RadialUnit};
+use super::{IntegrationMethod, Integrator, LutSampling, RadialUnit};
 use crate::frame::Frame;
 use crate::lut::IntermediateResult2d;
 use crate::math::{self, histogram};
@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 
 /// Splitting convention for the shared-grid 2D path. Other methods and legacy
 /// single-detector/1D integration are unaffected.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PixelSplitMode {
     /// Exact polygon intersections divided by original pixel polygon area.
     #[default]
@@ -295,7 +295,7 @@ pub struct AzimuthalRange2dResult {
 pub(super) struct AzimuthalEdgesKey {
     dim1: usize,
     dim2: usize,
-    method: usize,
+    method: IntegrationMethod,
 }
 
 /// Inputs that determine [`Integrator`]'s default 2D radial edges.
@@ -305,7 +305,7 @@ pub(super) struct RadialEdgesKey {
     dim2: usize,
     n_radial: usize,
     unit: RadialUnit,
-    method: usize,
+    method: IntegrationMethod,
     radial_range: Option<[u64; 2]>,
 }
 
@@ -408,16 +408,15 @@ impl Integrator {
 
     /// Cache key of the shared-grid table for this integrator's method and unit.
     pub(super) fn shared_grid_key(&self, grid: IntegrationGrid2d) -> super::cache::TwoDKey {
+        let sampling = match LutSampling::from_method(self.method) {
+            Some(LutSampling::PixelSplit(_)) => LutSampling::PixelSplit(grid.pixel_split_mode),
+            Some(sampling) => sampling,
+            None => unreachable!("Histogram rejected before shared-grid key construction"),
+        };
         super::cache::TwoDKey::SharedGrid {
             grid,
             unit: self.radial_unit,
-            // 0 = counting, 1 = polygon splitting, >=2 = supersampling + 1
-            sampling: match self.method {
-                IntegrationMethod::Counting => 0,
-                IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => 1,
-                IntegrationMethod::Supersampled { n_ss } => n_ss + 1,
-                IntegrationMethod::Histogram => unreachable!(),
-            },
+            sampling,
         }
     }
 
@@ -675,11 +674,7 @@ impl Integrator {
         let key = AzimuthalEdgesKey {
             dim1,
             dim2,
-            method: match self.method {
-                IntegrationMethod::Counting => 0,
-                IntegrationMethod::Supersampled { n_ss } => n_ss + 1,
-                _ => usize::MAX,
-            },
+            method: self.method,
         };
         let cache = &self.azimuthal_edges_2d;
         if let Some((cached, edges)) = *cache.read().expect("azimuthal edge cache lock poisoned")
@@ -778,6 +773,7 @@ impl Integrator {
     /// arguments needs, so parallel batch workers share one table instead of
     /// each building it. Invalid arguments are left for the integration call
     /// to report.
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) fn prepare2d(
         &self,
         dim1: usize,
@@ -1043,13 +1039,7 @@ impl Integrator {
             dim2,
             n_radial,
             unit: self.radial_unit,
-            method: match self.method {
-                IntegrationMethod::Counting => 0,
-                IntegrationMethod::PixelSplit => 1,
-                IntegrationMethod::PyfaiFull => 2,
-                IntegrationMethod::Supersampled { n_ss } => n_ss + 3,
-                IntegrationMethod::Histogram => unreachable!(),
-            },
+            method: self.method,
             radial_range: self
                 .radial_range
                 .map(|(lo, hi)| [lo.to_bits(), hi.to_bits()]),

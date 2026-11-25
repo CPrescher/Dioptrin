@@ -47,6 +47,185 @@ fn check_pixel(index: usize, limit: usize) {
     );
 }
 
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn row_strict<const VAR: bool, const COUNT: bool, const WEIGHT: bool, const MASK: bool>(
+    start: usize,
+    end: usize,
+    col_idx: &[usize],
+    values: &[f64],
+    mask: &[u8],
+    intensity: &[f64],
+    variance: &[f64],
+    normalization: &[f64],
+    limit: usize,
+) -> [f64; 4] {
+    if start == end {
+        return [0.0; 4];
+    }
+    let mut sum_sig = 0.0;
+    let mut sum_norm = 0.0;
+    let mut sum_var = 0.0;
+    let mut count = 0.0;
+    let mut k = start;
+    // SAFETY: `check_row` verified `start..end` is within `col_idx` (and
+    // `pixel_limit` verified `values.len() >= col_idx.len()` when `WEIGHT`);
+    // `check_pixel` guards every gathered pixel index against `limit`, which is
+    // bounded by the shortest active per-pixel slice.
+    unsafe {
+        let col_ptr = col_idx.as_ptr();
+        let values_ptr = values.as_ptr();
+        let mask_ptr = mask.as_ptr();
+        let intensity_ptr = intensity.as_ptr();
+        let variance_ptr = variance.as_ptr();
+        let norm_ptr = normalization.as_ptr();
+        while k < end {
+            let j = *col_ptr.add(k);
+            check_pixel(j, limit);
+            if !MASK || *mask_ptr.add(j) == 0 {
+                if WEIGHT {
+                    let w = *values_ptr.add(k);
+                    sum_sig += w * *intensity_ptr.add(j);
+                    if VAR {
+                        sum_var += w * w * *variance_ptr.add(j);
+                    }
+                    sum_norm += w * *norm_ptr.add(j);
+                    if COUNT {
+                        count += w;
+                    }
+                } else {
+                    sum_sig += *intensity_ptr.add(j);
+                    if VAR {
+                        sum_var += *variance_ptr.add(j);
+                    }
+                    sum_norm += *norm_ptr.add(j);
+                    if COUNT {
+                        count += 1.0;
+                    }
+                }
+            }
+            k += 1;
+        }
+    }
+    [sum_sig, sum_norm, sum_var, count]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn integrate_rows<const VAR: bool, const COUNT: bool, T: Send>(
+    row_ptr: &[usize],
+    col_idx: &[usize],
+    values: Option<&[f64]>,
+    intensity: &[f64],
+    variance: &[f64],
+    mask: Option<&[u8]>,
+    normalization: &[f64],
+    finish: impl Fn([f64; 4]) -> T + Sync,
+) -> Vec<T> {
+    let limit = if VAR {
+        pixel_limit(
+            col_idx,
+            values,
+            mask,
+            &[intensity.len(), variance.len(), normalization.len()],
+        )
+    } else {
+        pixel_limit(
+            col_idx,
+            values,
+            mask,
+            &[intensity.len(), normalization.len()],
+        )
+    };
+    let rows = row_ptr.len() - 1;
+    (0..rows)
+        .into_par_iter()
+        .map(|row| {
+            let start = row_ptr[row];
+            let end = row_ptr[row + 1];
+            check_row(col_idx, start, end);
+            let acc = match (values, mask) {
+                (Some(w), Some(m)) => row_strict::<VAR, COUNT, true, true>(
+                    start,
+                    end,
+                    col_idx,
+                    w,
+                    m,
+                    intensity,
+                    variance,
+                    normalization,
+                    limit,
+                ),
+                (Some(w), None) => row_strict::<VAR, COUNT, true, false>(
+                    start,
+                    end,
+                    col_idx,
+                    w,
+                    &[],
+                    intensity,
+                    variance,
+                    normalization,
+                    limit,
+                ),
+                (None, Some(m)) => row_strict::<VAR, COUNT, false, true>(
+                    start,
+                    end,
+                    col_idx,
+                    &[],
+                    m,
+                    intensity,
+                    variance,
+                    normalization,
+                    limit,
+                ),
+                (None, None) => row_strict::<VAR, COUNT, false, false>(
+                    start,
+                    end,
+                    col_idx,
+                    &[],
+                    &[],
+                    intensity,
+                    variance,
+                    normalization,
+                    limit,
+                ),
+            };
+            finish(acc)
+        })
+        .collect()
+}
+
+#[inline]
+fn normalize_row([s, n, _, _]: [f64; 4]) -> f64 {
+    if n == 0.0 { 0.0 } else { s / n }
+}
+
+#[inline]
+fn normalize_row_with_error([s, n, v, _]: [f64; 4]) -> (f64, f64) {
+    if n == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (s / n, (v / (n * n)).max(0.0).sqrt())
+    }
+}
+
+fn unzip_raw<const VAR: bool>(
+    rows: Vec<[f64; 4]>,
+) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>, Vec<f64>) {
+    let mut sum_signal = Vec::with_capacity(rows.len());
+    let mut sum_norm = Vec::with_capacity(rows.len());
+    let mut sum_variance = VAR.then(|| Vec::with_capacity(rows.len()));
+    let mut count = Vec::with_capacity(rows.len());
+    for [s, n, v, c] in rows {
+        sum_signal.push(s);
+        sum_norm.push(n);
+        if let Some(ref mut sv) = sum_variance {
+            sv.push(v);
+        }
+        count.push(c);
+    }
+    (sum_signal, sum_norm, sum_variance, count)
+}
+
 /// Integrate using either unweighted or weighted 1D CSR LUT with normalization.
 ///
 /// Uses pyFAI-style weighted-average: `I = Sum(c*signal) / Sum(c*norm)`.
@@ -80,108 +259,17 @@ pub fn integrate1d(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
-    let limit = pixel_limit(
+    let pattern_intensity = integrate_rows::<false, false, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        &[],
         mask,
-        &[intensity.len(), normalization.len()],
+        normalization,
+        normalize_row,
     );
-    let n_points = lut.row_ptr.len() - 1;
-    let pattern_intensity: Vec<f64> = (0..n_points)
-        .into_par_iter()
-        .map(|i| {
-            let start = lut.row_ptr[i];
-            let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return 0.0;
-            }
-            match &lut.values {
-                Some(values) => {
-                    // Weighted: I = Sum(w*signal) / Sum(w*norm)
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        0.0
-                    } else {
-                        sum_sig / sum_norm
-                    }
-                }
-                None => {
-                    // Unweighted: I = Sum(signal) / Sum(norm)
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        0.0
-                    } else {
-                        sum_sig / sum_norm
-                    }
-                }
-            }
-        })
-        .collect();
-    let pattern_tth = histogram::bins(n_points, lut.hist_min, lut.hist_step);
+    let pattern_tth = histogram::bins(lut.row_ptr.len() - 1, lut.hist_min, lut.hist_step);
     (pattern_tth, pattern_intensity)
 }
 
@@ -196,120 +284,20 @@ pub fn integrate1d_with_errors(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let limit = pixel_limit(
-        &lut.col_idx,
-        lut.values.as_deref(),
-        mask,
-        &[intensity.len(), variance.len(), normalization.len()],
-    );
-    let n_points = lut.row_ptr.len() - 1;
-    let results: Vec<(f64, f64)> = (0..n_points)
-        .into_par_iter()
-        .map(|i| {
-            let start = lut.row_ptr[i];
-            let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return (0.0, 0.0);
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_var += w * w * *variance_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_var += w * w * *variance_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        (0.0, 0.0)
-                    } else {
-                        (sum_sig / sum_norm, sum_var / (sum_norm * sum_norm))
-                    }
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_var += *variance_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_var += *variance_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        (0.0, 0.0)
-                    } else {
-                        (sum_sig / sum_norm, sum_var / (sum_norm * sum_norm))
-                    }
-                }
-            }
-        })
-        .collect();
-    let mut pattern_intensity = Vec::with_capacity(n_points);
-    let mut pattern_sigma = Vec::with_capacity(n_points);
-    for (y, var) in results {
-        pattern_intensity.push(y);
-        pattern_sigma.push(var.max(0.0).sqrt());
-    }
-    let pattern_tth = histogram::bins(n_points, lut.hist_min, lut.hist_step);
+    let (pattern_intensity, pattern_sigma): (Vec<f64>, Vec<f64>) =
+        integrate_rows::<true, false, _>(
+            &lut.row_ptr,
+            &lut.col_idx,
+            lut.values.as_deref(),
+            intensity,
+            variance,
+            mask,
+            normalization,
+            normalize_row_with_error,
+        )
+        .into_iter()
+        .unzip();
+    let pattern_tth = histogram::bins(lut.row_ptr.len() - 1, lut.hist_min, lut.hist_step);
     (pattern_tth, pattern_intensity, pattern_sigma)
 }
 
@@ -343,105 +331,16 @@ pub fn integrate2d(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> Vec<f64> {
-    let limit = pixel_limit(
+    integrate_rows::<false, false, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        &[],
         mask,
-        &[intensity.len(), normalization.len()],
-    );
-    let rows = lut.row_ptr.len() - 1;
-    (0..rows)
-        .into_par_iter()
-        .map(|row| {
-            let start = lut.row_ptr[row];
-            let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return 0.0;
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        0.0
-                    } else {
-                        sum_sig / sum_norm
-                    }
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        0.0
-                    } else {
-                        sum_sig / sum_norm
-                    }
-                }
-            }
-        })
-        .collect()
+        normalization,
+        normalize_row,
+    )
 }
 
 /// Integrate using either unweighted or weighted 2D CSR LUT, returning errors.
@@ -455,120 +354,18 @@ pub fn integrate2d_with_errors(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
-    let limit = pixel_limit(
+    integrate_rows::<true, false, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        variance,
         mask,
-        &[intensity.len(), variance.len(), normalization.len()],
-    );
-    let rows = lut.row_ptr.len() - 1;
-    let results: Vec<(f64, f64)> = (0..rows)
-        .into_par_iter()
-        .map(|row| {
-            let start = lut.row_ptr[row];
-            let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return (0.0, 0.0);
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_var += w * w * *variance_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_var += w * w * *variance_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        (0.0, 0.0)
-                    } else {
-                        (sum_sig / sum_norm, sum_var / (sum_norm * sum_norm))
-                    }
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut k = start;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_var += *variance_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_var += *variance_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    if sum_norm == 0.0 {
-                        (0.0, 0.0)
-                    } else {
-                        (sum_sig / sum_norm, sum_var / (sum_norm * sum_norm))
-                    }
-                }
-            }
-        })
-        .collect();
-    let mut intensity_out = Vec::with_capacity(rows);
-    let mut sigma_out = Vec::with_capacity(rows);
-    for (y, var) in results {
-        intensity_out.push(y);
-        sigma_out.push(var.max(0.0).sqrt());
-    }
-    (intensity_out, sigma_out)
+        normalization,
+        normalize_row_with_error,
+    )
+    .into_iter()
+    .unzip()
 }
 
 /// Intermediate (pre-division) result for multi-detector merging.
@@ -597,119 +394,23 @@ pub fn integrate1d_raw(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult1d {
-    let limit = pixel_limit(
+    let rows = integrate_rows::<false, true, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        &[],
         mask,
-        &[intensity.len(), normalization.len()],
+        normalization,
+        |row| row,
     );
-    let n_points = lut.row_ptr.len() - 1;
-    let results: Vec<(f64, f64, f64)> = (0..n_points)
-        .into_par_iter()
-        .map(|i| {
-            let start = lut.row_ptr[i];
-            let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return (0.0, 0.0, 0.0);
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                        count += w;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    count += w;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, count)
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                        count += 1.0;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    count += 1.0;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, count)
-                }
-            }
-        })
-        .collect();
-    let mut sum_signal = Vec::with_capacity(n_points);
-    let mut sum_norm = Vec::with_capacity(n_points);
-    let mut count = Vec::with_capacity(n_points);
-    for (s, n, c) in results {
-        sum_signal.push(s);
-        sum_norm.push(n);
-        count.push(c);
-    }
-    let bins = histogram::bins(n_points, lut.hist_min, lut.hist_step);
+    let (sum_signal, sum_norm, sum_variance, count) = unzip_raw::<false>(rows);
+    let bins = histogram::bins(lut.row_ptr.len() - 1, lut.hist_min, lut.hist_step);
     IntermediateResult1d {
         bins,
         sum_signal,
         sum_norm,
-        sum_variance: None,
+        sum_variance,
         count,
     }
 }
@@ -722,129 +423,23 @@ pub fn integrate1d_raw_with_variance(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult1d {
-    let limit = pixel_limit(
+    let rows = integrate_rows::<true, true, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        variance,
         mask,
-        &[intensity.len(), variance.len(), normalization.len()],
+        normalization,
+        |row| row,
     );
-    let n_points = lut.row_ptr.len() - 1;
-    let results: Vec<(f64, f64, f64, f64)> = (0..n_points)
-        .into_par_iter()
-        .map(|i| {
-            let start = lut.row_ptr[i];
-            let end = lut.row_ptr[i + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return (0.0, 0.0, 0.0, 0.0);
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_var += w * w * *variance_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                        count += w;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_var += w * w * *variance_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    count += w;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, sum_var, count)
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_var += *variance_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                        count += 1.0;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_var += *variance_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    count += 1.0;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, sum_var, count)
-                }
-            }
-        })
-        .collect();
-    let mut sum_signal = Vec::with_capacity(n_points);
-    let mut sum_norm_v = Vec::with_capacity(n_points);
-    let mut sum_variance = Vec::with_capacity(n_points);
-    let mut count = Vec::with_capacity(n_points);
-    for (s, n, v, c) in results {
-        sum_signal.push(s);
-        sum_norm_v.push(n);
-        sum_variance.push(v);
-        count.push(c);
-    }
-    let bins = histogram::bins(n_points, lut.hist_min, lut.hist_step);
+    let (sum_signal, sum_norm, sum_variance, count) = unzip_raw::<true>(rows);
+    let bins = histogram::bins(lut.row_ptr.len() - 1, lut.hist_min, lut.hist_step);
     IntermediateResult1d {
         bins,
         sum_signal,
-        sum_norm: sum_norm_v,
-        sum_variance: Some(sum_variance),
+        sum_norm,
+        sum_variance,
         count,
     }
 }
@@ -856,117 +451,21 @@ pub fn integrate2d_raw(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult2d {
-    let limit = pixel_limit(
+    let rows = integrate_rows::<false, true, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        &[],
         mask,
-        &[intensity.len(), normalization.len()],
+        normalization,
+        |row| row,
     );
-    let rows = lut.row_ptr.len() - 1;
-    let results: Vec<(f64, f64, f64)> = (0..rows)
-        .into_par_iter()
-        .map(|row| {
-            let start = lut.row_ptr[row];
-            let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return (0.0, 0.0, 0.0);
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                        count += w;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    count += w;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, count)
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                        count += 1.0;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    count += 1.0;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, count)
-                }
-            }
-        })
-        .collect();
-    let mut sum_signal = Vec::with_capacity(rows);
-    let mut sum_norm = Vec::with_capacity(rows);
-    let mut count = Vec::with_capacity(rows);
-    for (s, n, c) in results {
-        sum_signal.push(s);
-        sum_norm.push(n);
-        count.push(c);
-    }
+    let (sum_signal, sum_norm, sum_variance, count) = unzip_raw::<false>(rows);
     IntermediateResult2d {
         sum_signal,
         sum_norm,
-        sum_variance: None,
+        sum_variance,
         count,
         n_radial: lut.n_tth,
         n_azimuthal: lut.n_azimuthal,
@@ -981,127 +480,21 @@ pub fn integrate2d_raw_with_variance(
     mask: Option<&[u8]>,
     normalization: &[f64],
 ) -> IntermediateResult2d {
-    let limit = pixel_limit(
+    let rows = integrate_rows::<true, true, _>(
+        &lut.row_ptr,
         &lut.col_idx,
         lut.values.as_deref(),
+        intensity,
+        variance,
         mask,
-        &[intensity.len(), variance.len(), normalization.len()],
+        normalization,
+        |row| row,
     );
-    let rows = lut.row_ptr.len() - 1;
-    let results: Vec<(f64, f64, f64, f64)> = (0..rows)
-        .into_par_iter()
-        .map(|row| {
-            let start = lut.row_ptr[row];
-            let end = lut.row_ptr[row + 1];
-            check_row(&lut.col_idx, start, end);
-            if start == end {
-                return (0.0, 0.0, 0.0, 0.0);
-            }
-            match &lut.values {
-                Some(values) => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let values_ptr = values.as_ptr();
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        let w = *values_ptr.add(k);
-                                        sum_sig += w * *intensity_ptr.add(j);
-                                        sum_var += w * w * *variance_ptr.add(j);
-                                        sum_norm += w * *norm_ptr.add(j);
-                                        count += w;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let w = *values_ptr.add(k);
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += w * *intensity_ptr.add(j);
-                                    sum_var += w * w * *variance_ptr.add(j);
-                                    sum_norm += w * *norm_ptr.add(j);
-                                    count += w;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, sum_var, count)
-                }
-                None => {
-                    let mut sum_sig = 0.0;
-                    let mut sum_var = 0.0;
-                    let mut sum_norm = 0.0;
-                    let mut count = 0.0;
-                    unsafe {
-                        let col_ptr = lut.col_idx.as_ptr();
-                        let intensity_ptr = intensity.as_ptr();
-                        let variance_ptr = variance.as_ptr();
-                        let norm_ptr = normalization.as_ptr();
-                        match mask {
-                            Some(mask) => {
-                                let mask_ptr = mask.as_ptr();
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    if *mask_ptr.add(j) == 0 {
-                                        sum_sig += *intensity_ptr.add(j);
-                                        sum_var += *variance_ptr.add(j);
-                                        sum_norm += *norm_ptr.add(j);
-                                        count += 1.0;
-                                    }
-                                    k += 1;
-                                }
-                            }
-                            None => {
-                                let mut k = start;
-                                while k < end {
-                                    let j = *col_ptr.add(k);
-                                    check_pixel(j, limit);
-                                    sum_sig += *intensity_ptr.add(j);
-                                    sum_var += *variance_ptr.add(j);
-                                    sum_norm += *norm_ptr.add(j);
-                                    count += 1.0;
-                                    k += 1;
-                                }
-                            }
-                        }
-                    }
-                    (sum_sig, sum_norm, sum_var, count)
-                }
-            }
-        })
-        .collect();
-    let mut sum_signal = Vec::with_capacity(rows);
-    let mut sum_norm_v = Vec::with_capacity(rows);
-    let mut sum_variance = Vec::with_capacity(rows);
-    let mut count = Vec::with_capacity(rows);
-    for (s, n, v, c) in results {
-        sum_signal.push(s);
-        sum_norm_v.push(n);
-        sum_variance.push(v);
-        count.push(c);
-    }
+    let (sum_signal, sum_norm, sum_variance, count) = unzip_raw::<true>(rows);
     IntermediateResult2d {
         sum_signal,
-        sum_norm: sum_norm_v,
-        sum_variance: Some(sum_variance),
+        sum_norm,
+        sum_variance,
         count,
         n_radial: lut.n_tth,
         n_azimuthal: lut.n_azimuthal,

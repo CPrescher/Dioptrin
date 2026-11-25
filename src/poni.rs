@@ -1,7 +1,6 @@
 //! Poni file handling
 //!
 //! Provides functions to read and write poni files into and from the Poni struct.
-#![allow(dead_code)]
 
 use std::fs::File;
 use std::io::{self, BufRead};

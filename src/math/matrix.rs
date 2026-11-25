@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use std::{
     fmt::Display,
     ops::{Add, Div, Mul},
@@ -5,6 +6,10 @@ use std::{
 
 use rayon::prelude::*;
 
+#[deprecated(
+    since = "0.15.3",
+    note = "Legacy prototype unused by Dioptrin; will be removed in a future release."
+)]
 pub struct Matrix {
     pub values: Vec<f64>,
     pub m: usize,
@@ -220,6 +225,7 @@ mod tests {
         assert_eq!(result.values, expected.values);
     }
 
+    #[test]
     fn test_div_dense_by_scalr() {
         let (n, m) = (2, 3);
         let dense = &Matrix::new(m, n, vec![1.0; n * m]);

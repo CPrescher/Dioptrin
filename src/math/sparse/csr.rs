@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use std::fmt::Display;
 
 /// A sparse matrix in the Compressed Sparse Row (CSR) format.
@@ -6,6 +7,10 @@ use std::fmt::Display;
 /// with respect to the column matrix. See
 /// <https://en.wikipedia.org/wiki/Sparse_matrix#Compressed_sparse_row_(CSR,_CRS_or_Yale_format)>
 /// for more information.
+#[deprecated(
+    since = "0.15.3",
+    note = "Legacy prototype unused by Dioptrin (use `dioptrin::lut` instead); will be removed in a future release."
+)]
 pub struct CsrMatrix {
     pub col_indices: Vec<usize>,
     pub row_pointer: Vec<usize>,

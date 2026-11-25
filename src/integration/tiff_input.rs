@@ -1,5 +1,5 @@
 //! Typed TIFF adapters. Arithmetic is shared with the existing f64 CSR path.
-use super::cache::{AzimuthalRangeKey, OneDKey};
+use super::cache::AzimuthalRangeKey;
 use super::{IntegrationMethod, Integrator};
 use crate::frame::TiffFrame;
 use tiff::decoder::DecodingResult;
@@ -39,32 +39,10 @@ impl Integrator {
         let (h, w) = (frame.dim1, frame.dim2);
         let view = self.for_shape(h, w);
         let norm = view.normalization();
-        let mask = self.mask.as_ref().map(|m| {
-            m.assert_compatible(h, w);
-            m.data.as_slice()
-        });
-        let unit = self.radial_unit;
-        let radial_range = self.radial_range_key();
-        let key = match self.method {
-            IntegrationMethod::Counting => OneDKey::Counting {
-                n_points,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::PixelSplit | IntegrationMethod::PyfaiFull => OneDKey::PixelSplit {
-                pyfai: matches!(self.method, super::IntegrationMethod::PyfaiFull),
-                n_points,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::Supersampled { n_ss } => OneDKey::Supersampled {
-                n_points,
-                n_ss,
-                unit,
-                radial_range,
-            },
-            IntegrationMethod::Histogram => unreachable!(),
-        };
+        let mask = self.checked_mask(h, w);
+        let key = self
+            .one_d_key(n_points)
+            .expect("Histogram handled before LUT lookup");
         let lut = view.ensure_lut1d(key);
         pixels!(
             frame,
@@ -105,10 +83,7 @@ impl Integrator {
         let (h, w) = (frame.dim1, frame.dim2);
         let view = self.for_shape(h, w);
         let norm = view.normalization();
-        let mask = self.mask.as_ref().map(|m| {
-            m.assert_compatible(h, w);
-            m.data.as_slice()
-        });
+        let mask = self.checked_mask(h, w);
         let key = self.lut2d_key(
             &view,
             n_radial,
