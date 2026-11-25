@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python `IntegrationResult` has read-only NumPy properties `radial_array`,
+  `azimuthal_array`, `intensity_array`, `errors_array` and
+  `azimuthal_std_array`: float64 views of the result's own memory (no copy,
+  about 0.1 us per read instead of milliseconds to build a list for a
+  2000 x 360 cake), `None` when the list attribute is `None`. 2D
+  `intensity_array`/`errors_array` have shape `(n_azimuthal, n_radial)`.
+  The list attributes are unchanged.
+
+### Changed
+
+- Python `BatchResult.result` returns the same `IntegrationResult` object on
+  every read instead of a deep copy of all its vectors. `IntegrationResult`
+  and `BatchResult` are now immutable (`frozen`) classes; neither had
+  settable attributes before.
+
 ## [0.15.2] - 2026-11-24
 
 ### Changed

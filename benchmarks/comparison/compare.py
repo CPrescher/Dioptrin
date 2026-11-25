@@ -120,6 +120,18 @@ DIOPTRIN_2D_PATHS = ("sequential", "stream", "batch")
 # threads); nested = neither argument (all frames on the global Rayon pool of
 # RAYON_NUM_THREADS = B threads, parallel inside frames too).
 DIOPTRIN_2D_BATCH_SPLITS = ("frames", "nested")
+# The CPU Dioptrin 1D call over the in-memory frame list (--dioptrin-1d-path):
+# global = Integrator.batch1d(frames, n, errors=...) with neither num_workers
+# nor num_threads, on the global Rayon pool of RAYON_NUM_THREADS = budget
+# threads (the library's default call; 4-frame tiled kernels when the call has
+# at least 4 frames per pool thread); split = num_workers=budget,
+# num_threads=1, which since Dioptrin 0.15.0 runs `budget` frames at a time on
+# one-thread pools that the call builds itself (in 0.14 it ran as global).
+DIOPTRIN_1D_PATHS = ("global", "split")
+# How a timed Dioptrin call turns its IntegrationResult into NumPy arrays:
+# array = the zero-copy read-only accessors (intensity_array, errors_array),
+# list = np.asarray of the list-returning attributes (builds without them).
+DIOPTRIN_RESULT_CONVERSIONS = ("array", "list")
 # Cross-library pairs in numerical.json besides the dioptrin-pixel_split reference.
 COUNTERPARTS_2D = (
     ("pyfai-full", "dioptrin-pyfai_full"),
@@ -471,6 +483,167 @@ def same_bits(a, b):
     return a.dtype == b.dtype and a.shape == b.shape and a.tobytes() == b.tobytes()
 
 
+class DioptrinOutput:
+    """One frame as a timed Dioptrin call hands it back to the harness.
+
+    `intensity` and, with Poisson errors, `sigma` are NumPy float64 arrays
+    created inside the timed call (1D: (n,), 2D: (n_azimuthal, n_radial)),
+    which is what pyFAI's and azint's timed calls return. `result` is the
+    IntegrationResult: the radial and azimuthal axes are per-integrator
+    constants and are read from it outside timing, as azint's `radial_axis`.
+    `filename` is the BatchResult label ("array[i]") of batch calls, checked
+    against the frame position during validation.
+    """
+
+    __slots__ = ("result", "intensity", "sigma", "filename")
+
+    def __init__(self, result, intensity, sigma, filename=None):
+        self.result = result
+        self.intensity = intensity
+        self.sigma = sigma
+        self.filename = filename
+
+
+def dioptrin_result_conversion(result):
+    """'array' when this IntegrationResult has the zero-copy accessors."""
+    return "array" if hasattr(result, "intensity_array") else "list"
+
+
+LIST_CONVERSION_ERROR = (
+    "the installed Dioptrin build has no IntegrationResult *_array accessors "
+    "(intensity_array, errors_array; Dioptrin 0.15.2 and older wheels lack "
+    "them), so every timed Dioptrin call would build NumPy arrays from Python "
+    "lists, serially under the GIL (for a 2000x360 cake about 32 ms against "
+    "1.6 ms of integration), and the rows would mostly time list building. "
+    "Install Dioptrin from a revision that has the accessors (rerun setup.py "
+    "from this checkout), or pass --allow-list-conversion to time the list "
+    "conversion anyway"
+)
+LIST_CONVERSION_WARNING = (
+    "LIST CONVERSION: this Dioptrin build has no *_array accessors; Dioptrin "
+    "rows time np.asarray over Python lists (serial, under the GIL), which can "
+    "dominate the timed call. Do not compare these rows with array rows or "
+    "with pyFAI/azint as integration throughput."
+)
+
+
+def dioptrin_has_result_arrays():
+    """Whether the installed dioptrin's IntegrationResult has the accessors."""
+    import dioptrin
+
+    cls = getattr(dioptrin, "IntegrationResult", None)
+    return cls is not None and hasattr(cls, "intensity_array")
+
+
+def dioptrin_case_conversion(result, case):
+    """dioptrin_result_conversion, refusing 'list' unless the case allows it.
+
+    The run refuses list conversion before any case (main); this repeats the
+    check in every case process and rank in case the build changed since.
+    """
+    conversion = dioptrin_result_conversion(result)
+    if conversion == "list" and not case.get("allow_list_conversion"):
+        raise RuntimeError("Refusing to time Dioptrin: " + LIST_CONVERSION_ERROR)
+    return conversion
+
+
+def dioptrin_converter(conversion, errors, shape=None):
+    """IntegrationResult -> DioptrinOutput, run inside the timed call.
+
+    `shape` is the 2D cake shape (n_azimuthal, n_radial): the list attributes
+    of 2D results are flat, the accessors are already shaped (a mismatch fails
+    validation rather than being reshaped away).
+    """
+    import numpy as np
+
+    if conversion == "array":
+
+        def convert(result, filename=None):
+            return DioptrinOutput(
+                result,
+                result.intensity_array,
+                result.errors_array if errors else None,
+                filename,
+            )
+
+    elif conversion == "list":
+
+        def convert(result, filename=None):
+            intensity = np.asarray(result.intensity, dtype=np.float64)
+            sigma = result.errors if errors else None
+            if sigma is not None:
+                sigma = np.asarray(sigma, dtype=np.float64)
+            if shape is not None:
+                intensity = intensity.reshape(shape)
+                if sigma is not None:
+                    sigma = sigma.reshape(shape)
+            return DioptrinOutput(result, intensity, sigma, filename)
+
+    else:
+        raise ValueError(f"Unknown Dioptrin result conversion {conversion!r}")
+    return convert
+
+
+def dioptrin_batch_converter(convert):
+    """BatchResult -> DioptrinOutput (error check and unwrap, then convert)."""
+
+    def unwrap(item):
+        if not item.is_ok():
+            raise RuntimeError(item.error)
+        return convert(item.result, item.filename)
+
+    return unwrap
+
+
+def dioptrin_axis(result, name, conversion):
+    """An axis of an IntegrationResult as float64 (outside timing), or None."""
+    import numpy as np
+
+    value = getattr(result, f"{name}_array" if conversion == "array" else name)
+    return None if value is None else np.asarray(value, dtype=np.float64)
+
+
+def dioptrin_radial_2d(result, conversion, fallback):
+    """The radial axis of a Dioptrin 2D result (outside timing). Builds from
+    0.15.0 on return it with radial_range; only builds before 0.15.0, which
+    return None, are given a fallback axis by the preflight
+    (case["dioptrin_radial_axis"]). A missing axis without one is an error,
+    not silently replaced."""
+    import numpy as np
+
+    radial = dioptrin_axis(result, "radial", conversion)
+    if radial is not None:
+        return radial
+    if fallback is None:
+        raise AssertionError(
+            "Dioptrin 2D result has no radial axis, although the preflight "
+            "found that this build returns one"
+        )
+    return np.asarray(fallback, dtype=np.float64)
+
+
+def check_dioptrin_output(output, index, shape, errors):
+    """What the timed call produced: float64 ndarrays of the expected shape,
+    in frame order for batch calls. Missing sigma is left to the callers."""
+    import numpy as np
+
+    if not isinstance(output, DioptrinOutput):
+        raise AssertionError(f"Timed Dioptrin call returned {type(output).__name__}")
+    if index is not None and output.filename not in (None, f"array[{index}]"):
+        raise AssertionError(f"Dioptrin batch result {index} is {output.filename!r}")
+    for name in ("intensity", "sigma") if errors else ("intensity",):
+        value = getattr(output, name)
+        if value is None:
+            continue
+        if not isinstance(value, np.ndarray) or value.dtype != np.float64:
+            raise AssertionError(
+                f"Dioptrin {name} is {type(value).__name__} "
+                f"{getattr(value, 'dtype', '')}, not a float64 ndarray"
+            )
+        if value.shape != shape:
+            raise AssertionError(f"Dioptrin {name} shape {value.shape}, expected {shape}")
+
+
 def dump(path, value):
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
@@ -737,10 +910,13 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
     ai = pyFAI.load(poni)
     ai.detector.mask = mask
     libraries = {library(v) for v in variants}
-    # Common 2D radial edges. Dioptrin's Integrator ignores radial_range in 2D
-    # for pixel_split and supersampled; pixel_split uses the extremes of the
-    # pixel-corner 2theta (plus 10 ulp), read here from its 1D default grid,
-    # which follows the same rule. Every other 2D case is given these edges.
+    # Common 2D radial edges: Dioptrin pixel_split's default edges, the
+    # extremes of the pixel-corner 2theta (plus 10 ulp), read from its 1D
+    # default grid. Every 2D case is given these edges. Since Dioptrin 0.15.0
+    # every method honours them as radial_range in 2D; builds before 0.15.0
+    # honoured radial_range in 2D only for pyfai_full, and pixel_split then
+    # used these same edges by default, so pixel_split cakes are on the common
+    # grid for every revision.
     corners = ai.array_from_unit(shape, typ="corner", unit="2th_deg")
     if "dioptrin" in libraries:
         import dioptrin
@@ -790,9 +966,14 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
         )
         store["pyfai"] = np.asarray(result.intensity)
         axes["pyfai"] = np.asarray(result.azimuthal)
+    # Whether this Dioptrin build returns the radial axis of a 2D result
+    # (0.15.0 and later, with radial_range or azimuthal_range); None without
+    # Dioptrin.
+    returns_2d_radial = None
     if "dioptrin" in libraries:
         import dioptrin
 
+        returns_2d_radial = True
         for method in ("pixel_split", "pyfai_full", "supersampled"):
             engine = dioptrin.Integrator(
                 poni,
@@ -810,6 +991,8 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
                 store[f"dioptrin-{method}"] = np.asarray(result.intensity).reshape(
                     na, nr
                 )
+                if getattr(result, "radial", None) is None:
+                    returns_2d_radial = False
             axes[f"dioptrin-{method}"] = np.degrees(np.asarray(result.azimuthal))
     if "azint" in libraries:
         import azint
@@ -882,14 +1065,21 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
         )
         del engine
 
-    radial_axes = {}
+    # Fallback 2D radial axes, for Dioptrin builds before 0.15.0 only: they
+    # return no radial axis with a 2D result, and bin onto the radial_range in
+    # 2D only for pyfai_full; the other methods use their default edges, which
+    # their 1D default grid shares. Builds from 0.15.0 on return the axis of
+    # every 2D result (checked above), so none is computed and a 2D result
+    # without one fails the case (dioptrin_2d_radial_axis).
+    radial_axes = None
     methods = {
         dioptrin_method(v) for v in variants if v.startswith("dioptrin-")
     }
     radial_counts = sorted({parse_cake(c)[0] for c in cakes})
-    if methods:
+    if methods and not returns_2d_radial:
         import dioptrin
 
+        radial_axes = {}
         for method in sorted(methods):
             counts = subpixels if method == "supersampled" else [None]
             for n_ss in counts:
@@ -898,7 +1088,6 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
                     method=method,
                     unit="2th_deg",
                     n_ss=n_ss or meta["n_splitting"],
-                    # Same rule as the 2D grid: only pyfai_full takes the range.
                     radial_range=(lo, hi) if method == "pyfai_full" else None,
                 )
                 engine.set_mask(mask)
@@ -929,6 +1118,7 @@ def preflight_2d(fixture, cakes, subpixels, variants, output):
             radial_range_1d=meta["radial_range"],
             convention=convention,
             multiintegrator_check=multi_check,
+            dioptrin_returns_2d_radial_axis=returns_2d_radial,
             dioptrin_radial_axes=radial_axes,
             table_estimates=estimates,
             unmasked_pixels=int(valid.sum()),
@@ -1002,8 +1192,9 @@ def setup_case(case, rank=None):
         )
         ai.set_mask(mask)
 
-        # The current array batch path uses the global Rayon pool rather than
-        # its file-worker arguments. Set the real total CPU budget at startup.
+        # The default array batch call (--dioptrin-1d-path global) runs on
+        # the global Rayon pool: it must be exactly the CPU budget
+        # (RAYON_NUM_THREADS, set by case_threads).
         if dioptrin.rayon_num_threads() != workers:
             raise RuntimeError(
                 "Dioptrin Rayon pool does not match requested CPU budget"
@@ -1012,8 +1203,8 @@ def setup_case(case, rank=None):
     if variant in DIOPTRIN_GPU_VARIANTS:
         # One host thread drives one device (w1, p1). The plan snapshots the
         # Integrator's mask, corrections, method, unit and radial range and
-        # holds the table on the device. List-to-NumPy conversion happens in
-        # extract/validate, outside timing, as for the CPU Dioptrin rows.
+        # holds the table on the device. The timed call ends with NumPy
+        # float64 intensity (and sigma) per frame, as for the CPU rows.
         backend = "cuda" if variant in CUDA_VARIANTS else "metal"
         kind = DIOPTRIN_GPU_VARIANTS[variant][1]
         precision = case.get("gpu_precision", CUDA_PRECISION)
@@ -1029,28 +1220,35 @@ def setup_case(case, rank=None):
         def integrate_one(frame):
             return plan.integrate1d(frame, errors=errors)
 
+        first = integrate_one(image)
+        conversion = dioptrin_case_conversion(first, case)
+        convert = dioptrin_converter(conversion, errors)
+
         if kind == "frame":
 
             def integrate_frames(images):
-                return [integrate_one(frame) for frame in images]
+                return [convert(integrate_one(frame)) for frame in images]
 
         else:
 
             def integrate_frames(images):
-                return plan.batch1d(images, errors=errors)
+                return [convert(r) for r in plan.batch1d(images, errors=errors)]
 
         def run():
             return integrate_frames(frames)
 
-        def extract(result):
+        def extract(output):
+            check_dioptrin_output(output, None, (n,), errors)
             return (
-                np.asarray(result.radial),
-                np.asarray(result.intensity),
-                np.asarray(result.errors) if errors else None,
+                dioptrin_axis(output.result, "radial", conversion),
+                output.intensity,
+                output.sigma if errors else None,
             )
 
-        extract(integrate_one(image))
+        extract(convert(first))
         setup_first = time.perf_counter() - started
+        del first
+        info["dioptrin_result_conversion"] = conversion
         baseline = [extract(r) for r in integrate_frames([unique[u] for u in needed])]
 
         def cuda_check(sample):
@@ -1066,14 +1264,18 @@ def setup_case(case, rank=None):
                 for i in range(len(needed))
             ]
             cpu = [
-                extract(ai.integrate1d(np.ascontiguousarray(unique[u]), n, errors=errors))
+                extract(
+                    convert(
+                        ai.integrate1d(np.ascontiguousarray(unique[u]), n, errors=errors)
+                    )
+                )
                 for u in needed
             ]
             identical = None
             if kind == "batch":
                 images = [unique[u] for u in needed]
-                batched = plan.batch1d(images, errors=errors)
-                single = [integrate_one(frame) for frame in images]
+                batched = [convert(r) for r in plan.batch1d(images, errors=errors)]
+                single = [convert(integrate_one(frame)) for frame in images]
                 identical = len(batched) == len(single) and all(
                     same_bits(a, b)
                     for x, y in zip(batched, single)
@@ -1126,27 +1328,46 @@ def setup_case(case, rank=None):
                 )
 
     elif variant.startswith("dioptrin-"):
+        # --dioptrin-1d-path (DIOPTRIN_1D_PATHS): "global" is the library's
+        # default call on the global pool of `workers` threads (checked
+        # above); "split" passes num_workers=workers, num_threads=1.
+        path = case.get("dioptrin_1d_path") or "global"
+        if path == "global":
+            shape = {}
+        elif path == "split":
+            shape = dict(num_workers=workers, num_threads=1)
+        else:
+            raise ValueError(f"Unknown Dioptrin 1D path {path!r}")
+
+        def batch(images):
+            return ai.batch1d(images, n, errors=errors, **shape)
+
+        first = batch([image])[0]
+        if not first.is_ok():
+            raise RuntimeError(first.error)
+        conversion = dioptrin_case_conversion(first.result, case)
+        unwrap = dioptrin_batch_converter(dioptrin_converter(conversion, errors))
 
         def integrate_frames(images):
-            return ai.batch1d(
-                images, n, errors=errors, num_workers=workers, num_threads=1
-            )
+            # Inside the timed call: unwrap every BatchResult and hold NumPy
+            # float64 intensity (and sigma) for every frame.
+            return [unwrap(item) for item in batch(images)]
 
         def run():
             return integrate_frames(frames)
 
-        def extract(result):
-            if not result.is_ok():
-                raise RuntimeError(result.error)
-            value = result.result
+        def extract(output):
+            check_dioptrin_output(output, None, (n,), errors)
             return (
-                np.asarray(value.radial),
-                np.asarray(value.intensity),
-                np.asarray(value.errors) if errors else None,
+                dioptrin_axis(output.result, "radial", conversion),
+                output.intensity,
+                output.sigma if errors else None,
             )
 
-        extract(integrate_frames([image])[0])
+        extract(unwrap(first))
         setup_first = time.perf_counter() - started
+        del first
+        info["dioptrin_result_conversion"] = conversion
         baseline = [extract(r) for r in integrate_frames([unique[u] for u in needed])]
     else:
         if variant in ("azint", "azint-cached"):
@@ -1310,6 +1531,9 @@ def setup_case(case, rank=None):
         if len(results) != len(frames):
             raise AssertionError("Wrong output frame count")
         for index, result in enumerate(results):
+            if isinstance(result, DioptrinOutput):
+                # The arrays the timed call produced, in frame order.
+                check_dioptrin_output(result, index, (n,), errors)
             radial, intensity, sigma = extract(result)
             expected = row(logical[index] % distinct)
             if intensity.shape != (n,) or not np.isfinite(intensity).all():
@@ -1457,7 +1681,11 @@ def setup_case_2d(case, rank=None):
     pool = None
     stock_check = None
     gpu_check_2d = None
-    unwrap_batch_result = None
+    conversion = None  # Dioptrin rows: DIOPTRIN_RESULT_CONVERSIONS
+
+    def convert(result):  # Dioptrin rows replace it with dioptrin_converter
+        return result
+
     info = dict(rss_inputs_mib=peak_rss(), uncertainty_support=UNCERTAINTY_2D[lib])
     started = time.perf_counter()
 
@@ -1479,7 +1707,8 @@ def setup_case_2d(case, rank=None):
                 "Dioptrin Rayon pool does not match requested CPU budget"
             )
         span = tuple(math.radians(v) for v in AZIMUTH_RANGE_DEG)
-        fallback_radial_axis = np.asarray(case["dioptrin_radial_axis"])
+        # Builds before 0.15.0 only (see dioptrin_radial_2d).
+        fallback_radial_axis = case.get("dioptrin_radial_axis")
 
         if variant in DIOPTRIN_GPU_VARIANTS:
             backend = "cuda" if variant in CUDA_VARIANTS else "metal"
@@ -1507,31 +1736,42 @@ def setup_case_2d(case, rank=None):
             def integrate(engine, frame):
                 return engine.integrate2d(frame, errors=errors)
 
+            first = integrate(plan, image)
+            conversion = dioptrin_case_conversion(first, case)
+            convert = dioptrin_converter(conversion, errors, (na, nr))
+
+            # The timed call ends with NumPy float64 cakes (n_azimuthal,
+            # n_radial), and sigma with Poisson errors, for every frame.
             if kind == "frame":
 
                 def run():
-                    return [plan.integrate2d(frame, errors=errors) for frame in frames]
+                    return [
+                        convert(plan.integrate2d(frame, errors=errors))
+                        for frame in frames
+                    ]
 
             else:
 
                 def run():
-                    return plan.batch2d(frames, errors=errors)
+                    return [convert(r) for r in plan.batch2d(frames, errors=errors)]
 
-            def extract(result):
-                radial = result.radial
+            def extract(output):
+                check_dioptrin_output(output, None, (na, nr), errors)
+                radial = dioptrin_radial_2d(
+                    output.result, conversion, fallback_radial_axis
+                )
                 sigma = None
                 if errors:
-                    if result.errors is None:
+                    if output.sigma is None:
                         raise Unsupported("Dioptrin GPU returned no 2D errors")
-                    sigma = np.asarray(result.errors).reshape(na, nr)
+                    sigma = output.sigma
                 return (
-                    fallback_radial_axis if radial is None else np.asarray(radial),
-                    np.degrees(np.asarray(result.azimuthal)),
-                    np.asarray(result.intensity).reshape(na, nr),
+                    radial,
+                    np.degrees(dioptrin_axis(output.result, "azimuthal", conversion)),
+                    output.intensity,
                     sigma,
                 )
 
-            first = integrate(plan, image)
             setup_first = time.perf_counter() - started
             engines = [plan]
             info["table_nnz"] = plan.table_entries
@@ -1556,12 +1796,14 @@ def setup_case_2d(case, rank=None):
                 ]
                 cpu_frames = [
                     extract(
-                        ai.integrate2d(
-                            np.ascontiguousarray(unique[u]),
-                            nr,
-                            na,
-                            errors=errors,
-                            azimuthal_range=span,
+                        convert(
+                            ai.integrate2d(
+                                np.ascontiguousarray(unique[u]),
+                                nr,
+                                na,
+                                errors=errors,
+                                azimuthal_range=span,
+                            )
                         )
                     )
                     for u in needed
@@ -1569,8 +1811,8 @@ def setup_case_2d(case, rank=None):
                 identical = None
                 if kind == "batch":
                     images = [unique[u] for u in needed]
-                    batched = plan.batch2d(images, errors=errors)
-                    single = [integrate(plan, frame) for frame in images]
+                    batched = [convert(r) for r in plan.batch2d(images, errors=errors)]
+                    single = [convert(integrate(plan, frame)) for frame in images]
                     identical = len(batched) == len(single) and all(
                         same_bits(a, b)
                         for x, y in zip(batched, single)
@@ -1627,11 +1869,19 @@ def setup_case_2d(case, rank=None):
                     frame, nr, na, errors=errors, azimuthal_range=span
                 )
 
+            first = integrate(ai, image)
+            setup_first = time.perf_counter() - started
+            conversion = dioptrin_case_conversion(first, case)
+            convert = dioptrin_converter(conversion, errors, (na, nr))
+            # Every path's timed call ends with NumPy float64 cakes
+            # (n_azimuthal, n_radial), and sigma with Poisson errors, for every
+            # frame (DioptrinOutput); the axes are read outside timing.
+
             if case["dioptrin_2d_path"] == "sequential":
                 # One frame at a time; each integrate2d runs its row-parallel SpMV
                 # on the Rayon pool (RAYON_NUM_THREADS = CPU budget), no copies.
                 def run():
-                    return [integrate(ai, frame) for frame in frames]
+                    return [convert(integrate(ai, frame)) for frame in frames]
 
             elif case["dioptrin_2d_path"] == "batch":
                 # One synchronous batch2d call over the array list (Dioptrin builds
@@ -1655,26 +1905,21 @@ def setup_case_2d(case, rank=None):
                         images, nr, na, errors=errors, azimuthal_range=span, **shape
                     )
 
-                def check_path():
-                    try:
-                        batch([image])
-                    except TypeError as error:
-                        raise Unsupported(
-                            "--dioptrin-2d-path batch needs Integrator.batch2d over "
-                            "NumPy arrays; the installed Dioptrin "
-                            f"{importlib.metadata.version('dioptrin')} accepts TIFF "
-                            f"paths only ({error})"
-                        ) from None
+                try:
+                    batch([image])
+                except TypeError as error:
+                    # Unsupported builds are skipped, never substituted.
+                    raise Unsupported(
+                        "--dioptrin-2d-path batch needs Integrator.batch2d over "
+                        "NumPy arrays; the installed Dioptrin "
+                        f"{importlib.metadata.version('dioptrin')} accepts TIFF "
+                        f"paths only ({error})"
+                    ) from None
+                unwrap = dioptrin_batch_converter(convert)
 
                 def run():
-                    return batch(frames)
-
-                def unwrap_batch_result(index, item):
-                    if item.filename != f"array[{index}]":
-                        raise RuntimeError(f"batch2d result {index} is {item.filename!r}")
-                    if not item.is_ok():
-                        raise RuntimeError(item.error)
-                    return item.result
+                    # BatchResult.result is read once per frame, inside timing.
+                    return [unwrap(item) for item in batch(frames)]
 
             elif case["dioptrin_2d_path"] == "stream":
                 # Frame-parallel stream: num_workers frames at once, one thread
@@ -1693,31 +1938,30 @@ def setup_case_2d(case, rank=None):
                         if not item.is_ok():
                             raise RuntimeError(item.error)
                         results[int(item.filename.removeprefix("array[")[:-1])] = (
-                            item.result
+                            convert(item.result)
                         )
                     return results
 
             else:
                 raise ValueError(f"Unknown Dioptrin 2D path {case['dioptrin_2d_path']!r}")
 
-            def extract(result):
-                radial = result.radial
+            def extract(output):
+                check_dioptrin_output(output, None, (na, nr), errors)
+                radial = dioptrin_radial_2d(
+                    output.result, conversion, fallback_radial_axis
+                )
                 sigma = None
                 if errors:
-                    if result.errors is None:
+                    if output.sigma is None:
                         raise Unsupported("Dioptrin returned no 2D errors")
-                    sigma = np.asarray(result.errors).reshape(na, nr)
+                    sigma = output.sigma
                 return (
-                    fallback_radial_axis if radial is None else np.asarray(radial),
-                    np.degrees(np.asarray(result.azimuthal)),
-                    np.asarray(result.intensity).reshape(na, nr),
+                    radial,
+                    np.degrees(dioptrin_axis(output.result, "azimuthal", conversion)),
+                    output.intensity,
                     sigma,
                 )
 
-            first = integrate(ai, image)
-            setup_first = time.perf_counter() - started
-            if case["dioptrin_2d_path"] == "batch":
-                check_path()  # unsupported builds are skipped, never substituted
             engines = [ai]
             info["table_nnz_source"] = "not exposed by the Dioptrin Python API"
     else:
@@ -1847,13 +2091,14 @@ def setup_case_2d(case, rank=None):
         )
 
     def extract_run_result(index, result):
-        # The BatchResult getter clones the cake. Keep this and the result
-        # checks in validation, matching the timed batch1d path.
-        if unwrap_batch_result is not None:
-            result = unwrap_batch_result(index, result)
+        if isinstance(result, DioptrinOutput):
+            # The arrays the timed call produced, in frame order.
+            check_dioptrin_output(result, index, (na, nr), errors)
         return extract(result)
 
-    first = extract(first)
+    if conversion is not None:
+        info["dioptrin_result_conversion"] = conversion
+    first = extract(convert(first))
     warm_result = run()
     setup_ready = time.perf_counter() - started
     info["peak_rss_ready_mib"] = peak_rss()
@@ -1876,7 +2121,7 @@ def setup_case_2d(case, rank=None):
         outputs.setdefault(logical[index] % distinct, extract_run_result(index, result))
     for u in needed:
         if u not in outputs:
-            outputs[u] = extract(integrate(ai, unique[u]))
+            outputs[u] = extract(convert(integrate(ai, unique[u])))
     for got, expected in zip(outputs[needed[0]][1:], first[1:]):
         if expected is not None:
             np.testing.assert_allclose(got, expected, rtol=1e-6, atol=1e-6)
@@ -1949,11 +2194,13 @@ def setup_case_2d(case, rank=None):
         np.savez_compressed(result_path.with_suffix(".cake0.npz"), **first_cake)
         np.savez(result_path.with_suffix(".npz"), **sample)
         if variant == "dioptrin-supersampled":
-            # Untimed, for numerical.json only: Integrator.integrate2d ignores
-            # radial_range for supersampled, so its cakes sit on their own
-            # radial grid. MultiIntegrator with this one integrator bins the
-            # same subpixels onto the common explicit edges (for pixel_split it
-            # reproduces Integrator.integrate2d; see preflight2d.json).
+            # Untimed, for numerical.json only: MultiIntegrator with this one
+            # integrator bins the same subpixels onto the common explicit
+            # edges (for pixel_split it reproduces Integrator.integrate2d; see
+            # preflight2d.json). Since Dioptrin 0.15.0 the timed cakes already
+            # use these edges (radial_range), so this cake is on the same grid;
+            # builds before 0.15.0 ignored radial_range in 2D for supersampled,
+            # and their timed cakes sit on supersampled's own default edges.
             import dioptrin
 
             common = dioptrin.MultiIntegrator([ai]).integrate2d(
@@ -2070,6 +2317,8 @@ def summary_line(case, meta, rate):
         )
         if case.get("dioptrin_2d_batch_split"):
             variant += f" batch/{case['dioptrin_2d_batch_split']}"
+    elif case.get("dioptrin_1d_path") not in (None, "global"):
+        variant += f" {case['dioptrin_1d_path']}"
     return (
         f"{meta['dataset']:14} {case['workload']:8} {variant:25} workers={case['workers']:3} "
         + (f"processes={processes} " if processes > 1 else "")
@@ -2220,6 +2469,40 @@ def serve_rank(case, rank):
     send(control, "result", str(path))
 
 
+def dioptrin_call_lines(rows, rows_2d):
+    """summary.md lines: the CPU Dioptrin 1D call and the result conversion."""
+    lines = []
+    paths = sorted({r["dioptrin_1d_path"] for r in rows if r.get("dioptrin_1d_path")})
+    if paths:
+        calls = {
+            "global": "batch1d(frames, n, errors) on the global Rayon pool of the budget",
+            "split": "batch1d(frames, n, errors, num_workers=budget, num_threads=1)",
+        }
+        lines.append(
+            "Dioptrin CPU 1D rows time "
+            + "; ".join(f"{p}: {calls[p]}" for p in paths)
+            + "."
+        )
+    conversions = sorted(
+        {
+            r["dioptrin_result_conversion"]
+            for r in rows + rows_2d
+            if r.get("dioptrin_result_conversion")
+        }
+    )
+    if conversions:
+        lines.append(
+            "Every timed Dioptrin call ends with NumPy float64 intensity (and Poisson "
+            "sigma) for every frame, as pyFAI's and azint's do; conversion: "
+            + ", ".join(
+                {"array": "array (zero-copy accessors)", "list": "list (np.asarray of lists)"}[c]
+                for c in conversions
+            )
+            + "."
+        )
+    return lines
+
+
 def azint_build_lines(output):
     try:
         environment = json.loads((output / "environment.json").read_text())
@@ -2341,6 +2624,11 @@ def summarize(output):
         # Input dtype and GPU accumulation precision (appended).
         "input_dtype",
         "gpu_precision",
+        # CPU Dioptrin 1D call (--dioptrin-1d-path; empty for other libraries,
+        # GPU rows and 2D) and how every timed Dioptrin call produced its
+        # NumPy arrays (empty for other libraries). Appended.
+        "dioptrin_1d_path",
+        "dioptrin_result_conversion",
     ]
     for row in rows:
         row.setdefault("processes", 1)
@@ -2355,19 +2643,27 @@ def summarize(output):
     rows_2d = [r for r in rows if r["dimension"] == "2d"]
     rows = [r for r in rows if r["dimension"] == "1d"]
     def find_1d(row, variant):
-        return next(
-            (
-                r
-                for r in rows
-                if r["dataset"] == row["dataset"]
-                and r["workload"] == row["workload"]
-                and r["variant"] == variant
-                and r["workers"] == 1
-                and r["trial"] == 0
-                and r["errors"] == row["errors"]
-            ),
-            None,
-        )
+        candidates = [
+            r
+            for r in rows
+            if r["dataset"] == row["dataset"]
+            and r["workload"] == row["workload"]
+            and r["variant"] == variant
+            and r["workers"] == 1
+            and r["trial"] == 0
+            and r["errors"] == row["errors"]
+        ]
+        # With several --dioptrin-1d-path values in one run, compare within
+        # the same path; rows without one (other libraries, GPU rows) use the
+        # default path.
+        path = row.get("dioptrin_1d_path") or "global"
+        for preferred in (path, "global"):
+            same = [
+                r for r in candidates if (r.get("dioptrin_1d_path") or "global") == preferred
+            ]
+            if same:
+                return same[0]
+        return candidates[0] if candidates else None
 
     def metrics_1d(row, reference, **extra):
         with np.load(Path(row["result"]).with_suffix(".npz")) as saved:
@@ -2380,6 +2676,8 @@ def summarize(output):
             variant=row["variant"],
             error_mode=row["error_mode"],
             reference=reference["variant"],
+            dioptrin_1d_path=row.get("dioptrin_1d_path"),
+            reference_dioptrin_1d_path=reference.get("dioptrin_1d_path"),
             negative_sigma_bins=row.get("negative_sigma_bins", 0),
             max_axis_difference_deg=float(np.max(np.abs(a["radial"] - b["radial"]))),
         )
@@ -2509,6 +2807,11 @@ def summarize(output):
         "",
         f"{dim_label}, preloaded {dtype_label} inputs; generation, decoding, and output writing excluded.",
         *gpu_lines,
+        *(
+            ["", f"**WARNING: {LIST_CONVERSION_WARNING}**", ""]
+            if any(r.get("dioptrin_result_conversion") == "list" for r in rows + rows_2d)
+            else []
+        ),
         "Repeated reuses one image; frames cycles through distinct generated images.",
         "Cross-library algorithms, precision, and normalization differ; see numerical.json.",
         "azint reuses its constructor normalisation in azint-cached; azint_cached_identity.json",
@@ -2517,6 +2820,7 @@ def summarize(output):
         "OMP_NUM_THREADS = budget); Dioptrin uses a Rayon pool of the budget. With several",
         "processes each gets budget/processes; throughput is all frames over the wall time",
         "from a common start to the last process finishing.",
+        *dioptrin_call_lines(rows, rows_2d),
         *azint_build_lines(output),
         *extra_lines(output),
     ]
@@ -2527,9 +2831,19 @@ def summarize(output):
             "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | --- |",
         ]
     keys = ("dataset", "workload", "variant", "workers", "processes", "error_mode")
-    groups = sorted({tuple(r[f] for f in keys) for r in rows})
+    # The CPU Dioptrin 1D path is shown with the method, not as a column.
+    groups = sorted(
+        {tuple(r[f] for f in keys) + (r.get("dioptrin_1d_path") or "",) for r in rows}
+    )
     for key in groups:
-        members = [r for r in rows if tuple(r[f] for f in keys) == key]
+        members = [
+            r
+            for r in rows
+            if tuple(r[f] for f in keys) + (r.get("dioptrin_1d_path") or "",) == key
+        ]
+        *key, path = key
+        if path:
+            key[2] = f"{key[2]} ({path})"
         values = [r["frames_per_s"] for r in members]
         status = ", ".join(
             sorted({r.get("numerical_status", "unchecked") for r in members})
@@ -2613,9 +2927,11 @@ def numerical_2d(rows):
     Each case is compared with dioptrin-pixel_split (polygon clipping) of the
     same dataset, workload, cake and error mode, and with its counterpart in
     COUNTERPARTS_2D (same subpixel count where both have one). Every pair is
-    compared as integrated ("grid": "native"). dioptrin-supersampled cakes sit
-    on their own radial grid; where one side is dioptrin-supersampled, a second
-    entry ("grid": "common") uses its MultiIntegrator cake on the common edges.
+    compared as integrated ("grid": "native"). Where one side is
+    dioptrin-supersampled, a second entry ("grid": "common") uses its
+    MultiIntegrator cake on the common edges: the same grid as its native
+    cakes since Dioptrin 0.15.0, but not before, when supersampled ignored
+    radial_range in 2D and its cakes sat on its own default edges.
     """
     import numpy as np
 
@@ -3235,6 +3551,14 @@ def main():
         help="Explicitly allow an unrecorded/stale Dioptrin build, with a warning in the report",
     )
     parser.add_argument(
+        "--allow-list-conversion",
+        action="store_true",
+        help="Run Dioptrin variants even if the installed build lacks the "
+        "IntegrationResult *_array accessors (0.15.2 and older), timing NumPy "
+        "conversion of Python lists; warned about at start and in summary.md. "
+        "Without it such a run is refused",
+    )
+    parser.add_argument(
         "--workers",
         help="Comma-separated CPU budgets; default: suite budgets within CPU affinity",
     )
@@ -3335,6 +3659,20 @@ def main():
         "1D cases keep the per-dataset n_splitting",
     )
     parser.add_argument(
+        "--dioptrin-1d-path",
+        nargs="+",
+        choices=DIOPTRIN_1D_PATHS,
+        default=["global"],
+        help="CPU Dioptrin 1D call over the frame list: global (default) is "
+        "Integrator.batch1d(frames, n, errors=...) without num_workers/"
+        "num_threads, on the global Rayon pool of RAYON_NUM_THREADS = CPU "
+        "budget threads (the library's default call); split passes "
+        "num_workers=budget, num_threads=1 (budget frames at a time on "
+        "one-thread pools built per call, since Dioptrin 0.15.0). Several "
+        "values give one case each; non-default paths are part of the case "
+        "name",
+    )
+    parser.add_argument(
         "--dioptrin-2d-path",
         choices=DIOPTRIN_2D_PATHS,
         default="sequential",
@@ -3425,6 +3763,7 @@ def main():
         parser.error(str(error))
     args.cakes = [f"{r}x{a}" for r, a in cakes]
     args.dioptrin_2d_batch_split = list(dict.fromkeys(args.dioptrin_2d_batch_split))
+    args.dioptrin_1d_path = list(dict.fromkeys(args.dioptrin_1d_path))
     if min(args.subpixels) < 1:
         parser.error("--subpixels must be positive")
     if not 0 < args.max_memory_fraction <= 1:
@@ -3511,6 +3850,21 @@ def main():
                 + ". Rerun setup.py, or explicitly use --allow-unverified-build."
             )
         print("UNVERIFIED BUILD: " + message, file=sys.stderr, flush=True)
+    # Every timed Dioptrin call converts its results to NumPy arrays; without
+    # the accessors that is list building, which can dominate the timing.
+    # Checked here, before any case runs (cases and ranks check again).
+    result_arrays = (
+        dioptrin_has_result_arrays() if "dioptrin" in required else None
+    )
+    if result_arrays is False:
+        if not args.allow_list_conversion:
+            parser.error("Refusing to run Dioptrin variants: " + LIST_CONVERSION_ERROR)
+        banner = "!" * 78
+        print(
+            f"{banner}\nWARNING {LIST_CONVERSION_WARNING}\n{banner}",
+            file=sys.stderr,
+            flush=True,
+        )
     try:
         probes = probe_variants(
             args.variants, args.opencl_device, args.cuda_device, args.metal_device
@@ -3601,6 +3955,7 @@ def main():
                 for variant in args.variants
             },
             build_verification_problems=build_problems,
+            dioptrin_result_arrays=result_arrays,
             module_paths=module_paths,
             total_memory_mib=round(total_memory_bytes() / 2**20, 1),
             memory_model_2d=MEMORY_MODEL,
@@ -3762,6 +4117,7 @@ def main():
             if beam
             else 0,
             opencl_device=args.opencl_device,
+            allow_list_conversion=args.allow_list_conversion,
         )
 
     opencl_2d = (probes.get("opencl") or {}).get("available_2d", False)
@@ -3782,40 +4138,56 @@ def main():
                                         count > 1 or processes > 1
                                     ):
                                         continue  # one host thread drives the device
-                                    suffix = f"{dataset}-{workload}-{variant}"
-                                    mode = "poisson" if errors else "intensity"
-                                    split = f"-p{processes}" if processes > 1 else ""
-                                    label = f"{suffix}-w{count}{split}-{mode}-t{trial}"
-                                    case_path = output / "cases" / f"{label}.json"
-                                    case = base_case(
-                                        dataset,
-                                        workload,
-                                        variant,
-                                        count,
-                                        processes,
-                                        errors,
-                                        trial,
+                                    dioptrin_cpu = (
+                                        variant.startswith("dioptrin-")
+                                        and variant not in DIOPTRIN_GPU_VARIANTS
                                     )
-                                    case["result"] = str(
-                                        case_path.with_suffix(".result.json")
-                                    )
-                                    if count > 1 or trial > 0:
-                                        case["reference"] = str(
-                                            output
-                                            / "cases"
-                                            / f"{suffix}-w1-{mode}-t0.result.npz"
+                                    for path_1d in (
+                                        args.dioptrin_1d_path if dioptrin_cpu else [None]
+                                    ):
+                                        # Non-default 1D paths are part of the
+                                        # case name, so several paths in one run
+                                        # never share files or references.
+                                        how = (
+                                            f"-{path_1d}"
+                                            if path_1d not in (None, "global")
+                                            else ""
                                         )
-                                    if variant in CUDA_VARIANTS:
-                                        case["cuda_device"] = args.cuda_device
-                                        case["gpu_precision"] = args.gpu_precision
-                                    elif variant in METAL_VARIANTS:
-                                        case["metal_device"] = args.metal_device
-                                        case["gpu_precision"] = args.gpu_precision
-                                    case["input_dtype"] = args.input_dtype
-                                    case["threads"] = case_threads(
-                                        variant, count, processes
-                                    )
-                                    execute(label, case, case_path)
+                                        suffix = f"{dataset}-{workload}-{variant}{how}"
+                                        mode = "poisson" if errors else "intensity"
+                                        split = f"-p{processes}" if processes > 1 else ""
+                                        label = f"{suffix}-w{count}{split}-{mode}-t{trial}"
+                                        case_path = output / "cases" / f"{label}.json"
+                                        case = base_case(
+                                            dataset,
+                                            workload,
+                                            variant,
+                                            count,
+                                            processes,
+                                            errors,
+                                            trial,
+                                        )
+                                        case["dioptrin_1d_path"] = path_1d
+                                        case["result"] = str(
+                                            case_path.with_suffix(".result.json")
+                                        )
+                                        if count > 1 or trial > 0:
+                                            case["reference"] = str(
+                                                output
+                                                / "cases"
+                                                / f"{suffix}-w1-{mode}-t0.result.npz"
+                                            )
+                                        if variant in CUDA_VARIANTS:
+                                            case["cuda_device"] = args.cuda_device
+                                            case["gpu_precision"] = args.gpu_precision
+                                        elif variant in METAL_VARIANTS:
+                                            case["metal_device"] = args.metal_device
+                                            case["gpu_precision"] = args.gpu_precision
+                                        case["input_dtype"] = args.input_dtype
+                                        case["threads"] = case_threads(
+                                            variant, count, processes
+                                        )
+                                        execute(label, case, case_path)
                 if "2d" not in args.dimensions or dataset not in preflights:
                     continue
                 preflight = preflights[dataset]
@@ -3908,13 +4280,15 @@ def main():
                                             case["metal_device"] = args.metal_device
                                             case["gpu_precision"] = args.gpu_precision
                                         case["input_dtype"] = args.input_dtype
-                                        if variant.startswith("dioptrin-"):
+                                        axes_2d = preflight["dioptrin_radial_axes"]
+                                        if variant.startswith("dioptrin-") and axes_2d:
+                                            # Builds before 0.15.0 only.
                                             key = method + (
                                                 f"-ss{subpixels}" if subpixels else ""
                                             )
-                                            case["dioptrin_radial_axis"] = preflight[
-                                                "dioptrin_radial_axes"
-                                            ][key][str(n_radial)]
+                                            case["dioptrin_radial_axis"] = axes_2d[key][
+                                                str(n_radial)
+                                            ]
                                         case.update(
                                             estimate_memory_mib(
                                                 case,
