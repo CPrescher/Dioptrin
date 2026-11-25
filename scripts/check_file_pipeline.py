@@ -63,7 +63,7 @@ def main():
                         tifffile.imwrite(path, pixels, compression=codec, byteorder=byteorder,
                                          photometric="minisblack", **options)
                         data = np.ascontiguousarray(pixels[::-1], dtype=np.float64)
-                        for method in ["counting", "histogram", "pixel_split", "supersampled"]:
+                        for method in ["counting", "pixel_split", "supersampled"]:
                             for fast in [False, True]:
                                 ai = dioptrin.Integrator.from_poni_dict(
                                     kwargs, method=method, n_ss=3, fast_math=fast,

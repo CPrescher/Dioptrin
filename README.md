@@ -181,24 +181,14 @@ fn main() {
 
     let n_tth = 1250;
     let n_azimuthal = 360;
-    let azimuthal_step = 2.0 * PI / n_azimuthal as f64;
-    let azimuthal_start = 0.0;
 
-    let cake = integrator.integrate2d_with_azimuthal_range(&frame, n_tth, n_azimuthal, azimuthal_start, azimuthal_step);
+    let cake = integrator.integrate2d(&frame, n_tth, n_azimuthal);
 
     println!("2D bins: {}", cake.len());
 }
 ```
 
-The last two arguments of `integrate2d_with_azimuthal_range` are the **centre of
-the first azimuthal bin** and the **bin width**, in radians. For `counting`,
-`pixel_split` and `supersampled` without an explicit radial range the bins wrap
-periodically; `pyfai_full`, and every method once a radial range is set, bin
-onto the sector `[start - step/2, start + (n - 0.5)*step)`, drop angles outside
-it and refuse `n * step > 2π`. With `azimuthal_start = 0.0` and a step of `2π / n_azimuthal` as
-above, the bins cover `[-step/2, 2π - step/2)`.
-
-To integrate a true `(min, max)` azimuthal range, such as a sector, use
+To integrate a specific `(min, max)` azimuthal range, such as a sector, use
 `Integrator::integrate2d_on_azimuthal_range`. The range edges are in radians and
 split into `n_azimuthal` equal bins; pixels outside the range are left out, and
 the radial bins are those of `integrate2d` (the default path's, or the
@@ -266,8 +256,6 @@ fn main() {
 - `Integration2D { n_radial, n_azimuthal }` - 2D integration → `intensity_flat`
 - `Integration2DWithErrors { n_radial, n_azimuthal }` - 2D with errors → `(intensity_flat, errors_flat)`
 - `Integration1DWithAzimuthalStd { n_bins, errors }` - 1D with azimuthal spread → `AzimuthalIntegrationResult`
-- `Integration2DWithAzimuthalRange { n_radial, n_azimuthal, azimuthal_min, azimuthal_max }` - 2D on an azimuthal grid given by first-bin centre and step (periodic, or a sector for `pyfai_full` and with an explicit radial range) → `intensity_flat`; despite their names, `azimuthal_min` is the centre of the first bin and `azimuthal_max` the bin width (radians), as in `integrate2d_with_azimuthal_range`
-- `Integration2DWithAzimuthalRangeAndErrors { .. }` - the same with errors → `(intensity_flat, errors_flat)`
 - `Integration2DOnAzimuthalRange { n_radial, n_azimuthal, azimuthal_min, azimuthal_max, errors }` - 2D on a true `(min, max)` azimuthal range in radians, sectors included → `Result<AzimuthalRange2dResult, String>`
 
 For custom processing logic, implement the `IntegrationTask` trait on your own struct.

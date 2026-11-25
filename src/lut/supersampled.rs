@@ -737,6 +737,7 @@ fn build_counted_2d_csr<F>(
     radial_step: f64,
     conversion: &RadialConverter,
     az_segs: Option<AzimuthalSegments>,
+    normalize_bins: bool,
     sample_bin: F,
 ) -> (Vec<usize>, Vec<usize>, Vec<f64>)
 where
@@ -745,10 +746,10 @@ where
     let n_bins = n_radial * n_azimuthal;
     let transform = geometry.subpixel_transform();
     let (Some((p0, d1_step, d2_step)), Some(az_segs)) = (transform.affine_plane(), az_segs) else {
-        return build_counted_csr(geometry, n_ss, n_bins, true, sample_bin);
+        return build_counted_csr(geometry, n_ss, n_bins, normalize_bins, sample_bin);
     };
     if n_radial == 0 || n_azimuthal == 0 || az_segs.len() == 0 {
-        return build_counted_csr(geometry, n_ss, n_bins, true, sample_bin);
+        return build_counted_csr(geometry, n_ss, n_bins, normalize_bins, sample_bin);
     }
 
     const MARGIN: f64 = 1e-9;
@@ -1333,9 +1334,12 @@ where
                     *v = val;
                 }
             }
-            let total = totals[bin];
-            if total != 0 {
-                let denom = total as f64;
+            let denom = if normalize_bins {
+                totals[bin] as f64
+            } else {
+                ss2 as f64
+            };
+            if denom != 0.0 {
                 for v in v_slice.iter_mut() {
                     *v /= denom;
                 }
@@ -1400,6 +1404,7 @@ pub fn build_lut2d_ss_csr(
         radial_step,
         &conversion,
         az_segs,
+        true,
         |d1, d2| {
             let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
             let rb = histogram::get_bin_clamped(
@@ -1423,6 +1428,51 @@ pub fn build_lut2d_ss_csr(
         values: Some(values),
         n_tth: n_radial,
         n_azimuthal,
+    }
+}
+
+/// Shared-grid 2D supersampled CSR builder with per-pixel fractional weights
+/// (`count / n_ss^2`). Uses the fast affine-plane wedge path for default
+/// clamped grids and row-batched CSR transposition for all grids.
+pub(crate) fn build_shared_grid_ss_csr(
+    geometry: &Geometry,
+    grid: &crate::integration::IntegrationGrid2d,
+    n_ss: usize,
+    unit: RadialUnit,
+) -> Lut2d {
+    assert!(n_ss > 0, "n_ss must be positive");
+    let (r0, _) = grid.radial_range();
+    let dr = grid.radial_step();
+    let (a0, _) = grid.azimuthal_range();
+    let da = grid.azimuthal_step();
+    let conversion = RadialConverter::new(unit, geometry.poni.wavelength);
+    let transform = geometry.subpixel_transform();
+    let az_segs = if grid.is_clamped_default_supersampled() {
+        AzimuthalSegments::clamped(a0, da, grid.n_azimuthal)
+    } else {
+        None
+    };
+    let (row_ptr, col_idx, values) = build_counted_2d_csr(
+        geometry,
+        n_ss,
+        grid.n_radial,
+        grid.n_azimuthal,
+        r0,
+        dr,
+        &conversion,
+        az_segs,
+        false,
+        |d1, d2| {
+            let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
+            grid.bin(conversion.convert(tth), azimuth)
+        },
+    );
+    Lut2d {
+        row_ptr,
+        col_idx,
+        values: Some(values),
+        n_tth: grid.n_radial,
+        n_azimuthal: grid.n_azimuthal,
     }
 }
 
@@ -1978,6 +2028,7 @@ mod tests {
                             rstep,
                             &conversion,
                             AzimuthalSegments::clamped(amin, astep, n_azimuthal),
+                            true,
                             sample_clamped,
                         );
                         let exact = build_counted_csr(
@@ -2016,6 +2067,7 @@ mod tests {
                             rstep,
                             &conversion,
                             AzimuthalSegments::wrapped(min_az, az_step, n_azimuthal),
+                            true,
                             sample_wrapped,
                         );
                         let exact_w = build_counted_csr(
@@ -2069,6 +2121,7 @@ pub fn build_lut2d_ss_csr_with_azimuthal_range(
         radial_step,
         &conversion,
         az_segs,
+        true,
         |d1, d2| {
             let (tth, azimuth) = transform.tth_and_azimuth(d1, d2);
             let rb = histogram::get_bin_clamped(

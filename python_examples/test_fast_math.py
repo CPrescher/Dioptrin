@@ -69,9 +69,9 @@ class FastMathTests(unittest.TestCase):
                 for field in ('intensity','errors'):
                     np.testing.assert_allclose(getattr(fast,field),getattr(reference,field),rtol=2e-12,atol=2e-12)
 
-    def test_spread_and_histogram_retain_their_existing_algorithms(self):
+    def test_spread_retains_its_existing_algorithm(self):
         image = np.random.default_rng(9).uniform(1,100,(32,64))
-        for method in ('counting','pixel_split','supersampled','histogram'):
+        for method in ('counting','pixel_split','supersampled'):
             ai = dioptrin.Integrator.from_poni_dict(PONI,method=method,n_ss=3,fast_math=False)
             reference = ai.integrate1d(image,30,errors=True,azimuthal_std=True)
             ai.set_fast_math(True)

@@ -525,27 +525,18 @@ class ArgumentValidationTests(unittest.TestCase):
             with self.subTest(bad), self.assertRaisesRegex(ValueError, "radial_range"):
                 integrator(radial_range=bad)
 
-    def test_histogram_rejects_radial_range(self):
-        # Histogram always bins over the automatic range; it would silently
-        # ignore radial_range, so the combination is rejected everywhere.
-        message = r"radial_range is not supported by the 'histogram' method.*automatic"
+    def test_histogram_method_removed_and_standalone_method_works(self):
         for method in ("histogram", "hist", "HISTOGRAM"):
-            with self.subTest(method), self.assertRaisesRegex(ValueError, message):
-                integrator(method=method, radial_range=(0.01, 0.1))
+            with self.subTest(method), self.assertRaisesRegex(ValueError, "Unknown integration method"):
+                integrator(method=method)
         ai = integrator(method="counting", radial_range=(0.01, 0.1))
-        with self.assertRaisesRegex(ValueError, message):
+        with self.assertRaisesRegex(ValueError, "Unknown integration method"):
             ai.set_method("histogram")
-        # The failed switch left the method and range unchanged.
-        radial = np.asarray(ai.integrate1d(GOOD, 10).radial)
-        self.assertGreaterEqual(radial.min(), 0.01)
-        self.assertLessEqual(radial.max(), 0.1)
-        for method in ("counting", "pixel_split", "pyfai_full", "supersampled"):
-            ai.set_method(method)
-        # Histogram without a range is unaffected and can be switched to/from.
-        hist = integrator(method="histogram")
-        self.assertTrue(np.any(np.asarray(hist.integrate1d(GOOD, 10).intensity) > 0))
-        hist.set_method("counting")
-        hist.set_method("histogram")
+        res = ai.integrate1d_histogram(GOOD, 10)
+        self.assertTrue(np.any(np.asarray(res.intensity) > 0))
+        res_err = ai.integrate1d_histogram(GOOD, 10, errors=True)
+        self.assertIsNotNone(res_err.errors)
+        self.assertEqual(len(res_err.errors), 10)
 
     def test_supersampling_factor(self):
         with self.assertRaisesRegex(ValueError, "n_ss must be positive"):

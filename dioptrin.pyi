@@ -627,6 +627,28 @@ class Integrator:
         """
         ...
 
+    def integrate1d_histogram(
+        self,
+        image: Union[str, np.ndarray],
+        n_points: int,
+        errors: bool = False,
+    ) -> IntegrationResult:
+        """
+        Perform legacy unweighted 1D histogram integration of pre-corrected pixel intensities.
+
+        Always bins over the automatic radial range of pixel centres (``radial_range``
+        is ignored) and does not use a cached LUT.
+
+        Args:
+            image: Path to a single-channel (grayscale) TIFF file or 2D NumPy array
+            n_points: Number of bins for the 1D integration output
+            errors: Whether to compute Poisson error estimates (default: False)
+
+        Returns:
+            IntegrationResult with radial values, intensities, and optional errors
+        """
+        ...
+
     def integrate2d(
         self,
         image: Union[str, np.ndarray],

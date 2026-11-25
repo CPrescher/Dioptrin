@@ -45,7 +45,7 @@ class Batch1dArrayWorkerTests(unittest.TestCase):
 
     def test_worker_splits_match_integrate1d(self):
         images = frames()
-        cases = [(m, None) for m in ("counting", "pixel_split", "supersampled", "histogram")]
+        cases = [(m, None) for m in ("counting", "pixel_split", "supersampled")]
         cases += [(m, (0.01, 0.08)) for m in ("counting", "pixel_split", "pyfai_full")]
         for method, radial_range in cases:
             ai = dioptrin.Integrator.from_poni_dict(

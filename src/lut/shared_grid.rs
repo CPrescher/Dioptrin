@@ -1,5 +1,6 @@
-//! Fractional pixel contributions on explicit shared edges. Legacy builders
-//! retain their historical row normalization and implicit detector-local grids.
+//! Unified 2D LUT builder producing per-pixel fractional weights on an explicit
+//! [`IntegrationGrid2d`], shared by [`crate::integration::Integrator`] and
+//! [`crate::multi::MultiIntegrator`].
 use super::Lut2d;
 use super::pixel_split::{clip_polygon_rect_scratch, polygon_area};
 use crate::geometry::Geometry;
@@ -17,6 +18,9 @@ pub(crate) fn build(
     sampling: LutSampling,
     unit: RadialUnit,
 ) -> Lut2d {
+    if let LutSampling::Supersampled { n_ss } = sampling {
+        return super::supersampled::build_shared_grid_ss_csr(geometry, grid, n_ss, unit);
+    }
     let corners = if matches!(sampling, LutSampling::PixelSplit(_)) {
         let (tth, azimuthal) = geometry.angular_corners();
         Some((
@@ -51,16 +55,8 @@ pub(crate) fn build(
                         entries.push((bin, 1.0));
                     }
                 }
-                LutSampling::Supersampled { n_ss } => {
-                    entries = sample_pixel(
-                        geometry,
-                        &transform,
-                        pixel,
-                        grid,
-                        n_ss,
-                        &[(0.5, 0.5)],
-                        converter.as_ref().unwrap(),
-                    );
+                LutSampling::Supersampled { .. } => {
+                    unreachable!("supersampled grids are built by build_shared_grid_ss_csr");
                 }
                 LutSampling::PixelSplit(split_mode) => {
                     debug_assert_eq!(split_mode, grid.pixel_split_mode);

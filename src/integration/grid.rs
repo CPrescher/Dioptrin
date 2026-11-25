@@ -143,6 +143,10 @@ impl IntegrationGrid2d {
         self.clamp_azimuthal_outside = true;
         self
     }
+
+    pub(crate) fn is_clamped_default_supersampled(&self) -> bool {
+        self.clamp_radial_outside && self.clamp_azimuthal_outside
+    }
     pub fn radial_range(&self) -> (f64, f64) {
         (
             f64::from_bits(self.radial[0]),
@@ -454,44 +458,20 @@ impl Integrator {
     /// Integrate to 2D on the azimuthal edges `(min, max)` in radians, split
     /// into `n_azimuthal` equal half-open bins `[min + i*step, min + (i+1)*step)`.
     ///
-    /// Unlike [`Integrator::integrate2d_with_azimuthal_range`] (first-bin centre
-    /// and step, wrapping periodically) this is a true range: a sector such as
-    /// `(0, PI / 2)` receives only the pixels (or pixel fractions) inside it.
-    /// Angles are periodic, so a sector may cross the ±π cut, e.g.
-    /// `(2.5, 2.5 + PI / 2)`. Edges must be finite and resolvable, with a
-    /// positive span of at most 2π. Any starting angle is accepted; starts
-    /// outside ±2π are corrected to [-π, π), including the returned axis.
-    /// For example, (-3π, -π) is corrected to the full turn (-π, π).
+    /// A sector such as `(0, PI / 2)` receives only the pixels (or pixel
+    /// fractions) inside it. Angles are periodic, so a sector may cross the ±π
+    /// cut, e.g. `(2.5, 2.5 + PI / 2)`. Edges must be finite and resolvable,
+    /// with a positive span of at most 2π. Any starting angle is accepted;
+    /// starts outside ±2π are corrected to [-π, π), including the returned
+    /// axis. For example, (-3π, -π) is corrected to the full turn (-π, π).
     ///
     /// The radial edges are the ones [`Integrator::integrate2d`] uses for the
     /// same method, unit and `n_radial`, so the radial axis matches the default
-    /// cake. Binning uses the shared-grid tables (as `MultiIntegrator` does);
-    /// mask, mask mode, solid-angle and polarization corrections and fast math
-    /// apply exactly as on the default path. Radially nothing the default path
-    /// keeps is lost: as in the default tables, counting puts a pixel exactly
-    /// at the upper edge in the last bin, and supersampling puts subpixels
-    /// below or above the data-derived edges (next to the beam centre, or a
-    /// few ulp past the outermost hull point) into the first or last radial
-    /// bin. Azimuthal edges are true edges: a (sub)pixel outside them is never
-    /// clamped into an end row.
-    ///
-    /// Passed the default path's own azimuthal edges, the result compares with
-    /// [`Integrator::integrate2d`] as follows:
-    /// - counting: bit-identical;
-    /// - supersampling: equal to rounding (1e-12 relative) in every bin,
-    ///   including those next to the beam centre, except in the first and last
-    ///   azimuthal rows when a subpixel lies just outside the default
-    ///   azimuthal edges (which come from pixel centres and a hull grid): the
-    ///   default table clamps it into the end row, this path drops it or, when
-    ///   the edges span almost a full turn, wraps it into the opposite end row
-    ///   (up to 0.7% in one bin of the CeO2 Pilatus 1M test image at
-    ///   `n_ss = 3`, 1000 x 360 bins);
-    /// - pixel splitting: exact fractional polygon areas, slightly different
-    ///   from the legacy 2D pixel-split table (median 5e-5 relative per bin on
-    ///   the CeO2 Pilatus 1M test image); pixels touching the beam centre are
-    ///   sampled densely instead of split, which changes the innermost bins;
-    /// - pyfai_full: its default cake is the full circle `(-π, π)`, on which
-    ///   it is bit-identical.
+    /// cake. Both paths share the same unified shared-grid 2D builder (as
+    /// `MultiIntegrator` does); mask, mask mode, solid-angle and polarization
+    /// corrections and fast math apply identically. Azimuthal edges here are
+    /// true sector edges: a (sub)pixel outside them is never clamped into an
+    /// end row.
     ///
     /// Non-finite pixels behave as on the default path: they are not rejected
     /// and make only the bins they contribute to NaN or infinite.
@@ -612,8 +592,10 @@ impl Integrator {
         // rounds to `n`, as on the default path.
         let mut grid = IntegrationGrid2d::new(n_radial, n_azimuthal, radial_range, azimuthal_range)
             .map_err(|e| match explicit {
-                Some((lo, hi)) => format!("radial_range ({lo}, {hi}): {e}"),
-                None => e,
+                Some((lo, hi)) if e.starts_with("radial") => {
+                    format!("radial_range ({lo}, {hi}): {e}")
+                }
+                _ => e,
             })?
             .with_clamped_index_rounding();
         match self.method {
@@ -680,6 +662,11 @@ impl Integrator {
                     math::max(&corners) + 10.0 * f64::EPSILON,
                 )
             }
+        };
+        let edges = if edges.1 - edges.0 > 1e-12 {
+            edges
+        } else {
+            (-std::f64::consts::PI, std::f64::consts::PI)
         };
         *cache.write().expect("azimuthal edge cache lock poisoned") = Some((key, edges));
         edges

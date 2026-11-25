@@ -290,9 +290,9 @@ pub struct Integrator {
     fast_math: bool,
     mask_mode: MaskMode,
     sparse_layout: SparseLayout,
-    /// Default 2D radial edges for `integrate2d_on_azimuthal_range`.
+    /// Cached data-derived default 2D radial edges.
     radial_edges_2d: RwLock<Option<(grid::RadialEdgesKey, (f64, f64))>>,
-    /// Default 2D azimuthal edges for 2D integration on an explicit radial range.
+    /// Cached data-derived default 2D azimuthal edges.
     azimuthal_edges_2d: RwLock<Option<(grid::AzimuthalEdgesKey, (f64, f64))>>,
 }
 

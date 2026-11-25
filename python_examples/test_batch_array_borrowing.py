@@ -36,7 +36,7 @@ class BatchArrayBorrowingTests(unittest.TestCase):
         before = base.copy()
         mask = np.zeros(view.shape, dtype=np.uint8)
         mask[:3] = 1
-        for method in ("counting", "pixel_split", "supersampled", "histogram"):
+        for method in ("counting", "pixel_split", "supersampled"):
             for errors in (False, True):
                 for spread in (False, True):
                     with self.subTest(method=method, errors=errors, spread=spread):

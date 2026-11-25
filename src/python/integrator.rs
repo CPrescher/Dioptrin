@@ -1385,6 +1385,79 @@ impl PyIntegrator {
         }
     }
 
+    /// Perform legacy unweighted 1D histogram integration of pre-corrected pixel intensities.
+    ///
+    /// Always bins over the automatic radial range of pixel centres (`radial_range`
+    /// is ignored) and does not use a cached LUT.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - Path to the TIFF image file or 2D NumPy array
+    /// * `n_points` - Number of radial bins
+    /// * `errors` - Whether to compute Poisson error estimates (default: False)
+    #[pyo3(signature = (image, n_points, errors=false))]
+    fn integrate1d_histogram(
+        &self,
+        py: Python<'_>,
+        image: ImageInput<'_>,
+        n_points: usize,
+        errors: bool,
+    ) -> PyResult<PyIntegrationResult> {
+        check_positive("n_points", n_points)?;
+        let integrator = &self.integrator;
+        let run = |slice: &[f64], dim1: usize, dim2: usize| -> PyResult<PyIntegrationResult> {
+            self.check_mask((dim1, dim2), "image")?;
+            Ok(py.detach(|| {
+                if errors {
+                    let (radial, intensity, errs) = integrator
+                        .integrate1d_histogram_with_errors_from_slice(slice, dim1, dim2, n_points);
+                    PyIntegrationResult::from_1d_with_errors(radial, intensity, errs)
+                } else {
+                    let (radial, intensity) =
+                        integrator.integrate1d_histogram_from_slice(slice, dim1, dim2, n_points);
+                    PyIntegrationResult::from_1d(radial, intensity)
+                }
+            }))
+        };
+        match image {
+            ImageInput::Path(tiff_path) => {
+                let frame = py
+                    .detach(|| Frame::from_tiff(tiff_path).map_err(|err| err.to_string()))
+                    .map_err(|err| {
+                        PyValueError::new_err(format!("Failed to load TIFF: {}", err))
+                    })?;
+                run(&frame.data, frame.dim1, frame.dim2)
+            }
+            ImageInput::Array(array) => {
+                let (dim1, dim2) = extract_array_dims(&array, "float64")?;
+                let slice = array.as_slice().map_err(|err| {
+                    PyValueError::new_err(format!("Array must be contiguous: {}", err))
+                })?;
+                run(slice, dim1, dim2)
+            }
+            ImageInput::ArrayF32(array) => {
+                let (dim1, dim2) = extract_array_dims(&array, "float32")?;
+                let data: Vec<f64> = array.as_slice()?.iter().map(|&v| f64::from(v)).collect();
+                run(&data, dim1, dim2)
+            }
+            ImageInput::ArrayU16(array) => {
+                let (dim1, dim2) = extract_array_dims(&array, "uint16")?;
+                let data: Vec<f64> = array.as_slice()?.iter().map(|&v| f64::from(v)).collect();
+                run(&data, dim1, dim2)
+            }
+            ImageInput::ArrayU32(array) => {
+                let (dim1, dim2) = extract_array_dims(&array, "uint32")?;
+                let data: Vec<f64> = array.as_slice()?.iter().map(|&v| f64::from(v)).collect();
+                run(&data, dim1, dim2)
+            }
+            ImageInput::ArrayI32(array) => {
+                let (dim1, dim2) = extract_array_dims(&array, "int32")?;
+                let data: Vec<f64> = array.as_slice()?.iter().map(|&v| f64::from(v)).collect();
+                run(&data, dim1, dim2)
+            }
+        }
+    }
+
     /// Perform 2D integration.
     ///
     /// Set `errors=True` to include per-bin error estimates. Use `azimuthal_range`
@@ -1435,8 +1508,7 @@ impl PyIntegrator {
     ///
     /// # Errors
     ///
-    /// Raises `ValueError` if the integrator uses the Histogram method, which has
-    /// no azimuthal binning, or if its `radial_range` has a negative minimum
+    /// Raises `ValueError` if `radial_range` has a negative minimum
     /// (2D radial edges must be nonnegative).
     ///
     /// # Example

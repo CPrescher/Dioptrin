@@ -16,13 +16,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2000 x 360 cake), `None` when the list attribute is `None`. 2D
   `intensity_array`/`errors_array` have shape `(n_azimuthal, n_radial)`.
   The list attributes are unchanged.
+- `Integrator::integrate1d_histogram`, `integrate1d_histogram_from_slice`,
+  `integrate1d_histogram_with_errors`, and
+  `integrate1d_histogram_with_errors_from_slice` in Rust, and
+  `Integrator.integrate1d_histogram(image, n_points, errors=False)` in Python,
+  replacing the removed `IntegrationMethod::Histogram` variant.
 
 ### Changed
 
+- **Breaking:** `IntegrationMethod::Histogram` (and Python `method="histogram"` /
+  `"hist"`) has been removed so every `IntegrationMethod` is LUT-backed and
+  valid for 1D, 2D, raw, batch, multi-detector, fixed/dynamic plans, CUDA, and
+  Metal. Use `Integrator::integrate1d_histogram*` (or Python
+  `integrator.integrate1d_histogram(...)`) for legacy unweighted pre-corrected
+  1D histogramming.
+- **Breaking:** `Integrator::integrate2d_with_azimuthal_range*` and the batch
+  tasks `Integration2DWithAzimuthalRange` /
+  `Integration2DWithAzimuthalRangeAndErrors` have been removed. Migrate to
+  `Integrator::integrate2d_on_azimuthal_range*` /
+  `Integration2DOnAzimuthalRange` (which take true `(min, max)` radian edges)
+  or `IntegrationGrid2d`.
+- **Breaking:** Unified all `Integrator` 2D LUT construction onto the
+  per-pixel fractional-weight `shared_grid` builder (shared with
+  `MultiIntegrator`). Default 2D `PixelSplit` cakes now use exact fractional
+  polygon areas and dense sampling for beam-touching pixels (median ~3.5e-5
+  relative difference per bin on CeO2 Pilatus 1M vs the legacy row-normalized
+  table), and `PyfaiFull` default cakes use exact `(-π, π)` azimuthal edges
+  (possible ulp-level differences vs the previous centre/step calculation).
+  Default `Supersampled` 2D tables continue to use the fast affine-plane wedge
+  builder with per-pixel fractional weights.
+- **Breaking:** Removed the unused `math::matrix` and `math::sparse` prototype
+  modules.
 - Python `BatchResult.result` returns the same `IntegrationResult` object on
   every read instead of a deep copy of all its vectors. `IntegrationResult`
   and `BatchResult` are now immutable (`frozen`) classes; neither had
   settable attributes before.
+
+### Fixed
+
+- Shared-grid 2D pixel splitting now uses per-pixel angular corners
+  (`Geometry::angular_corners` / `corner_indices`) on non-contiguous
+  detectors (gapped `Separable`, `Corners`, and `Transformed`), preventing
+  quads from straddling module gaps.
 
 ## [0.15.2] - 2026-11-24
 

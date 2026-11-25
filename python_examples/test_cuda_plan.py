@@ -142,8 +142,6 @@ class CudaApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             integrator(mask_mode="dynamic").prepare_cuda1d(SHAPE, 40)
         with self.assertRaises(ValueError):
-            integrator("histogram").prepare_cuda1d(SHAPE, 40)
-        with self.assertRaises(ValueError):
             ai.prepare_cuda1d(SHAPE, 0)
         with self.assertRaises(ValueError):
             ai.prepare_cuda1d((0, 64), 40)

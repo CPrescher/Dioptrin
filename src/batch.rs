@@ -82,16 +82,15 @@ pub trait IntegrationTask: Send + Sync {
         self.execute(integrator, &frame.to_frame())
     }
 
-    /// The `Integrator::integrate2d*` method this task calls, if it is a 2D
-    /// task. The batch helpers use it to reject the Histogram method, which
-    /// has no 2D binning, with one error per input instead of a worker panic.
+    /// The `Integrator::integrate2d*` method name this task calls, if it is a
+    /// 2D task (used as the error prefix when [`Self::check_2d`] rejects a
+    /// configuration).
     fn integrate2d_method(&self) -> Option<&'static str> {
         None
     }
 
     /// Checks the integrator's 2D configuration for this task before any
-    /// file is read: an explicit radial range the 2D grid cannot use, or a
-    /// first-bin-centre/step sector wider than 2π with such a range, would
+    /// file is read: an explicit radial range the 2D grid cannot use would
     /// make every integration call panic. The batch helpers then answer each
     /// input with this error instead.
     #[doc(hidden)]

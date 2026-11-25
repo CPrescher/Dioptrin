@@ -31,7 +31,7 @@ class AzimuthalStdTests(unittest.TestCase):
             assert_allclose(actual.errors, expected.errors)
 
     def test_optional_and_independent_of_poisson_errors(self):
-        for method in ["counting", "pixel_split", "supersampled", "histogram"]:
+        for method in ["counting", "pixel_split", "supersampled"]:
             with self.subTest(method=method):
                 ai = integrator(method, n_ss=3)
                 ai.set_mask((np.indices(self.image.shape)[0] < 7).astype(np.uint8))
@@ -48,12 +48,7 @@ class AzimuthalStdTests(unittest.TestCase):
                 valid = np.isfinite(both.azimuthal_std)
                 self.assertTrue(np.any(valid))
                 self.assertTrue(np.all(np.asarray(both.azimuthal_std)[valid] >= 0))
-                if method == "histogram":
-                    # Histogram has no azimuthal binning; 2D integration rejects it.
-                    with self.assertRaisesRegex(ValueError, "histogram"):
-                        ai.integrate2d(self.image, 10, 10)
-                else:
-                    self.assertIsNone(ai.integrate2d(self.image, 10, 10).azimuthal_std)
+                self.assertIsNone(ai.integrate2d(self.image, 10, 10).azimuthal_std)
 
     def test_all_masked_and_single_contribution(self):
         ai = integrator("counting")

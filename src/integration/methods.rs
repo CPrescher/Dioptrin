@@ -224,6 +224,13 @@ impl Integrator {
         self.integrate1d_histogram_from_slice(&frame.data, frame.dim1, frame.dim2, n_points)
     }
 
+    fn precorrected_signal(data: &[f64], normalization: &[f64]) -> Vec<f64> {
+        data.iter()
+            .zip(normalization.iter())
+            .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
+            .collect()
+    }
+
     /// Legacy unweighted 1D histogram integration from a flat slice of pre-corrected
     /// pixel intensities.
     pub fn integrate1d_histogram_from_slice(
@@ -233,15 +240,17 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>) {
+        assert_eq!(
+            data.len(),
+            dim1 * dim2,
+            "data length ({}) does not match shape ({dim1}, {dim2})",
+            data.len()
+        );
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
         let radial = &view.state.radial;
-        let corrected: Vec<f64> = data
-            .iter()
-            .zip(normalization.iter())
-            .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-            .collect();
+        let corrected = Self::precorrected_signal(data, &normalization);
         histogram::histogram(radial, &corrected, n_points, mask_data)
     }
 
@@ -268,20 +277,21 @@ impl Integrator {
         dim2: usize,
         n_points: usize,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        assert_eq!(
+            data.len(),
+            dim1 * dim2,
+            "data length ({}) does not match shape ({dim1}, {dim2})",
+            data.len()
+        );
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
         let radial = &view.state.radial;
-        let corrected: Vec<f64> = data
+        let corrected = Self::precorrected_signal(data, &normalization);
+        let corrected_var: Vec<f64> = data
             .iter()
             .zip(normalization.iter())
-            .map(|(&s, &n)| if n > 0.0 { s / n } else { 0.0 })
-            .collect();
-        let variance: Vec<f64> = data.iter().map(|&x| x.max(0.0)).collect();
-        let corrected_var: Vec<f64> = variance
-            .iter()
-            .zip(normalization.iter())
-            .map(|(&v, &n)| if n > 0.0 { v / (n * n) } else { 0.0 })
+            .map(|(&x, &n)| if n > 0.0 { x.max(0.0) / (n * n) } else { 0.0 })
             .collect();
         histogram::histogram_with_errors(radial, &corrected, &corrected_var, n_points, mask_data)
     }

@@ -66,7 +66,7 @@ class Integrate1dGilTests(unittest.TestCase):
 
     def test_threaded_results_equal_single_threaded(self):
         self.check("""
-        methods = ("counting", "pixel_split", "supersampled", "pyfai_full", "histogram")
+        methods = ("counting", "pixel_split", "supersampled", "pyfai_full")
         expected = {}
         for method in methods:
             ai = make(method)

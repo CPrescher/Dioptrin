@@ -219,6 +219,17 @@ fn default_calls_keep_the_default_tables() {
         let key = |ai: &Integrator| ai.cache_2d.read().unwrap().key.unwrap();
         let plain = ai.integrate2d_from_slice(&data, ROWS, COLS, N_FULL, NA);
         let expected = key(&ai);
+        let view = ai.for_shape(ROWS, COLS);
+        assert_eq!(
+            expected.grid.radial_range(),
+            ai.default_radial_edges_2d(&view, N_FULL),
+            "{method:?}"
+        );
+        let expected_az = match method {
+            IntegrationMethod::PyfaiFull => (-PI, PI),
+            _ => ai.default_azimuthal_edges_2d(&view),
+        };
+        assert_eq!(expected.grid.azimuthal_range(), expected_az, "{method:?}");
         // Setting and clearing a range returns to the very same table.
         let mut toggled = integrator(method);
         toggled.set_radial_range(Some(SUB));

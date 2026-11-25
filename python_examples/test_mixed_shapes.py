@@ -28,7 +28,7 @@ class MixedShapeTests(unittest.TestCase):
     def test_parallel_1d_arrays_and_generators_match_independent_shapes(self):
         frames = images()
         order = [i % len(frames) for i in range(18)]
-        for method in (*METHODS, "histogram"):
+        for method in METHODS:
             for fast in (False, True):
                 new = lambda: dioptrin.Integrator.from_poni_dict(
                     PONI, method=method, n_ss=2, fast_math=fast)
