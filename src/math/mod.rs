@@ -1,6 +1,4 @@
 pub mod histogram;
-pub mod matrix;
-pub mod sparse;
 
 use rayon::prelude::*;
 use std::cmp::PartialOrd;
