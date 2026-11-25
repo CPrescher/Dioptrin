@@ -2,6 +2,8 @@
 
 Cross-machine protocol comparing **Dioptrin (CPU + GPU)**, **pyFAI (CPU + OpenCL GPU)**, and **azint (CPU)** using identical fixtures, radial bins, 2D cake grids (`2000x360`, `1000x72`, χ in `[-180, 180)` deg), masks, polarization (`0.965`), solid-angle correction, and numerical verification across all three machines.
 
+The rerun of these benchmarks with Dioptrin 0.16.0, with one run script per machine, is described in [`../2026-11-25-paper-0.16.0/README.md`](../2026-11-25-paper-0.16.0/README.md).
+
 ## Shared Settings & Platform Caveats
 
 - **Dioptrin version:** `v0.15.2` (plus PR #86 comparison harness updates; record the exact `git rev-parse HEAD` in `environment.json`).
