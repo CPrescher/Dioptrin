@@ -181,7 +181,6 @@ fn typed_tiff_threads_match_float_references_across_shapes() {
         })
         .collect();
     std::fs::remove_file(path).unwrap();
-    let angles = [None, Some((-2.8, 0.9))];
     for method in METHODS.into_iter().take(4) {
         for fast in [false, true] {
             let new = || integrator(method).with_fast_math(fast);
@@ -191,37 +190,20 @@ fn typed_tiff_threads_match_float_references_across_shapes() {
                     let frame = image.to_frame();
                     let ai = new();
                     let pattern = ai.integrate1d_with_errors(&frame, N_POINTS);
-                    let cakes: Vec<_> = angles
-                        .into_iter()
-                        .map(|range| {
-                            if let Some((start, step)) = range {
-                                ai.integrate2d_with_azimuthal_range_and_errors(
-                                    &frame,
-                                    N_RADIAL,
-                                    N_AZIMUTHAL,
-                                    start,
-                                    step,
-                                )
-                            } else {
-                                ai.integrate2d_with_errors(&frame, N_RADIAL, N_AZIMUTHAL)
-                            }
-                        })
-                        .collect();
-                    (pattern, cakes)
+                    let cake = ai.integrate2d_with_errors(&frame, N_RADIAL, N_AZIMUTHAL);
+                    (pattern, cake)
                 })
                 .collect();
             let shared = new();
             (0..18).into_par_iter().for_each(|i| {
                 let k = i % typed.len();
-                let a = (i / typed.len()) % angles.len();
                 let actual = shared.integrate_tiff1d::<true>(&typed[k], N_POINTS);
                 let expected = &references[k].0;
                 assert_eq!(actual.0, expected.0);
                 assert_same(method, &actual.1, &expected.1, "typed 1D intensity");
                 assert_same(method, &actual.2, &expected.2, "typed 1D errors");
-                let actual =
-                    shared.integrate_tiff2d::<true>(&typed[k], N_RADIAL, N_AZIMUTHAL, angles[a]);
-                let expected = &references[k].1[a];
+                let actual = shared.integrate_tiff2d::<true>(&typed[k], N_RADIAL, N_AZIMUTHAL);
+                let expected = &references[k].1;
                 assert_same(method, &actual.0, &expected.0, "typed 2D intensity");
                 assert_same(method, &actual.1, &expected.1, "typed 2D errors");
             });

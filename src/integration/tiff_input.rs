@@ -1,6 +1,5 @@
 //! Typed TIFF adapters. Arithmetic is shared with the existing f64 CSR path.
 use super::Integrator;
-use super::cache::AzimuthalRangeKey;
 use crate::frame::TiffFrame;
 use tiff::decoder::DecodingResult;
 
@@ -57,41 +56,20 @@ impl Integrator {
         frame: &TiffFrame,
         n_radial: usize,
         n_azimuthal: usize,
-        azimuthal: Option<(f64, f64)>,
     ) -> (Vec<f64>, Vec<f64>) {
         if frame.legacy().is_some() {
             let f = frame.to_frame();
-            return match (ERRORS, azimuthal) {
-                (true, None) => self.integrate2d_with_errors(&f, n_radial, n_azimuthal),
-                (false, None) => (self.integrate2d(&f, n_radial, n_azimuthal), Vec::new()),
-                (true, Some((a, b))) => self.integrate2d_with_azimuthal_range_and_errors(
-                    &f,
-                    n_radial,
-                    n_azimuthal,
-                    a,
-                    b,
-                ),
-                (false, Some((a, b))) => (
-                    self.integrate2d_with_azimuthal_range(&f, n_radial, n_azimuthal, a, b),
-                    Vec::new(),
-                ),
+            return if ERRORS {
+                self.integrate2d_with_errors(&f, n_radial, n_azimuthal)
+            } else {
+                (self.integrate2d(&f, n_radial, n_azimuthal), Vec::new())
             };
         }
         let (h, w) = (frame.dim1, frame.dim2);
         let view = self.for_shape(h, w);
         let norm = view.normalization();
         let mask = self.checked_mask(h, w);
-        let key = self.lut2d_key(
-            &view,
-            n_radial,
-            n_azimuthal,
-            azimuthal.map(|(start, step)| AzimuthalRangeKey::new(start, step)),
-            if azimuthal.is_some() {
-                "integrate2d_with_azimuthal_range"
-            } else {
-                "integrate2d"
-            },
-        );
+        let key = self.lut2d_key(&view, n_radial, n_azimuthal, "integrate2d");
         let lut = view.ensure_lut2d(key);
         pixels!(
             frame,

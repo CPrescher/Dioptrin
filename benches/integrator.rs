@@ -167,27 +167,24 @@ pub fn integrator_2d_azimuthal_range_benchmark(c: &mut Criterion) {
     integrator.set_method(IntegrationMethod::PixelSplit);
     let n_radial = 1250;
     let n_azimuthal = 360;
-    let azimuthal_start = 0.0;
-    let azimuthal_step = 2.0 * std::f64::consts::PI / n_azimuthal as f64;
+    let azimuthal_range = (0.0, std::f64::consts::TAU);
 
     // Warm-up
-    let _ = integrator.integrate2d_with_azimuthal_range(
-        &frame,
-        n_radial,
-        n_azimuthal,
-        azimuthal_start,
-        azimuthal_step,
-    );
+    let _ = integrator
+        .integrate2d_on_azimuthal_range(&frame, n_radial, n_azimuthal, azimuthal_range, false)
+        .unwrap();
 
     c.bench_function("integrator 2d azimuthal range", |b| {
         b.iter(|| {
-            integrator.integrate2d_with_azimuthal_range(
-                &frame,
-                n_radial,
-                n_azimuthal,
-                azimuthal_start,
-                azimuthal_step,
-            )
+            integrator
+                .integrate2d_on_azimuthal_range(
+                    &frame,
+                    n_radial,
+                    n_azimuthal,
+                    azimuthal_range,
+                    false,
+                )
+                .unwrap()
         })
     });
 }

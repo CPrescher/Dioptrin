@@ -226,9 +226,6 @@ fn panicking_entry_points(ai: &Integrator, f: &Frame, what: &str, full: [usize; 
     check("integrate2d_with_errors", &|| {
         drop(ai.integrate2d_with_errors(f, 8, 4))
     });
-    check("integrate2d_with_azimuthal_range", &|| {
-        drop(ai.integrate2d_with_azimuthal_range(f, 8, 4, -3.0, 0.5))
-    });
 }
 
 /// Every `Result` entry point: the shape error is returned, not panicked.

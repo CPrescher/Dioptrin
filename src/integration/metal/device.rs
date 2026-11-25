@@ -701,7 +701,7 @@ fn with_table_2d<R>(
     let (key, radial_axis, azimuthal_axis) = match azimuthal_range {
         None => {
             let key = integrator
-                .try_lut2d_key(&view, n_radial, n_azimuthal, None)
+                .try_lut2d_key(&view, n_radial, n_azimuthal)
                 .map_err(MetalError::InvalidInput)?;
             let radial = integrator.radial_range().map(|(lo, hi)| {
                 crate::math::histogram::bins(n_radial, lo, (hi - lo) / n_radial as f64)

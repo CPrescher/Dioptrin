@@ -630,32 +630,18 @@ impl Integrator {
         Ok(grid)
     }
 
-    /// Shared grid that `integrate2d*` and `integrate2d_with_azimuthal_range*`
-    /// use for `Counting`, `PixelSplit` and `Supersampled` when an explicit
-    /// radial range is set: `n_radial` equal bins between its edges, values
-    /// outside them dropped. Azimuthally the bins are those of the default
-    /// tables: the data-derived default edges, or with `azimuthal` (first-bin
-    /// centre and step) the sector `[start - step/2, start + (n - 0.5)*step)`,
-    /// which must span at most 2π and is not folded periodically.
+    /// Shared grid that `integrate2d*` uses for `Counting`, `PixelSplit` and
+    /// `Supersampled` when an explicit radial range is set: `n_radial` equal
+    /// bins between its edges, values outside them dropped, with the default
+    /// tables' data-derived azimuthal edges.
     pub(super) fn explicit_radial_grid_2d(
         &self,
         view: &super::cache::ShapeView<'_>,
         n_radial: usize,
         n_azimuthal: usize,
-        azimuthal: Option<super::cache::AzimuthalRangeKey>,
         (lo, hi): (f64, f64),
     ) -> Result<IntegrationGrid2d, String> {
-        let azimuthal_range = match azimuthal {
-            Some(key) => {
-                let start = f64::from_bits(key.start_bits);
-                let step = f64::from_bits(key.step_bits);
-                (
-                    start - 0.5 * step,
-                    start + (n_azimuthal as f64 - 0.5) * step,
-                )
-            }
-            None => self.default_azimuthal_edges_2d(view),
-        };
+        let azimuthal_range = self.default_azimuthal_edges_2d(view);
         // Index rounding keeps values inside the edges in the last bin, as
         // the default tables do; it never moves a value from outside the
         // radial range into a bin.
@@ -742,26 +728,13 @@ impl Integrator {
         ))
     }
 
-    /// `Err` when `integrate2d*` (azimuthal `None`) or
-    /// `integrate2d_with_azimuthal_range*` (`Some((start, step))`) would panic
-    /// because the explicit radial range, or the sector with it, cannot form
-    /// a 2D grid. Needs no image; `Ok` without an explicit range.
-    pub(crate) fn check_2d_bins(
-        &self,
-        n_radial: usize,
-        n_azimuthal: usize,
-        start_step: Option<(f64, f64)>,
-    ) -> Result<(), String> {
+    /// `Err` when `integrate2d*` would panic because the explicit radial range
+    /// cannot form a 2D grid. Needs no image; `Ok` without an explicit range.
+    pub(crate) fn check_2d_bins(&self, n_radial: usize, n_azimuthal: usize) -> Result<(), String> {
         let Some((lo, hi)) = self.radial_range else {
             return Ok(());
         };
-        let azimuthal_range = match start_step {
-            Some((start, step)) => (
-                start - 0.5 * step,
-                start + (n_azimuthal as f64 - 0.5) * step,
-            ),
-            None => (0.0, 1.0),
-        };
+        let azimuthal_range = (0.0, 1.0);
         IntegrationGrid2d::new(n_radial, n_azimuthal, (lo, hi), azimuthal_range)
             .map(|_| ())
             .map_err(|e| format!("2D grid for radial_range ({lo}, {hi}): {e}"))
@@ -788,7 +761,7 @@ impl Integrator {
         }
         let view = self.for_shape(dim1, dim2);
         let key = match azimuthal_range {
-            None => self.try_lut2d_key(&view, n_radial, n_azimuthal, None),
+            None => self.try_lut2d_key(&view, n_radial, n_azimuthal),
             Some(range) => self
                 .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
                 .map(|grid| self.shared_grid_key(grid)),
@@ -818,7 +791,7 @@ impl Integrator {
         }
         let view = self.for_shape(dim1, dim2);
         let key = match azimuthal_range {
-            None => self.try_lut2d_key(&view, n_radial, n_azimuthal, None),
+            None => self.try_lut2d_key(&view, n_radial, n_azimuthal),
             Some(range) => self
                 .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
                 .map(|grid| self.shared_grid_key(grid)),
@@ -869,9 +842,7 @@ impl Integrator {
         }
         let view = self.for_shape(dim1, dim2);
         let key = match azimuthal_range {
-            None => self
-                .try_lut2d_key(&view, n_radial, n_azimuthal, None)
-                .ok()?,
+            None => self.try_lut2d_key(&view, n_radial, n_azimuthal).ok()?,
             Some(range) => {
                 let grid = self
                     .azimuthal_range_grid(&view, n_radial, n_azimuthal, range)
@@ -928,7 +899,7 @@ impl Integrator {
         }
         let view = self.for_shape(dim1, dim2);
         let key = match azimuthal_range {
-            None => match self.try_lut2d_key(&view, n_radial, n_azimuthal, None) {
+            None => match self.try_lut2d_key(&view, n_radial, n_azimuthal) {
                 Ok(k) => k,
                 Err(_) => return false,
             },
@@ -993,10 +964,7 @@ impl Integrator {
         self.validate_2d_setup(dim1, dim2, data.len())?;
         let view = self.for_shape(dim1, dim2);
         let (key, axes) = match azimuthal_range {
-            None => (
-                self.try_lut2d_key(&view, n_radial, n_azimuthal, None)?,
-                None,
-            ),
+            None => (self.try_lut2d_key(&view, n_radial, n_azimuthal)?, None),
             Some(range) => {
                 let grid = self.azimuthal_range_grid(&view, n_radial, n_azimuthal, range)?;
                 let axes = (grid.radial_centers(), grid.azimuthal_centers());

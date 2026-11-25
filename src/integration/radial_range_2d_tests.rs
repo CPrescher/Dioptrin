@@ -4,7 +4,7 @@ use super::*;
 use crate::frame::Frame;
 use crate::mask::Mask;
 use crate::poni::Poni;
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::PI;
 
 const ROWS: usize = 60;
 const COLS: usize = 80;
@@ -77,13 +77,9 @@ fn all_entry_points(ai: &Integrator, n_radial: usize) -> Vec<(&'static str, Vec<
         dim1: ROWS,
         dim2: COLS,
     };
-    let (start, step) = (-PI + PI / NA as f64, TAU / NA as f64);
     let plain = ai.integrate2d_from_slice(&data, ROWS, COLS, n_radial, NA);
     let (with_errors, errors) =
         ai.integrate2d_with_errors_from_slice(&data, ROWS, COLS, n_radial, NA);
-    let legacy = ai.integrate2d_with_azimuthal_range(&frame, n_radial, NA, start, step);
-    let (legacy_e, legacy_err) =
-        ai.integrate2d_with_azimuthal_range_and_errors(&frame, n_radial, NA, start, step);
     let range = |r: (f64, f64)| {
         let out = ai
             .integrate2d_on_azimuthal_range(&frame, n_radial, NA, r, true)
@@ -100,8 +96,6 @@ fn all_entry_points(ai: &Integrator, n_radial: usize) -> Vec<(&'static str, Vec<
         ("integrate2d", ai.integrate2d(&frame, n_radial, NA), vec![]),
         ("integrate2d_from_slice", plain, vec![]),
         ("integrate2d_with_errors", with_errors, errors),
-        ("integrate2d_with_azimuthal_range", legacy, vec![]),
-        ("..._and_errors", legacy_e, legacy_err),
         (
             "on_azimuthal_range full circle",
             full_circle,
@@ -247,24 +241,9 @@ fn default_calls_keep_the_default_tables() {
                 n_azimuthal: NA,
                 unit: RadialUnit::TthDeg,
                 radial_range: None,
-                azimuthal: None,
             },
         };
         assert_eq!(key(&ai), expected, "{method:?}");
-        let _ = ai.integrate2d_with_azimuthal_range_from_slice(
-            &data,
-            ROWS,
-            COLS,
-            N_FULL,
-            NA,
-            0.1,
-            TAU / NA as f64,
-        );
-        assert!(
-            !matches!(key(&ai), TwoDKey::SharedGrid { .. })
-                || matches!(method, IntegrationMethod::PyfaiFull),
-            "{method:?}: legacy azimuthal range left its table"
-        );
         // Setting and clearing a range returns to the very same table.
         let mut toggled = integrator(method);
         toggled.set_radial_range(Some(SUB));

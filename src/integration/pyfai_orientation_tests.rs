@@ -369,27 +369,6 @@ fn pyfai_full_range_and_shared_grid_paths_match_the_flipped_image() {
             &r.intensity,
             Some(&covered),
         );
-
-        let [lo, hi] = crate::lut::pyfai_radial_range(reference.geometry(), RadialUnit::TthRad);
-        for (start, step, n) in [(-PI + PI / 24.0, PI / 12.0, 24), (2.6, 0.2, 10)] {
-            let legacy = |ai: &Integrator, data: &[f64]| {
-                ai.integrate2d_with_azimuthal_range_from_slice(data, N1, N2, 16, n, start, step)
-            };
-            let lower = start - 0.5 * step;
-            let covered = coverage(
-                &reference,
-                (N1, N2),
-                (16, n),
-                (lo, hi),
-                (lower, lower + n as f64 * step),
-            );
-            assert_close(
-                &format!("{label} centre/step range ({start}, {step})"),
-                &legacy(&test, &img),
-                &legacy(&reference, &reference_image),
-                Some(&covered),
-            );
-        }
     }
 }
 

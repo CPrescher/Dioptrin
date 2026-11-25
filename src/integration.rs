@@ -450,21 +450,17 @@ impl Integrator {
     ///   between `min` and `max` and leaves out pixels, subpixels or pixel
     ///   fractions outside the range. Legacy [`Integrator::integrate1d_histogram`]
     ///   ignores it and always uses the automatic range of the pixel centres.
-    /// - 2D (`integrate2d*`, `integrate2d_with_azimuthal_range*`,
-    ///   `integrate2d_on_azimuthal_range*`/`_brackets*` and batch
-    ///   integration): every method bins onto `n_radial` equal bins between
-    ///   `min` and `max` and drops (sub)pixels or pixel fractions outside the
-    ///   range; nothing is clamped into the end bins.
+    /// - 2D (`integrate2d*`, `integrate2d_on_azimuthal_range*`/`_brackets*` and
+    ///   batch integration): every method bins onto `n_radial` equal bins
+    ///   between `min` and `max` and drops (sub)pixels or pixel fractions
+    ///   outside the range; nothing is clamped into the end bins.
     ///   [`Integrator::radial_centers_2d`] returns the bin centres. `Counting`,
     ///   `PixelSplit` and `Supersampled` then use the shared-grid tables of
     ///   `MultiIntegrator` (exact fractional polygon areas for `PixelSplit`,
     ///   which differ slightly from its default 2D table) with the default
     ///   path's azimuthal bins (on CeO2 Pilatus 1M, 1000 x 360 bins on matching
     ///   edges, `PixelSplit` differs from its default cake by a median 3.5e-5
-    ///   relative per bin). With a range, `integrate2d_with_azimuthal_range*`
-    ///   bins onto the sector `[start - step/2, start + (n - 0.5)*step)` without
-    ///   folding angles outside it (as `PyfaiFull` always does); `n * step > 2π`
-    ///   is refused. The 2D grid needs `0 <= min < max`: other ranges make the
+    ///   relative per bin). The 2D grid needs `0 <= min < max`: other ranges make the
     ///   `Result` entry points return `Err` and the others panic;
     ///   [`Integrator::radial_centers_2d`] returns that `Err` and can serve as
     ///   a pre-check. 2D bins are half-open, `[min, max)`: a value exactly at

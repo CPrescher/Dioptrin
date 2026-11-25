@@ -63,19 +63,6 @@ fn azimuthal(c: &mut Criterion) {
         group.bench_function(format!("range_full/{name}"), |b| b.iter(run));
 
         let ai = Integrator::new(geometry.clone()).with_method(method);
-        let run = || {
-            ai.integrate2d_with_azimuthal_range(
-                &frame,
-                N_RADIAL,
-                n_sector,
-                sector.0 + half_width,
-                step,
-            )
-        };
-        black_box(run());
-        group.bench_function(format!("start_step/{name}"), |b| b.iter(run));
-
-        let ai = Integrator::new(geometry.clone()).with_method(method);
         let centres = (sector.0 + half_width, sector.1 + half_width);
         let run = || {
             ai.integrate2d_on_azimuthal_brackets(&frame, N_RADIAL, centres, half_width, false)

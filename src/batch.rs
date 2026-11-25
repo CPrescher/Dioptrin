@@ -192,14 +192,14 @@ impl IntegrationTask for Integration2D {
     }
     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
         integrator
-            .integrate_tiff2d::<false>(frame, self.n_radial, self.n_azimuthal, None)
+            .integrate_tiff2d::<false>(frame, self.n_radial, self.n_azimuthal)
             .0
     }
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d")
     }
     fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
-        integrator.check_2d_bins(self.n_radial, self.n_azimuthal, None)
+        integrator.check_2d_bins(self.n_radial, self.n_azimuthal)
     }
 }
 
@@ -219,114 +219,13 @@ impl IntegrationTask for Integration2DWithErrors {
         integrator.integrate2d_with_errors(frame, self.n_radial, self.n_azimuthal)
     }
     fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
-        integrator.integrate_tiff2d::<true>(frame, self.n_radial, self.n_azimuthal, None)
+        integrator.integrate_tiff2d::<true>(frame, self.n_radial, self.n_azimuthal)
     }
     fn integrate2d_method(&self) -> Option<&'static str> {
         Some("integrate2d_with_errors")
     }
     fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
-        integrator.check_2d_bins(self.n_radial, self.n_azimuthal, None)
-    }
-}
-
-/// 2D integration on an azimuthal grid given by first-bin centre and step.
-///
-/// Without an explicit `radial_range` on the integrator, the bins of
-/// `Counting`, `PixelSplit` and `Supersampled` wrap periodically: angles
-/// outside the total range fold into the bins. `PyfaiFull`, and every method
-/// once an explicit `radial_range` is set, treat the bins as the sector
-/// `[start - step/2, start + (n_azimuthal - 0.5)*step)` and drop angles
-/// outside it; a sector wider than 2π (`n_azimuthal * step > 2π`) is refused.
-///
-/// Returns a flat vector of intensities `[n_radial * n_azimuthal]`.
-#[derive(Clone, Copy, Debug)]
-pub struct Integration2DWithAzimuthalRange {
-    pub n_radial: usize,
-    pub n_azimuthal: usize,
-    /// Centre of the first azimuthal bin in radians (the `azimuthal_start` of
-    /// `Integrator::integrate2d_with_azimuthal_range`), despite the field name.
-    pub azimuthal_min: f64,
-    /// Azimuthal bin width in radians (`azimuthal_step`), despite the field name.
-    pub azimuthal_max: f64,
-}
-
-impl IntegrationTask for Integration2DWithAzimuthalRange {
-    type Output = Vec<f64>;
-
-    fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
-        integrator.integrate2d_with_azimuthal_range(
-            frame,
-            self.n_radial,
-            self.n_azimuthal,
-            self.azimuthal_min,
-            self.azimuthal_max,
-        )
-    }
-    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
-        integrator
-            .integrate_tiff2d::<false>(
-                frame,
-                self.n_radial,
-                self.n_azimuthal,
-                Some((self.azimuthal_min, self.azimuthal_max)),
-            )
-            .0
-    }
-    fn integrate2d_method(&self) -> Option<&'static str> {
-        Some("integrate2d_with_azimuthal_range")
-    }
-    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
-        integrator.check_2d_bins(
-            self.n_radial,
-            self.n_azimuthal,
-            Some((self.azimuthal_min, self.azimuthal_max)),
-        )
-    }
-}
-
-/// 2D integration with azimuthal range restriction and error estimation.
-///
-/// Returns `(intensity_flat, errors_flat)` vectors.
-#[derive(Clone, Copy, Debug)]
-pub struct Integration2DWithAzimuthalRangeAndErrors {
-    pub n_radial: usize,
-    pub n_azimuthal: usize,
-    /// Centre of the first azimuthal bin in radians (the `azimuthal_start` of
-    /// `Integrator::integrate2d_with_azimuthal_range`), despite the field name.
-    pub azimuthal_min: f64,
-    /// Azimuthal bin width in radians (`azimuthal_step`), despite the field name.
-    pub azimuthal_max: f64,
-}
-
-impl IntegrationTask for Integration2DWithAzimuthalRangeAndErrors {
-    type Output = (Vec<f64>, Vec<f64>);
-
-    fn execute(&self, integrator: &Integrator, frame: &Frame) -> Self::Output {
-        integrator.integrate2d_with_azimuthal_range_and_errors(
-            frame,
-            self.n_radial,
-            self.n_azimuthal,
-            self.azimuthal_min,
-            self.azimuthal_max,
-        )
-    }
-    fn execute_tiff(&self, integrator: &Integrator, frame: &TiffFrame) -> Self::Output {
-        integrator.integrate_tiff2d::<true>(
-            frame,
-            self.n_radial,
-            self.n_azimuthal,
-            Some((self.azimuthal_min, self.azimuthal_max)),
-        )
-    }
-    fn integrate2d_method(&self) -> Option<&'static str> {
-        Some("integrate2d_with_azimuthal_range_and_errors")
-    }
-    fn check_2d(&self, integrator: &Integrator) -> Result<(), String> {
-        integrator.check_2d_bins(
-            self.n_radial,
-            self.n_azimuthal,
-            Some((self.azimuthal_min, self.azimuthal_max)),
-        )
+        integrator.check_2d_bins(self.n_radial, self.n_azimuthal)
     }
 }
 
@@ -937,21 +836,6 @@ mod tests {
                 },
                 negative(),
                 &format!("integrate2d_with_errors: {grid}"),
-            );
-            // A valid range, but 4 bins of 2 rad span more than one turn.
-            let wide = Integrator::new(Geometry::new(3, 3, test_poni()))
-                .with_method(method)
-                .with_radial_range(0.0, 30.0);
-            check_every_input_rejected(
-                Integration2DWithAzimuthalRangeAndErrors {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal_min: 0.0,
-                    azimuthal_max: 2.0,
-                },
-                wide,
-                "integrate2d_with_azimuthal_range_and_errors: 2D grid for radial_range \
-                 (0, 30): azimuthal span must be at most 2π (one full turn)",
             );
         }
         // A usable range still integrates every file.

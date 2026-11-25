@@ -35,7 +35,6 @@ pub(super) enum TwoDKey {
         n_azimuthal: usize,
         unit: RadialUnit,
         radial_range: Option<RadialRangeKey>,
-        azimuthal: Option<AzimuthalRangeKey>,
     },
     SharedGrid {
         grid: super::IntegrationGrid2d,
@@ -58,101 +57,6 @@ pub(super) enum TwoDKey {
         n_ss: usize,
         unit: RadialUnit,
     },
-    CountingAzimuthal {
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal: AzimuthalRangeKey,
-        unit: RadialUnit,
-    },
-    PixelSplitAzimuthal {
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal: AzimuthalRangeKey,
-        unit: RadialUnit,
-    },
-    SupersampledAzimuthal {
-        n_radial: usize,
-        n_azimuthal: usize,
-        n_ss: usize,
-        azimuthal: AzimuthalRangeKey,
-        unit: RadialUnit,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct AzimuthalRangeKey {
-    pub(super) start_bits: u64,
-    pub(super) step_bits: u64,
-}
-
-impl AzimuthalRangeKey {
-    pub(super) fn new(start: f64, step: f64) -> Self {
-        Self {
-            start_bits: start.to_bits(),
-            step_bits: step.to_bits(),
-        }
-    }
-}
-
-/// Lower and upper sector edge of a PyfaiFull cake whose first bin is
-/// centred on `start` with width `step`.
-fn pyfai_sector_edges(start: f64, step: f64, n_azimuthal: usize) -> (f64, f64) {
-    (
-        start - 0.5 * step,
-        start + (n_azimuthal as f64 - 0.5) * step,
-    )
-}
-
-/// Validate a legacy (start, step) pair for PyfaiFull, which bins into the
-/// sector `[start - step/2, start + (n - 0.5)*step)` and does not fold angles
-/// periodically. When the lower edge lies outside `[-2π, 2π]`, `start` is
-/// replaced by `start.rem_euclid(2π)` (a whole number of turns away, computed
-/// exactly), which puts the lower edge in `[-step/2, 2π)`; pairs already
-/// inside the window are returned unchanged, so their tables stay
-/// bit-identical.
-///
-/// # Panics
-///
-/// Panics with a descriptive message if `start` is not finite, `step` is not
-/// finite and positive, the sector spans more than 2π, or `start` is so large
-/// that its spacing between representable values exceeds a millionth of
-/// `step` (|start| above about 8e7 for a one-degree step), where subtracting
-/// whole turns could no longer place the bin edges accurately.
-fn pyfai_sector_key(key: AzimuthalRangeKey, n_azimuthal: usize) -> AzimuthalRangeKey {
-    use std::f64::consts::TAU;
-    let start = f64::from_bits(key.start_bits);
-    let step = f64::from_bits(key.step_bits);
-    assert!(
-        step.is_finite() && step > 0.0,
-        "integrate2d_with_azimuthal_range: PyfaiFull needs a finite, positive azimuthal_step (got {step})"
-    );
-    assert!(
-        start.is_finite(),
-        "integrate2d_with_azimuthal_range: PyfaiFull needs a finite azimuthal_start (got {start})"
-    );
-    // The span is `n * step` whatever the start; differencing the edges would
-    // lose precision for large starts.
-    let span = n_azimuthal as f64 * step;
-    assert!(
-        span <= TAU + 1e-12,
-        "integrate2d_with_azimuthal_range: PyfaiFull needs n_azimuthal * azimuthal_step <= 2π \
-         (got {n_azimuthal} * {step} = {span} rad > {TAU} rad); it does not fold a longer range periodically"
-    );
-    let (lo, _) = pyfai_sector_edges(start, step, n_azimuthal);
-    if (-TAU..=TAU).contains(&lo) {
-        return key;
-    }
-    let ulp = f64::from_bits(start.abs().to_bits() + 1) - start.abs();
-    assert!(
-        ulp <= 1e-6 * step,
-        "integrate2d_with_azimuthal_range: PyfaiFull azimuthal_start {start} is too large to reduce \
-         to [-2π, 2π] accurately (representable starts are {ulp} rad apart, azimuthal_step is \
-         {step} rad); pass the start modulo 2π"
-    );
-    // `rem_euclid` is exact, so the result is a whole number of turns of the
-    // f64 `TAU` away from `start`, in `[0, TAU]`. With `step <= TAU` the lower
-    // edge `start - step/2` is then in `[-π, TAU)`, inside the window.
-    AzimuthalRangeKey::new(start.rem_euclid(TAU), step)
 }
 
 /// One memoized lookup table, tagged with everything it was built from: the
@@ -285,26 +189,13 @@ impl Integrator {
         drop(view.ensure_lut1d(self.one_d_key(n_points)));
     }
 
-    pub(super) fn pixel_split2d_key(
-        &self,
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal: Option<AzimuthalRangeKey>,
-    ) -> TwoDKey {
+    pub(super) fn pixel_split2d_key(&self, n_radial: usize, n_azimuthal: usize) -> TwoDKey {
         if matches!(self.method, super::IntegrationMethod::PyfaiFull) {
             TwoDKey::PyfaiFull {
                 n_radial,
                 n_azimuthal,
-                azimuthal: azimuthal.map(|a| pyfai_sector_key(a, n_azimuthal)),
                 unit: self.radial_unit,
                 radial_range: self.radial_range_key(),
-            }
-        } else if let Some(azimuthal) = azimuthal {
-            TwoDKey::PixelSplitAzimuthal {
-                n_radial,
-                n_azimuthal,
-                azimuthal,
-                unit: self.radial_unit,
             }
         } else {
             TwoDKey::PixelSplit {
@@ -473,22 +364,15 @@ impl ShapeView<'_> {
                     n_azimuthal,
                     unit,
                     radial_range,
-                    azimuthal,
                 } => {
                     let [lo, hi] = radial_range
                         .map(|r| [f64::from_bits(r.min_bits), f64::from_bits(r.max_bits)])
                         .unwrap_or_else(|| lut::pyfai_radial_range(&geom, unit));
-                    let (start, step) = azimuthal
-                        .map(|a| (f64::from_bits(a.start_bits), f64::from_bits(a.step_bits)))
-                        .unwrap_or((
-                            -std::f64::consts::PI + std::f64::consts::PI / n_azimuthal as f64,
-                            std::f64::consts::TAU / n_azimuthal as f64,
-                        ));
                     let grid = super::IntegrationGrid2d::new(
                         n_radial,
                         n_azimuthal,
                         (lo, hi),
-                        pyfai_sector_edges(start, step, n_azimuthal),
+                        (-std::f64::consts::PI, std::f64::consts::PI),
                     )
                     .unwrap_or_else(|e| panic!("PyfaiFull 2D cake: {e}"))
                     .with_pixel_split_mode(super::PixelSplitMode::PyfaiHistogram);
@@ -528,50 +412,6 @@ impl ShapeView<'_> {
                     n_radial,
                     n_azimuthal,
                     n_ss,
-                    unit,
-                ),
-                TwoDKey::CountingAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal,
-                    unit: _,
-                } => lut::build_lut2d_csr_with_azimuthal_range(
-                    radial,
-                    azimuth,
-                    n_radial,
-                    n_azimuthal,
-                    f64::from_bits(azimuthal.start_bits),
-                    f64::from_bits(azimuthal.step_bits),
-                ),
-                TwoDKey::PixelSplitAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    azimuthal,
-                    unit,
-                } => lut::build_lut2d_ps_csr_with_azimuthal_range(
-                    &geom,
-                    radial,
-                    azimuth,
-                    n_radial,
-                    n_azimuthal,
-                    f64::from_bits(azimuthal.start_bits),
-                    f64::from_bits(azimuthal.step_bits),
-                    unit,
-                ),
-                TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal,
-                    unit,
-                } => lut::build_lut2d_ss_csr_with_azimuthal_range(
-                    &geom,
-                    radial,
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    f64::from_bits(azimuthal.start_bits),
-                    f64::from_bits(azimuthal.step_bits),
                     unit,
                 ),
             };

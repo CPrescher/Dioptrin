@@ -95,16 +95,10 @@ fn typed_tiff_reuse_preserves_all_sample_types_and_csr_arithmetic() {
                     let actual = ai.integrate_tiff1d::<false>(&typed, 7);
                     same(&expected.0, &actual.0);
                     same(&expected.1, &actual.1);
-                    for az in [None, Some((-0.3, 0.7))] {
-                        let expected = if let Some((a, b)) = az {
-                            ai.integrate2d_with_azimuthal_range_and_errors(&reference, 5, 4, a, b)
-                        } else {
-                            ai.integrate2d_with_errors(&reference, 5, 4)
-                        };
-                        let actual = ai.integrate_tiff2d::<true>(&typed, 5, 4, az);
-                        same(&expected.0, &actual.0);
-                        same(&expected.1, &actual.1);
-                    }
+                    let expected = ai.integrate2d_with_errors(&reference, 5, 4);
+                    let actual = ai.integrate_tiff2d::<true>(&typed, 5, 4);
+                    same(&expected.0, &actual.0);
+                    same(&expected.1, &actual.1);
                 }
             }
         }};

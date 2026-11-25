@@ -1,7 +1,7 @@
 use crate::frame::Frame;
 use crate::math::histogram;
 
-use super::cache::{AzimuthalRangeKey, RadialRangeKey, TwoDKey};
+use super::cache::{RadialRangeKey, TwoDKey};
 use super::{IntegrationMethod, Integrator};
 
 impl Integrator {
@@ -349,57 +349,38 @@ impl Integrator {
         self.integrate1d_raw_impl(data, dim1, dim2, n_points, true)
     }
 
-    /// Cache key of the 2D table for `integrate2d*` and
-    /// `integrate2d_with_azimuthal_range*` (`azimuthal` = first-bin centre and
-    /// step). Without an explicit radial range these are the default tables;
-    /// with one, `Counting`, `PixelSplit` and `Supersampled` use the shared
-    /// grid of [`Self::explicit_radial_grid_2d`] (`PyfaiFull` takes the range
-    /// in its own key).
+    /// Cache key of the 2D table for `integrate2d*`. Without an explicit radial
+    /// range these are the default tables; with one, `Counting`, `PixelSplit`
+    /// and `Supersampled` use the shared grid of [`Self::explicit_radial_grid_2d`]
+    /// (`PyfaiFull` takes the range in its own key).
     pub(super) fn try_lut2d_key(
         &self,
         view: &super::cache::ShapeView<'_>,
         n_radial: usize,
         n_azimuthal: usize,
-        azimuthal: Option<AzimuthalRangeKey>,
     ) -> Result<TwoDKey, String> {
         let unit = self.radial_unit;
-        Ok(match (self.method, self.radial_range, azimuthal) {
-            (IntegrationMethod::PyfaiFull, _, _) | (IntegrationMethod::PixelSplit, None, _) => {
-                self.pixel_split2d_key(n_radial, n_azimuthal, azimuthal)
+        Ok(match (self.method, self.radial_range) {
+            (IntegrationMethod::PyfaiFull, _) | (IntegrationMethod::PixelSplit, None) => {
+                self.pixel_split2d_key(n_radial, n_azimuthal)
             }
-            (_, Some(range), _) => self.shared_grid_key(self.explicit_radial_grid_2d(
+            (_, Some(range)) => self.shared_grid_key(self.explicit_radial_grid_2d(
                 view,
                 n_radial,
                 n_azimuthal,
-                azimuthal,
                 range,
             )?),
-            (IntegrationMethod::Counting, None, None) => TwoDKey::Counting {
+            (IntegrationMethod::Counting, None) => TwoDKey::Counting {
                 n_radial,
                 n_azimuthal,
                 unit,
             },
-            (IntegrationMethod::Counting, None, Some(azimuthal)) => TwoDKey::CountingAzimuthal {
-                n_radial,
-                n_azimuthal,
-                azimuthal,
-                unit,
-            },
-            (IntegrationMethod::Supersampled { n_ss }, None, None) => TwoDKey::Supersampled {
+            (IntegrationMethod::Supersampled { n_ss }, None) => TwoDKey::Supersampled {
                 n_radial,
                 n_azimuthal,
                 n_ss,
                 unit,
             },
-            (IntegrationMethod::Supersampled { n_ss }, None, Some(azimuthal)) => {
-                TwoDKey::SupersampledAzimuthal {
-                    n_radial,
-                    n_azimuthal,
-                    n_ss,
-                    azimuthal,
-                    unit,
-                }
-            }
         })
     }
 
@@ -409,14 +390,12 @@ impl Integrator {
         view: &super::cache::ShapeView<'_>,
         n_radial: usize,
         n_azimuthal: usize,
-        azimuthal: Option<AzimuthalRangeKey>,
         caller: &str,
     ) -> TwoDKey {
-        self.try_lut2d_key(view, n_radial, n_azimuthal, azimuthal)
+        self.try_lut2d_key(view, n_radial, n_azimuthal)
             .unwrap_or_else(|e| panic!("{caller}: {e}"))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn integrate2d_impl(
         &self,
         data: &[f64],
@@ -424,18 +403,15 @@ impl Integrator {
         dim2: usize,
         n_radial: usize,
         n_azimuthal: usize,
-        azimuthal: Option<AzimuthalRangeKey>,
         caller: &str,
     ) -> Vec<f64> {
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let lut2d =
-            view.ensure_lut2d(self.lut2d_key(&view, n_radial, n_azimuthal, azimuthal, caller));
+        let lut2d = view.ensure_lut2d(self.lut2d_key(&view, n_radial, n_azimuthal, caller));
         self.lut_integrate2d(data, &lut2d, mask_data, &normalization[..])
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn integrate2d_with_errors_impl(
         &self,
         data: &[f64],
@@ -443,14 +419,12 @@ impl Integrator {
         dim2: usize,
         n_radial: usize,
         n_azimuthal: usize,
-        azimuthal: Option<AzimuthalRangeKey>,
         caller: &str,
     ) -> (Vec<f64>, Vec<f64>) {
         let view = self.for_shape(dim1, dim2);
         let normalization = view.normalization();
         let mask_data = self.checked_mask(dim1, dim2);
-        let lut2d =
-            view.ensure_lut2d(self.lut2d_key(&view, n_radial, n_azimuthal, azimuthal, caller));
+        let lut2d = view.ensure_lut2d(self.lut2d_key(&view, n_radial, n_azimuthal, caller));
         self.lut_integrate2d_with_errors(data, &lut2d, mask_data, &normalization[..])
     }
 
@@ -488,7 +462,6 @@ impl Integrator {
             frame.dim2,
             n_radial,
             n_azimuthal,
-            None,
             "integrate2d",
         )
     }
@@ -509,78 +482,7 @@ impl Integrator {
             dim2,
             n_radial,
             n_azimuthal,
-            None,
             "integrate2d_from_slice",
-        )
-    }
-
-    /// Integrate a frame to 2D using an explicit azimuthal start and step.
-    /// Thread-safe: can be called from multiple threads on a shared `Arc<Integrator>`.
-    ///
-    /// For a full-circle azimuthal range, use `azimuthal_step = 2*pi / n_azimuthal` and a
-    /// `azimuthal_start` that defines the center of the first bin (e.g. `0.0` for 0..2*pi).
-    /// Without an explicit `radial_range` on the integrator, the azimuthal bins of
-    /// `Counting`, `PixelSplit` and `Supersampled` wrap periodically, so angles outside the
-    /// total range fold into `0..n_azimuthal`.
-    ///
-    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
-    /// do not wrap: they treat the bins as the sector
-    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
-    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
-    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
-    /// positive, or if `azimuthal_start` is not finite.
-    #[inline]
-    pub fn integrate2d_with_azimuthal_range(
-        &self,
-        frame: &Frame,
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal_start: f64,
-        azimuthal_step: f64,
-    ) -> Vec<f64> {
-        self.integrate2d_impl(
-            &frame.data,
-            frame.dim1,
-            frame.dim2,
-            n_radial,
-            n_azimuthal,
-            Some(AzimuthalRangeKey::new(azimuthal_start, azimuthal_step)),
-            "integrate2d_with_azimuthal_range",
-        )
-    }
-
-    /// Like [`Self::integrate2d_with_azimuthal_range`], for a row-major `dim1 x dim2` slice.
-    ///
-    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
-    /// do not wrap: they treat the bins as the sector
-    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
-    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
-    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
-    /// positive, or if `azimuthal_start` is not finite.
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn integrate2d_with_azimuthal_range_from_slice(
-        &self,
-        data: &[f64],
-        dim1: usize,
-        dim2: usize,
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal_start: f64,
-        azimuthal_step: f64,
-    ) -> Vec<f64> {
-        self.integrate2d_impl(
-            data,
-            dim1,
-            dim2,
-            n_radial,
-            n_azimuthal,
-            Some(AzimuthalRangeKey::new(azimuthal_start, azimuthal_step)),
-            "integrate2d_with_azimuthal_range_from_slice",
         )
     }
 
@@ -598,7 +500,6 @@ impl Integrator {
             frame.dim2,
             n_radial,
             n_azimuthal,
-            None,
             "integrate2d_with_errors",
         )
     }
@@ -619,77 +520,7 @@ impl Integrator {
             dim2,
             n_radial,
             n_azimuthal,
-            None,
             "integrate2d_with_errors_from_slice",
-        )
-    }
-
-    /// Integrate a frame to 2D with errors using an explicit azimuthal binning definition.
-    ///
-    /// `azimuthal_start` is the center of the first azimuthal bin; the effective start edge is
-    /// `azimuthal_start - azimuthal_step / 2`. Without an explicit `radial_range` on the
-    /// integrator, the azimuthal bins of `Counting`, `PixelSplit` and `Supersampled` wrap
-    /// periodically, so angles outside the total range fold into `0..n_azimuthal`.
-    ///
-    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
-    /// do not wrap: they treat the bins as the sector
-    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
-    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
-    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
-    /// positive, or if `azimuthal_start` is not finite.
-    #[inline]
-    pub fn integrate2d_with_azimuthal_range_and_errors(
-        &self,
-        frame: &Frame,
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal_start: f64,
-        azimuthal_step: f64,
-    ) -> (Vec<f64>, Vec<f64>) {
-        self.integrate2d_with_errors_impl(
-            &frame.data,
-            frame.dim1,
-            frame.dim2,
-            n_radial,
-            n_azimuthal,
-            Some(AzimuthalRangeKey::new(azimuthal_start, azimuthal_step)),
-            "integrate2d_with_azimuthal_range_and_errors",
-        )
-    }
-
-    /// Like [`Self::integrate2d_with_azimuthal_range_and_errors`], for a row-major
-    /// `dim1 x dim2` slice.
-    ///
-    /// `IntegrationMethod::PyfaiFull`, and every method once an explicit `radial_range` is set,
-    /// do not wrap: they treat the bins as the sector
-    /// `[azimuthal_start - azimuthal_step/2, azimuthal_start + (n_azimuthal - 0.5)*azimuthal_step)`
-    /// and drop angles outside it instead of folding them into the bins. A sector whose lower
-    /// edge lies outside `[-2π, 2π]` is shifted by whole turns into that window.
-    /// With `IntegrationMethod::PyfaiFull` or an explicit `radial_range`, panics if
-    /// `n_azimuthal * azimuthal_step` exceeds 2π, if `azimuthal_step` is not finite and
-    /// positive, or if `azimuthal_start` is not finite.
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn integrate2d_with_azimuthal_range_and_errors_from_slice(
-        &self,
-        data: &[f64],
-        dim1: usize,
-        dim2: usize,
-        n_radial: usize,
-        n_azimuthal: usize,
-        azimuthal_start: f64,
-        azimuthal_step: f64,
-    ) -> (Vec<f64>, Vec<f64>) {
-        self.integrate2d_with_errors_impl(
-            data,
-            dim1,
-            dim2,
-            n_radial,
-            n_azimuthal,
-            Some(AzimuthalRangeKey::new(azimuthal_start, azimuthal_step)),
-            "integrate2d_with_azimuthal_range_and_errors_from_slice",
         )
     }
 }
