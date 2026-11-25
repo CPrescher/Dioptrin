@@ -241,11 +241,7 @@ fn paper_native_cuda() -> Result<()> {
         cpu_patterns.push(json!({"radial": radial, "intensity": intensity, "sigma": sigma}));
     }
     let view = integrator.for_shape(rows, columns);
-    let lut = view.ensure_lut1d(
-        integrator
-            .one_d_table_key(case.bins as usize)
-            .ok_or("missing lookup key")?,
-    );
+    let lut = view.ensure_lut1d(integrator.one_d_key(case.bins as usize));
     let gpu_patterns: Vec<_> = checked.chunks_exact(pattern).map(|frame| json!({
         "radial": lut.bins(), "intensity": frame.iter().step_by(stride).copied().collect::<Vec<_>>(),
         "sigma": if case.errors { frame[1..].iter().step_by(stride).copied().collect::<Vec<_>>() } else { Vec::new() },

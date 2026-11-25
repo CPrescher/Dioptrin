@@ -65,7 +65,7 @@ fn cpu_inputs() -> Result<()> {
                 let data32 = input32.repeat(frames);
                 for (layout, cpu) in &policies {
                     let view = cpu.for_shape(case.shape.0, case.shape.1);
-                    let lut = view.ensure_lut1d(cpu.one_d_table_key(BINS as usize).unwrap());
+                    let lut = view.ensure_lut1d(cpu.one_d_key(BINS as usize));
                     let plan32 = Float32::new(&lut, cpu, &view.normalization())?;
                     for errors in [false, true] {
                         let (height, width) = case.shape;

@@ -453,7 +453,7 @@ fn integrate_pixels<P: Pixel>(
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let view = cpu.for_shape(shape.0, shape.1);
     let norm = view.normalization();
-    let lut = view.ensure_lut1d(cpu.one_d_table_key(BINS as usize).unwrap());
+    let lut = view.ensure_lut1d(cpu.one_d_key(BINS as usize));
     let mask = cpu.mask().map(|mask| mask.data.as_slice());
     match (cpu.fast_math(), errors) {
         (true, true) => lut.integrate_pixels::<true, true, P>(pixels, mask, &norm),
