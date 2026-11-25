@@ -13,8 +13,8 @@ reference locally with `cargo doc --no-deps --open`.
 `Integrator::prepare_fixed1d((height, width), bins)` creates an immutable snapshot
 of the current geometry, corrections and fixed mask. It requires fixed mask mode,
 CSC and fast arithmetic (float64 weights and sums, with fused multiply-add).
-Counting, pixel splitting and positive supersampling are supported. Dynamic masks,
-histogram integration, CSR selection and strict arithmetic are rejected.
+Counting, pixel splitting, `pyfai_full` and positive supersampling are supported.
+Dynamic masks, CSR selection and strict arithmetic are rejected.
 
 Share one `Fixed1dPlan` across frame workers; each worker borrows it and owns four
 reusable float64 partial histograms. After `begin_frame()`, push nonempty contiguous

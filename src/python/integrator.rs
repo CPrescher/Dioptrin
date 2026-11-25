@@ -1014,8 +1014,7 @@ impl PyIntegrator {
     /// method, unit and radial range; `fast_math` and `sparse_layout` are
     /// ignored. Raises `CudaUnavailableError` when this build has no CUDA
     /// support or the device cannot be used, `ValueError` for an unsupported
-    /// configuration (dynamic mask or histogram method) or
-    /// invalid input. The GIL is released while preparing.
+    /// configuration (dynamic mask) or invalid input. The GIL is released while preparing.
     #[pyo3(signature = (shape, n_points, *, precision="f32_compensated", device=0, max_batch_bytes=None))]
     fn prepare_cuda1d(
         &self,
@@ -1153,12 +1152,10 @@ impl PyIntegrator {
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
     /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
     /// * `radial_range` - Optional explicit (min, max) radial bin range in `unit`.
-    ///   Not supported with "histogram", which always uses the automatic range.
     ///
     /// # Raises
     ///
-    /// ValueError for invalid options, including `radial_range` combined with
-    /// the "histogram" method.
+    /// ValueError for invalid options.
     ///
     /// # Returns
     ///
@@ -1218,12 +1215,10 @@ impl PyIntegrator {
     /// * `n_ss` - Number of subpixels per pixel for supersampled method (default: 5)
     /// * `unit` - Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
     /// * `radial_range` - Optional explicit (min, max) radial bin range in `unit`.
-    ///   Not supported with "histogram", which always uses the automatic range.
     ///
     /// # Raises
     ///
-    /// ValueError for invalid options, including `radial_range` combined with
-    /// the "histogram" method.
+    /// ValueError for invalid options.
     ///
     /// # Returns
     ///
@@ -1655,8 +1650,7 @@ impl PyIntegrator {
     ///
     /// # Raises
     ///
-    /// ValueError if the method name is invalid, or if the method is "histogram"
-    /// while a `radial_range` is set (Histogram always uses the automatic range)
+    /// ValueError if the method name is invalid.
     ///
     /// # Example
     ///
@@ -2403,8 +2397,7 @@ impl PyIntegrator {
     ///
     /// # Errors
     ///
-    /// Raises `ValueError` if the integrator uses the Histogram method, which has
-    /// no azimuthal binning, or for an array that is not C-contiguous or does not
+    /// Raises `ValueError` for an array that is not C-contiguous or does not
     /// match the mask; `TypeError` for an array that is not 2D float64, a single
     /// path, or a list mixing paths and arrays (use `batch2d_iter` for those).
     ///
@@ -2694,8 +2687,8 @@ impl PyIntegrator {
     ///
     /// # Errors
     ///
-    /// Raises `ValueError` if the integrator uses the Histogram method, which has
-    /// no azimuthal binning.
+    /// Raises `ValueError` if `radial_range` has a negative minimum or an
+    /// invalid azimuthal range is supplied.
     ///
     /// # Example
     ///

@@ -370,9 +370,7 @@ class Integrator:
             radial_range: Optional (min, max) tuple for explicit radial bin range.
                 Required when using MultiIntegrator to ensure all detectors
                 share the same bin grid. Units must match the selected unit.
-                Not supported with method="histogram", which always uses the
-                automatic radial range ("counting", "pixel_split", "pyfai_full"
-                and "supersampled" honour it in 1D and 2D; 2D integration needs
+                Honoured in 1D and 2D (2D integration needs
                 min >= 0 and reports the bin centres in result.radial). 2D bins
                 are half-open [min, max), so a value exactly at max is dropped;
                 1D includes both limits (step from max + 10 eps), so 1D and 2D
@@ -381,7 +379,7 @@ class Integrator:
         Raises:
             ValueError: If an option is invalid: unknown method/unit, n_ss = 0,
                 polarization_factor outside [-1, 1], radial_range not finite with
-                min < max, radial_range combined with method="histogram", or a
+                min < max, or a
                 q unit without a positive PONI wavelength
 
         Example:
@@ -424,15 +422,12 @@ class Integrator:
             n_ss: Number of subpixels per pixel for supersampled method (default: 5)
             unit: Radial unit: "2th_rad" (default), "2th_deg", "q_A^-1", or "q_nm^-1"
             radial_range: Optional (min, max) tuple for explicit radial bin range.
-                Not supported with method="histogram", which always uses the
-                automatic radial range.
 
         Returns:
             New Integrator instance
 
         Raises:
-            ValueError: If an option is invalid, as for Integrator() (including
-                radial_range with method="histogram"); a q unit needs a positive
+            ValueError: If an option is invalid, as for Integrator(); a q unit needs a positive
                 "wavelength" in the dictionary
 
         Example:
@@ -519,7 +514,7 @@ class Integrator:
         Raises:
             CudaUnavailableError: Built without the ``cuda`` feature, or the
                 driver, NVRTC or device cannot be used.
-            ValueError: Dynamic mask mode, histogram method,
+            ValueError: Dynamic mask mode,
                 ``n_points == 0``, a shape that does not match the mask or
                 detector, an unknown precision, or a budget too small for one
                 frame.
@@ -709,8 +704,7 @@ class Integrator:
         read-only for the call and must not be mutated concurrently.
 
         Raises:
-            ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning; if n_radial or n_azimuthal is 0; if the
+            ValueError: If n_radial or n_azimuthal is 0; if the
                 TIFF cannot be loaded or is not single-channel (e.g. RGB); if
                 the image is empty or its shape does not match the mask; or if
                 the Integrator's radial_range has a negative minimum
@@ -736,9 +730,7 @@ class Integrator:
             n_ss: Number of subpixels per pixel for supersampled method (required if method is "supersampled")
 
         Raises:
-            ValueError: If the method name is invalid or n_ss is 0, or if the
-                method is "histogram" while the Integrator has a radial_range
-                (Histogram always uses the automatic radial range)
+            ValueError: If the method name is invalid or n_ss is 0.
 
         Example:
             >>> integrator.set_method("supersampled", n_ss=7)
@@ -1032,8 +1024,7 @@ class Integrator:
             in parallel, as in batch1d.
 
         Raises:
-            ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning, if n_radial or n_azimuthal is 0, if the
+            ValueError: If n_radial or n_azimuthal is 0, if the
                 Integrator's radial_range has a negative minimum, or for an
                 array that is not C-contiguous or does not match the mask. File
                 errors, including a TIFF that is not single-channel (e.g. RGB)
@@ -1139,8 +1130,7 @@ class Integrator:
             When using a generator, `total` is 0 and `progress` returns None.
 
         Raises:
-            ValueError: If the integrator uses the "histogram" method, which has
-                no azimuthal binning; if n_radial or n_azimuthal is 0; or if an
+            ValueError: If n_radial or n_azimuthal is 0; or if an
                 array is empty, not C-contiguous, or does not match the mask shape
             TypeError: If images is a single path (str, bytes, bytearray or os.PathLike)
                 instead of a list or iterable (wrap one path in a list), or an
@@ -1174,8 +1164,7 @@ class MultiIntegrator:
     before dividing. The 2D absolute normalization mode supplies pyFAI
     MultiGeometry's solid-angle scale; splitting algorithms can still differ.
 
-    All integrators must share the same radial_unit and radial_range, and must
-    not use the "histogram" method.
+    All integrators must share the same radial_unit and radial_range.
 
     Example:
         >>> import dioptrin
@@ -1193,7 +1182,6 @@ class MultiIntegrator:
         - Have the same radial_unit
         - Have an explicit radial_range set
         - Have the same radial_range values
-        - Not use the "histogram" method
 
         Args:
             integrators: List of Integrator instances, one per detector
@@ -1205,7 +1193,7 @@ class MultiIntegrator:
 
         Raises:
             ValueError: If validation fails (empty list, mismatched units/ranges,
-                missing radial_range, or histogram method used)
+                or missing radial_range)
 
         Example:
             >>> int1 = dioptrin.Integrator("det1.poni", unit="q_A^-1", radial_range=(0.5, 25.0))

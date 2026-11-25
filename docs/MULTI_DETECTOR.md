@@ -34,7 +34,6 @@ All integrators in a `MultiIntegrator` must:
 1. Have the **same `radial_unit`** (e.g., all `"q_A^-1"`)
 2. Have an **explicit `radial_range`** set (so all detectors share the same bin grid)
 3. Have the **same `radial_range`** values
-4. **Not** use the `"histogram"` method (use `"counting"`, `"pixel_split"`, `"pyfai_full"`, or `"supersampled"`)
 
 ## Shared-grid 2D cakes
 

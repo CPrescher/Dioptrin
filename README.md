@@ -132,10 +132,8 @@ azimuthal_std = sqrt(variance)
 ```
 
 This is a **population standard deviation**, not RMS or an error bar on the
-mean. It uses the same weighting as the integrated intensity. Counting,
-pixel-split, `pyfai_full` and supersampled methods reuse the cached CSR lookup table.
-The legacy Histogram method retains its equal weighting of pre-corrected pixels
-and automatic radial range. The spread uses a shifted two-pass calculation to
+mean. It uses the same weighting as the integrated intensity, and reuses the
+cached CSR lookup table. The spread uses a shifted two-pass calculation to
 avoid cancellation for large backgrounds with small variations. Poisson errors
 continue to use squared pixel fractions and are calculated independently.
 
@@ -158,9 +156,10 @@ and disabled paths with `python python_examples/bench_azimuthal_std.py`.
 
 ## 2D integration example (azimuthal range)
 
-2D integration supports the counting, pixel-split, `pyfai_full` and supersampled
-methods. The legacy Histogram method has no azimuthal binning and is 1D only:
-the `integrate2d*` methods panic for it, and Python raises `ValueError`.
+2D integration supports all integration methods (`counting`, `pixel_split`,
+`pyfai_full`, and `supersampled`). Legacy unweighted 1D histogramming is
+available via `Integrator::integrate1d_histogram*` (Python:
+`integrator.integrate1d_histogram(...)`).
 
 ```rust
 use std::f64::consts::PI;
@@ -369,7 +368,7 @@ import dioptrin
 # Create an integrator from a PONI calibration file
 integrator = dioptrin.Integrator(
     "calibration.poni",
-    method="pixel_split",      # "counting", "pixel_split", "pyfai_full", "histogram" (1D only), or "supersampled"
+    method="pixel_split",      # "counting", "pixel_split", "pyfai_full", or "supersampled"
     polarization_factor=0.99,  # optional
     unit="2th_deg"             # "2th_rad", "2th_deg", "q_A^-1", or "q_nm^-1"
 )
@@ -414,8 +413,7 @@ pass it as an array, e.g. `np.ascontiguousarray(rgb[::-1, :, 0], dtype=np.float6
 (the `[::-1]` matches the up-down flip applied to TIFF paths; `tifffile`
 returns planar files as `(3, rows, cols)`, so use `rgb[0, ::-1]` there).
 
-An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the radial bin grid and drops values outside it, in 1D and in 2D: every 2D method then bins onto `n_radial` equal bins between `min` and `max` (2D needs `min >= 0`), and 2D results report the bin centres in `result.radial` (Rust: `Integrator::radial_centers_2d`). In 2D, `counting`, `pixel_split` and `supersampled` use the shared-grid tables of `MultiIntegrator` on an explicit range (exact fractional polygon areas for `pixel_split`, slightly different from its default 2D table: on the CeO2 Pilatus 1M test image, 1000 x 360 bins on matching edges, a median relative difference of 3.5e-5 per bin, at most 1.7e-3 of the cake maximum, and a total ratio of 1.000056) and keep the default azimuthal bins; without a range they keep their automatic, detector-local radial grid and results. 2D bins are half-open, `[min, max)`, so a value exactly at `max` is dropped, while 1D includes both limits (its step is computed from `max + 10 eps`); 1D and 2D bin centres for the same range are therefore not bit-equal. The Rust `integrate2d_with_azimuthal_range*` methods (first-bin centre and step) bin onto that sector without folding when a range is set and refuse `n * step > 2π`.
-The legacy `histogram` method always uses the automatic radial range and does not honour `radial_range`; Python raises `ValueError` if both are given.
+An optional `radial_range=(min, max)` (Rust: `with_radial_range`) fixes the radial bin grid and drops values outside it, in 1D and in 2D: every 2D method uses the unified per-pixel fractional-weight `shared_grid` builder, binning onto `n_radial` equal bins between `min` and `max` (2D needs `min >= 0`), and 2D results report the bin centres in `result.radial` (Rust: `Integrator::radial_centers_2d`). 2D bins are half-open, `[min, max)`, so a value exactly at `max` is dropped, while 1D includes both limits (its step is computed from `max + 10 eps`); 1D and 2D bin centres for the same range are therefore not bit-equal. Legacy `integrate1d_histogram` always uses the automatic radial range and ignores `radial_range`.
 
 ### Fast accumulation (default)
 
@@ -672,7 +670,7 @@ image_sets = [[img1_a, img2_a], [img1_b, img2_b]]
 results = multi.batch1d(images=image_sets, n_points=2000)
 ```
 
-All integrators must share the same `unit` and `radial_range`. The `"histogram"` method is not supported.
+All integrators must share the same `unit` and `radial_range`.
 See `docs/MULTI_DETECTOR.md` for full details including Rust API and pyFAI comparison.
 
 ### Thread Configuration

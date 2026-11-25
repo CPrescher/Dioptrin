@@ -11,9 +11,9 @@ method keep running on the CPU, and no setting moves them to the GPU.
 
 ## Scope
 
-- 1D and 2D fixed-mask integration (`mask_mode="fixed"`) with the `counting`,
-  `pixel_split`, `pyfai_full` and `supersampled` methods. A dynamic mask, the
-  `histogram` method, `azimuthal_std` and `MultiIntegrator` are not supported.
+- 1D and 2D fixed-mask integration (`mask_mode="fixed"`) with all integration
+  methods (`counting`, `pixel_split`, `pyfai_full` and `supersampled`). Dynamic
+  masks, `azimuthal_std` and `MultiIntegrator` are not supported.
 - Opt-in through `Integrator.prepare_cuda1d` (`Cuda1dPlan`) and
   `Integrator.prepare_cuda2d` (`Cuda2dPlan`).
 - Not included in the PyPI wheels. A wheel without the feature still has every

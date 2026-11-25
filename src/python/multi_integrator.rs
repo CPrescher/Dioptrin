@@ -106,7 +106,6 @@ impl PyMultiIntegrator {
     /// Create a new MultiIntegrator from a list of Integrator instances.
     ///
     /// All integrators must have the same radial_unit and radial_range set.
-    /// The Histogram method is not supported.
     ///
     /// # Arguments
     ///
