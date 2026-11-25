@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from compare import (
     AZIMUTH_RANGE_DEG,
     CONVENTION_BANDS,
+    DioptrinOutput,
     Unsupported,
     azint_azimuth_axis,
     cake_metrics,
@@ -161,6 +162,7 @@ class CakeTests(unittest.TestCase):
             dioptrin_radial_axis=[3.0, 4.0],
             dioptrin_2d_path="batch",
             dioptrin_2d_batch_split="frames",
+            allow_list_conversion=True,  # the fake cake has lists
         )
         with patch.dict(sys.modules, {"dioptrin": module}), patch(
             "compare.load_inputs", return_value=inputs
@@ -171,12 +173,89 @@ class CakeTests(unittest.TestCase):
                     expected = case["dioptrin_radial_axis"] if radial is None else radial
                     state = setup_case_2d(case)
                     np.testing.assert_array_equal(state["sample"]["radial"], expected)
+                    self.assertEqual(state["info"]["dioptrin_result_conversion"], "list")
                     read_cake.reset_mock()
                     results = state["run"]()
-                    self.assertIs(results[0], item)
-                    read_cake.assert_not_called()
-                    state["validate"](results)
+                    # The timed call unwraps the BatchResult once and ends
+                    # with a float64 cake of shape (n_azimuthal, n_radial).
                     read_cake.assert_called_once_with()
+                    self.assertIsInstance(results[0], DioptrinOutput)
+                    self.assertIs(results[0].result, cake)
+                    self.assertEqual(results[0].intensity.dtype, np.float64)
+                    self.assertEqual(results[0].intensity.shape, (1, 2))
+                    read_cake.reset_mock()
+                    state["validate"](results)
+                    read_cake.assert_not_called()  # validation reuses the arrays
+                    # Out-of-order batch results fail validation.
+                    results[0].filename = "array[1]"
+                    with self.assertRaisesRegex(AssertionError, "array\\[1\\]"):
+                        state["validate"](results)
+
+    def array_cake(self, intensity, errors=None):
+        """Stand-in IntegrationResult of a build with the zero-copy accessors;
+        reading a list attribute fails the test."""
+
+        class Result:
+            radial_array = np.array([1.0, 2.0])
+            azimuthal_array = np.array([0.0])
+            azimuthal_std_array = None
+
+            def __getattr__(self, name):
+                raise AssertionError(f"list attribute {name} read")
+
+        result = Result()
+        result.intensity_array = intensity
+        result.errors_array = errors
+        return result
+
+    def test_cake_array_accessors_are_used_inside_the_timed_call(self):
+        frame = np.ones((2, 2))
+        intensity = np.array([[1.0, 2.0]])
+        sigma = np.array([[0.5, 0.25]])
+        engine = Mock()
+        engine.integrate2d.side_effect = lambda *a, **k: self.array_cake(
+            intensity, sigma
+        )
+        module = SimpleNamespace(
+            Integrator=Mock(return_value=engine), rayon_num_threads=lambda: 1
+        )
+        inputs = (
+            HERE, {"n_splitting": 1}, np.zeros_like(frame), {0: frame}, [0], [frame],
+            [0], 1,
+        )
+        case = dict(
+            n_radial=2,
+            n_azimuthal=1,
+            workers=1,
+            errors=True,
+            variant="dioptrin-pixel_split",
+            radial_range_2d=(0.5, 2.5),
+            dioptrin_radial_axis=[3.0, 4.0],
+            dioptrin_2d_path="sequential",
+        )
+        with patch.dict(sys.modules, {"dioptrin": module}), patch(
+            "compare.load_inputs", return_value=inputs
+        ):
+            state = setup_case_2d(case)
+            self.assertEqual(state["info"]["dioptrin_result_conversion"], "array")
+            np.testing.assert_array_equal(state["sample"]["radial"], [1.0, 2.0])
+            results = state["run"]()
+            # Zero-copy: the timed call hands back the accessors' arrays.
+            self.assertIs(results[0].intensity, intensity)
+            self.assertIs(results[0].sigma, sigma)
+            state["validate"](results)
+            # An accessor shaped (n_radial, n_azimuthal) is not reshaped away.
+            engine.integrate2d.side_effect = lambda *a, **k: self.array_cake(
+                intensity.T.copy(), sigma.T.copy()
+            )
+            with self.assertRaisesRegex(AssertionError, "shape"):
+                state["validate"](state["run"]())
+            # Poisson requested but no errors array: unsupported, not faked.
+            engine.integrate2d.side_effect = lambda *a, **k: self.array_cake(
+                intensity, None
+            )
+            with self.assertRaises(Unsupported):
+                state["validate"](state["run"]())
 
 
 class CakeRunTests(unittest.TestCase):

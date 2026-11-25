@@ -356,6 +356,7 @@ class CudaSetupCaseTests(unittest.TestCase):
             errors=errors,
             variant=variant,
             cuda_device=0,
+            allow_list_conversion=True,  # the fakes return lists
         )
 
     def setup(self, variant, errors=True):

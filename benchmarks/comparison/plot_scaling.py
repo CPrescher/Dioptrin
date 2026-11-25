@@ -42,15 +42,24 @@ def save(fig, output, name):
     plt.close(fig)
 
 
-def plot_cpu(directory, output, mode, processes=1):
-    """1D rows of `processes` processes (rows recorded before these fields
-    existed are 1D single-process); 2D cakes and other process counts are
-    left out rather than pooled into the same points."""
+def plot_cpu(directory, output, mode, processes=1, dioptrin_1d_path="global"):
+    """1D rows of `processes` processes and, for CPU Dioptrin rows, of one
+    compare.py --dioptrin-1d-path (rows recorded before these fields existed
+    are 1D single-process on the global path); 2D cakes, other process counts
+    and other Dioptrin 1D calls are left out rather than pooled into the same
+    points."""
     rates = defaultdict(list)
     frame_counts = defaultdict(set)
     for path in sorted((directory / "cases").glob("*.result.json")):
         row = json.loads(path.read_text(encoding="utf-8"))
         if row.get("dimension", "1d") != "1d" or row.get("processes", 1) != processes:
+            continue
+        # Other libraries' rows have no path and are always kept; Dioptrin
+        # rows without one (older runs) used the global call.
+        if (
+            row["variant"].startswith("dioptrin-")
+            and (row.get("dioptrin_1d_path") or "global") != dioptrin_1d_path
+        ):
             continue
         if row["error_mode"] == mode and row["workload"] == "repeated":
             variant = CPU_ALIASES.get(row["variant"], row["variant"])
@@ -97,6 +106,8 @@ def plot_cpu(directory, output, mode, processes=1):
     axes[1, 0].set_ylabel("Speedup over one worker")
     fig.legend(handles.values(), handles.keys(), loc="outside lower center", ncol=2, frameon=False)
     suffix = "" if processes == 1 else f"-p{processes}"
+    if dioptrin_1d_path != "global":
+        suffix += f"-{dioptrin_1d_path}"
     save(fig, output, f"cpu-scaling-{mode}{suffix}")
 
 
@@ -149,12 +160,20 @@ def main():
         help="CPU plot: use the 1D rows of this process count (compare.py "
         "--processes); default 1. 2D rows are never plotted.",
     )
+    parser.add_argument(
+        "--dioptrin-1d-path",
+        choices=("global", "split"),
+        default="global",
+        help="CPU plot: use the CPU Dioptrin rows of this compare.py "
+        "--dioptrin-1d-path (rows without the field count as global); "
+        "default global. Non-default paths add the path to the file name.",
+    )
     args = parser.parse_args()
     if not (args.cpu or args.gpu):
         parser.error("pass at least one of --cpu and --gpu")
     args.output.mkdir(parents=True, exist_ok=True)
     if args.cpu:
-        plot_cpu(args.cpu, args.output, args.mode, args.processes)
+        plot_cpu(args.cpu, args.output, args.mode, args.processes, args.dioptrin_1d_path)
     if args.gpu:
         plot_gpu(args.gpu, args.output, args.mode, GPU,
                  "Host-to-pattern throughput (frames/s)", "gpu-detector-scaling")

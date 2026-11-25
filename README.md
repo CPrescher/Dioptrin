@@ -401,7 +401,7 @@ result = integrator.integrate1d(data, n_points=1000)
 
 # 2D integration from TIFF file
 result = integrator.integrate2d("pattern.tif", n_radial=100, n_azimuthal=360)
-cake = np.array(result.intensity).reshape(result.n_azimuthal, result.n_radial)
+cake = result.intensity_array  # read-only (n_azimuthal, n_radial) NumPy view, no copy
 
 # 2D integration from NumPy array
 result = integrator.integrate2d(data, n_radial=100, n_azimuthal=360)
@@ -543,9 +543,9 @@ for r in results:
 results = integrator.batch2d(files, n_radial=100, n_azimuthal=360)
 for r in results:
     if r.is_ok():
-        # r.result.intensity is flat array [n_radial * n_azimuthal]
-        # r.result.n_radial and r.result.n_azimuthal for reshaping
-        cake = np.array(r.result.intensity).reshape(r.result.n_azimuthal, r.result.n_radial)
+        # r.result.intensity is a flat list [n_azimuthal * n_radial];
+        # intensity_array is the same data as an (n_azimuthal, n_radial) view
+        cake = r.result.intensity_array
 
 # Batch 2D on an azimuthal sector: (min, max) edges in radians, split into
 # n_azimuthal equal bins; pixels outside are left out and r.result.azimuthal
@@ -617,10 +617,21 @@ for r in integrator.batch2d_iter(
   - `errors`: Error estimates (if `errors=True`)
   - `azimuthal_std`: Weighted population spread (1D, if `azimuthal_std=True`)
   - `n_radial`, `n_azimuthal`: Dimensions for reshaping 2D results
+  - `radial_array`, `azimuthal_array`, `intensity_array`, `errors_array`,
+    `azimuthal_std_array`: the same data as read-only float64 NumPy arrays
+    (`None` when the list attribute is `None`). They are views of the
+    result's own memory, so reading them copies nothing; each view keeps the
+    result alive, so any one view keeps all of that result's arrays in
+    memory. For 2D results `intensity_array` and `errors_array` have
+    shape `(n_azimuthal, n_radial)`; the axis arrays are 1D. The list
+    attributes build a new Python list on every read (milliseconds for a
+    large cake), so prefer the `*_array` properties in loops; use
+    `np.array(result.intensity_array)` for a writable copy.
 
 - **`BatchResult`**: Wrapper for batch results
   - `filename`: Path of processed file
-  - `result`: `IntegrationResult` or `None` if failed
+  - `result`: `IntegrationResult` or `None` if failed (the same object on
+    every read)
   - `error`: Error message or `None` if successful
   - `is_ok()`, `is_err()`: Convenience methods
 

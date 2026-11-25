@@ -21,7 +21,7 @@ use crate::mask::Mask;
 use crate::poni::Poni;
 
 use super::results::{
-    BatchReceiver, PyBatchIterator, PyBatchResult, PyIntegrationResult, StreamError, panic_message,
+    BatchEntry, BatchReceiver, PyBatchIterator, PyIntegrationResult, StreamError, panic_message,
 };
 use super::utils::{
     BatchImageInput, ClassifiedInput, FrameOrPath, ImageInput, StackImageInput, batch_images,
@@ -921,7 +921,7 @@ impl PyIntegrator {
         errors: bool,
         azimuthal_std: bool,
         split: Option<(usize, usize)>,
-    ) -> PyResult<Vec<PyBatchResult>> {
+    ) -> PyResult<Vec<BatchEntry>> {
         let frames = arrays
             .iter()
             .enumerate()
@@ -953,7 +953,7 @@ impl PyIntegrator {
                     None => PyIntegrationResult::from_1d(radial, intensity),
                 }
             };
-            PyBatchResult {
+            BatchEntry {
                 filename: format!("array[{}]", i),
                 result: Some(integration_result),
                 error: None,
@@ -971,7 +971,7 @@ impl PyIntegrator {
             let outcomes = py
                 .detach(|| {
                     map_in_pools(frames.len(), num_workers, num_threads, prepare, |i| {
-                        let mut one: Vec<PyBatchResult> = frames[i..=i]
+                        let mut one: Vec<BatchEntry> = frames[i..=i]
                             .par_iter()
                             .enumerate()
                             .map(integrate)
@@ -1001,7 +1001,7 @@ impl PyIntegrator {
                     && integrator.can_integrate1d_batch4(dim1, dim2, n_points, errors)
                 {
                     let n_tiled = (frames.len() / 4) * 4;
-                    let mut out: Vec<PyBatchResult> = frames[..n_tiled]
+                    let mut out: Vec<BatchEntry> = frames[..n_tiled]
                         .par_chunks_exact(4)
                         .enumerate()
                         .flat_map(|(chunk_idx, chunk)| {
@@ -1025,7 +1025,7 @@ impl PyIntegrator {
                                         ),
                                         None => PyIntegrationResult::from_1d(radial, intensity),
                                     };
-                                    PyBatchResult {
+                                    BatchEntry {
                                         filename: format!("array[{}]", base + j),
                                         result: Some(res),
                                         error: None,
@@ -1073,7 +1073,7 @@ impl PyIntegrator {
         bins: Bins2d,
         radial: Option<Vec<f64>>,
         split: Option<(usize, usize)>,
-    ) -> PyResult<Vec<PyBatchResult>> {
+    ) -> PyResult<Vec<BatchEntry>> {
         let frames = arrays
             .iter()
             .enumerate()
@@ -1130,13 +1130,13 @@ impl PyIntegrator {
                             .with_radial(radial.clone()),
                         }
                     };
-                    PyBatchResult {
+                    BatchEntry {
                         filename,
                         result: Some(result),
                         error: None,
                     }
                 }
-                Err(error) => PyBatchResult {
+                Err(error) => BatchEntry {
                     filename,
                     result: None,
                     error: Some(error),
@@ -1188,7 +1188,7 @@ impl PyIntegrator {
                             )
                         });
                         let n_tiled = (frames.len() / 4) * 4;
-                        let mut out: Vec<PyBatchResult> = frames[..n_tiled]
+                        let mut out: Vec<BatchEntry> = frames[..n_tiled]
                             .par_chunks_exact(4)
                             .enumerate()
                             .flat_map(|(chunk_idx, chunk)| {
@@ -1238,7 +1238,7 @@ impl PyIntegrator {
                                                 .with_radial(radial.clone()),
                                             }
                                         };
-                                        PyBatchResult {
+                                        BatchEntry {
                                             filename: format!("array[{}]", base + j),
                                             result: Some(res),
                                             error: None,
@@ -2137,7 +2137,7 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
         azimuthal_std: bool,
-    ) -> PyResult<Vec<PyBatchResult>> {
+    ) -> PyResult<Vec<BatchEntry>> {
         check_positive("n_points", n_points)?;
         // Arrays keep the global pool unless a split was asked for.
         let split_requested = num_workers.is_some() || num_threads.is_some();
@@ -2161,12 +2161,12 @@ impl PyIntegrator {
                         )
                         .into_iter()
                         .map(|(filename, result)| match result {
-                            Ok(result) => PyBatchResult {
+                            Ok(result) => BatchEntry {
                                 filename,
                                 result: Some(PyIntegrationResult::from_azimuthal(result)),
                                 error: None,
                             },
-                            Err(error) => PyBatchResult {
+                            Err(error) => BatchEntry {
                                 filename,
                                 result: None,
                                 error: Some(error),
@@ -2188,14 +2188,14 @@ impl PyIntegrator {
                     Ok(results
                         .into_iter()
                         .map(|(filename, result)| match result {
-                            Ok((radial, intensity, errs)) => PyBatchResult {
+                            Ok((radial, intensity, errs)) => BatchEntry {
                                 filename,
                                 result: Some(PyIntegrationResult::from_1d_with_errors(
                                     radial, intensity, errs,
                                 )),
                                 error: None,
                             },
-                            Err(err) => PyBatchResult {
+                            Err(err) => BatchEntry {
                                 filename,
                                 result: None,
                                 error: Some(err),
@@ -2215,12 +2215,12 @@ impl PyIntegrator {
                     Ok(results
                         .into_iter()
                         .map(|(filename, result)| match result {
-                            Ok((radial, intensity)) => PyBatchResult {
+                            Ok((radial, intensity)) => BatchEntry {
                                 filename,
                                 result: Some(PyIntegrationResult::from_1d(radial, intensity)),
                                 error: None,
                             },
-                            Err(err) => PyBatchResult {
+                            Err(err) => BatchEntry {
                                 filename,
                                 result: None,
                                 error: Some(err),
@@ -2279,7 +2279,7 @@ impl PyIntegrator {
                         PyIntegrationResult::from_1d(radial, intensity)
                     };
 
-                    PyBatchResult {
+                    BatchEntry {
                         filename: format!("array[{}]", i),
                         result: Some(integration_result),
                         error: None,
@@ -2306,7 +2306,7 @@ impl PyIntegrator {
                     let outcomes = py
                         .detach(|| {
                             map_in_pools(frames.len(), num_workers, num_threads, prepare, |i| {
-                                let mut one: Vec<PyBatchResult> = frames[i..=i]
+                                let mut one: Vec<BatchEntry> = frames[i..=i]
                                     .par_iter()
                                     .enumerate()
                                     .map(integrate)
@@ -2346,7 +2346,7 @@ impl PyIntegrator {
                                 .can_integrate1d_batch4(dim1, dim2, n_points, errors)
                         {
                             let n_tiled = (frames.len() / 4) * 4;
-                            let mut out: Vec<PyBatchResult> = frames[..n_tiled]
+                            let mut out: Vec<BatchEntry> = frames[..n_tiled]
                                 .par_chunks_exact(4)
                                 .enumerate()
                                 .flat_map(|(chunk_idx, chunk)| {
@@ -2375,7 +2375,7 @@ impl PyIntegrator {
                                                     PyIntegrationResult::from_1d(radial, intensity)
                                                 }
                                             };
-                                            PyBatchResult {
+                                            BatchEntry {
                                                 filename: format!("array[{}]", base + j),
                                                 result: Some(res),
                                                 error: None,
@@ -2696,7 +2696,7 @@ impl PyIntegrator {
         num_workers: Option<usize>,
         num_threads: Option<usize>,
         azimuthal_bracket: Option<f64>,
-    ) -> PyResult<Vec<PyBatchResult>> {
+    ) -> PyResult<Vec<BatchEntry>> {
         self.reject_histogram_2d("batch2d")?;
         check_positive("n_radial", n_radial)?;
         let (n_azimuthal, azimuthal_range) =
@@ -2778,7 +2778,7 @@ impl PyIntegrator {
                 Ok(results
                     .into_iter()
                     .map(|(filename, result)| match result {
-                        Ok(intensity) => PyBatchResult {
+                        Ok(intensity) => BatchEntry {
                             filename,
                             result: Some(
                                 PyIntegrationResult::from_2d(intensity, n_radial, n_azimuthal)
@@ -2786,7 +2786,7 @@ impl PyIntegrator {
                             ),
                             error: None,
                         },
-                        Err(err) => PyBatchResult {
+                        Err(err) => BatchEntry {
                             filename,
                             result: None,
                             error: Some(err),
@@ -2810,7 +2810,7 @@ impl PyIntegrator {
                 Ok(results
                     .into_iter()
                     .map(|(filename, result)| match result {
-                        Ok((intensity, errs)) => PyBatchResult {
+                        Ok((intensity, errs)) => BatchEntry {
                             filename,
                             result: Some(
                                 PyIntegrationResult::from_2d_with_errors(
@@ -2823,7 +2823,7 @@ impl PyIntegrator {
                             ),
                             error: None,
                         },
-                        Err(err) => PyBatchResult {
+                        Err(err) => BatchEntry {
                             filename,
                             result: None,
                             error: Some(err),

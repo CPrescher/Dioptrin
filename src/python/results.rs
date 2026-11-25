@@ -1,4 +1,7 @@
-use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
+use numpy::ndarray::{ArrayView1, ArrayView2};
+use numpy::npyffi::NPY_ARRAY_WRITEABLE;
+use numpy::{PyArray, PyUntypedArrayMethods};
+use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
@@ -22,7 +25,16 @@ use crate::batch::StreamControl;
 /// * `azimuthal_std` - Weighted population spread (1D, when requested)
 /// * `n_radial` - Number of radial bins (for reshaping 2D data)
 /// * `n_azimuthal` - Number of azimuthal bins (for reshaping 2D data)
-#[pyclass(name = "IntegrationResult", from_py_object)]
+///
+/// Each vector also has a `*_array` property (`intensity_array`, ...) that
+/// returns a read-only float64 NumPy view of the same data without copying;
+/// 2D `intensity_array`/`errors_array` have shape `(n_azimuthal, n_radial)`.
+//
+// `frozen`: once the Python object exists, Rust code reaches the fields only
+// through `&self`, so the vectors are never mutated or reallocated while it is
+// alive. The `*_array` views rely on this; do not add setters or `&mut self`
+// methods. (Extraction via `from_py_object` clones, leaving the object intact.)
+#[pyclass(name = "IntegrationResult", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyIntegrationResult {
     #[pyo3(get)]
@@ -41,8 +53,107 @@ pub struct PyIntegrationResult {
     pub n_azimuthal: Option<usize>,
 }
 
+/// Which vector of a [`PyIntegrationResult`] a NumPy view borrows.
+#[derive(Clone, Copy)]
+enum Field {
+    Radial,
+    Azimuthal,
+    Intensity,
+    Errors,
+    AzimuthalStd,
+}
+
+impl PyIntegrationResult {
+    fn field(&self, field: Field) -> Option<&[f64]> {
+        match field {
+            Field::Radial => self.radial.as_deref(),
+            Field::Azimuthal => self.azimuthal.as_deref(),
+            Field::Intensity => Some(&self.intensity),
+            Field::Errors => self.errors.as_deref(),
+            Field::AzimuthalStd => self.azimuthal_std.as_deref(),
+        }
+    }
+
+    /// Read-only NumPy view of `field`, with `slf` as its base (so the view
+    /// keeps the result alive).
+    ///
+    /// `as_2d` views 2D intensity/errors as `(n_azimuthal, n_radial)`, the
+    /// layout the integrators write (index `azimuthal_bin * n_radial + radial_bin`).
+    fn view<'py>(
+        slf: &Bound<'py, Self>,
+        field: Field,
+        as_2d: bool,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let this = slf.get();
+        let Some(data) = this.field(field) else {
+            return Ok(None);
+        };
+        let owner = slf.clone().into_any();
+        // SAFETY (borrow_from_array): the array points into the heap buffer of
+        // a vector owned by `slf` and holds a reference to `slf` as its base,
+        // so the buffer outlives the array. The class is frozen and has no
+        // setters, so the vector is never mutated or reallocated once the
+        // Python object exists.
+        // SAFETY (flags): the array was just created and nothing else refers
+        // to it yet; clearing WRITEABLE makes it read-only, and NumPy refuses
+        // to set the flag again because the base exposes no writable buffer.
+        let array = match (as_2d, this.n_radial, this.n_azimuthal) {
+            (true, Some(n_radial), Some(n_azimuthal)) => {
+                let view = ArrayView2::from_shape((n_azimuthal, n_radial), data).map_err(|e| {
+                    PyValueError::new_err(format!(
+                        "2D result of length {} does not match ({n_azimuthal}, {n_radial}): {e}",
+                        data.len()
+                    ))
+                })?;
+                let array = unsafe { PyArray::borrow_from_array(&view, owner) };
+                unsafe { (*array.as_array_ptr()).flags &= !NPY_ARRAY_WRITEABLE };
+                array.into_any()
+            }
+            _ => {
+                let view = ArrayView1::from(data);
+                let array = unsafe { PyArray::borrow_from_array(&view, owner) };
+                unsafe { (*array.as_array_ptr()).flags &= !NPY_ARRAY_WRITEABLE };
+                array.into_any()
+            }
+        };
+        Ok(Some(array))
+    }
+}
+
 #[pymethods]
 impl PyIntegrationResult {
+    /// `radial` as a read-only float64 NumPy view (no copy), or None.
+    #[getter]
+    fn radial_array<'py>(slf: &Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Self::view(slf, Field::Radial, false)
+    }
+
+    /// `azimuthal` as a read-only float64 NumPy view (no copy), or None.
+    #[getter]
+    fn azimuthal_array<'py>(slf: &Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Self::view(slf, Field::Azimuthal, false)
+    }
+
+    /// `intensity` as a read-only float64 NumPy view (no copy): shape `(n,)`
+    /// for 1D, `(n_azimuthal, n_radial)` for 2D.
+    #[getter]
+    fn intensity_array<'py>(slf: &Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Self::view(slf, Field::Intensity, true)
+    }
+
+    /// `errors` as a read-only float64 NumPy view (no copy), shaped like
+    /// `intensity_array`, or None.
+    #[getter]
+    fn errors_array<'py>(slf: &Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Self::view(slf, Field::Errors, true)
+    }
+
+    /// `azimuthal_std` as a read-only float64 NumPy view (no copy), or None.
+    #[getter]
+    fn azimuthal_std_array<'py>(slf: &Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        Self::view(slf, Field::AzimuthalStd, false)
+    }
+
     fn __repr__(&self) -> String {
         let kind = if self.n_azimuthal.is_some() {
             "2D"
@@ -150,14 +261,14 @@ impl PyIntegrationResult {
         result: Result<AzimuthalRange2dOutput, String>,
         n_radial: usize,
         n_azimuthal: usize,
-    ) -> PyBatchResult {
+    ) -> BatchEntry {
         match result.and_then(|r| r) {
-            Ok(r) => PyBatchResult {
+            Ok(r) => BatchEntry {
                 filename,
                 result: Some(Self::from_azimuthal_range_2d(r, n_radial, n_azimuthal)),
                 error: None,
             },
-            Err(e) => PyBatchResult {
+            Err(e) => BatchEntry {
                 filename,
                 result: None,
                 error: Some(e),
@@ -183,20 +294,46 @@ impl PyIntegrationResult {
     }
 }
 
+/// Rust-side batch outcome, built off the interpreter by the batch paths and
+/// turned into a Python [`PyBatchResult`] when it is handed to Python.
+pub struct BatchEntry {
+    pub filename: String,
+    pub result: Option<PyIntegrationResult>,
+    pub error: Option<String>,
+}
+
+impl<'py> IntoPyObject<'py> for BatchEntry {
+    type Target = PyBatchResult;
+    type Output = Bound<'py, PyBatchResult>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
+        let result = self.result.map(|r| Py::new(py, r)).transpose()?;
+        Bound::new(
+            py,
+            PyBatchResult {
+                filename: self.filename,
+                result,
+                error: self.error,
+            },
+        )
+    }
+}
+
 /// Result of a single file in a batch integration.
 ///
 /// # Attributes
 ///
 /// * `filename` - Path to the processed file
-/// * `result` - IntegrationResult if successful, None if failed
+/// * `result` - IntegrationResult if successful, None if failed (the same
+///   object on every read; no data is copied)
 /// * `error` - Error message if failed, None if successful
-#[pyclass(name = "BatchResult", from_py_object)]
-#[derive(Clone)]
+#[pyclass(name = "BatchResult", frozen)]
 pub struct PyBatchResult {
     #[pyo3(get)]
     pub filename: String,
     #[pyo3(get)]
-    pub result: Option<PyIntegrationResult>,
+    pub result: Option<Py<PyIntegrationResult>>,
     #[pyo3(get)]
     pub error: Option<String>,
 }
@@ -303,7 +440,7 @@ pub struct PyBatchIterator {
     receiver: Option<BatchReceiver>,
     total: usize,
     completed: usize,
-    buffer: BTreeMap<usize, PyBatchResult>,
+    buffer: BTreeMap<usize, BatchEntry>,
     next_index: usize,
     stream_error: StreamError,
     finished: bool,
@@ -362,7 +499,7 @@ fn recv<T: Send>(py: Python<'_>, rx: &Mutex<Receiver<T>>) -> Option<T> {
     py.detach(|| rx.lock().ok().and_then(|guard| guard.recv().ok()))
 }
 
-impl PyBatchResult {
+impl BatchEntry {
     fn from_result(filename: String, result: Result<PyIntegrationResult, String>) -> Self {
         match result {
             Ok(result) => Self {
@@ -417,7 +554,7 @@ impl PyBatchIterator {
 
     /// Hand out the result for `next_index` and grant the producer credit
     /// for one more item.
-    fn deliver(&mut self, result: PyBatchResult) -> PyBatchResult {
+    fn deliver(&mut self, result: BatchEntry) -> BatchEntry {
         self.next_index += 1;
         self.completed += 1;
         if let Some(control) = &self.control {
@@ -496,7 +633,7 @@ impl PyBatchIterator {
         slf
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<PyBatchResult> {
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<BatchEntry> {
         if self.finished {
             return Err(PyStopIteration::new_err(()));
         }
@@ -520,7 +657,7 @@ impl PyBatchIterator {
                 BatchReceiver::Integration1DWithAzimuthalStd(rx) => {
                     recv(py, rx).map(|(index, filename, result)| {
                         let result = result.map(PyIntegrationResult::from_azimuthal);
-                        (index, PyBatchResult::from_result(filename, result))
+                        (index, BatchEntry::from_result(filename, result))
                     })
                 }
                 BatchReceiver::Integration1D(rx) => {
@@ -528,7 +665,7 @@ impl PyBatchIterator {
                         let result = result.map(|(radial, intensity)| {
                             PyIntegrationResult::from_1d(radial, intensity)
                         });
-                        (index, PyBatchResult::from_result(filename, result))
+                        (index, BatchEntry::from_result(filename, result))
                     })
                 }
                 BatchReceiver::Integration1DWithErrors(rx) => {
@@ -536,7 +673,7 @@ impl PyBatchIterator {
                         let result = result.map(|(radial, intensity, errors)| {
                             PyIntegrationResult::from_1d_with_errors(radial, intensity, errors)
                         });
-                        (index, PyBatchResult::from_result(filename, result))
+                        (index, BatchEntry::from_result(filename, result))
                     })
                 }
                 BatchReceiver::Integration2D {
@@ -549,7 +686,7 @@ impl PyBatchIterator {
                         PyIntegrationResult::from_2d(intensity, *n_radial, *n_azimuthal)
                             .with_radial(radial.clone())
                     });
-                    (index, PyBatchResult::from_result(filename, result))
+                    (index, BatchEntry::from_result(filename, result))
                 }),
                 BatchReceiver::Integration2DWithErrors {
                     receiver,
@@ -566,7 +703,7 @@ impl PyBatchIterator {
                         )
                         .with_radial(radial.clone())
                     });
-                    (index, PyBatchResult::from_result(filename, result))
+                    (index, BatchEntry::from_result(filename, result))
                 }),
                 BatchReceiver::Integration2DOnAzimuthalRange {
                     receiver,

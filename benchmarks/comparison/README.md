@@ -239,10 +239,10 @@ bbox CSR using Cython on Python frame threads (`pyfai-full`, `pyfai-bbox`);
 `pyfai-full-omp`, pyFAI's recommended CPU mode, one full CSR Cython engine
 integrating frames in sequence with `OMP_NUM_THREADS` = CPU budget; and
 `pyfai-full-opencl`, method `("full", "csr", "opencl")` on one OpenCL device;
-and, in 1D only and opt-in (`--variants`), Dioptrin's CUDA plan in four rows,
+and, opt-in (`--variants`), Dioptrin's CUDA plans in four rows,
 `dioptrin-pixel_split-cuda`, `dioptrin-pyfai_full-cuda`,
-`dioptrin-pixel_split-cuda-batch` and `dioptrin-pyfai_full-cuda-batch` (see
-"Dioptrin CUDA" below). Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
+`dioptrin-pixel_split-cuda-batch` and `dioptrin-pyfai_full-cuda-batch`, in 1D
+and 2D (see "Dioptrin CUDA" below). Supersampling is 15 x 15 for Pilatus, 5 x 5 for the larger
 generated detectors, and 3 x 3 for quick.
 The runner requires pyFAI to use the requested method and rejects fallbacks.
 
@@ -268,13 +268,17 @@ engine); rows for higher budgets or process counts are not scheduled.
 
 ### Dioptrin CUDA
 
-The four CUDA rows run Dioptrin's experimental CUDA 1D plan
-(`Integrator.prepare_cuda1d`) under the same protocol as `pyfai-full-opencl`:
-the same float64 fixture frames, passed unchanged, the same Integrator settings
-as the CPU Dioptrin rows (method, mask, 2theta range, solid angle, polarization
-0.965), a CPU budget of 1 (one host thread, `RAYON_NUM_THREADS=1`) and one
-process. They are 1D only; with `--dimensions 2d` they get no 2D cases and are
-left out of the 2D preflight. They are not in the default variant list: name
+The four CUDA rows run Dioptrin's experimental CUDA plans
+(`Integrator.prepare_cuda1d`, and `prepare_cuda2d` for 2D cases) under the same
+protocol as `pyfai-full-opencl`: the same float64 fixture frames, passed
+unchanged, the same Integrator settings as the CPU Dioptrin rows (method, mask,
+2theta range, solid angle, polarization 0.965), a CPU budget of 1 (one host
+thread, `RAYON_NUM_THREADS=1`) and one process. With `--dimensions 2d` they also
+get 2D cases (at budget 1 and one process) and take part in the 2D preflight;
+the 2D timed call is `plan.integrate2d(frame)` per frame or `plan.batch2d(frames)`,
+and the untimed check compares with CPU `Integrator.integrate2d` (and, for the
+batch rows, `batch2d` with per-frame `integrate2d`). The 1D description below
+applies to 2D with these calls. They are not in the default variant list: name
 them with `--variants`, so a default run never initialises a CUDA device or
 NVRTC.
 
@@ -302,12 +306,11 @@ scratch, so no device memory is allocated inside timing blocks.
 
 **Timed region.** Every timed call copies each float64 frame from host memory
 to the device (8 bytes per pixel), converts it to float32 there, integrates,
-copies the pattern back and synchronises before returning. The timed call
-returns `IntegrationResult` objects holding the data in host memory; the Python
-lists and the NumPy arrays are created when their attributes are read, during
-validation, outside timing, as for the CPU Dioptrin rows. pyFAI's timed call
-returns NumPy arrays. Transfers use ordinary (pageable) NumPy memory, as
-pyFAI's do.
+copies the pattern back and synchronises before returning. Like every Dioptrin
+row, it then ends with NumPy float64 intensity (and Poisson sigma) for every
+frame, created inside the timed call (see "Result conversion" below); pyFAI's
+timed call returns NumPy arrays. Transfers use ordinary (pageable) NumPy
+memory, as pyFAI's do.
 
 **Precision.** All CUDA rows use `f32_compensated`: float32 pixels and weights,
 sums accumulated as double-word (hi, lo) float32 pairs, and denominators,
@@ -404,9 +407,92 @@ reference entry carries `"also_counterpart": true` and no second entry is
 written. A counterpart entry is left out when the counterpart row did not run.
 2D entries are described under "2D cakes".
 
-The CPU-budget column is the total global Rayon pool size for Dioptrin's native
-array batch API. For competitors it is the number of persistent Python frame
-threads. Thread settings per case:
+**Dioptrin CPU 1D call.** `--dioptrin-1d-path` chooses what the CPU Dioptrin
+1D rows time (several values give one case each):
+
+- `global` (default): `Integrator.batch1d(frames, n, errors=...)` over the
+  list of arrays, with neither `num_workers` nor `num_threads`: the library's
+  default call. All frames run on the global Rayon pool, whose size the case
+  sets to the CPU budget (`RAYON_NUM_THREADS`) and checks
+  (`dioptrin.rayon_num_threads()`, the case fails otherwise). This call uses
+  Dioptrin's 4-frame tiled kernels when it has at least 4 frames per pool
+  thread (frames per call >= 4 x budget; the standard suite's 32 frames
+  reach that up to a budget of 8). Below that it integrates frame by frame,
+  so a scaling curve with a fixed frame count can switch kernels between
+  budgets (for example 32 frames: tiled up to 8 threads, per frame at 16);
+  raise `--frames` to at least 4 x the largest budget to keep one kernel.
+  With `--processes P` each process makes its own call with frames/P frames
+  on budget/P threads, which is the same condition.
+- `split`: `batch1d(frames, n, errors=..., num_workers=budget, num_threads=1)`.
+  Since Dioptrin 0.15.0 this runs `budget` frames at a time, each on a
+  one-thread pool that the call builds (and drops) itself, without the tiled
+  kernels; results are bit-identical. In 0.14 the same arguments were ignored
+  for arrays and the call ran as `global`, so earlier results with these
+  arguments are `global` measurements.
+
+The path is recorded in the `dioptrin_1d_path` column and in each
+`*.result.json` (empty for other libraries, GPU rows and 2D rows), and
+`summary.md` shows it with the method and names the call. Case files of the
+non-default path carry it in their names (`...-dioptrin-pixel_split-split-w8-...`),
+so the two paths never share files or one-worker references; `numerical.json`
+compares each Dioptrin row with the reference of its own path (other rows with
+`global`) and records `dioptrin_1d_path` and `reference_dioptrin_1d_path`.
+
+**Result conversion.** pyFAI's timed `integrate1d`/`integrate2d` return
+`Integrate1dResult`/`Integrate2dResult` objects holding NumPy arrays: the
+radial axis (recomputed per call), intensity, sigma with Poisson errors and,
+in 2D, the azimuthal axis. azint's timed `integrate` returns a tuple of NumPy
+arrays, intensity and sigma (1D and 2D); its axes are constant attributes
+(`radial_axis`, `azimuth_axis`) that it does not return per call. Dioptrin's
+calls return `IntegrationResult` (inside `BatchResult` for batch calls), whose
+data are read through attributes. So that every row ends with the same thing
+in hand, every timed Dioptrin call (CPU 1D, every CPU 2D path, CUDA and Metal
+in 1D and 2D) ends with NumPy float64 intensity, and sigma with Poisson errors,
+for every frame: shape `(n,)` in 1D and `(n_azimuthal, n_radial)` in 2D. Batch
+calls also unwrap every `BatchResult` (`is_ok()`, `.result`) inside timing.
+The axes are per-integrator constants and, as for azint, are read outside
+timing (pyFAI's per-call axes stay inside its timed call). Two conversions
+exist, recorded per case in `dioptrin_result_conversion`:
+
+- `array`: the zero-copy read-only `IntegrationResult` properties
+  `intensity_array` and `errors_array` (float64 ndarrays), used whenever the
+  installed build has them.
+- `list`: `np.asarray(result.intensity)` and `np.asarray(result.errors)`
+  (reshaped to the cake in 2D) for builds without them (0.15.2 and earlier),
+  which build Python lists of floats first.
+
+The `array` views are read-only (`flags.writeable` is False) and keep their
+`IntegrationResult` alive; pyFAI's and azint's arrays are writable. Nothing in
+the harness writes to the outputs, so this does not change what is timed, but
+code that modifies results in place needs `.copy()` for Dioptrin.
+
+The `list` conversion runs serially under the GIL and can cost more than the
+integration: for a 2000x360 cake about 32 ms against 1.6 ms. A run with such a
+build would mostly time list building, so the harness refuses it. Before any
+case runs, the parent checks whether the installed `dioptrin.IntegrationResult`
+has the accessors and, if not, stops with an error naming the cause (install
+Dioptrin from a revision that has them; 0.15.2 wheels do not). Every case
+process, and every rank with `--processes`, repeats the check on its first
+result. `--allow-list-conversion` runs such a build anyway: the log starts
+with a `WARNING LIST CONVERSION` banner, `summary.md` repeats the warning, the
+case records keep `dioptrin_result_conversion` = `list`, and
+`environment.json` records `dioptrin_result_arrays: false`. Use it only to
+reproduce the older timing, never to compare with `array` rows or with other
+libraries.
+
+Validation and the saved outputs reuse the arrays the timed call produced (no
+second conversion); it additionally requires float64 ndarrays of exactly the
+expected shape and batch results in frame order (`array[i]`). Results before
+this change timed only the native call and left the conversion outside timing.
+
+For CPU Dioptrin rows the CPU-budget column is the number of threads that
+compute, set up differently per call. On the `global` 1D path and the 2D
+`sequential` path and `nested` batch split it is the size of the global Rayon
+pool (`RAYON_NUM_THREADS`, which the case checks). On the `split` 1D path, the
+2D `stream` path and the `frames` batch split it is `num_workers`: the call runs
+that many frames at a time, each on a one-thread pool it builds itself, and the
+global pool of the same size sits idle. For competitors it is the number of
+persistent Python frame threads. Thread settings per case:
 
 | Variant | Frame threads | `OMP_NUM_THREADS` | `RAYON_NUM_THREADS` |
 | --- | ---: | ---: | ---: |
@@ -436,7 +522,9 @@ arrays, and (for `azint-cached`) the cached `norm` are shared and only read;
 the per-call `norm_1d`/`norm_2d` attributes are assigned on each copy, and
 scratch arrays are newly allocated per call. Its pinned native SpMV releases the GIL.
 PyFAI owns an initialized CSR engine
-per worker. Native batch scheduling and result allocation are timed. Setup,
+per worker. Native batch scheduling, result allocation and, for Dioptrin, the
+conversion of the results to NumPy arrays ("Result conversion" above) are
+timed. Setup,
 first-result and all-workers-ready times, and process-lifetime peak RSS are
 separate columns. Setup includes backend import and lazy initialization.
 Frame workers receive contiguous slices of the logical input sequence, so the
@@ -528,6 +616,14 @@ is chosen with `--dioptrin-2d-path`:
 
   Either way the process computes on B threads; `cpu_per_wall` in each
   `*.result.json` (CPU time over wall time of the timed blocks) records it.
+  With the `list` result conversion (`--allow-list-conversion`, builds without
+  the accessors) the timed blocks also include the single-threaded conversion
+  of the cakes to NumPy arrays after the call, which lowers `cpu_per_wall`
+  below B; the `array` views are created without copying and do not.
+  `nested` is the call the library makes by default for a list of arrays
+  (Dioptrin 0.15.2: without `num_workers`/`num_threads` all frames run on the
+  global pool, with the 4-frame tiled 2D kernels when the call has at least
+  4 frames per pool thread and the method supports them).
   Needs a Dioptrin whose `batch2d` accepts NumPy arrays (after 0.14.0, which
   takes TIFF paths only): with an older build the cases are listed in
   `skipped.json` as unsupported, never run through another path. `frames` also
@@ -554,22 +650,28 @@ one sparse matrix.
 
 **Same grid for every library.** Radial edges are `n_radial` equal bins between
 the extremes of the pixel-corner 2theta (`preflight2d.json`, `radial_range_2d`).
-Dioptrin's `Integrator` honours `radial_range` in 2D only for `pyfai_full`;
-`pixel_split` always uses these corner extremes, so they are the common grid
-(pyFAI and azint get them explicitly; the 1D cases keep their own range, which
-starts at 0). `supersampled` also ignores `radial_range` in 2D and uses its own
-default edges (the extremes of the subpixel hull and pixel centres), which are
-different (on Pilatus the lower edge differs by 0.013 degrees, most of a
-2000-bin width). Its timed cakes are therefore on their own radial grid,
-reported in `numerical.json` as `max_radial_axis_difference_deg`. For the
-numerical comparison only, its one-worker reference case also integrates the
-first frame, after timing, with `MultiIntegrator([integrator])`, which takes
-explicit edges, onto the common grid (`*.cake0common.npz`, entries with
-`"grid": "common"`). The preflight checks that `MultiIntegrator` reproduces
-`Integrator.integrate2d` where both use the same edges (`pixel_split`;
-`multiintegrator_check` in `preflight2d.json`; to within 4e-11 relative on
-the smoke datasets). Dioptrin 2D results carry no radial axis; the preflight reads each
-method's actual edges from its 1D default grid, which follows the same rule.
+Every library gets these edges: pyFAI and azint explicitly, Dioptrin as
+`radial_range` of its `Integrator` (the 1D cases keep their own range, which
+starts at 0). Since Dioptrin 0.15.0 every method honours `radial_range` in 2D:
+`pixel_split` and `supersampled` then use the shared-grid tables of
+`MultiIntegrator` (for `pixel_split` with exact fractional polygon areas, which
+differ slightly from its default 2D table), and 2D results carry the radial
+axis, which the harness reads. Builds before 0.15.0 honoured the range in 2D
+only for `pyfai_full`: `pixel_split` used the corner extremes anyway (the same
+edges), while `supersampled` used its own default edges (the extremes of the
+subpixel hull and pixel centres; on Pilatus the lower edge differs by 0.013
+degrees, most of a 2000-bin width), so its timed cakes were on their own
+radial grid, reported in `numerical.json` as `max_radial_axis_difference_deg`.
+Those builds also returned no 2D radial axis; the harness then uses the edges
+the preflight reads from each method's 1D default grid, which follows the old
+rule. For the numerical comparison only, the `supersampled` one-worker
+reference case also integrates the first frame, after timing, with
+`MultiIntegrator([integrator])`, which takes explicit edges, onto the common
+grid (`*.cake0common.npz`, entries with `"grid": "common"`); with 0.15.0 or
+later this is the same grid as its timed cakes. The preflight checks that
+`MultiIntegrator` reproduces `Integrator.integrate2d` where both use the same
+edges (`pixel_split`; `multiintegrator_check` in `preflight2d.json`; to within
+4e-11 relative on the smoke datasets).
 
 **Subpixels.** `--subpixels` sets the subpixels per side for
 `dioptrin-supersampled`, `azint` and `azint-cached` in 2D (default 10; several
@@ -601,7 +703,9 @@ this. A library that returned no 2D sigma would be recorded as `unsupported` in
 `table_nnz`, `table_nnz_total`, `table_nnz_source`, `estimated_table_nnz`,
 `estimated_memory_mib`, `rss_inputs_mib`, `peak_rss_ready_mib`,
 `setup_rss_growth_mib` and `dioptrin_2d_batch_split` (empty for 1D rows; 1D columns and variant names are
-unchanged). `setup_first_s` is the time to the first cake (import, set-up and
+unchanged), then `input_dtype`, `gpu_precision`, `dioptrin_1d_path` (CPU
+Dioptrin 1D rows only) and `dioptrin_result_conversion` (every Dioptrin row;
+see "Result conversion"). `setup_first_s` is the time to the first cake (import, set-up and
 table construction) and `setup_ready_s` the time until every worker is built
 and warmed. `peak_rss_ready_mib` is the peak RSS when all workers are ready,
 before any validation reference is read; `peak_rss_mib` is the process-lifetime

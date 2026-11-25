@@ -194,6 +194,38 @@ class IntegrationResult:
         """Number of azimuthal bins (for reshaping 2D data)."""
         ...
 
+    # Read-only float64 NumPy views of the vectors above. They share the
+    # result's memory (no copy) and keep the result alive, so any one view
+    # keeps all of that result's arrays in memory; None exactly when the
+    # matching list attribute is None.
+
+    @property
+    def radial_array(self) -> Optional[np.ndarray]:
+        """`radial` as a read-only float64 array of shape (n,), without copying."""
+        ...
+
+    @property
+    def azimuthal_array(self) -> Optional[np.ndarray]:
+        """`azimuthal` as a read-only float64 array of shape (n,), without copying."""
+        ...
+
+    @property
+    def intensity_array(self) -> np.ndarray:
+        """`intensity` as a read-only float64 array without copying: shape (n,)
+        for 1D, (n_azimuthal, n_radial) for 2D."""
+        ...
+
+    @property
+    def errors_array(self) -> Optional[np.ndarray]:
+        """`errors` as a read-only float64 array shaped like `intensity_array`,
+        without copying."""
+        ...
+
+    @property
+    def azimuthal_std_array(self) -> Optional[np.ndarray]:
+        """`azimuthal_std` as a read-only float64 array of shape (n,), without copying."""
+        ...
+
 
 class BatchResult:
     """
@@ -212,7 +244,7 @@ class BatchResult:
 
     @property
     def result(self) -> Optional[IntegrationResult]:
-        """IntegrationResult or None if failed."""
+        """IntegrationResult or None if failed (the same object on every read)."""
         ...
 
     @property
