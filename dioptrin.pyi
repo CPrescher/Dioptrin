@@ -2089,6 +2089,47 @@ def auto_calibrate(
     ...
 
 
+def auto_calibrate_image(
+    image: NDArray[np.float64],
+    calibrant: Calibrant,
+    wavelength: float,
+    pixel1: float,
+    pixel2: Optional[float] = None,
+    starting_distance: Optional[float] = None,
+    distance_tolerance_factor: float = 2.0,
+    distance_min: float = 0.04,
+    distance_max: float = 1.5,
+    fix: Optional[list[str]] = None,
+    enable_tilt_fallback: bool = True,
+    max_ring_index: int = 65,
+    max_iter: int = 200,
+    tol: float = 1e-9,
+) -> AutoCalibrateResult:
+    """
+    End-to-end automatic calibration directly from a 2D diffraction image
+    with zero manual clicks.
+
+    Args:
+        image: 2D float64 numpy array (row 0 at bottom, matching Frame::from_tiff)
+        calibrant: Reference powder (e.g. LaB6, CeO2)
+        wavelength: X-ray wavelength in metres
+        pixel1: Pixel pitch along axis 0 (rows) in metres
+        pixel2: Pixel pitch along axis 1 (cols) in metres (defaults to pixel1)
+        starting_distance: Optional rough detector distance in metres
+        distance_tolerance_factor: Search margin [d0 / factor, d0 * factor]
+        distance_min: Lower blind-search distance bound in metres (default 0.04)
+        distance_max: Upper blind-search distance bound in metres (default 1.5)
+        fix: Parameter names to lock during refinement (default ["wavelength", "rot3"])
+        enable_tilt_fallback: Fall back to 5D grid search for tilted/strip detectors
+        max_iter: Maximum L-M iterations per pass (default 200)
+        tol: Relative cost tolerance for convergence (default 1e-9)
+
+    Raises:
+        ValueError: If calibration fails or parameters are invalid
+    """
+    ...
+
+
 def estimate_ring_center(
     peaks: list[Tuple[float, float]],
     max_trials: int = 500,

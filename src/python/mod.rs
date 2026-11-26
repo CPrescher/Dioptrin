@@ -12,8 +12,9 @@ pub mod utils;
 
 use calibration::{
     PyAutoCalibrateResult, PyCalibrant, PyCalibrationPoints, PyCalibrationResult, PyEllipseFit,
-    PyRansacEllipseResult, PyRingIdResult, auto_calibrate_py, estimate_ring_center_py,
-    find_peaks_image_py, find_peaks_massif_py, identify_rings_py, ransac_ellipses_py, refine_py,
+    PyRansacEllipseResult, PyRingIdResult, auto_calibrate_image_py, auto_calibrate_py,
+    estimate_ring_center_py, find_peaks_image_py, find_peaks_massif_py, identify_rings_py,
+    ransac_ellipses_py, refine_py,
 };
 use integrator::PyIntegrator;
 use multi_integrator::PyMultiIntegrator;
@@ -30,6 +31,7 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(identify_rings_py, m)?)?;
     m.add_function(wrap_pyfunction!(find_peaks_image_py, m)?)?;
     m.add_function(wrap_pyfunction!(auto_calibrate_py, m)?)?;
+    m.add_function(wrap_pyfunction!(auto_calibrate_image_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_ring_center_py, m)?)?;
     m.add_function(wrap_pyfunction!(cuda::cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda::cuda_info_py, m)?)?;
