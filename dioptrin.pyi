@@ -37,6 +37,7 @@ __all__ = [
     "identify_rings",
     "find_peaks_image",
     "auto_calibrate",
+    "auto_calibrate_image",
     "estimate_ring_center",
     "simulate_diffraction",
 ]
