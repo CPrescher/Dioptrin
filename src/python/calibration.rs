@@ -6,11 +6,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
-    AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError, CalibrationOptions,
-    CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions, Loss, MassifOptions,
-    ParamMask, RansacOptions, RansacResult, RingCenterOptions, RingIdOptions, RingIdResult,
-    auto_calibrate, estimate_ring_center, find_peaks, find_peaks_image, identify_rings,
-    ransac_ellipses, refine,
+    AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
+    CalibrationOptions, CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions,
+    Loss, MassifOptions, ParamMask, RansacOptions, RansacResult, RingCenterOptions, RingIdOptions,
+    RingIdResult, auto_calibrate, auto_calibrate_image_with_mask, estimate_ring_center, find_peaks,
+    find_peaks_image, identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -811,6 +811,147 @@ pub fn auto_calibrate_py(
     let (refined, diag) =
         auto_calibrate(&peaks, &calibrant.inner, wavelength, pixel1, pixel2, &opts)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyAutoCalibrateResult {
+        refined,
+        n_detected_ellipses: diag.n_detected_ellipses,
+        n_identified_ellipses: diag.n_identified_ellipses,
+        bootstrap_distance: diag.bootstrap_distance,
+        bootstrap_ring_center_d1: diag.bootstrap_ring_center_d1,
+        bootstrap_ring_center_d2: diag.bootstrap_ring_center_d2,
+    })
+}
+
+/// End-to-end automatic calibration directly from a 2D diffraction image with
+/// zero manual clicks.
+///
+/// # Arguments
+///
+/// * `image`             — 2D `float64` numpy array (same orientation as
+///                         `Frame::from_tiff`, i.e. row 0 at bottom / `data[::-1]`
+///                         from fabio)
+/// * `calibrant`         — reference powder (`Calibrant`)
+/// * `wavelength`        — X-ray wavelength in metres
+/// * `pixel1`            — pixel pitch along axis 0 (rows) in metres
+/// * `pixel2`            — pixel pitch along axis 1 (cols) in metres (defaults to `pixel1`)
+/// * `starting_distance` — optional rough detector distance in metres (speeds up
+///                         and focuses search; `None` performs a blind search)
+/// * `distance_tolerance_factor` — search margin `[d0 / factor, d0 * factor]` when
+///                         `starting_distance` is given (default `2.0`)
+/// * `distance_min`      — lower blind-search distance bound in metres (default `0.04`)
+/// * `distance_max`      — upper blind-search distance bound in metres (default `1.5`)
+/// * `fix`               — optional list of parameter names to hold fixed (defaults to
+///                         `["wavelength", "rot3"]`)
+/// * `enable_tilt_fallback` — fall back to 5D grid search for heavily tilted or strip
+///                         detectors (default `True`)
+/// * `max_iter`          — maximum L-M iterations per refinement pass (default `200`)
+/// * `tol`               — L-M convergence tolerance (default `1e-9`)
+#[pyfunction]
+#[pyo3(name = "auto_calibrate_image")]
+#[pyo3(signature = (
+    image, calibrant, wavelength, pixel1, pixel2=None,
+    starting_distance=None,
+    mask=None,
+    distance_tolerance_factor=2.0,
+    distance_min=0.04,
+    distance_max=1.5,
+    fix=None,
+    enable_tilt_fallback=true,
+    max_ring_index=65,
+    max_iter=200,
+    tol=1e-9,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn auto_calibrate_image_py(
+    py: Python<'_>,
+    image: PyReadonlyArray2<'_, f64>,
+    calibrant: &PyCalibrant,
+    wavelength: f64,
+    pixel1: f64,
+    pixel2: Option<f64>,
+    starting_distance: Option<f64>,
+    mask: Option<PyReadonlyArray2<'_, bool>>,
+    distance_tolerance_factor: f64,
+    distance_min: f64,
+    distance_max: f64,
+    fix: Option<&Bound<'_, PyList>>,
+    enable_tilt_fallback: bool,
+    max_ring_index: usize,
+    max_iter: usize,
+    tol: f64,
+) -> PyResult<PyAutoCalibrateResult> {
+    let view = image.as_array();
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+    let pixel2 = pixel2.unwrap_or(pixel1);
+
+    let refine_mask = match fix {
+        Some(list) => parse_mask(Some(list))?,
+        None => AutoCalibrateImageOptions::default().refine_mask,
+    };
+
+    let opts = AutoCalibrateImageOptions {
+        starting_distance,
+        distance_tolerance_factor,
+        distance_min,
+        distance_max,
+        refine_mask,
+        enable_tilt_fallback,
+        max_ring_index,
+        max_iter,
+        tol,
+    };
+
+    // Always materialize in row-major (C) order before detaching from the GIL.
+    // Note: rust-numpy's `as_slice()` succeeds for Fortran-contiguous arrays too,
+    // so checking `is_standard_layout()` avoids reading F-ordered arrays transposed.
+    let img_buf: Vec<f64> = if view.is_standard_layout() {
+        image
+            .as_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|_| view.iter().copied().collect())
+    } else {
+        view.iter().copied().collect()
+    };
+
+    let mask_buf: Option<Vec<bool>> = match mask {
+        Some(m) => {
+            let m_view = m.as_array();
+            let m_shape = m_view.shape();
+            if m_shape != shape {
+                return Err(PyValueError::new_err(format!(
+                    "mask shape ({}, {}) does not match image shape ({}, {})",
+                    m_shape[0], m_shape[1], dim1, dim2
+                )));
+            }
+            Some(if m_view.is_standard_layout() {
+                m.as_slice()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|_| m_view.iter().copied().collect())
+            } else {
+                m_view.iter().copied().collect()
+            })
+        }
+        None => None,
+    };
+
+    let cal = calibrant.inner.clone();
+    let (refined, diag) = py
+        .detach(|| {
+            auto_calibrate_image_with_mask(
+                &img_buf,
+                dim1,
+                dim2,
+                mask_buf.as_deref(),
+                &cal,
+                wavelength,
+                pixel1,
+                pixel2,
+                &opts,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     Ok(PyAutoCalibrateResult {
         refined,

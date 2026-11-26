@@ -161,7 +161,10 @@ pub struct AutoCalibrateDiagnostics {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AutoCalibrateError {
+    /// Invalid arguments (e.g. shape mismatch, tiny image, non-positive wavelength/pixel size).
+    InvalidInput(String),
     /// Fewer ellipses detected than `min_inliers` requires — image too sparse
     /// or RANSAC parameters too strict.
     NoEllipses,
@@ -174,6 +177,7 @@ pub enum AutoCalibrateError {
 impl std::fmt::Display for AutoCalibrateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            AutoCalibrateError::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
             AutoCalibrateError::NoEllipses => write!(f, "no ellipses detected by RANSAC"),
             AutoCalibrateError::NoConfidentIdentity => {
                 write!(

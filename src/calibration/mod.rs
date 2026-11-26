@@ -29,6 +29,7 @@ mod calibrant;
 mod center;
 mod ellipse;
 mod grid_search;
+mod image_auto;
 mod inversion;
 mod massif;
 mod radial;
@@ -46,6 +47,9 @@ pub use center::{RingCenter, RingCenterOptions, estimate_ring_center, fit_circle
 pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
 pub use grid_search::{
     GridSearchCandidate, GridSearchOptions, GridSearchResult, grid_search, grid_search_top_k,
+};
+pub use image_auto::{
+    AutoCalibrateImageOptions, auto_calibrate_image, auto_calibrate_image_with_mask,
 };
 pub use inversion::{InvertedGeometry, aggregate, invert};
 pub use massif::{ImagePeakOptions, MassifOptions, PreparedMassif, find_peaks, find_peaks_image};
