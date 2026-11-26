@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-26
+
+### Added
+
+- **End-to-end 2D image auto-calibration**: `calibration::auto_calibrate_image`
+  and `calibration::auto_calibrate_image_with_mask` in Rust, and
+  `dioptrin.auto_calibrate_image(image, calibrant, wavelength, pixel1, pixel2=None, starting_distance=None, mask=None, ...)`
+  in Python. Recovers detector geometry `(distance, poni1, poni2, rot1, rot2)`
+  from a raw 2D diffraction frame with zero manual clicks — handling centered,
+  off-center/off-detector, non-square-pixel, dark-subtracted, circular-aperture,
+  module-gap, spotty, and heavily tilted strip detectors.
+- `AutoCalibrateError::InvalidInput(String)` (and `#[non_exhaustive]` on
+  `AutoCalibrateError`) for clean validation of image shapes, masks, and
+  physical parameters without panicking.
+- **Powder diffraction image simulation**: `simulation::simulate_diffraction` in
+  Rust and `dioptrin.simulate_diffraction` in Python (with documentation in
+  `docs/simulation.md`) for generating physically realistic 2D Debye–Scherrer
+  frames from a `Poni` / `Geometry` and `Calibrant`.
+
 ## [0.16.0] - 2026-11-25
 
 ### Added
