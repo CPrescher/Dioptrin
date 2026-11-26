@@ -17,12 +17,13 @@ copyright = "2026, Clemens Prescher"
 release = metadata["version"]
 version = release
 
-extensions = ["myst_parser"]
+extensions = ["myst_parser", "sphinx.ext.mathjax"]
 source_suffix = {".md": "markdown"}
 root_doc = "index"
 language = "en"
 nitpicky = True
 myst_heading_anchors = 4
+myst_enable_extensions = ["dollarmath"]
 
 # Benchmark notebooks and historical reports are records, not manual chapters.
 # Selected JSON files are copied only when referenced as downloads by a chapter.

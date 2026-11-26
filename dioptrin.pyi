@@ -38,6 +38,7 @@ __all__ = [
     "find_peaks_image",
     "auto_calibrate",
     "estimate_ring_center",
+    "simulate_diffraction",
 ]
 
 
@@ -1662,11 +1663,23 @@ class Calibrant:
         """Build from an explicit list of d-spacings (Å)."""
         ...
 
+    @staticmethod
+    def from_d_spacings_and_intensities(
+        name: str,
+        d_spacings: list[float],
+        intensities: list[Optional[float]],
+    ) -> Calibrant:
+        """Build from d-spacings (Å) and optional per-ring relative intensities."""
+        ...
+
     @property
     def name(self) -> str: ...
 
     @property
     def d_spacings(self) -> list[float]: ...
+
+    @property
+    def intensities(self) -> list[Optional[float]]: ...
 
     def n_rings(self) -> int: ...
 
@@ -2163,5 +2176,65 @@ def estimate_ring_center(
 
     Returns:
         (d1, d2), or None if too few peaks / no consensus
+    """
+    ...
+
+
+def simulate_diffraction(
+    geometry: Union[Integrator, dict[str, Any], str],
+    calibrant: Union[Calibrant, str],
+    shape: Optional[Tuple[int, int]] = None,
+    detector: Optional[str] = None,
+    profile: str = "gaussian",
+    fwhm_rad: float = 2.0e-3,
+    eta: float = 0.5,
+    i_max: float = 1000.0,
+    background: float = 0.0,
+    ring_intensity: Optional[Union[str, list[float]]] = None,
+    fallback_intensity: float = 0.1,
+    oversampling: int = 1,
+    apply_solid_angle: bool = True,
+    polarization_factor: Optional[float] = None,
+    mask_value: Optional[float] = 0.0,
+    poisson_noise: bool = False,
+    readout_noise: float = 0.0,
+    rng_seed: int = 0x5EED_D109_7A50_0001,
+) -> np.ndarray:
+    """
+    Simulate a 2D powder diffraction image for a given geometry and calibrant.
+
+    Args:
+        geometry: A ``dioptrin.Integrator``, a PONI dict, or a path to a ``.poni`` file.
+            Paths and dicts carry scalar PONI fields only; pass ``detector`` or an
+            ``Integrator`` with a physical detector attached to include splines,
+            non-planar maps, or built-in module-gap masks. Passing an ``Integrator``
+            does not inherit its ``polarization_factor``.
+        calibrant: A ``dioptrin.Calibrant`` or a path to a pyFAI-style ``.D`` file
+        shape: ``(dim1, dim2)`` image shape; optional when ``geometry`` or ``detector``
+            already defines a shape
+        detector: Optional built-in detector name (e.g. ``"Pilatus1M"``)
+        profile: ``"gaussian"`` (default), ``"lorentzian"``, or ``"pseudo_voigt"``
+        fwhm_rad: Full width at half maximum of the diffraction rings in 2θ radians
+        eta: Lorentzian mixing fraction in ``[0, 1]`` for ``"pseudo_voigt"``
+        i_max: Peak intensity scaling factor (must be >= 0)
+        background: Constant background offset added to every pixel
+        ring_intensity: ``"uniform"`` (default / ``None``), ``"calibrant"``, or a
+            sequence of non-negative per-ring relative weights aligned with
+            ``calibrant.d_spacings`` (sorted descending in d / ascending in 2θ)
+        fallback_intensity: Relative intensity for rings without a listed intensity
+            in the ``.D`` file when ``ring_intensity="calibrant"``
+        oversampling: Subpixel oversampling factor per axis (``N`` evaluates ``N x N``
+            points per pixel)
+        apply_solid_angle: Multiply ring signal by pixel solid angle (default ``True``,
+            matching ``Integrator`` and pyFAI)
+        polarization_factor: Optional linear polarization factor in ``[-1, 1]``
+        mask_value: Value written to built-in detector mask gaps, or ``None`` to skip
+        poisson_noise: Apply Poisson shot noise to pixel intensities
+        readout_noise: Standard deviation of additive Gaussian readout noise
+            (may produce negative, non-integer pixel values)
+        rng_seed: Deterministic RNG seed for noise (unsigned 64-bit)
+
+    Returns:
+        2D float64 NumPy array of shape ``(dim1, dim2)``
     """
     ...
