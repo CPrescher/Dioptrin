@@ -48,7 +48,9 @@ pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransa
 pub use grid_search::{
     GridSearchCandidate, GridSearchOptions, GridSearchResult, grid_search, grid_search_top_k,
 };
-pub use image_auto::{AutoCalibrateImageOptions, auto_calibrate_image};
+pub use image_auto::{
+    AutoCalibrateImageOptions, auto_calibrate_image, auto_calibrate_image_with_mask,
+};
 pub use inversion::{InvertedGeometry, aggregate, invert};
 pub use massif::{ImagePeakOptions, MassifOptions, PreparedMassif, find_peaks, find_peaks_image};
 pub use radial::{RadialExtractOptions, RadialExtractResult, extract_rings_radial};

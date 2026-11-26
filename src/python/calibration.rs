@@ -9,7 +9,7 @@ use crate::calibration::{
     AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
     CalibrationOptions, CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions,
     Loss, MassifOptions, ParamMask, RansacOptions, RansacResult, RingCenterOptions, RingIdOptions,
-    RingIdResult, auto_calibrate, auto_calibrate_image, estimate_ring_center, find_peaks,
+    RingIdResult, auto_calibrate, auto_calibrate_image_with_mask, estimate_ring_center, find_peaks,
     find_peaks_image, identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
@@ -851,6 +851,7 @@ pub fn auto_calibrate_py(
 #[pyo3(signature = (
     image, calibrant, wavelength, pixel1, pixel2=None,
     starting_distance=None,
+    mask=None,
     distance_tolerance_factor=2.0,
     distance_min=0.04,
     distance_max=1.5,
@@ -862,12 +863,14 @@ pub fn auto_calibrate_py(
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn auto_calibrate_image_py(
+    py: Python<'_>,
     image: PyReadonlyArray2<'_, f64>,
     calibrant: &PyCalibrant,
     wavelength: f64,
     pixel1: f64,
     pixel2: Option<f64>,
     starting_distance: Option<f64>,
+    mask: Option<PyReadonlyArray2<'_, bool>>,
     distance_tolerance_factor: f64,
     distance_min: f64,
     distance_max: f64,
@@ -900,26 +903,55 @@ pub fn auto_calibrate_image_py(
         tol,
     };
 
-    let owned_buf;
-    let slice: &[f64] = match image.as_slice() {
-        Ok(s) => s,
-        Err(_) => {
-            owned_buf = view.iter().copied().collect::<Vec<f64>>();
-            &owned_buf
-        }
+    // Always materialize in row-major (C) order before detaching from the GIL.
+    // Note: rust-numpy's `as_slice()` succeeds for Fortran-contiguous arrays too,
+    // so checking `is_standard_layout()` avoids reading F-ordered arrays transposed.
+    let img_buf: Vec<f64> = if view.is_standard_layout() {
+        image
+            .as_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|_| view.iter().copied().collect())
+    } else {
+        view.iter().copied().collect()
     };
 
-    let (refined, diag) = auto_calibrate_image(
-        slice,
-        dim1,
-        dim2,
-        &calibrant.inner,
-        wavelength,
-        pixel1,
-        pixel2,
-        &opts,
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mask_buf: Option<Vec<bool>> = match mask {
+        Some(m) => {
+            let m_view = m.as_array();
+            let m_shape = m_view.shape();
+            if m_shape != shape {
+                return Err(PyValueError::new_err(format!(
+                    "mask shape ({}, {}) does not match image shape ({}, {})",
+                    m_shape[0], m_shape[1], dim1, dim2
+                )));
+            }
+            Some(if m_view.is_standard_layout() {
+                m.as_slice()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|_| m_view.iter().copied().collect())
+            } else {
+                m_view.iter().copied().collect()
+            })
+        }
+        None => None,
+    };
+
+    let cal = calibrant.inner.clone();
+    let (refined, diag) = py
+        .detach(|| {
+            auto_calibrate_image_with_mask(
+                &img_buf,
+                dim1,
+                dim2,
+                mask_buf.as_deref(),
+                &cal,
+                wavelength,
+                pixel1,
+                pixel2,
+                &opts,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     Ok(PyAutoCalibrateResult {
         refined,

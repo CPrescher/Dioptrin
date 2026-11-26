@@ -2109,6 +2109,7 @@ def auto_calibrate_image(
     pixel1: float,
     pixel2: Optional[float] = None,
     starting_distance: Optional[float] = None,
+    mask: Optional[NDArray[np.bool_]] = None,
     distance_tolerance_factor: float = 2.0,
     distance_min: float = 0.04,
     distance_max: float = 1.5,
@@ -2123,22 +2124,34 @@ def auto_calibrate_image(
     with zero manual clicks.
 
     Args:
-        image: 2D float64 numpy array (row 0 at bottom, matching Frame::from_tiff)
+        image: 2D float64 numpy array (pass ``.astype(np.float64)`` for integer
+            images; row 0 at bottom, i.e. ``np.flipud(fabio_data)``, matching
+            ``Frame::from_tiff``)
         calibrant: Reference powder (e.g. LaB6, CeO2)
         wavelength: X-ray wavelength in metres
         pixel1: Pixel pitch along axis 0 (rows) in metres
         pixel2: Pixel pitch along axis 1 (cols) in metres (defaults to pixel1)
-        starting_distance: Optional rough detector distance in metres
+        starting_distance: Optional rough detector distance in metres (used
+            directly when ``"distance"`` is in ``fix``)
+        mask: Optional 2D boolean mask with same shape as ``image`` where
+            ``True`` marks excluded/masked pixels
         distance_tolerance_factor: Search margin [d0 / factor, d0 * factor]
         distance_min: Lower blind-search distance bound in metres (default 0.04)
         distance_max: Upper blind-search distance bound in metres (default 1.5)
         fix: Parameter names to lock during refinement (default ["wavelength", "rot3"])
         enable_tilt_fallback: Fall back to 5D grid search for tilted/strip detectors
+        max_ring_index: Maximum calibrant ring index considered in 1D/2D matching
+            (default 65)
         max_iter: Maximum L-M iterations per pass (default 200)
         tol: Relative cost tolerance for convergence (default 1e-9)
 
+    Note:
+        In the returned ``AutoCalibrateResult``, ``n_identified_ellipses`` reports
+        the number of calibrated rings with >= 5 matched points and
+        ``bootstrap_ring_center_d1`` / ``bootstrap_ring_center_d2`` are in metres.
+
     Raises:
-        ValueError: If calibration fails or parameters are invalid
+        ValueError: If inputs are invalid or calibration does not verify
     """
     ...
 
