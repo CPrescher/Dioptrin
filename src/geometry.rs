@@ -636,7 +636,7 @@ impl Geometry {
     }
 }
 
-mod math {
+pub(crate) mod math {
     pub struct TrigonometricConstants {
         sin_rot1: f64,
         cos_rot1: f64,

@@ -15,6 +15,9 @@ pub struct Calibrant {
     /// d-spacings in Ångström, sorted descending (lowest 2θ first, matching
     /// pyFAI's ordering — ring index 0 is the lowest-angle ring).
     pub d_spacings: Vec<f64>,
+    /// Optional relative intensities parsed from `.D` file inline comments
+    /// (e.g. `# (1 1 1) 8 100.0`), aligned with `d_spacings`.
+    pub intensities: Vec<Option<f64>>,
 }
 
 #[derive(Debug)]
@@ -55,13 +58,53 @@ impl From<std::io::Error> for CalibrantError {
 
 impl Calibrant {
     /// Construct from an explicit list of d-spacings (Å).
+    ///
+    /// Non-finite and non-positive values are ignored.
     pub fn from_d_spacings(name: impl Into<String>, d_spacings: Vec<f64>) -> Self {
-        let mut sorted = d_spacings;
+        let mut sorted: Vec<f64> = d_spacings
+            .into_iter()
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .collect();
         // Keep pyFAI's convention: descending d (= ascending 2θ).
-        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| b.total_cmp(a));
+        let n = sorted.len();
         Self {
             name: name.into(),
             d_spacings: sorted,
+            intensities: vec![None; n],
+        }
+    }
+
+    /// Construct from d-spacings (Å) and optional per-ring relative intensities.
+    ///
+    /// Non-finite and non-positive d-spacings are ignored. Remaining entries
+    /// are sorted by descending `d_spacing`, keeping each intensity paired with
+    /// its ring. If `intensities` is shorter than `d_spacings`, remaining rings
+    /// get `None`.
+    pub fn from_d_spacings_and_intensities(
+        name: impl Into<String>,
+        d_spacings: Vec<f64>,
+        intensities: Vec<Option<f64>>,
+    ) -> Self {
+        let mut pairs: Vec<(f64, Option<f64>)> = d_spacings
+            .into_iter()
+            .enumerate()
+            .filter(|(_, d)| d.is_finite() && *d > 0.0)
+            .map(|(idx, d)| {
+                let inten = intensities
+                    .get(idx)
+                    .copied()
+                    .flatten()
+                    .filter(|v| v.is_finite() && *v >= 0.0);
+                (d, inten)
+            })
+            .collect();
+        pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let (d_spacings, intensities) = pairs.into_iter().unzip();
+        Self {
+            name: name.into(),
+            d_spacings,
+            intensities,
         }
     }
 
@@ -80,11 +123,12 @@ impl Calibrant {
     /// Parse a pyFAI-style `.D` calibrant from an in-memory string.
     pub fn from_d_str(name: impl Into<String>, contents: &str) -> Result<Self, CalibrantError> {
         let mut d_spacings = Vec::new();
+        let mut intensities = Vec::new();
         for (i, raw_line) in contents.lines().enumerate() {
-            // Strip inline comments (everything from the first `#`).
-            let line = match raw_line.split_once('#') {
-                Some((before, _)) => before,
-                None => raw_line,
+            // Split inline comment (everything from the first `#`).
+            let (line, comment) = match raw_line.split_once('#') {
+                Some((before, after)) => (before, Some(after)),
+                None => (raw_line, None),
             };
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -98,12 +142,17 @@ impl Calibrant {
             })?;
             if d > 0.0 {
                 d_spacings.push(d);
+                intensities.push(comment.and_then(parse_comment_intensity));
             }
         }
         if d_spacings.is_empty() {
             return Err(CalibrantError::Empty);
         }
-        Ok(Self::from_d_spacings(name, d_spacings))
+        Ok(Self::from_d_spacings_and_intensities(
+            name,
+            d_spacings,
+            intensities,
+        ))
     }
 
     /// Number of rings in this calibrant.
@@ -130,5 +179,58 @@ impl Calibrant {
                 }
             })
             .collect()
+    }
+}
+
+/// Extract an optional relative intensity from a pyFAI `.D` inline comment.
+///
+/// Standard format: `(h k l)  mult  intensity` (e.g. `(1 1 1)     8 100.0`).
+/// Lines with only multiplicity (e.g. `(5 1 1)    32`) return `None`.
+fn parse_comment_intensity(comment: &str) -> Option<f64> {
+    let (_, after_hkl) = comment.split_once(')')?;
+    let mut tokens = after_hkl.split_whitespace();
+    let _mult = tokens.next()?;
+    let intensity: f64 = tokens.next()?.parse().ok()?;
+    if intensity.is_finite() && intensity >= 0.0 {
+        Some(intensity)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_comment_intensity_handles_edge_cases() {
+        assert_eq!(parse_comment_intensity(" (1 1 1)     8 100.0"), Some(100.0));
+        assert_eq!(parse_comment_intensity(" (2 0 0) 6 27.73"), Some(27.73));
+        // Multiplicity only, no intensity
+        assert_eq!(parse_comment_intensity(" (5 1 1)    32"), None);
+        // No parentheses
+        assert_eq!(parse_comment_intensity(" 8 100.0"), None);
+        // Negative or non-numeric intensity
+        assert_eq!(parse_comment_intensity(" (1 0 0) 6 -5.0"), None);
+        assert_eq!(parse_comment_intensity(" (1 0 0) 6 nan"), None);
+        assert_eq!(parse_comment_intensity(" (1 0 0) 6 junk"), None);
+    }
+
+    #[test]
+    fn from_d_spacings_filters_non_positive_and_non_finite() {
+        let cal = Calibrant::from_d_spacings(
+            "filtered",
+            vec![1.5, -2.0, 0.0, f64::NAN, f64::INFINITY, 3.0],
+        );
+        assert_eq!(cal.d_spacings, vec![3.0, 1.5]);
+        assert_eq!(cal.intensities, vec![None, None]);
+
+        let cal2 = Calibrant::from_d_spacings_and_intensities(
+            "paired",
+            vec![1.5, -1.0, 3.0],
+            vec![Some(20.0), Some(99.0), Some(100.0)],
+        );
+        assert_eq!(cal2.d_spacings, vec![3.0, 1.5]);
+        assert_eq!(cal2.intensities, vec![Some(100.0), Some(20.0)]);
     }
 }

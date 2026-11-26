@@ -10,6 +10,7 @@ pub mod mask;
 pub mod math;
 pub mod multi;
 pub mod poni;
+pub mod simulation;
 
 #[cfg(test)]
 mod util;
