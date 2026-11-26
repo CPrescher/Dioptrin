@@ -9,30 +9,31 @@ development, and geometry verification.
 
 ## Forward model
 
-Given a `Geometry` with positive `poni.wavelength` ($\lambda$, in metres) and a
-`Calibrant` with d-spacings $d_k$ (in Ångström), each physical Bragg ring
-($\lambda \le 2 d_k$) sits at
+Given a `Geometry` with positive `poni.wavelength` (λ, in metres) and a
+`Calibrant` with d-spacings `d_k` (in Ångström), each physical Bragg ring
+(`λ ≤ 2 d_k`) sits at:
 
-$$2\theta_k = 2 \arcsin\!\left(\frac{\lambda}{2 d_k}\right).$$
+```text
+2θ_k = 2 * arcsin(λ / (2 * d_k))
+```
 
-For each pixel $(r, c)$:
+For each pixel `(r, c)`:
 
 1. **Angular evaluation**: `2θ` is evaluated at the pixel centre
-   $(r + 0.5, c + 0.5)$ — or averaged over an $N \times N$ uniform subpixel grid
+   `(r + 0.5, c + 0.5)` — or averaged over an `N × N` uniform subpixel grid
    when `oversampling = N` — using `Geometry::subpixel_transform()`. Flat uniform
    detectors take an affine-plane fast path; attached physical `Detector` models
    evaluate their full position mapping (splines, module gaps, orientation,
    binning, and non-planar geometry).
 2. **Peak profile**: All active rings are summed using one of three unit-peak
-   profiles parameterized by `fwhm_rad` (Full Width at Half Maximum in $2\theta$
+   profiles parameterized by `fwhm_rad` (Full Width at Half Maximum in `2θ`
    radians):
    - **Gaussian** (`PeakProfile::Gaussian` / `"gaussian"`, default):
-     $\exp\!\bigl(-4 \ln 2 \, (\Delta 2\theta / \mathrm{FWHM})^2\bigr)$
+     `exp(-4 * ln(2) * (Δ2θ / fwhm)^2)`
    - **Lorentzian** (`PeakProfile::Lorentzian` / `"lorentzian"`):
-     $1 / \bigl(1 + (2 \Delta 2\theta / \mathrm{FWHM})^2\bigr)$
+     `1 / (1 + (2 * Δ2θ / fwhm)^2)`
    - **Pseudo-Voigt** (`PeakProfile::PseudoVoigt { eta }` / `"pseudo_voigt"`):
-     $(1 - \eta)\,G(\Delta 2\theta) + \eta\,L(\Delta 2\theta)$ with
-     $\eta \in [0, 1]$
+     `(1 - eta) * G(Δ2θ) + eta * L(Δ2θ)` with `eta` in `[0, 1]`
 3. **Ring amplitudes**: Controlled by `ring_intensity` and scaled by `i_max`:
    - `Uniform` (`"uniform"`, default): every ring has relative amplitude `1.0`.
    - `FromCalibrant { fallback }` (`"calibrant"`): uses relative intensities
@@ -40,13 +41,13 @@ For each pixel $(r, c)$:
      the strongest listed ring is `1.0`. Rings without a listed intensity use
      `fallback` (default `0.1`, or `1.0` if no ring lists an intensity).
    - `Custom(weights)`: explicit non-negative per-ring weights aligned with
-     `calibrant.d_spacings` (sorted descending in $d$, i.e. ascending in $2\theta$).
+     `calibrant.d_spacings` (sorted descending in `d`, i.e. ascending in `2θ`).
 4. **Physical corrections**:
    - `apply_solid_angle` (default `true`): multiplies the ring signal by
      `Geometry::calc_solid_angle()` (matching `Integrator`, which always divides
      by solid angle, and pyFAI's `fake_calibration_image`).
    - `polarization_factor` (default `None`): when `Some(p)` with
-     $p \in [-1, 1]$, multiplies the ring signal by the same linear polarization
+     `p` in `[-1, 1]`, multiplies the ring signal by the same linear polarization
      factor `Geometry::calc_polarization` computes.
 5. **Background and noise**:
    - Adds `background` (default `0.0`).
@@ -62,7 +63,7 @@ For each pixel $(r, c)$:
 
 ## Rust API
 
-```rust,no_run
+```rust
 use std::sync::Arc;
 use dioptrin::calibration::Calibrant;
 use dioptrin::detector;
