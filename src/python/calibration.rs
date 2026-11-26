@@ -46,6 +46,18 @@ impl PyCalibrant {
         }
     }
 
+    /// Build from d-spacings (Å) and optional per-ring relative intensities.
+    #[staticmethod]
+    fn from_d_spacings_and_intensities(
+        name: &str,
+        d_spacings: Vec<f64>,
+        intensities: Vec<Option<f64>>,
+    ) -> Self {
+        Self {
+            inner: Calibrant::from_d_spacings_and_intensities(name, d_spacings, intensities),
+        }
+    }
+
     #[getter]
     fn name(&self) -> &str {
         &self.inner.name
@@ -54,6 +66,11 @@ impl PyCalibrant {
     #[getter]
     fn d_spacings(&self) -> Vec<f64> {
         self.inner.d_spacings.clone()
+    }
+
+    #[getter]
+    fn intensities(&self) -> Vec<Option<f64>> {
+        self.inner.intensities.clone()
     }
 
     fn n_rings(&self) -> usize {

@@ -7,6 +7,7 @@ pub mod integrator;
 pub mod metal;
 pub mod multi_integrator;
 pub mod results;
+pub mod simulation;
 mod streaming;
 pub mod utils;
 
@@ -18,6 +19,7 @@ use calibration::{
 use integrator::PyIntegrator;
 use multi_integrator::PyMultiIntegrator;
 use results::{PyBatchIterator, PyBatchResult, PyIntegrationResult};
+use simulation::simulate_diffraction_py;
 use utils::{rayon_num_threads, set_rayon_threads};
 
 #[pymodule]
@@ -31,6 +33,7 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_peaks_image_py, m)?)?;
     m.add_function(wrap_pyfunction!(auto_calibrate_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_ring_center_py, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate_diffraction_py, m)?)?;
     m.add_function(wrap_pyfunction!(cuda::cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda::cuda_info_py, m)?)?;
     // Private test hook: set as an attribute so it stays out of `__all__`.
