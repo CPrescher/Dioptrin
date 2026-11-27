@@ -9,9 +9,10 @@ use crate::calibration::{
     AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
     CalibrationOptions, CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions,
     Loss, MassifOptions, ParamMask, PolarizationRot3Options, PolarizationRot3Result, RansacOptions,
-    RansacResult, RingCenterOptions, RingIdOptions, RingIdResult, auto_calibrate,
-    auto_calibrate_image_with_mask, calibrate_rot3_polarization, estimate_ring_center, find_peaks,
-    find_peaks_image, identify_rings, ransac_ellipses, refine,
+    RansacResult, RefineImageOptions, RefineImageResult, RingCenterOptions, RingIdOptions,
+    RingIdResult, auto_calibrate, auto_calibrate_image_with_mask, calibrate_rot3_polarization,
+    estimate_ring_center, extract_ring_peaks, find_peaks, find_peaks_image, identify_rings,
+    ransac_ellipses, refine, refine_image,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -1219,4 +1220,314 @@ pub fn calibrate_rot3_polarization_py(
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     Ok(PyPolarizationRot3Result { inner: res })
+}
+
+// ---------- image-based ring peak extraction & refinement ----------
+
+#[pyclass(name = "RefineImageResult")]
+pub struct PyRefineImageResult {
+    inner: RefineImageResult,
+}
+
+#[pymethods]
+impl PyRefineImageResult {
+    #[getter]
+    fn n_iter(&self) -> usize {
+        self.inner.calibration.n_iter
+    }
+    #[getter]
+    fn chi2(&self) -> f64 {
+        self.inner.calibration.chi2
+    }
+    #[getter]
+    fn rms_rad(&self) -> f64 {
+        self.inner.calibration.rms_rad
+    }
+    #[getter]
+    fn n_rings(&self) -> usize {
+        self.inner.n_rings
+    }
+    #[getter]
+    fn start_rms_rad(&self) -> Option<f64> {
+        self.inner.start_rms_rad
+    }
+    #[getter]
+    fn assignments(&self) -> Vec<Option<usize>> {
+        self.inner.calibration.assignments.clone()
+    }
+    #[getter]
+    fn inliers(&self) -> Vec<bool> {
+        self.inner.calibration.inliers.clone()
+    }
+    #[getter]
+    fn points(&self) -> PyCalibrationPoints {
+        PyCalibrationPoints {
+            inner: self.inner.points.clone(),
+        }
+    }
+    #[getter]
+    fn rot3_calibration(&self) -> Option<PyPolarizationRot3Result> {
+        self.inner
+            .rot3_calibration
+            .clone()
+            .map(|r| PyPolarizationRot3Result { inner: r })
+    }
+    #[getter]
+    fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let p = &self.inner.calibration.poni;
+        d.set_item("pixel1", p.pixel1)?;
+        d.set_item("pixel2", p.pixel2)?;
+        d.set_item("distance", p.distance)?;
+        d.set_item("poni1", p.poni1)?;
+        d.set_item("poni2", p.poni2)?;
+        d.set_item("rot1", p.rot1)?;
+        d.set_item("rot2", p.rot2)?;
+        d.set_item("rot3", p.rot3)?;
+        d.set_item("wavelength", p.wavelength)?;
+        Ok(d)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "RefineImageResult(n_rings={}, n_points={}, rms_rad={:e})",
+            self.inner.n_rings,
+            self.inner.points.len(),
+            self.inner.calibration.rms_rad
+        )
+    }
+}
+
+/// Extract sub-pixel ring control points uniformly around all visible calibrant
+/// rings predicted by `poni`, using the mask-aware DoG residual and `8×8`
+/// local-MAD noise model (zero `intensity_min_factor` tuning).
+#[pyfunction]
+#[pyo3(name = "extract_ring_peaks")]
+#[pyo3(signature = (
+    image,
+    poni,
+    calibrant,
+    mask=None,
+    max_ring_index=65,
+    max_rings=16,
+    n_azimuth=72,
+    intensity_limit=None,
+    search_half_width_px=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn extract_ring_peaks_py(
+    py: Python<'_>,
+    image: PyReadonlyArray2<'_, f64>,
+    poni: &Bound<'_, PyAny>,
+    calibrant: &PyCalibrant,
+    mask: Option<PyReadonlyArray2<'_, bool>>,
+    max_ring_index: usize,
+    max_rings: usize,
+    n_azimuth: usize,
+    intensity_limit: Option<f64>,
+    search_half_width_px: Option<usize>,
+) -> PyResult<PyCalibrationPoints> {
+    let view = image.as_array();
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+
+    let poni_val: Poni = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
+        let geom = integ.inner().geometry();
+        if geom.dim1() != dim1 || geom.dim2() != dim2 {
+            return Err(PyValueError::new_err(format!(
+                "image shape ({dim1}, {dim2}) does not match Integrator shape ({}, {})",
+                geom.dim1(),
+                geom.dim2()
+            )));
+        }
+        geom.poni.clone()
+    } else if let Ok(dict) = poni.cast::<PyDict>() {
+        poni_from_dict(dict)?
+    } else {
+        return Err(PyValueError::new_err(
+            "poni must be a dioptrin.Integrator or a PONI dict",
+        ));
+    };
+
+    let img_buf: Vec<f64> = if view.is_standard_layout() {
+        image
+            .as_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|_| view.iter().copied().collect())
+    } else {
+        view.iter().copied().collect()
+    };
+
+    let mask_buf: Option<Vec<bool>> = match mask {
+        Some(m) => {
+            let m_view = m.as_array();
+            let m_shape = m_view.shape();
+            if m_shape != shape {
+                return Err(PyValueError::new_err(format!(
+                    "mask shape ({}, {}) does not match image shape ({}, {})",
+                    m_shape[0], m_shape[1], dim1, dim2
+                )));
+            }
+            Some(if m_view.is_standard_layout() {
+                m.as_slice()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|_| m_view.iter().copied().collect())
+            } else {
+                m_view.iter().copied().collect()
+            })
+        }
+        None => None,
+    };
+
+    let opts = RefineImageOptions {
+        max_ring_index,
+        max_rings,
+        n_azimuth,
+        intensity_limit,
+        search_half_width_px,
+        ..RefineImageOptions::default()
+    };
+    let cal = calibrant.inner.clone();
+    let pts = py
+        .detach(|| {
+            extract_ring_peaks(
+                &img_buf,
+                dim1,
+                dim2,
+                mask_buf.as_deref(),
+                &poni_val,
+                &cal,
+                &opts,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyCalibrationPoints { inner: pts })
+}
+
+/// Refine an existing `start` PONI directly against a 2D diffraction image
+/// using iterative local-MAD 2D ring-profile extraction + Huber L-M + optional
+/// polarization-based `rot3` calibration.
+#[pyfunction]
+#[pyo3(name = "refine_image")]
+#[pyo3(signature = (
+    image,
+    start,
+    calibrant,
+    mask=None,
+    fix=None,
+    max_ring_index=65,
+    max_rings=16,
+    n_azimuth=72,
+    n_passes=3,
+    intensity_limit=None,
+    search_half_width_px=None,
+    polarization_factor=None,
+    max_iter=200,
+    tol=1e-9,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn refine_image_py(
+    py: Python<'_>,
+    image: PyReadonlyArray2<'_, f64>,
+    start: &Bound<'_, PyAny>,
+    calibrant: &PyCalibrant,
+    mask: Option<PyReadonlyArray2<'_, bool>>,
+    fix: Option<&Bound<'_, PyList>>,
+    max_ring_index: usize,
+    max_rings: usize,
+    n_azimuth: usize,
+    n_passes: usize,
+    intensity_limit: Option<f64>,
+    search_half_width_px: Option<usize>,
+    polarization_factor: Option<f64>,
+    max_iter: usize,
+    tol: f64,
+) -> PyResult<PyRefineImageResult> {
+    let view = image.as_array();
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+
+    let poni_val: Poni = if let Ok(integ) = start.extract::<PyRef<PyIntegrator>>() {
+        let geom = integ.inner().geometry();
+        if geom.dim1() != dim1 || geom.dim2() != dim2 {
+            return Err(PyValueError::new_err(format!(
+                "image shape ({dim1}, {dim2}) does not match Integrator shape ({}, {})",
+                geom.dim1(),
+                geom.dim2()
+            )));
+        }
+        geom.poni.clone()
+    } else if let Ok(dict) = start.cast::<PyDict>() {
+        poni_from_dict(dict)?
+    } else {
+        return Err(PyValueError::new_err(
+            "start must be a dioptrin.Integrator or a PONI dict",
+        ));
+    };
+
+    let refine_mask = match fix {
+        Some(list) => parse_mask(Some(list))?,
+        None => RefineImageOptions::default().refine_mask,
+    };
+
+    let img_buf: Vec<f64> = if view.is_standard_layout() {
+        image
+            .as_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|_| view.iter().copied().collect())
+    } else {
+        view.iter().copied().collect()
+    };
+
+    let mask_buf: Option<Vec<bool>> = match mask {
+        Some(m) => {
+            let m_view = m.as_array();
+            let m_shape = m_view.shape();
+            if m_shape != shape {
+                return Err(PyValueError::new_err(format!(
+                    "mask shape ({}, {}) does not match image shape ({}, {})",
+                    m_shape[0], m_shape[1], dim1, dim2
+                )));
+            }
+            Some(if m_view.is_standard_layout() {
+                m.as_slice()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|_| m_view.iter().copied().collect())
+            } else {
+                m_view.iter().copied().collect()
+            })
+        }
+        None => None,
+    };
+
+    let opts = RefineImageOptions {
+        refine_mask,
+        max_ring_index,
+        max_rings,
+        n_azimuth,
+        intensity_limit,
+        search_half_width_px,
+        n_passes,
+        polarization_factor,
+        max_iter,
+        tol,
+    };
+    let cal = calibrant.inner.clone();
+    let res = py
+        .detach(|| {
+            refine_image(
+                &img_buf,
+                dim1,
+                dim2,
+                mask_buf.as_deref(),
+                &poni_val,
+                &cal,
+                &opts,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyRefineImageResult { inner: res })
 }

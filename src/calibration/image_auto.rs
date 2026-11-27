@@ -179,6 +179,472 @@ fn subsample_preview_peaks(peaks: &[(f64, f64)], max_count: usize) -> Vec<(f64, 
     }
 }
 
+/// Configuration for [`extract_ring_peaks`] and [`refine_image`].
+#[derive(Debug, Clone)]
+pub struct RefineImageOptions {
+    /// Parameter mask for Levenberg–Marquardt refinement.
+    /// Defaults to wavelength and `rot3` fixed, `(distance, poni1, poni2, rot1, rot2)` free.
+    /// Note: `rot3` is always kept fixed during `2θ` refinement (since `2θ` is
+    /// invariant to `rot3`); pass `polarization_factor` to calibrate `rot3`.
+    pub refine_mask: ParamMask,
+    /// Maximum calibrant ring index searched (default `65`).
+    pub max_ring_index: usize,
+    /// Maximum number of visible calibrant rings included (default `16`).
+    pub max_rings: usize,
+    /// Number of azimuthal sectors sampled around each ring (default `72`).
+    pub n_azimuth: usize,
+    /// Optional upper intensity limit (`None` auto-detects flat-topped
+    /// saturation plateaus `>= 65_000`).
+    pub intensity_limit: Option<f64>,
+    /// Optional base radial search half-width in pixels (`>= 3`). When `None`
+    /// (default), auto-selects from detector size and shrinks across refinement
+    /// passes, clamped per ring to `max(3, 0.45 × local_ring_spacing)`.
+    pub search_half_width_px: Option<usize>,
+    /// Number of iterative re-extraction + L-M polish passes in [`refine_image`]
+    /// (default `3`, clamped to `1..=6`).
+    pub n_passes: usize,
+    /// Optional linear X-ray polarization factor in `[-1, 1]` (e.g. `Some(0.99)`).
+    /// Values with `|P| >= 0.05` run [`super::calibrate_rot3_polarization`]
+    /// after refinement and update `poni.rot3` if `reliable` is true. Values
+    /// with `|P| < 0.05` skip `rot3` calibration; non-finite or `|P| > 1`
+    /// return `InvalidInput`.
+    pub polarization_factor: Option<f64>,
+    /// Maximum L-M iterations per pass (default `200`).
+    pub max_iter: usize,
+    /// L-M convergence tolerance (default `1e-9`).
+    pub tol: f64,
+}
+
+impl Default for RefineImageOptions {
+    fn default() -> Self {
+        let mut refine_mask = ParamMask::fix_wavelength();
+        refine_mask.rot3 = false;
+        Self {
+            refine_mask,
+            max_ring_index: 65,
+            max_rings: 16,
+            n_azimuth: 72,
+            intensity_limit: None,
+            search_half_width_px: None,
+            n_passes: 3,
+            polarization_factor: None,
+            max_iter: 200,
+            tol: 1e-9,
+        }
+    }
+}
+
+/// Output of [`refine_image`].
+#[derive(Debug, Clone)]
+pub struct RefineImageResult {
+    /// Final Levenberg–Marquardt calibration result (with `poni.rot3` updated
+    /// when `rot3_calibration` is present and `reliable`).
+    pub calibration: CalibrationResult,
+    /// Sub-pixel ring control points `(d1, d2, Some(ring_k))` extracted in the
+    /// final pass (suitable for plotting or further inspection).
+    pub points: CalibrationPoints,
+    /// Number of calibrant rings with `>= 5` matched control points.
+    pub n_rings: usize,
+    /// RMS `2θ` residual (radians) of `start_poni` evaluated on `points`, for
+    /// verifying that refinement improved upon the starting geometry.
+    pub start_rms_rad: Option<f64>,
+    /// Result of post-refinement polarization `rot3` calibration, when
+    /// `options.polarization_factor` was set with `|P| >= 0.05` and sufficient
+    /// signal existed.
+    pub rot3_calibration: Option<super::polarization::PolarizationRot3Result>,
+}
+
+/// Extract sub-pixel control points uniformly around all visible calibrant
+/// rings predicted by `poni`, using the mask-aware DoG residual and `8×8`
+/// local-MAD noise model (`2.5 × sigma_loc` prominence).
+pub fn extract_ring_peaks(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    poni: &Poni,
+    calibrant: &Calibrant,
+    options: &RefineImageOptions,
+) -> Result<CalibrationPoints, AutoCalibrateError> {
+    validate_image_and_poni(image, dim1, dim2, mask, poni, options)?;
+    let explicit_upper = options
+        .intensity_limit
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let (valid, _, _) = build_valid_mask(image, mask, dim1, dim2, explicit_upper);
+    let (_smooth, residual, noise, sigma_r) = compute_residual_and_noise(image, &valid, dim1, dim2);
+    if sigma_r < 1e-12 {
+        return Ok(CalibrationPoints::new());
+    }
+    let hw = options
+        .search_half_width_px
+        .unwrap_or_else(|| ((dim1.max(dim2) as f64 / 70.0).round() as usize).clamp(10, 24));
+    let n_az = options.n_azimuth.clamp(12, 360);
+    let (pts, _) = extract_ring_peaks_2d(
+        &residual,
+        &noise,
+        sigma_r,
+        &valid,
+        dim1,
+        dim2,
+        poni,
+        calibrant,
+        hw,
+        n_az,
+        options.max_rings.max(1),
+        options.max_ring_index.max(1),
+    );
+    Ok(pts)
+}
+
+/// Evaluate RMS `2θ` residual (radians) of `poni` against already-assigned
+/// `points`, returning `None` if no valid ring points exist.
+fn eval_points_rms_rad(
+    poni: &Poni,
+    dim1: usize,
+    dim2: usize,
+    points: &CalibrationPoints,
+    calibrant: &Calibrant,
+) -> Option<f64> {
+    let tths = calibrant.two_theta_rad(poni.wavelength);
+    let geom = Geometry::new(dim1, dim2, poni.clone());
+    let tc = crate::geometry::math::TrigonometricConstants::new(poni);
+    let p3 = poni.distance;
+    let mut sum2 = 0.0;
+    let mut cnt = 0usize;
+    let _ = geom;
+    for i in 0..points.len() {
+        let Some(rk) = points.ring[i] else {
+            continue;
+        };
+        let Some(Some(target)) = tths.get(rk) else {
+            continue;
+        };
+        let p1 = (points.d1[i] + 0.5) * poni.pixel1 - poni.poni1;
+        let p2 = (points.d2[i] + 0.5) * poni.pixel2 - poni.poni2;
+        let x1 = crate::geometry::math::f_x1(&p1, &p2, &p3, &tc);
+        let x2 = crate::geometry::math::f_x2(&p1, &p2, &p3, &tc);
+        let x3 = crate::geometry::math::f_x3(&p1, &p2, &p3, &tc);
+        let pred = crate::geometry::math::f_tth(&x1, &x2, &x3);
+        let r = pred - target;
+        sum2 += r * r;
+        cnt += 1;
+    }
+    (cnt > 0).then(|| (sum2 / cnt as f64).sqrt())
+}
+
+/// Refine an existing `start_poni` directly against a 2D diffraction image
+/// using iterative local-MAD 2D ring-profile peak extraction + Huber-weighted
+/// Levenberg–Marquardt, with optional post-refinement polarization `rot3`
+/// calibration.
+///
+/// Designed for interactive "Refine" workflows (after initial manual or
+/// automatic calibration, or when refining a loaded `.poni` against a new
+/// calibrant image) with zero `intensity_min_factor` tuning.
+pub fn refine_image(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    start_poni: &Poni,
+    calibrant: &Calibrant,
+    options: &RefineImageOptions,
+) -> Result<RefineImageResult, AutoCalibrateError> {
+    validate_image_and_poni(image, dim1, dim2, mask, start_poni, options)?;
+    let explicit_upper = options
+        .intensity_limit
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let (valid, _, _) = build_valid_mask(image, mask, dim1, dim2, explicit_upper);
+    let (smooth, residual, noise, sigma_r) = compute_residual_and_noise(image, &valid, dim1, dim2);
+    if sigma_r < 1e-12 {
+        return Err(AutoCalibrateError::InvalidInput(
+            "image has no valid non-constant pixels".into(),
+        ));
+    }
+
+    let mut refine_mask = options.refine_mask;
+    // 2θ is invariant to rot3; keep rot3 locked during L-M so finite-difference
+    // noise cannot drift it (rot3 is calibrated via `polarization_factor`).
+    refine_mask.rot3 = false;
+
+    let n_passes = options.n_passes.clamp(1, 6);
+    let n_az = options.n_azimuth.clamp(12, 360);
+    let max_rings = options.max_rings.max(1);
+    let max_ring_index = options.max_ring_index.max(1);
+    let base_hw = options
+        .search_half_width_px
+        .unwrap_or_else(|| ((dim1.max(dim2) as f64 / 70.0).round() as usize).clamp(10, 24));
+
+    let run_2d_passes = |init: Poni,
+                         hw0: usize,
+                         passes_cnt: usize|
+     -> Option<(CalibrationResult, CalibrationPoints, usize)> {
+        let mut p = init;
+        let mut best: Option<(CalibrationResult, CalibrationPoints, usize)> = None;
+        let hw_floor = hw0.min(6);
+        for pass in 0..passes_cnt {
+            let hw = if passes_cnt == 1 {
+                hw0
+            } else {
+                let frac = 1.0 - 0.55 * (pass as f64 / (passes_cnt - 1) as f64);
+                ((hw0 as f64 * frac).round() as usize).clamp(hw_floor, hw0)
+            };
+            let pass_rings = if passes_cnt >= 3 && pass == 0 {
+                max_rings.min(8)
+            } else if passes_cnt >= 3 && pass == 1 {
+                max_rings.min(12)
+            } else {
+                max_rings
+            };
+            let (pts, _) = extract_ring_peaks_2d(
+                &residual,
+                &noise,
+                sigma_r,
+                &valid,
+                dim1,
+                dim2,
+                &p,
+                calibrant,
+                hw,
+                n_az,
+                pass_rings,
+                max_ring_index,
+            );
+            if pts.len() < 15 {
+                break;
+            }
+            let huber_c = if pass == 0 { 2.5e-3 } else { 1.0e-3 };
+            let cal_opts = CalibrationOptions {
+                mask: refine_mask,
+                loss: Loss::Huber { c: huber_c },
+                auto_assign_rings: false,
+                assign_tolerance_rad: 0.05,
+                max_iter: options.max_iter,
+                tol: options.tol,
+            };
+            let geom = Geometry::new(dim1, dim2, p.clone());
+            match refine(&geom, &pts, calibrant, &cal_opts) {
+                Ok(res) if res.poni.distance.is_finite() && res.poni.distance > 0.005 => {
+                    let nr = count_supported_rings(&res.assignments, 5);
+                    if nr < 2 {
+                        break;
+                    }
+                    let replace = match &best {
+                        None => true,
+                        Some((prev, _, prev_rings)) => {
+                            if nr > *prev_rings {
+                                res.rms_rad <= (prev.rms_rad * 1.6).max(5.0e-4)
+                            } else {
+                                nr >= (*prev_rings).min(3) && res.rms_rad <= prev.rms_rad * 1.25
+                            }
+                        }
+                    };
+                    if replace {
+                        p = res.poni.clone();
+                        best = Some((res, pts, nr));
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        best
+    };
+
+    let mut best_fit = run_2d_passes(start_poni.clone(), base_hw, n_passes);
+
+    // If 2D azimuthal ring profiling alone didn't lock tightly (e.g. a spotty
+    // pattern or a starting PONI offset by >10 px), pull in using the already-
+    // computed residual & noise (zero extra blur / peak RSS) with auto ring
+    // assignment, then polish with 2D ring profiles.
+    let need_peak_pull = match &best_fit {
+        Some((res, _, nr)) => *nr < 6 || res.rms_rad >= 1.5e-3,
+        None => true,
+    };
+    let mut cached_peaks: Option<Vec<(f64, f64)>> = None;
+    if need_peak_pull {
+        let (peaks, _) = scan_robust_peaks(
+            image, &smooth, &residual, &noise, sigma_r, &valid, dim1, dim2, 5000, None,
+        );
+        if peaks.len() >= 15 {
+            let mut pk_pts = CalibrationPoints::new();
+            for &(d1, d2) in &peaks {
+                pk_pts.push(d1, d2, None);
+            }
+            let mut pk_poni = start_poni.clone();
+            let mut pk_ok = false;
+            for &(assign_tol, huber_c) in &[(1.2e-2, 3.0e-3), (4.5e-3, 1.5e-3), (2.5e-3, 8.0e-4)] {
+                let geom = Geometry::new(dim1, dim2, pk_poni.clone());
+                let opts_pk = CalibrationOptions {
+                    mask: refine_mask,
+                    loss: Loss::Huber { c: huber_c },
+                    auto_assign_rings: true,
+                    assign_tolerance_rad: assign_tol,
+                    max_iter: options.max_iter,
+                    tol: options.tol,
+                };
+                if let Ok(res) = refine(&geom, &pk_pts, calibrant, &opts_pk)
+                    && res.poni.distance.is_finite()
+                    && res.poni.distance > 0.005
+                {
+                    pk_poni = res.poni;
+                    pk_ok = true;
+                }
+            }
+            if pk_ok && let Some((res2, pts2, nr2)) = run_2d_passes(pk_poni, base_hw.min(10), 2) {
+                let score = |nr: usize, rms: f64| (nr.min(16) as f64).sqrt() / (rms + 1.0e-4);
+                let better = match &best_fit {
+                    None => true,
+                    Some((prev, _, prev_nr)) => {
+                        score(nr2, res2.rms_rad) > score(*prev_nr, prev.rms_rad)
+                    }
+                };
+                if better {
+                    best_fit = Some((res2, pts2, nr2));
+                }
+            }
+        }
+        cached_peaks = Some(peaks);
+    }
+
+    let (mut calibration, points, n_rings) =
+        best_fit.ok_or(AutoCalibrateError::NoConfidentIdentity)?;
+
+    // Quality gate: reject diverged or wrong-calibrant fits rather than
+    // silently corrupting a user's calibration.
+    if n_rings < 2 || calibration.rms_rad > 3.5e-3 {
+        return Err(AutoCalibrateError::NoConfidentIdentity);
+    }
+    let rel_d_shift = (calibration.poni.distance / start_poni.distance - 1.0).abs();
+    let dp1_shift = (calibration.poni.poni1 - start_poni.poni1).abs() / start_poni.pixel1;
+    let dp2_shift = (calibration.poni.poni2 - start_poni.poni2).abs() / start_poni.pixel2;
+    let max_px_shift = (0.12 * dim1.max(dim2) as f64).max(40.0);
+    if rel_d_shift > 0.15 || dp1_shift.max(dp2_shift) > max_px_shift {
+        return Err(AutoCalibrateError::NoConfidentIdentity);
+    }
+    let start_rms_rad = eval_points_rms_rad(start_poni, dim1, dim2, &points, calibrant);
+    if let Some(s_rms) = start_rms_rad
+        && s_rms < 1.5e-3
+        && calibration.rms_rad > s_rms * 1.5 + 2.0e-4
+    {
+        return Err(AutoCalibrateError::NoConfidentIdentity);
+    }
+    let verify_peaks = cached_peaks.unwrap_or_else(|| {
+        scan_robust_peaks(
+            image, &smooth, &residual, &noise, sigma_r, &valid, dim1, dim2, 5000, None,
+        )
+        .0
+    });
+    if verify_peaks.len() >= 15 {
+        let m = evaluate_peak_match(
+            &verify_peaks,
+            &valid,
+            dim1,
+            dim2,
+            &calibration.poni,
+            calibrant,
+            2.0e-3,
+            max_ring_index,
+        );
+        if m.inlier_frac < 0.40 || m.ring_recall < 0.55 || m.inlier_rms_rad > 1.2e-3 {
+            return Err(AutoCalibrateError::NoConfidentIdentity);
+        }
+    }
+
+    let mut rot3_calibration = None;
+    if let Some(pf) = options.polarization_factor
+        && pf.abs() >= 0.05
+    {
+        let inv_mask: Vec<bool> = valid.iter().map(|&v| !v).collect();
+        if let Ok(pol) = super::polarization::calibrate_rot3_polarization(
+            image,
+            dim1,
+            dim2,
+            Some(&inv_mask),
+            &calibration.poni,
+            calibrant,
+            pf,
+            &super::polarization::PolarizationRot3Options::default(),
+        ) {
+            if pol.reliable {
+                calibration.poni.rot3 = pol.rot3_rad;
+            }
+            rot3_calibration = Some(pol);
+        }
+    }
+
+    Ok(RefineImageResult {
+        calibration,
+        points,
+        n_rings,
+        start_rms_rad,
+        rot3_calibration,
+    })
+}
+
+fn validate_image_and_poni(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    poni: &Poni,
+    options: &RefineImageOptions,
+) -> Result<(), AutoCalibrateError> {
+    let expected_len = dim1
+        .checked_mul(dim2)
+        .ok_or_else(|| AutoCalibrateError::InvalidInput("image dimensions overflow".into()))?;
+    if image.len() != expected_len {
+        return Err(AutoCalibrateError::InvalidInput(format!(
+            "image length {} does not match {}x{}",
+            image.len(),
+            dim1,
+            dim2
+        )));
+    }
+    if dim1 < 16 || dim2 < 16 {
+        return Err(AutoCalibrateError::InvalidInput(format!(
+            "image too small ({dim1}x{dim2}; need at least 16x16)"
+        )));
+    }
+    if let Some(m) = mask
+        && m.len() != expected_len
+    {
+        return Err(AutoCalibrateError::InvalidInput(format!(
+            "mask length {} does not match image length {}",
+            m.len(),
+            expected_len
+        )));
+    }
+    if let Some(hw) = options.search_half_width_px
+        && hw < 3
+    {
+        return Err(AutoCalibrateError::InvalidInput(format!(
+            "search_half_width_px must be >= 3, got {hw}"
+        )));
+    }
+    if let Some(pf) = options.polarization_factor
+        && (!pf.is_finite() || pf.abs() > 1.0)
+    {
+        return Err(AutoCalibrateError::InvalidInput(format!(
+            "polarization_factor must be finite and in [-1, 1], got {pf}"
+        )));
+    }
+    if !poni.distance.is_finite()
+        || poni.distance <= 0.0
+        || !poni.wavelength.is_finite()
+        || poni.wavelength <= 0.0
+        || !poni.pixel1.is_finite()
+        || poni.pixel1 <= 0.0
+        || !poni.pixel2.is_finite()
+        || poni.pixel2 <= 0.0
+    {
+        return Err(AutoCalibrateError::InvalidInput(
+            "poni has non-finite or non-positive distance, wavelength, or pixel size".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Automatically calibrate a 2D powder diffraction image without any manual clicks.
 ///
 /// Convenience wrapper around [`auto_calibrate_image_with_mask`] with `mask = None`.
@@ -1483,15 +1949,12 @@ impl LocalNoiseGrid {
     }
 }
 
-fn extract_robust_peaks(
+fn compute_residual_and_noise(
     image: &[f64],
     valid: &[bool],
-    _valid_median: f64,
     dim1: usize,
     dim2: usize,
-    max_peaks: usize,
-    peak_threshold_sigma: Option<f64>,
-) -> (Vec<(f64, f64)>, Vec<f64>, LocalNoiseGrid, f64, f64) {
+) -> (Vec<f64>, Vec<f64>, LocalNoiseGrid, f64) {
     let n = dim1 * dim2;
     // Mask-aware normalized convolution: multiply by validity mask, blur both
     // signal and mask, then divide. Buffers are dropped promptly and the large
@@ -1563,7 +2026,7 @@ fn extract_robust_peaks(
     }
     if r_sample.is_empty() {
         let noise = LocalNoiseGrid::build(&residual, valid, dim1, dim2, 0.0, 0.0);
-        return (Vec::new(), residual, noise, 0.0, 3.5);
+        return (smooth, residual, noise, 0.0);
     }
     let mid = r_sample.len() / 2;
     r_sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
@@ -1582,14 +2045,57 @@ fn extract_robust_peaks(
         sigma_r = var_r.sqrt();
     }
     let noise = LocalNoiseGrid::build(&residual, valid, dim1, dim2, med_r, sigma_r);
+    (smooth, residual, noise, sigma_r)
+}
+
+fn extract_robust_peaks(
+    image: &[f64],
+    valid: &[bool],
+    _valid_median: f64,
+    dim1: usize,
+    dim2: usize,
+    max_peaks: usize,
+    peak_threshold_sigma: Option<f64>,
+) -> (Vec<(f64, f64)>, Vec<f64>, LocalNoiseGrid, f64, f64) {
+    let (smooth, residual, noise, sigma_r) = compute_residual_and_noise(image, valid, dim1, dim2);
     if sigma_r < 1e-12 {
         return (Vec::new(), residual, noise, 0.0, 3.5);
     }
+    let (peaks, used_sigma) = scan_robust_peaks(
+        image,
+        &smooth,
+        &residual,
+        &noise,
+        sigma_r,
+        valid,
+        dim1,
+        dim2,
+        max_peaks,
+        peak_threshold_sigma,
+    );
+    (peaks, residual, noise, sigma_r, used_sigma)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_robust_peaks(
+    image: &[f64],
+    smooth: &[f64],
+    residual: &[f64],
+    noise: &LocalNoiseGrid,
+    sigma_r: f64,
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
+    max_peaks: usize,
+    peak_threshold_sigma: Option<f64>,
+) -> (Vec<(f64, f64)>, f64) {
+    let n = dim1 * dim2;
 
     // Estimate raw (unsmoothed) pixel noise σ from |image - smooth| MAD so
     // isolated single-pixel hot-pixel rejection scales with raw noise rather
     // than the ~3× smaller smoothed residual σ.
-    let mut raw_dev = Vec::with_capacity(r_sample.len());
+    let step = (n / 32_768).max(1);
+    let mut raw_dev = Vec::with_capacity(32_768);
     let mut k = 0;
     while k < n {
         if valid[k] {
@@ -1778,7 +2284,7 @@ fn extract_robust_peaks(
 
     let tile_min_score = (used_sigma + 1.5).max(4.5);
     let peaks = select_spatially_balanced_peaks(candidates, dim1, dim2, max_peaks, tile_min_score);
-    (peaks, residual, noise, sigma_r, used_sigma)
+    (peaks, used_sigma)
 }
 
 // ---------- Step 3: Isotropic ring-center estimation + sharpness refinement ----------
