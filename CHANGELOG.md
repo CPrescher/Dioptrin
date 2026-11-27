@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **27 built-in calibrants**: `Calibrant::builtin(name)`,
+  `Calibrant::builtin_names()`, and `Calibrant::builtin_str(name)` in Rust,
+  plus `dioptrin.Calibrant.builtin(name)` and
+  `dioptrin.Calibrant.builtin_names()` in Python. Bundles all 27 standard `.D`
+  calibrants (`CeO2`, `LaB6`, `Si`, `Al`, `Au`, `Ni`, `NaCl`, `TiO2`, `ZnO`,
+  `alpha_Al2O3`, `Cr2O3`, `quartz`, SRMs, `AgBh`, etc.) with precomputed
+  relative powder intensities (0–100) and high-Q extensions down to `0.25 Å`
+  for the inorganic calibrants.
+
+### Changed
+
+- Marked `CalibrantError` as `#[non_exhaustive]` and added
+  `CalibrantError::UnknownBuiltin(String)`.
+
+### Performance
+
+- CPU `batch2d` with errors and the default `fast_math=True` now uses the
+  4-frame tiled CSR kernel (previously only intensity-only or strict
+  arithmetic did), through a new fast-math signal-plus-variance tile with
+  one 8-wide accumulator per lane. Results are
+  bit-identical to per-frame `integrate2d` with errors. Measured on an
+  Apple M4 Pro (32 frames per call, Pilatus 1M into 2000×360 bins): 1 thread
+  158 → 364 frames/s; 8 threads 890 → 2135 frames/s.
+- Fixed-mask 2D integration with errors (single frames and batch tail frames)
+  now normalises intensity and sigma inside the row-parallel pass, so the
+  per-bin 32-byte intermediate and the serial normalisation pass are gone.
+  Results are bit-identical.
+
 ## [0.17.0] - 2026-11-26
 
 ### Added
