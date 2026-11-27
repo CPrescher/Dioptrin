@@ -143,7 +143,7 @@ cal = dioptrin.Calibrant.builtin("CeO2")
 result, diag = dioptrin.auto_calibrate_image(
     image,                 # 2D float64 NumPy array (dim1, dim2)
     cal,
-    wavelength=0.31e-10,   # metres
+    wavelength=0.4066e-10, # metres
     pixel1=172e-6,         # metres (row pixel size)
     pixel2=172e-6,         # metres (column pixel size; defaults to pixel1)
     starting_distance=None, # optional distance hint in metres
@@ -170,7 +170,7 @@ let (result, diag) = auto_calibrate_image_with_progress(
     frame.dim2,
     None, // optional mask: Option<&[bool]>
     &cal,
-    0.31e-10,
+    0.4066e-10,
     172e-6,
     172e-6,
     &opts,
