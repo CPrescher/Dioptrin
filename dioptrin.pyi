@@ -32,7 +32,10 @@ __all__ = [
     "RingIdResult",
     "AutoCalibrateResult",
     "PolarizationRot3Result",
+    "RefineImageResult",
     "refine",
+    "refine_image",
+    "extract_ring_peaks",
     "find_peaks_massif",
     "ransac_ellipses",
     "identify_rings",
@@ -2358,5 +2361,72 @@ def calibrate_rot3_polarization(
 
     Works after any calibration workflow — manual peak picking + ``refine``,
     ``auto_calibrate``, ``auto_calibrate_image``, or a loaded ``.poni`` file.
+    """
+    ...
+
+
+class RefineImageResult:
+    """Result of ``refine_image``."""
+
+    @property
+    def n_iter(self) -> int: ...
+    @property
+    def chi2(self) -> float: ...
+    @property
+    def rms_rad(self) -> float: ...
+    @property
+    def n_rings(self) -> int: ...
+    @property
+    def start_rms_rad(self) -> Optional[float]: ...
+    @property
+    def assignments(self) -> list[Optional[int]]: ...
+    @property
+    def inliers(self) -> list[bool]: ...
+    @property
+    def points(self) -> CalibrationPoints: ...
+    @property
+    def rot3_calibration(self) -> Optional[PolarizationRot3Result]: ...
+    @property
+    def poni(self) -> dict[str, float]: ...
+
+
+def extract_ring_peaks(
+    image: NDArray[np.float64],
+    poni: Union[Integrator, dict[str, float]],
+    calibrant: Calibrant,
+    mask: Optional[NDArray[np.bool_]] = None,
+    max_ring_index: int = 65,
+    max_rings: int = 16,
+    n_azimuth: int = 72,
+    intensity_limit: Optional[float] = None,
+    search_half_width_px: Optional[int] = None,
+) -> CalibrationPoints:
+    """
+    Extract sub-pixel control points uniformly around all visible calibrant
+    rings predicted by ``poni`` using the local-MAD DoG noise model.
+    """
+    ...
+
+
+def refine_image(
+    image: NDArray[np.float64],
+    start: Union[Integrator, dict[str, float]],
+    calibrant: Calibrant,
+    mask: Optional[NDArray[np.bool_]] = None,
+    fix: Optional[list[str]] = None,
+    max_ring_index: int = 65,
+    max_rings: int = 16,
+    n_azimuth: int = 72,
+    n_passes: int = 3,
+    intensity_limit: Optional[float] = None,
+    search_half_width_px: Optional[int] = None,
+    polarization_factor: Optional[float] = None,
+    max_iter: int = 200,
+    tol: float = 1e-9,
+) -> RefineImageResult:
+    """
+    Refine an existing ``start`` PONI directly against a 2D diffraction image
+    using iterative local-MAD 2D ring-profile peak extraction, Huber L-M, and
+    optional post-refinement polarization ``rot3`` calibration.
     """
     ...

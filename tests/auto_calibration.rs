@@ -800,3 +800,201 @@ fn auto_calibrate_lab6_offcenter_pe_quarter_sections() {
     println!("{}", "-".repeat(104));
     println!("SUMMARY: blind {blind_ok}/{total} passed, hinted {hinted_ok}/{total} passed\n");
 }
+
+#[test]
+fn extract_ring_peaks_and_refine_image_from_perturbed_poni() {
+    use dioptrin::calibration::{RefineImageOptions, extract_ring_peaks, refine_image};
+    use dioptrin::geometry::Geometry;
+    use dioptrin::simulation::{RingIntensity, SimulationOptions, simulate_diffraction};
+
+    // 1. Real CeO2_Pilatus1M from a perturbed starting PONI (offset by ~8 px and +2% distance).
+    let frame = Frame::from_tiff("test_data/CeO2_Pilatus1M.tif".into()).expect("load CeO2");
+    let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2.D");
+    let truth = Poni::load("test_data/v1.poni").expect("load v1.poni");
+
+    let mut perturbed = truth.clone();
+    perturbed.distance *= 1.02;
+    perturbed.poni1 += 6.0 * truth.pixel1;
+    perturbed.poni2 -= 7.0 * truth.pixel2;
+    perturbed.rot1 += 0.5_f64.to_radians();
+
+    let pts = extract_ring_peaks(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &truth,
+        &cal,
+        &RefineImageOptions::default(),
+    )
+    .expect("extract_ring_peaks should succeed");
+    assert!(
+        pts.len() >= 200,
+        "expected >= 200 ring points, got {}",
+        pts.len()
+    );
+
+    let refined = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &perturbed,
+        &cal,
+        &RefineImageOptions::default(),
+    )
+    .expect("refine_image on CeO2_Pilatus1M should succeed");
+    assert!(refined.n_rings >= 12);
+    assert!(
+        refined.points.len() >= 150,
+        "expected >= 150 refined ring points, got {}",
+        refined.points.len()
+    );
+    assert_poni_close(
+        "refine_image CeO2_Pilatus1M",
+        &refined.calibration.poni,
+        &truth,
+        1.5e-3,
+        1.5,
+        2e-3,
+    );
+
+    // 2. Simulated polarized image with known rot3 = +24°: refine_image recovers
+    //    geometry AND rot3 in one call.
+    let mut truth_pol = Poni {
+        pixel1: 172e-6,
+        pixel2: 172e-6,
+        distance: 0.12,
+        poni1: 256.0 * 172e-6,
+        poni2: 240.0 * 172e-6,
+        rot1: 5.0_f64.to_radians(),
+        rot2: -4.0_f64.to_radians(),
+        rot3: 24.0_f64.to_radians(),
+        wavelength: 0.4066e-10,
+        ..Poni::new()
+    };
+    let geom = Geometry::new(512, 512, truth_pol.clone());
+    let sim = simulate_diffraction(
+        &geom,
+        &cal,
+        &SimulationOptions {
+            fwhm_rad: 2.5e-3,
+            ring_intensity: RingIntensity::FromCalibrant { fallback: 20_000.0 },
+            background: 50.0,
+            apply_solid_angle: true,
+            polarization_factor: Some(0.99),
+            poisson_noise: true,
+            rng_seed: 2026,
+            ..Default::default()
+        },
+    )
+    .expect("simulate polarized");
+
+    let mut start_pol = truth_pol.clone();
+    start_pol.distance *= 0.985;
+    start_pol.poni1 -= 5.0 * truth_pol.pixel1;
+    start_pol.rot3 = 0.0;
+
+    let opts_pol = RefineImageOptions {
+        polarization_factor: Some(0.99),
+        ..Default::default()
+    };
+    let ref_pol = refine_image(
+        &sim.data, sim.dim1, sim.dim2, None, &start_pol, &cal, &opts_pol,
+    )
+    .expect("refine_image polarized should succeed");
+    let pol = ref_pol
+        .rot3_calibration
+        .as_ref()
+        .expect("rot3_calibration should be populated");
+    assert!(pol.reliable, "expected reliable rot3 fit, got {pol:?}");
+    let rot3_err_deg = (ref_pol.calibration.poni.rot3 - truth_pol.rot3)
+        .abs()
+        .to_degrees();
+    assert!(
+        rot3_err_deg < 2.0,
+        "expected rot3 ~24°, got {:.2}° (err={rot3_err_deg:.2}°)",
+        ref_pol.calibration.poni.rot3.to_degrees()
+    );
+    truth_pol.rot3 = ref_pol.calibration.poni.rot3;
+    assert_poni_close(
+        "refine_image polarized",
+        &ref_pol.calibration.poni,
+        &truth_pol,
+        1e-3,
+        1.0,
+        2e-3,
+    );
+
+    // 3. Fast 2D multi-pass path on small (2 px) perturbation without fallback.
+    let mut small_pert = truth.clone();
+    small_pert.poni1 += 2.0 * truth.pixel1;
+    small_pert.poni2 -= 2.0 * truth.pixel2;
+    let ref_small = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &small_pert,
+        &cal,
+        &RefineImageOptions {
+            search_half_width_px: Some(3), // must not panic when hw < 6
+            ..Default::default()
+        },
+    )
+    .expect("small perturbation with hw=3 should succeed without panicking");
+    assert_poni_close(
+        "refine_image small pert hw=3",
+        &ref_small.calibration.poni,
+        &truth,
+        1.5e-3,
+        1.5,
+        2e-3,
+    );
+
+    // 4. Input validation & wrong-calibrant rejection.
+    assert!(matches!(
+        refine_image(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            None,
+            &truth,
+            &cal,
+            &RefineImageOptions {
+                search_half_width_px: Some(0),
+                ..Default::default()
+            },
+        ),
+        Err(dioptrin::calibration::AutoCalibrateError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        refine_image(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            None,
+            &truth,
+            &cal,
+            &RefineImageOptions {
+                polarization_factor: Some(1.5),
+                ..Default::default()
+            },
+        ),
+        Err(dioptrin::calibration::AutoCalibrateError::InvalidInput(_))
+    ));
+    let lab6 = Calibrant::from_d_file("test_data/calibrants/LaB6_SRM660b.D").expect("load LaB6.D");
+    assert!(
+        refine_image(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            None,
+            &truth,
+            &lab6,
+            &RefineImageOptions::default(),
+        )
+        .is_err(),
+        "wrong calibrant (LaB6 on CeO2) must be rejected"
+    );
+}
