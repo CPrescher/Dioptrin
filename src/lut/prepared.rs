@@ -405,15 +405,19 @@ impl PreparedCsr {
                 for i in 0..nbins {
                     let start = self.row_ptr[i];
                     let end = self.row_ptr[i + 1];
-                    let (sig, var) = row_batch4::<_, P, FAST, VAR, $weighted>(
-                        start, end, $cols, $weights, signals,
-                    );
+                    let (sig, var) = if FAST && VAR {
+                        row_batch4_fast_var::<_, P, $weighted>(start, end, $cols, $weights, signals)
+                    } else {
+                        row_batch4::<_, P, FAST, VAR, $weighted>(
+                            start, end, $cols, $weights, signals,
+                        )
+                    };
                     let n = cached[i];
                     for f in 0..4 {
-                        out_y[f][i] = if n == 0.0 { 0.0 } else { sig[f] / n };
+                        let (y, e) = normalize_bin::<VAR>(sig[f], n, var[f]);
+                        out_y[f][i] = y;
                         if VAR {
-                            let v = if n == 0.0 { 0.0 } else { var[f] / (n * n) };
-                            out_e.as_mut().unwrap()[f][i] = v.max(0.0).sqrt();
+                            out_e.as_mut().unwrap()[f][i] = e;
                         }
                     }
                 }
@@ -527,16 +531,10 @@ impl PreparedCsr {
         let mut intensity = Vec::with_capacity(rows.len());
         let mut errors = Vec::with_capacity(if VAR { rows.len() } else { 0 });
         for [signal, norm, variance, _] in rows {
-            // Keep the original division and square-root order, including zero
-            // normalization and nonfinite inputs; do not precompute reciprocals.
-            intensity.push(if norm == 0.0 { 0.0 } else { signal / norm });
+            let (y, e) = normalize_bin::<VAR>(signal, norm, variance);
+            intensity.push(y);
             if VAR {
-                let v = if norm == 0.0 {
-                    0.0
-                } else {
-                    variance / (norm * norm)
-                };
-                errors.push(v.max(0.0).sqrt());
+                errors.push(e);
             }
         }
         (intensity, errors)
@@ -727,8 +725,9 @@ impl Prepared1d {
             return Some(out.map(|(y, e)| (bins.clone(), y, e)));
         }
         if FAST && VAR {
-            // 4 unrolled lanes x 4 frames x (signal + variance) exceeds AVX2's
-            // 16 YMM registers; fall back to the untiled per-frame CSR path.
+            // The 1D CSR layout does not tile fast math with errors yet; callers
+            // use the untiled per-frame CSR path. It could reuse
+            // `row_batch4_fast_var` (as 2D does), but that is not benchmarked.
             return None;
         }
         let table = self.csr.fixed_table(mask);
@@ -799,31 +798,51 @@ impl Prepared2d {
         mask: Option<&[u8]>,
         norm: &[f64],
     ) -> Vec<f64> {
+        self.fixed_normalized::<FAST, false, P>(signal, mask, norm)
+            .0
+    }
+
+    /// Fixed-mask intensity (and, when `VAR`, Poisson sigma) normalised inside
+    /// the row-parallel CSR pass with the cached denominators, written
+    /// straight into the output vectors. Same row kernel, reduction order and
+    /// `normalize_bin` arithmetic as `cached_results` + `normalize_rows`, so
+    /// bit-identical to that path, without its 32-byte-per-bin intermediate
+    /// and serial post-pass.
+    fn fixed_normalized<const FAST: bool, const VAR: bool, P: Pixel>(
+        &self,
+        signal: &[P],
+        mask: Option<&[u8]>,
+        norm: &[f64],
+    ) -> (Vec<f64>, Vec<f64>) {
         let table = self.fixed_table(mask);
         table.check_pixels("image", signal.len());
         let normalization = table.normalization::<FAST>(None, norm);
+        let mut intensity = Vec::new();
+        let mut errors = Vec::new();
         macro_rules! run {
-            ($cols:expr) => {
-                (0..table.row_ptr.len() - 1)
-                    .into_par_iter()
-                    .map(|i| {
-                        let s = table.sum::<_, P, FAST, true, false, false, false>(
-                            i,
-                            $cols,
-                            None,
-                            signal,
-                            &[],
-                        )[0];
-                        let n = normalization[i];
-                        if n == 0. { 0. } else { s / n }
-                    })
-                    .collect()
-            };
+            ($cols:expr) => {{
+                let bins = (0..table.row_ptr.len() - 1).into_par_iter().map(|i| {
+                    let [s, _, v, _] = table.sum::<_, P, FAST, true, false, VAR, false>(
+                        i,
+                        $cols,
+                        None,
+                        signal,
+                        &[],
+                    );
+                    normalize_bin::<VAR>(s, normalization[i], v)
+                });
+                if VAR {
+                    bins.unzip_into_vecs(&mut intensity, &mut errors);
+                } else {
+                    intensity = bins.map(|(y, _)| y).collect();
+                }
+            }};
         }
         match &table.col_idx {
             Columns::Compact(c) => run!(c),
             Columns::Wide(c) => run!(c),
         }
+        (intensity, errors)
     }
     pub(crate) fn raw2d_with_variances(
         &self,
@@ -886,10 +905,10 @@ impl Prepared2d {
         self.integrate_pixels::<FAST, VAR, f64>(s, m, n)
     }
 
-    /// Returns whether `integrate_batch4` will take the 4-frame tiled CSR path
-    /// for `(fast, var)`.
-    pub(crate) fn can_batch4(&self, fast: bool, var: bool) -> bool {
-        self.csr.mode == MaskMode::Fixed && !(fast && var)
+    /// Returns whether `integrate_batch4` will take the 4-frame tiled CSR path.
+    /// Every fixed-mask `(fast, var)` combination is eligible.
+    pub(crate) fn can_batch4(&self, _fast: bool, _var: bool) -> bool {
+        self.csr.mode == MaskMode::Fixed
     }
 
     /// 4-frame SIMD-tiled fixed-mask 2D CSR integration writing directly into
@@ -910,9 +929,8 @@ impl Prepared2d {
         true
     }
 
-    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration (fast intensity or
-    /// strict intensity/errors). Returns `None` for dynamic masks or CSR
-    /// `fast && var`.
+    /// 4-frame SIMD-tiled fixed-mask 2D CSR integration (fast or strict,
+    /// intensity or intensity and errors). Returns `None` for dynamic masks.
     #[allow(clippy::type_complexity)]
     pub(crate) fn integrate_batch4<const FAST: bool, const VAR: bool, P: Pixel>(
         &self,
@@ -932,8 +950,8 @@ impl Prepared2d {
         m: Option<&[u8]>,
         n: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
-        if !VAR && self.mode == MaskMode::Fixed {
-            (self.fixed_intensity::<FAST, P>(s, m, n), Vec::new())
+        if self.mode == MaskMode::Fixed {
+            self.fixed_normalized::<FAST, VAR, P>(s, m, n)
         } else {
             self.normalized::<FAST, VAR, P>(s, m, n)
         }
@@ -954,6 +972,27 @@ impl Prepared2d {
             n_azimuthal: self.n_azimuthal,
         }
     }
+}
+
+/// Normalise one bin: intensity `signal / norm` and, when `VAR`, the sigma
+/// `sqrt(max(variance / norm², 0))`, both zero where `norm == 0`. The CSR
+/// output paths (2D row-parallel, the 4-frame tiles of 1D and 2D, and the
+/// `normalize_rows` post-pass used by 1D and the 2D dynamic-mask path) all go
+/// through this one function so their results stay bit-identical. Keep the division
+/// and square-root order, including zero normalization and nonfinite inputs;
+/// do not precompute reciprocals.
+#[inline(always)]
+fn normalize_bin<const VAR: bool>(signal: f64, norm: f64, variance: f64) -> (f64, f64) {
+    let intensity = if norm == 0.0 { 0.0 } else { signal / norm };
+    if !VAR {
+        return (intensity, 0.0);
+    }
+    let v = if norm == 0.0 {
+        0.0
+    } else {
+        variance / (norm * norm)
+    };
+    (intensity, v.max(0.0).sqrt())
 }
 
 #[inline(always)]
@@ -1078,6 +1117,9 @@ fn row<
     [reduce(s), reduce(n), reduce(v), reduce(c)]
 }
 
+/// 4-frame tile for intensity (fast or strict) and strict variance: each
+/// frame with exactly the lanes and reduction order of `row` for the same
+/// `FAST`/`VAR`. Fast math with variance uses `row_batch4_fast_var` instead.
 #[inline(always)]
 fn row_batch4<I: PixelIndex, P: Pixel, const FAST: bool, const VAR: bool, const WEIGHT: bool>(
     start: usize,
@@ -1094,7 +1136,8 @@ fn row_batch4<I: PixelIndex, P: Pixel, const FAST: bool, const VAR: bool, const 
     let s3 = signals[3].as_ptr();
     let mut k = start;
     // SAFETY: `PreparedCsr::new` checks row_ptr/weights against col_idx, and
-    // `cached_results_batch4` checks all four signal lengths via `check_pixels`.
+    // `cached_results_batch4_into` checks all four signal lengths via
+    // `check_pixels`.
     unsafe {
         macro_rules! visit {
             ($lane:expr, $at:expr) => {{
@@ -1163,6 +1206,98 @@ fn row_batch4<I: PixelIndex, P: Pixel, const FAST: bool, const VAR: bool, const 
         }
     };
     (reduce(s), reduce(v))
+}
+
+/// Signal and Poisson variance (`max(x, 0)`) of four frames in one pass over
+/// a CSR row. Each frame keeps exactly the lanes, per-lane operations and
+/// reduction order of `row::<FAST = true, SIGNAL = true, VAR = true>`:
+/// entry `k` of a row goes to lane `(k - start) % 4` (the remainder to lanes
+/// 0, 1, 2), and the lanes reduce as `(l0 + l1) + (l2 + l3)`.
+/// Only the number of frames gathered per table pass changes.
+///
+/// Layout: one 8-wide accumulator per lane, `[signal f0..f3, variance
+/// f0..f3]`, updated as `acc[i] = madd(ww[i], xx[i], acc[i])` with
+/// `ww = [w; 4] ++ [w*w; 4]` and `xx = x ++ max(x, 0)`. One uniform 8-wide
+/// operation is meant to let the compiler keep each lane in vector registers.
+/// Observed during development (not guaranteed by anything here): compiled for
+/// x86-64-v3 (AVX2+FMA), this kernel used only packed `vfmadd` and no stack
+/// spills, whereas the old two-`[[f64; 4]; 4]` form spilled, the register
+/// pressure once given as the reason to exclude this combination from tiling.
+/// Only Apple M4 speed was measured. Lanes are named variables, and the remainder uses
+/// constant lanes, so no accumulator is indexed dynamically. Strict
+/// arithmetic keeps `row_batch4`: one accumulator lane per frame gains
+/// nothing from this layout and measured slower with it on Apple M4.
+#[inline(always)]
+fn row_batch4_fast_var<I: PixelIndex, P: Pixel, const WEIGHT: bool>(
+    start: usize,
+    end: usize,
+    cols: &[I],
+    weights: &[f64],
+    signals: [&[P]; 4],
+) -> ([f64; 4], [f64; 4]) {
+    let zero = [0.0f64; 8];
+    let (mut a0, mut a1, mut a2, mut a3) = (zero, zero, zero, zero);
+    let s0 = signals[0].as_ptr();
+    let s1 = signals[1].as_ptr();
+    let s2 = signals[2].as_ptr();
+    let s3 = signals[3].as_ptr();
+    let mut k = start;
+    // SAFETY: `PreparedCsr::new` checks row_ptr/weights against col_idx, and
+    // `cached_results_batch4_into` checks all four signal lengths via
+    // `check_pixels`.
+    unsafe {
+        macro_rules! visit {
+            ($acc:ident, $at:expr) => {{
+                let at = $at;
+                let j = cols.get_unchecked(at).pixel();
+                let x = [
+                    (*s0.add(j)).to_f64(),
+                    (*s1.add(j)).to_f64(),
+                    (*s2.add(j)).to_f64(),
+                    (*s3.add(j)).to_f64(),
+                ];
+                let xx = [
+                    x[0],
+                    x[1],
+                    x[2],
+                    x[3],
+                    x[0].max(0.0),
+                    x[1].max(0.0),
+                    x[2].max(0.0),
+                    x[3].max(0.0),
+                ];
+                $acc = if WEIGHT {
+                    let w = *weights.get_unchecked(at);
+                    let w2 = w * w;
+                    let ww = [w, w, w, w, w2, w2, w2, w2];
+                    std::array::from_fn(|i| madd(ww[i], xx[i], $acc[i]))
+                } else {
+                    std::array::from_fn(|i| $acc[i] + xx[i])
+                };
+            }};
+        }
+        while k + 4 <= end {
+            visit!(a0, k);
+            visit!(a1, k + 1);
+            visit!(a2, k + 2);
+            visit!(a3, k + 3);
+            k += 4;
+        }
+        if k < end {
+            visit!(a0, k);
+        }
+        if k + 1 < end {
+            visit!(a1, k + 1);
+        }
+        if k + 2 < end {
+            visit!(a2, k + 2);
+        }
+    }
+    let total: [f64; 8] = std::array::from_fn(|i| (a0[i] + a1[i]) + (a2[i] + a3[i]));
+    (
+        [total[0], total[1], total[2], total[3]],
+        [total[4], total[5], total[6], total[7]],
+    )
 }
 
 #[cfg(test)]

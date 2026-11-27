@@ -1458,6 +1458,156 @@ fn pixel_split_cake_is_bit_identical_across_thread_counts() {
     }
 }
 
+/// The Python `batch2d` flow on `frames`: 4-frame tiles through
+/// `try_integrate2d_batch4_into`, the tail frame by frame.
+#[allow(clippy::type_complexity)]
+fn tiled_batch2d<P: crate::frame::Pixel>(
+    ai: &Integrator,
+    frames: &[&[P]],
+    (dim1, dim2): (usize, usize),
+    (n_radial, n_azimuthal): (usize, usize),
+    az_range: Option<(f64, f64)>,
+) -> Vec<(Vec<f64>, Vec<f64>)> {
+    assert!(ai.can_integrate2d_batch4(dim1, dim2, n_radial, n_azimuthal, az_range, true));
+    let total = n_radial * n_azimuthal;
+    let mut out = Vec::new();
+    let n_tiled = frames.len() / 4 * 4;
+    for chunk in frames[..n_tiled].as_chunks::<4>().0 {
+        let mut y = vec![f64::NAN; 4 * total];
+        let mut e = vec![f64::NAN; 4 * total];
+        let (y0, r) = y.split_at_mut(total);
+        let (y1, r) = r.split_at_mut(total);
+        let (y2, y3) = r.split_at_mut(total);
+        let (e0, r) = e.split_at_mut(total);
+        let (e1, r) = r.split_at_mut(total);
+        let (e2, e3) = r.split_at_mut(total);
+        assert!(ai.try_integrate2d_batch4_into(
+            [chunk[0], chunk[1], chunk[2], chunk[3]],
+            dim1,
+            dim2,
+            n_radial,
+            n_azimuthal,
+            az_range,
+            [y0, y1, y2, y3],
+            Some([e0, e1, e2, e3]),
+        ));
+        for f in 0..4 {
+            out.push((
+                y[f * total..(f + 1) * total].to_vec(),
+                e[f * total..(f + 1) * total].to_vec(),
+            ));
+        }
+    }
+    for &frame in &frames[n_tiled..] {
+        let (y, e, _) = ai
+            .integrate2d_pixels_from_slice(frame, dim1, dim2, n_radial, n_azimuthal, az_range, true)
+            .unwrap();
+        out.push((y, e.expect("errors requested")));
+    }
+    out
+}
+
+#[test]
+fn fast_math_errors_batch2d_tiles_match_per_frame_integrate2d_bit_for_bit() {
+    let (dim1, dim2) = (24, 28);
+    let npix = dim1 * dim2;
+    let mut poni = Poni::new();
+    poni.pixel1 = 1e-4;
+    poni.pixel2 = 1e-4;
+    poni.distance = 0.08;
+    poni.poni1 = 0.0012;
+    poni.poni2 = 0.0014;
+    poni.rot1 = 0.03;
+    poni.wavelength = 1e-10;
+    let geom = Geometry::new(dim1, dim2, poni);
+    let mask = || {
+        Mask::from_vec(
+            (0..npix).map(|i| u8::from(i % 11 == 0)).collect(),
+            dim1,
+            dim2,
+        )
+        .expect("mask")
+    };
+    // Integer values with negatives and zeros, exact in i32 and f64.
+    let frames: Vec<Vec<i32>> = (0..9)
+        .map(|f| {
+            (0..npix)
+                .map(|i| ((i * (17 + f * 7) + 3 * f) % 101) as i32 - 5)
+                .collect()
+        })
+        .collect();
+    let as_f64: Vec<Vec<f64>> = frames
+        .iter()
+        .enumerate()
+        .map(|(f, v)| {
+            let mut x: Vec<f64> = v.iter().map(|&x| f64::from(x) * 0.73).collect();
+            x[f + 1] = -0.0;
+            x
+        })
+        .collect();
+    let bins = (16, 12);
+    let to_bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    for method in [
+        IntegrationMethod::Counting,
+        IntegrationMethod::PixelSplit,
+        IntegrationMethod::PyfaiFull,
+        IntegrationMethod::Supersampled { n_ss: 3 },
+    ] {
+        for radial_range in [None, Some((0.2, 2.0))] {
+            for masked in [false, true] {
+                for az_range in [None, Some((-1.0, 1.5))] {
+                    let mut ai = Integrator::new(geom.clone())
+                        .with_method(method)
+                        .with_polarization_factor(0.8);
+                    assert!(ai.fast_math);
+                    if let Some((lo, hi)) = radial_range {
+                        ai = ai.with_radial_range(lo, hi);
+                    }
+                    if masked {
+                        ai = ai.with_mask(mask());
+                    }
+                    let per_frame = |data: &[f64]| -> (Vec<f64>, Vec<f64>) {
+                        match az_range {
+                            None => ai.integrate2d_with_errors_from_slice(
+                                data, dim1, dim2, bins.0, bins.1,
+                            ),
+                            Some(r) => {
+                                let res = ai
+                                    .integrate2d_on_azimuthal_range_from_slice(
+                                        data, dim1, dim2, bins.0, bins.1, r, true,
+                                    )
+                                    .unwrap();
+                                (res.intensity, res.errors.expect("errors"))
+                            }
+                        }
+                    };
+                    for n_frames in [4, 5, 9] {
+                        let f64_refs: Vec<&[f64]> =
+                            as_f64[..n_frames].iter().map(Vec::as_slice).collect();
+                        let i32_refs: Vec<&[i32]> =
+                            frames[..n_frames].iter().map(Vec::as_slice).collect();
+                        let tiled_f64 = tiled_batch2d(&ai, &f64_refs, (dim1, dim2), bins, az_range);
+                        let tiled_i32 = tiled_batch2d(&ai, &i32_refs, (dim1, dim2), bins, az_range);
+                        for f in 0..n_frames {
+                            let context = format!(
+                                "{method:?} radial={radial_range:?} masked={masked} \
+                                 az={az_range:?} n={n_frames} frame={f}"
+                            );
+                            let (want_y, want_e) = per_frame(&as_f64[f]);
+                            assert_eq!(to_bits(&tiled_f64[f].0), to_bits(&want_y), "{context}");
+                            assert_eq!(to_bits(&tiled_f64[f].1), to_bits(&want_e), "{context}");
+                            let exact: Vec<f64> = frames[f].iter().map(|&x| f64::from(x)).collect();
+                            let (want_y, want_e) = per_frame(&exact);
+                            assert_eq!(to_bits(&tiled_i32[f].0), to_bits(&want_y), "{context} i32");
+                            assert_eq!(to_bits(&tiled_i32[f].1), to_bits(&want_e), "{context} i32");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn integrate2d_batch4_matches_single_frame_bit_for_bit() {
     let (dim1, dim2) = (24, 28);
@@ -1508,7 +1658,7 @@ fn integrate2d_batch4_matches_single_frame_bit_for_bit() {
                     let eligible = ai.can_integrate2d_batch4(dim1, dim2, 16, 12, az_range, errors);
                     let batch =
                         ai.try_integrate2d_batch4(slices, dim1, dim2, 16, 12, az_range, errors);
-                    assert_eq!(eligible, !(fast_math && errors));
+                    assert!(eligible);
                     assert_eq!(batch.is_some(), eligible);
                     let Some(batch) = batch else {
                         continue;
