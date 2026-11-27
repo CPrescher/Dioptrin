@@ -520,7 +520,8 @@ fn fit_rings(
                     let v = image[idx];
                     let is_bad = mask.is_some_and(|m| m[idx])
                         || !v.is_finite()
-                        || (mask_negative && v < 0.0);
+                        || (mask_negative && v < 0.0)
+                        || v >= 4_294_967_000.0;
 
                     let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
                     let x1 = f_x1(&p1, &p2, &p3, &tc);
@@ -718,9 +719,13 @@ fn fit_diffuse(
                 for c in 0..dim2 {
                     let idx = row_off + c;
                     let v = image[idx];
-                    // Skip masked, non-finite, negative sentinels, and
-                    // zero-padded dead corners on positive-pedestal detectors.
-                    if mask.is_some_and(|m| m[idx]) || !v.is_finite() || (mask_negative && v <= 0.0)
+                    // Skip masked, non-finite, negative sentinels, Eiger
+                    // u32::MAX gap sentinels, and zero-padded dead corners on
+                    // positive-pedestal detectors.
+                    if mask.is_some_and(|m| m[idx])
+                        || !v.is_finite()
+                        || (mask_negative && v <= 0.0)
+                        || v >= 4_294_967_000.0
                     {
                         continue;
                     }
@@ -1017,7 +1022,11 @@ fn solve_polarization_irls(
             } else {
                 inv_s2 * (DELTA_HUBER / u)
             };
-            weighted_rss += w * resid * resid;
+            // Winsorize standardized residuals so a single corrupted/sentinel
+            // bin (e.g. unmasked u32::MAX Eiger gap) cannot explode s² and
+            // collapse SNR to 0 while Huber IRLS already downweighted it.
+            let u_clip = u.min(2.0 * DELTA_HUBER);
+            weighted_rss += u_clip * u_clip;
             w_sum += w;
             bc_sum += w * bc;
             bs_sum += w * bs;
