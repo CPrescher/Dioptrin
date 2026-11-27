@@ -542,6 +542,51 @@ fn auto_calibrate_image_lab6_marccd_blind_and_hinted() {
 }
 
 #[test]
+fn auto_calibrate_legacy_ceo2_side_grid() {
+    use dioptrin::calibration::{
+        AutoCalibrateOptions, AutoMethod, ImagePeakOptions, auto_calibrate, find_peaks_image,
+    };
+    let frame = Frame::from_tiff("test_data/ceo2_side.tif".to_string()).expect("load tiff");
+    let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load calibrant");
+    let truth = Poni::load("test_data/ceo2_side.poni").expect("load truth poni");
+    let peaks = find_peaks_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        &ImagePeakOptions {
+            threshold_factor: 3.0,
+            max_peaks: 5000,
+            ..ImagePeakOptions::default()
+        },
+    );
+    let mut opts = AutoCalibrateOptions {
+        method: AutoMethod::Auto,
+        ..AutoCalibrateOptions::default()
+    };
+    opts.grid.distance_min = 0.05;
+    opts.grid.distance_max = 0.6;
+    opts.grid.distance_steps = 18;
+    opts.grid.rot_max = 45.0_f64.to_radians();
+    opts.grid.rot_steps = 15;
+    opts.grid.poni_search_radius_px = 400.0;
+    opts.grid.poni_grid_steps = 13;
+    opts.grid.tolerance_rad = 8.0e-3;
+    opts.grid.max_peaks_for_grid = 400;
+    opts.grid.max_ring_index = 12;
+    opts.grid.top_k = 50;
+    let (res, _diag) = auto_calibrate(
+        &peaks,
+        &cal,
+        truth.wavelength,
+        truth.pixel1,
+        truth.pixel2,
+        &opts,
+    )
+    .expect("legacy auto_calibrate ceo2_side");
+    assert_poni_close("legacy ceo2_side", &res.poni, &truth, 5e-3, 6.0, 1e-2);
+}
+
+#[test]
 #[ignore = "requires untracked local fixture test_data/LaB6_OffCenter_PE.tif"]
 fn auto_calibrate_image_lab6_offcenter_pe_blind_and_hinted() {
     let frame = Frame::from_tiff("test_data/LaB6_OffCenter_PE.tif".to_string()).expect("load tiff");

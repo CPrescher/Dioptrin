@@ -173,9 +173,8 @@ pub fn grid_search(
 
     // Deterministic uniform-stride subsample of peaks.
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let n = peaks.len();
-        let m = options.max_peaks_for_grid.max(1);
-        (0..m).map(|i| peaks[(i * n) / m]).collect()
+        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
+        peaks.iter().step_by(step).copied().collect()
     } else {
         peaks.to_vec()
     };
@@ -441,10 +440,16 @@ fn score_rot_grid_top_k(
                 (0.0, 0.0)
             };
 
-            // Keep the top 2 `(p1, p2)` cells for each distance `d` at this
-            // `(r1, r2)` so neither a broad false distance basin nor a competing
-            // PONI offset at the same distance can crowd out the true basin.
-            let mut per_d_best: Vec<ScoredCell> = Vec::with_capacity(distances.len() * 2);
+            // Keep every distinct 2D local maximum on the `(p1, p2)` plane for
+            // each distance `d` at this `(r1, r2)`. Adjacent cells in a wide
+            // false PONI basin can never crowd out a separate true PONI basin,
+            // while keeping memory orders of magnitude smaller than storing all
+            // cells.
+            let n1 = base_p1.len();
+            let n2 = base_p2.len();
+            let mut plane_scores = vec![0.0_f32; n1 * n2];
+            let mut plane_meta = vec![(0usize, 0usize); n1 * n2];
+            let mut per_d_best: Vec<ScoredCell> = Vec::with_capacity(distances.len() * 4);
 
             for &d in distances {
                 let s1 = d * shift1_per_d;
@@ -452,15 +457,14 @@ fn score_rot_grid_top_k(
                 let d_r02 = d * r02;
                 let d_r12 = d * r12;
                 let d_r22 = d * r22;
-                let mut best1: Option<ScoredCell> = None;
-                let mut best2: Option<ScoredCell> = None;
 
-                for &bp1 in &base_p1 {
+                for (i1, &bp1) in base_p1.iter().enumerate() {
                     let p1 = bp1 + s1;
                     let p1_r00 = -p1 * r00 + d_r02;
                     let p1_r20 = -p1 * r20 + d_r22;
+                    let row_off = i1 * n2;
 
-                    for &bp2 in &base_p2 {
+                    for (i2, &bp2) in base_p2.iter().enumerate() {
                         let p2 = bp2 + s2;
                         let ox = (p1_r00 - p2 * r01) as f32;
                         let oy = (-p2 * r11 + d_r12) as f32;
@@ -498,42 +502,44 @@ fn score_rot_grid_top_k(
                                     } else if e.ring_idx < 128 {
                                         ring_mask_hi |= 1u64 << (e.ring_idx - 64);
                                     }
-                                    // Fast 3rd-order rational approximation of
-                                    // exp(-r² / (2·(0.4·tol)²)) = exp(-3.125·u²),
-                                    // matching the Gaussian kernel to ~1% with no exp().
                                     let u = r * e.inv_tol;
-                                    let x = 3.125_f32 * u * u;
-                                    let x2 = x * x;
-                                    weight_sum += 1.0_f32
-                                        / (1.0_f32 + x + 0.5_f32 * x2 + 0.1667_f32 * x2 * x);
+                                    weight_sum += (-3.125_f32 * u * u).exp();
                                     count += 1;
                                 }
                             }
                         }
 
-                        if count > 0 {
-                            let beats1 = best1.is_none_or(|b| weight_sum > b.0);
-                            let beats2 = !beats1 && best2.is_none_or(|b| weight_sum > b.0);
-                            if beats1 || beats2 {
-                                let n_rings = (ring_mask_lo.count_ones()
-                                    + ring_mask_hi.count_ones())
-                                    as usize;
-                                let entry = (weight_sum, n_rings, count, (d, p1, p2, r1, r2));
-                                if beats1 {
-                                    best2 = best1;
-                                    best1 = Some(entry);
-                                } else {
-                                    best2 = Some(entry);
-                                }
-                            }
-                        }
+                        plane_scores[row_off + i2] = weight_sum;
+                        plane_meta[row_off + i2] = if count > 0 {
+                            (
+                                (ring_mask_lo.count_ones() + ring_mask_hi.count_ones()) as usize,
+                                count,
+                            )
+                        } else {
+                            (0, 0)
+                        };
                     }
                 }
-                if let Some(entry) = best1 {
-                    per_d_best.push(entry);
-                }
-                if let Some(entry) = best2 {
-                    per_d_best.push(entry);
+
+                for (i1, &bp1) in base_p1.iter().enumerate() {
+                    let row_off = i1 * n2;
+                    for (i2, &bp2) in base_p2.iter().enumerate() {
+                        let idx = row_off + i2;
+                        let sc = plane_scores[idx];
+                        let (n_rings, count) = plane_meta[idx];
+                        if count == 0 || sc <= 0.0 {
+                            continue;
+                        }
+                        let is_local_max = (i1 == 0 || sc >= plane_scores[idx - n2])
+                            && (i1 + 1 == n1 || sc >= plane_scores[idx + n2])
+                            && (i2 == 0 || sc >= plane_scores[idx - 1])
+                            && (i2 + 1 == n2 || sc >= plane_scores[idx + 1]);
+                        if is_local_max {
+                            let p1 = bp1 + s1;
+                            let p2 = bp2 + s2;
+                            per_d_best.push((sc, n_rings, count, (d, p1, p2, r1, r2)));
+                        }
+                    }
                 }
             }
             per_d_best
@@ -621,9 +627,8 @@ pub fn grid_search_top_k(
     };
 
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let n = peaks.len();
-        let m = options.max_peaks_for_grid.max(1);
-        (0..m).map(|i| peaks[(i * n) / m]).collect()
+        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
+        peaks.iter().step_by(step).copied().collect()
     } else {
         peaks.to_vec()
     };
@@ -691,9 +696,8 @@ pub(crate) fn grid_search_top_k_beam_centered(
     };
 
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let n = peaks.len();
-        let m = options.max_peaks_for_grid.max(1);
-        (0..m).map(|i| peaks[(i * n) / m]).collect()
+        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
+        peaks.iter().step_by(step).copied().collect()
     } else {
         peaks.to_vec()
     };
