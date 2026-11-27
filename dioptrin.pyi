@@ -2313,12 +2313,12 @@ class PolarizationRot3Result:
 
     @property
     def n_rings_used(self) -> int:
-        """Number of calibrant rings that contributed to the polarization fit."""
+        """Number of calibrant rings (or radial diffuse bands) that contributed to the fit."""
         ...
 
     @property
     def n_samples(self) -> int:
-        """Total number of ``(ring, azimuth)`` samples used in the fit."""
+        """Total number of ``(ring/band, azimuth)`` samples used in the fit."""
         ...
 
     @property
@@ -2334,6 +2334,11 @@ class PolarizationRot3Result:
     @property
     def reliable(self) -> bool:
         """Whether the fit passes SNR, uncertainty, and amplitude-ratio gates."""
+        ...
+
+    @property
+    def source_used(self) -> Literal["rings", "diffuse"]:
+        """Which signal source produced the fit (``"rings"`` or ``"diffuse"``)."""
         ...
 
     @property
@@ -2354,10 +2359,16 @@ def calibrate_rot3_polarization(
     ring_half_width_rad: Optional[float] = None,
     min_samples_per_ring: int = 12,
     min_total_samples: int = 24,
+    source: Literal["auto", "rings", "diffuse"] = "auto",
 ) -> PolarizationRot3Result:
     """
     Calibrate ``rot3`` from the azimuthal intensity modulation of powder rings
-    under a known linear X-ray polarization factor.
+    and/or between-rings diffuse scattering under a known linear X-ray
+    polarization factor.
+
+    With ``source="auto"`` (default), tries calibrant powder rings first and
+    automatically falls back to between-rings diffuse background when rings
+    are spotty or unreliable.
 
     Works after any calibration workflow — manual peak picking + ``refine``,
     ``auto_calibrate``, ``auto_calibrate_image``, or a loaded ``.poni`` file.

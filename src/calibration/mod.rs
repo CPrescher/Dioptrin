@@ -57,7 +57,7 @@ pub use image_auto::{
 pub use inversion::{InvertedGeometry, aggregate, invert};
 pub use massif::{ImagePeakOptions, MassifOptions, PreparedMassif, find_peaks, find_peaks_image};
 pub use polarization::{
-    PolarizationRot3Error, PolarizationRot3Options, PolarizationRot3Result,
+    PolarizationRot3Error, PolarizationRot3Options, PolarizationRot3Result, PolarizationRot3Source,
     calibrate_rot3_polarization,
 };
 pub use radial::{RadialExtractOptions, RadialExtractResult, extract_rings_radial};
