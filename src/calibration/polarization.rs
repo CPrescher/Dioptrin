@@ -170,9 +170,10 @@ struct ActiveRing {
 
 #[derive(Debug, Clone)]
 struct RingAzSample {
-    cos2: f64, // exact pixel-averaged ⟨cos(2χ₀)⟩ inside this bin
-    sin2: f64, // exact pixel-averaged ⟨sin(2χ₀)⟩ inside this bin
-    y: f64,    // median-normalized solid-angle-corrected excess intensity
+    cos2: f64,        // exact pixel-averaged ⟨cos(2χ₀)⟩ inside this bin
+    sin2: f64,        // exact pixel-averaged ⟨sin(2χ₀)⟩ inside this bin
+    inv_sa_norm: f64, // ⟨1/Ω⟩ / med_k for shared dark-pedestal regression (0 for rings)
+    y: f64,           // median-normalized solid-angle-corrected intensity
 }
 
 #[derive(Debug, Clone)]
@@ -225,26 +226,96 @@ fn median_of(vals: &mut [f64]) -> f64 {
     vals[mid]
 }
 
-fn median_of_f32(vals: &mut [f32]) -> f64 {
-    let n = vals.len();
-    let mid = n / 2;
-    vals.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
-    vals[mid] as f64
-}
-
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Copy)]
 struct DiffuseCellAcc {
-    vals: Vec<f32>,
+    val_sum: f64,
+    inv_sa_sum: f64,
     cos2_sum: f64,
     sin2_sum: f64,
+    cnt: u32,
 }
 
 impl DiffuseCellAcc {
-    fn merge(&mut self, other: &mut Self) {
-        self.vals.append(&mut other.vals);
+    #[inline]
+    fn merge(&mut self, other: &Self) {
+        self.val_sum += other.val_sum;
+        self.inv_sa_sum += other.inv_sa_sum;
         self.cos2_sum += other.cos2_sum;
         self.sin2_sum += other.sin2_sum;
+        self.cnt += other.cnt;
     }
+}
+
+/// Detect an exact Eiger 32-bit unsigned gap sentinel (`u32::MAX = 4_294_967_295`)
+/// without rejecting legitimate high-valued floating-point images.
+#[inline]
+fn is_eiger_u32_sentinel(v: f64) -> bool {
+    (v - (u32::MAX as f64)).abs() < 1.0
+}
+
+/// Detect clipped saturation plateaus (12-bit, 14-bit `16_383`, 16-bit `65_535`,
+/// 20-bit Pilatus `1_048_575`, etc.) via adjacent equal-ceiling pixel pairs,
+/// matching `build_valid_mask` in `image_auto.rs`. Returns `f64::INFINITY` when
+/// no plateau is detected.
+fn detect_saturation_ceiling(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+) -> f64 {
+    let mut max_v = f64::NEG_INFINITY;
+    for (idx, &v) in image.iter().enumerate() {
+        if mask.is_some_and(|m| m[idx]) || !v.is_finite() || is_eiger_u32_sentinel(v) {
+            continue;
+        }
+        if v > max_v {
+            max_v = v;
+        }
+    }
+    if !max_v.is_finite() || max_v < 4_000.0 {
+        return f64::INFINITY;
+    }
+    let thresh = max_v * 0.995;
+    let mut adj_pairs = 0usize;
+    for r in 0..dim1 {
+        let row_off = r * dim2;
+        for c in 0..dim2 {
+            let idx = row_off + c;
+            if mask.is_some_and(|m| m[idx]) {
+                continue;
+            }
+            let v = image[idx];
+            if !v.is_finite() || is_eiger_u32_sentinel(v) || v < thresh {
+                continue;
+            }
+            if c + 1 < dim2 {
+                let r_idx = idx + 1;
+                let rv = image[r_idx];
+                if !mask.is_some_and(|m| m[r_idx])
+                    && rv.is_finite()
+                    && !is_eiger_u32_sentinel(rv)
+                    && rv >= thresh
+                {
+                    adj_pairs += 1;
+                }
+            }
+            if r + 1 < dim1 {
+                let d_idx = idx + dim2;
+                let dv = image[d_idx];
+                if !mask.is_some_and(|m| m[d_idx])
+                    && dv.is_finite()
+                    && !is_eiger_u32_sentinel(dv)
+                    && dv >= thresh
+                {
+                    adj_pairs += 1;
+                }
+            }
+            if adj_pairs >= 8 {
+                return thresh;
+            }
+        }
+    }
+    f64::INFINITY
 }
 
 /// Calibrate `rot3` from the azimuthal intensity modulation of powder rings
@@ -343,6 +414,7 @@ pub fn calibrate_rot3_polarization(
     let mut img_devs: Vec<f64> = bg_sample.iter().map(|&v| (v - img_med).abs()).collect();
     let img_sigma = 1.4826 * median_of(&mut img_devs);
     let mask_negative = img_med > 5.0 && (img_med - 4.0 * img_sigma) > 0.0;
+    let sat_thresh = detect_saturation_ceiling(image, dim1, dim2, mask);
 
     let all_tths: Vec<f64> = calibrant
         .two_theta_rad(poni.wavelength)
@@ -363,6 +435,7 @@ pub fn calibrate_rot3_polarization(
             options,
             n_az,
             mask_negative,
+            sat_thresh,
         ),
         PolarizationRot3Source::Diffuse => fit_diffuse(
             image,
@@ -375,6 +448,7 @@ pub fn calibrate_rot3_polarization(
             options,
             n_az,
             mask_negative,
+            sat_thresh,
         ),
         PolarizationRot3Source::Auto => {
             let rings_res = fit_rings(
@@ -388,6 +462,7 @@ pub fn calibrate_rot3_polarization(
                 options,
                 n_az,
                 mask_negative,
+                sat_thresh,
             );
             // When powder rings yield a reliable fit, return it directly:
             // ring-background subtraction cancels any constant dark pedestal,
@@ -409,18 +484,32 @@ pub fn calibrate_rot3_polarization(
                 options,
                 n_az,
                 mask_negative,
+                sat_thresh,
             );
             match (rings_res, diffuse_res) {
                 (Ok(r), Ok(d)) => {
-                    if d.reliable || d.modulation_snr > r.modulation_snr {
+                    if d.reliable {
                         Ok(d)
                     } else {
-                        Ok(r)
+                        // Neither source passed reliability gates: prefer a
+                        // physically plausible amplitude ratio β ∈ [0.5, 1.5],
+                        // breaking ties by smaller angle uncertainty.
+                        let r_phys = (0.5..=1.5).contains(&r.fitted_polarization_ratio);
+                        let d_phys = (0.5..=1.5).contains(&d.fitted_polarization_ratio);
+                        if d_phys != r_phys {
+                            if d_phys { Ok(d) } else { Ok(r) }
+                        } else if d.uncertainty_rad < r.uncertainty_rad {
+                            Ok(d)
+                        } else {
+                            Ok(r)
+                        }
                     }
                 }
                 (Ok(r), Err(_)) => Ok(r),
                 (Err(_), Ok(d)) => Ok(d),
-                (Err(e), Err(_)) => Err(e),
+                (Err(e_r), Err(e_d)) => Err(PolarizationRot3Error::InsufficientSignal(format!(
+                    "rings: {e_r}; diffuse: {e_d}"
+                ))),
             }
         }
     }
@@ -438,6 +527,7 @@ fn fit_rings(
     options: &PolarizationRot3Options,
     n_az: usize,
     mask_negative: bool,
+    sat_thresh: f64,
 ) -> Result<PolarizationRot3Result, PolarizationRot3Error> {
     if all_tths.is_empty() {
         return Err(PolarizationRot3Error::InsufficientSignal(
@@ -520,8 +610,9 @@ fn fit_rings(
                     let v = image[idx];
                     let is_bad = mask.is_some_and(|m| m[idx])
                         || !v.is_finite()
-                        || (mask_negative && v < 0.0)
-                        || v >= 4_294_967_000.0;
+                        || (mask_negative && v <= 0.0)
+                        || is_eiger_u32_sentinel(v)
+                        || v >= sat_thresh;
 
                     let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
                     let x1 = f_x1(&p1, &p2, &p3, &tc);
@@ -601,6 +692,7 @@ fn fit_rings(
             samples.push(RingAzSample {
                 cos2: acc.cos2_sum * inv_rc,
                 sin2: acc.sin2_sum * inv_rc,
+                inv_sa_norm: 0.0,
                 y: excess / mean_sa,
             });
         }
@@ -646,6 +738,7 @@ fn fit_diffuse(
     options: &PolarizationRot3Options,
     n_az: usize,
     mask_negative: bool,
+    sat_thresh: f64,
 ) -> Result<PolarizationRot3Result, PolarizationRot3Error> {
     let mut poni0 = poni.clone();
     poni0.rot3 = 0.0;
@@ -705,27 +798,101 @@ fn fit_diffuse(
     let inv_az = (n_az as f64) / (2.0 * PI);
     let total_cells = N_BANDS * n_az;
 
-    let chunk_rows = (dim1 / rayon::current_num_threads().max(1)).clamp(8, 128);
-    let (mut cells, tth_sums, tth_cnts) = (0..dim1)
+    // Fast strided pre-pass to estimate per-band robust median and spread for
+    // outlier clipping (rejects stray hot pixels and unindexed Bragg spots
+    // while keeping continuous clipped means accurate down to 2-4 counts/px
+    // and using O(1) memory regardless of image size).
+    let sample_r_step = (dim1 / 256).max(1);
+    let sample_c_step = (dim2 / 256).max(1);
+    let mut band_samples: Vec<Vec<f64>> = (0..N_BANDS).map(|_| Vec::with_capacity(512)).collect();
+    let mut sr = 0;
+    while sr < dim1 {
+        let p1 = (sr as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
+        let row_off = sr * dim2;
+        let mut sc = 0;
+        while sc < dim2 {
+            let idx = row_off + sc;
+            let v = image[idx];
+            // In diffuse mode, always skip negative sentinel gaps (e.g. Pilatus
+            // -1/-2 even at low count rates), zero dead corners on positive-
+            // pedestal detectors, Eiger u32::MAX gaps, and saturated plateaus.
+            if !mask.is_some_and(|m| m[idx])
+                && v.is_finite()
+                && v >= 0.0
+                && !(mask_negative && v <= 0.0)
+                && !is_eiger_u32_sentinel(v)
+                && v < sat_thresh
+            {
+                let p2 = (sc as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+                let x1 = f_x1(&p1, &p2, &p3, &tc);
+                let x2 = f_x2(&p1, &p2, &p3, &tc);
+                let x3 = f_x3(&p1, &p2, &p3, &tc);
+                let tth = f_tth(&x1, &x2, &x3);
+                if tth >= tth_min && tth < tth_max {
+                    let mut in_ring = false;
+                    if !ring_exclusions.is_empty() {
+                        let pos = ring_exclusions.partition_point(|&(rt, _)| rt < tth);
+                        let lo = pos.saturating_sub(1);
+                        let hi = (pos + 1).min(ring_exclusions.len());
+                        for &(rt, hw) in &ring_exclusions[lo..hi] {
+                            if (tth - rt).abs() <= hw {
+                                in_ring = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !in_ring {
+                        let sa = f_solid_angle(&p1, &p2, &p3);
+                        if sa > 0.0 {
+                            let b_rad =
+                                (((tth - tth_min) / band_w).floor() as usize).min(N_BANDS - 1);
+                            band_samples[b_rad].push(v / sa);
+                        }
+                    }
+                }
+            }
+            sc += sample_c_step;
+        }
+        sr += sample_r_step;
+    }
+
+    let mut band_clip_hi = [f64::INFINITY; N_BANDS];
+    for (b_rad, vals) in band_samples.iter_mut().enumerate() {
+        if vals.len() >= 16 {
+            let med = median_of(vals);
+            let mut devs: Vec<f64> = vals.iter().map(|&x| (x - med).abs()).collect();
+            let mad = 1.4826 * median_of(&mut devs);
+            // Generous upper bound: preserves full polarization modulation
+            // (up to ~2× med) and Poisson upper tail at low counts while
+            // clipping hot pixels and unindexed Bragg spots.
+            let spread = mad.max(med.max(1.0).sqrt()).max(0.25 * med.abs());
+            band_clip_hi[b_rad] = med + 5.0 * spread;
+        }
+    }
+
+    // Single zero-allocation Rayon pass using thread-local `fold` + `reduce`.
+    let (cells, tth_sums, tth_cnts) = (0..dim1)
         .into_par_iter()
-        .chunks(chunk_rows)
-        .map(|rows| {
-            let mut local_cells = vec![DiffuseCellAcc::default(); total_cells];
-            let mut local_tth_sum = [0.0_f64; N_BANDS];
-            let mut local_tth_cnt = [0_u64; N_BANDS];
-            for r in rows {
+        .fold(
+            || {
+                (
+                    vec![DiffuseCellAcc::default(); total_cells],
+                    [0.0_f64; N_BANDS],
+                    [0_u64; N_BANDS],
+                )
+            },
+            |(mut local_cells, mut local_tth_sum, mut local_tth_cnt), r| {
                 let p1 = (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
                 let row_off = r * dim2;
                 for c in 0..dim2 {
                     let idx = row_off + c;
                     let v = image[idx];
-                    // Skip masked, non-finite, negative sentinels, Eiger
-                    // u32::MAX gap sentinels, and zero-padded dead corners on
-                    // positive-pedestal detectors.
                     if mask.is_some_and(|m| m[idx])
                         || !v.is_finite()
+                        || v < 0.0
                         || (mask_negative && v <= 0.0)
-                        || v >= 4_294_967_000.0
+                        || is_eiger_u32_sentinel(v)
+                        || v >= sat_thresh
                     {
                         continue;
                     }
@@ -757,20 +924,26 @@ fn fit_diffuse(
                         continue;
                     }
                     let b_rad = (((tth - tth_min) / band_w).floor() as usize).min(N_BANDS - 1);
+                    let val_corr = v / sa;
+                    if val_corr > band_clip_hi[b_rad] {
+                        continue;
+                    }
                     let az0 = f_azimuth(&x1, &x2);
                     let b_az =
                         (((az0 + PI) * inv_az).floor() as isize).rem_euclid(n_az as isize) as usize;
                     let cell = &mut local_cells[b_rad * n_az + b_az];
-                    cell.vals.push((v / sa) as f32);
+                    cell.val_sum += val_corr;
+                    cell.inv_sa_sum += 1.0 / sa;
                     let two_az = 2.0 * az0;
                     cell.cos2_sum += two_az.cos();
                     cell.sin2_sum += two_az.sin();
+                    cell.cnt += 1;
                     local_tth_sum[b_rad] += tth;
                     local_tth_cnt[b_rad] += 1;
                 }
-            }
-            (local_cells, local_tth_sum, local_tth_cnt)
-        })
+                (local_cells, local_tth_sum, local_tth_cnt)
+            },
+        )
         .reduce(
             || {
                 (
@@ -779,8 +952,8 @@ fn fit_diffuse(
                     [0_u64; N_BANDS],
                 )
             },
-            |(mut a_cells, mut a_ts, mut a_tc), (mut b_cells, b_ts, b_tc)| {
-                for (dst, src) in a_cells.iter_mut().zip(b_cells.iter_mut()) {
+            |(mut a_cells, mut a_ts, mut a_tc), (b_cells, b_ts, b_tc)| {
+                for (dst, src) in a_cells.iter_mut().zip(b_cells.iter()) {
                     dst.merge(src);
                 }
                 for i in 0..N_BANDS {
@@ -805,19 +978,19 @@ fn fit_diffuse(
         }
         let mut samples = Vec::new();
         for b_az in 0..n_az {
-            let cell = &mut cells[b_rad * n_az + b_az];
-            let cnt = cell.vals.len();
-            if cnt < 10 {
+            let cell = &cells[b_rad * n_az + b_az];
+            if cell.cnt < 10 {
                 continue;
             }
-            let y = median_of_f32(&mut cell.vals);
+            let inv_cnt = 1.0 / cell.cnt as f64;
+            let y = cell.val_sum * inv_cnt;
             if !y.is_finite() {
                 continue;
             }
-            let inv_cnt = 1.0 / cnt as f64;
             samples.push(RingAzSample {
                 cos2: cell.cos2_sum * inv_cnt,
                 sin2: cell.sin2_sum * inv_cnt,
+                inv_sa_norm: cell.inv_sa_sum * inv_cnt,
                 y,
             });
         }
@@ -831,10 +1004,11 @@ fn fit_diffuse(
         }
         for s in &mut samples {
             s.y /= med;
+            s.inv_sa_norm /= med;
         }
         let mut devs: Vec<f64> = samples.iter().map(|s| (s.y - 1.0).abs()).collect();
         let mad = 1.4826 * median_of(&mut devs);
-        let est_noise = (mad - 0.5 * alpha.abs()).clamp(0.008, 0.50);
+        let est_noise = (mad - 0.5 * alpha.abs()).clamp(0.005, 0.50);
         band_data.push(RingAzData {
             alpha,
             sigma_rel: est_noise,
@@ -866,45 +1040,66 @@ fn solve_polarization_irls(
         )));
     }
 
-    // Joint Huber IRLS for free (c, s) and per-ring scales A_k with exact
-    // Schur-complement elimination of per-ring intercepts (critical for partial
-    // arcs where ⟨cos 2χ⟩ ≠ 0 and ⟨sin 2χ⟩ ≠ 0):
-    //   y_{k,b} / A_k − 1 ≈ δa_k + (−α_k cos2_{k,b}) c + (−α_k sin2_{k,b}) s
-    // where c = β cos(2·rot3), s = β sin(2·rot3), β = fitted_polarization_ratio.
+    // Joint Huber IRLS for free (c, s) — and, in Diffuse mode on tilted
+    // detectors, a shared additive dark pedestal D multiplying ⟨1/Ω⟩ — with
+    // exact Schur-complement elimination of per-ring/band scales A_k:
+    //   y_{k,b} / A_k − 1 ≈ δa_k + (−α_k cos2) c + (−α_k sin2) s + (u_{k,b} / A_k) D
+    // where u_{k,b} = ⟨1/Ω⟩_{k,b} / med_k, c = β cos(2·rot3), s = β sin(2·rot3).
+    // Including D removes the 1/Ω(χ) cos(2χ) pedestal bias on tilted detectors.
     const DELTA_HUBER: f64 = 1.5;
+    // Only include the shared dark-pedestal regressor D·⟨1/Ω⟩ when the detector
+    // is measurably tilted (≥ 3°): below 3°, 1/Ω is nearly constant around each
+    // ring (making D collinear/unobservable while causing negligible cos 2χ bias).
+    let fit_pedestal = source_used == PolarizationRot3Source::Diffuse
+        && poni.rot1.hypot(poni.rot2) >= 3.0_f64.to_radians();
+    let sigma_floor = if source_used == PolarizationRot3Source::Diffuse {
+        0.003
+    } else {
+        0.01
+    };
+
     let mut a_scales = vec![1.0_f64; n_rings_used];
     let mut sigmas: Vec<f64> = ring_data.iter().map(|r| r.sigma_rel).collect();
     let mut c_hat = 0.0_f64;
     let mut s_hat = 0.0_f64;
+    let mut d_hat = 0.0_f64;
     let mut resids_buf = Vec::with_capacity(n_az);
 
-    for iter in 0..15 {
-        // Solve Schur-complement 2×2 normal equations for (c, s) with δa_k
-        // eliminated analytically per ring.
+    for iter in 0..18 {
         let mut h_cc = 0.0;
         let mut h_cs = 0.0;
         let mut h_ss = 0.0;
+        let mut h_cd = 0.0;
+        let mut h_sd = 0.0;
+        let mut h_dd = 0.0;
         let mut g_c = 0.0;
         let mut g_s = 0.0;
+        let mut g_d = 0.0;
 
         for (k, rd) in ring_data.iter().enumerate() {
             let a_k = a_scales[k];
             let sig = sigmas[k];
             let inv_s2 = 1.0 / (sig * sig);
 
-            // Pass 1: weighted ring means for Schur complement.
+            // Pass 1: weighted band means for Schur complement.
             let mut w_sum = 0.0;
             let mut bc_sum = 0.0;
             let mut bs_sum = 0.0;
+            let mut bd_sum = 0.0;
             let mut t_sum = 0.0;
             for sm in &rd.samples {
                 let bc = -rd.alpha * sm.cos2;
                 let bs = -rd.alpha * sm.sin2;
+                let bd = if fit_pedestal {
+                    sm.inv_sa_norm / a_k
+                } else {
+                    0.0
+                };
                 let target = sm.y / a_k - 1.0;
                 let w = if iter == 0 {
                     inv_s2
                 } else {
-                    let pred = c_hat * bc + s_hat * bs;
+                    let pred = c_hat * bc + s_hat * bs + d_hat * bd;
                     let u = ((target - pred) / sig).abs();
                     if u <= DELTA_HUBER {
                         inv_s2
@@ -915,6 +1110,7 @@ fn solve_polarization_irls(
                 w_sum += w;
                 bc_sum += w * bc;
                 bs_sum += w * bs;
+                bd_sum += w * bd;
                 t_sum += w * target;
             }
             if w_sum <= 1e-18 {
@@ -922,17 +1118,23 @@ fn solve_polarization_irls(
             }
             let bc_bar = bc_sum / w_sum;
             let bs_bar = bs_sum / w_sum;
+            let bd_bar = bd_sum / w_sum;
             let t_bar = t_sum / w_sum;
 
-            // Pass 2: accumulate centered 2×2 system.
+            // Pass 2: accumulate centered 3×3 (or 2×2) system.
             for sm in &rd.samples {
                 let bc = -rd.alpha * sm.cos2;
                 let bs = -rd.alpha * sm.sin2;
+                let bd = if fit_pedestal {
+                    sm.inv_sa_norm / a_k
+                } else {
+                    0.0
+                };
                 let target = sm.y / a_k - 1.0;
                 let w = if iter == 0 {
                     inv_s2
                 } else {
-                    let pred = c_hat * bc + s_hat * bs;
+                    let pred = c_hat * bc + s_hat * bs + d_hat * bd;
                     let u = ((target - pred) / sig).abs();
                     if u <= DELTA_HUBER {
                         inv_s2
@@ -942,45 +1144,76 @@ fn solve_polarization_irls(
                 };
                 let dbc = bc - bc_bar;
                 let dbs = bs - bs_bar;
+                let dbd = bd - bd_bar;
                 let dt = target - t_bar;
                 h_cc += w * dbc * dbc;
                 h_cs += w * dbc * dbs;
                 h_ss += w * dbs * dbs;
                 g_c += w * dbc * dt;
                 g_s += w * dbs * dt;
+                if fit_pedestal {
+                    h_cd += w * dbc * dbd;
+                    h_sd += w * dbs * dbd;
+                    h_dd += w * dbd * dbd;
+                    g_d += w * dbd * dt;
+                }
             }
         }
 
-        let det = h_cc * h_ss - h_cs * h_cs;
-        if det <= 1e-18 {
-            return Err(PolarizationRot3Error::InsufficientSignal(
-                "azimuthal coverage is degenerate for cos(2χ)/sin(2χ) separation".into(),
-            ));
-        }
-        let new_c = (h_ss * g_c - h_cs * g_s) / det;
-        let new_s = (-h_cs * g_c + h_cc * g_s) / det;
+        // Solve for (c, s) and optionally D via Schur complement of D when
+        // detector tilt makes ⟨1/Ω⟩ azimuthally observable (h_dd > 1e-10).
+        let (new_c, new_s, new_d) = if fit_pedestal && h_dd > 1e-10 {
+            let eff_cc = h_cc - h_cd * h_cd / h_dd;
+            let eff_cs = h_cs - h_cd * h_sd / h_dd;
+            let eff_ss = h_ss - h_sd * h_sd / h_dd;
+            let eff_gc = g_c - h_cd * g_d / h_dd;
+            let eff_gs = g_s - h_sd * g_d / h_dd;
+            let det = eff_cc * eff_ss - eff_cs * eff_cs;
+            if det <= 1e-18 {
+                return Err(PolarizationRot3Error::InsufficientSignal(
+                    "azimuthal coverage is degenerate for cos(2χ)/sin(2χ) separation".into(),
+                ));
+            }
+            let nc = (eff_ss * eff_gc - eff_cs * eff_gs) / det;
+            let ns = (-eff_cs * eff_gc + eff_cc * eff_gs) / det;
+            let nd = (g_d - h_cd * nc - h_sd * ns) / h_dd;
+            (nc, ns, nd)
+        } else {
+            let det = h_cc * h_ss - h_cs * h_cs;
+            if det <= 1e-18 {
+                return Err(PolarizationRot3Error::InsufficientSignal(
+                    "azimuthal coverage is degenerate for cos(2χ)/sin(2χ) separation".into(),
+                ));
+            }
+            let nc = (h_ss * g_c - h_cs * g_s) / det;
+            let ns = (-h_cs * g_c + h_cc * g_s) / det;
+            (nc, ns, 0.0)
+        };
+
         let step = (new_c - c_hat).hypot(new_s - s_hat);
         c_hat = new_c;
         s_hat = new_s;
+        d_hat = new_d;
 
-        // Update per-ring scales A_k and residual-based per-ring noise σ_k.
+        // Update per-ring/band scales A_k and residual-based noise σ_k.
         for (k, rd) in ring_data.iter().enumerate() {
             let sig = sigmas[k];
             let mut num = 0.0;
             let mut den = 0.0;
             for sm in &rd.samples {
                 let m = (1.0 - rd.alpha * (c_hat * sm.cos2 + s_hat * sm.sin2)).max(0.05);
+                let y_adj = sm.y - d_hat * sm.inv_sa_norm;
                 let w = if iter == 0 {
                     1.0
                 } else {
-                    let u = ((sm.y / a_scales[k] - m) / sig).abs();
+                    let u = ((y_adj / a_scales[k] - m) / sig).abs();
                     if u <= DELTA_HUBER {
                         1.0
                     } else {
                         DELTA_HUBER / u
                     }
                 };
-                num += w * sm.y * m;
+                num += w * y_adj * m;
                 den += w * m * m;
             }
             if den > 1e-12 {
@@ -989,9 +1222,10 @@ fn solve_polarization_irls(
             resids_buf.clear();
             for sm in &rd.samples {
                 let m = 1.0 - rd.alpha * (c_hat * sm.cos2 + s_hat * sm.sin2);
-                resids_buf.push((sm.y / a_scales[k] - m).abs());
+                let y_adj = sm.y - d_hat * sm.inv_sa_norm;
+                resids_buf.push((y_adj / a_scales[k] - m).abs());
             }
-            sigmas[k] = (1.4826 * median_of(&mut resids_buf)).clamp(0.01, 0.50);
+            sigmas[k] = (1.4826 * median_of(&mut resids_buf)).clamp(sigma_floor, 0.50);
         }
 
         if iter >= 3 && step < 1e-7 {
@@ -999,12 +1233,15 @@ fn solve_polarization_irls(
         }
     }
 
-    // Compute final Schur-complement Fisher matrix H and Huber-weighted RSS
-    // so Σ = s² · H⁻¹ accurately accounts for per-ring scale uncertainty.
+    // Compute final Schur-complement Fisher matrix H and winsorized RSS so
+    // Σ = s² · H_eff⁻¹ accounts for both per-band scale and dark-pedestal uncertainty.
     let mut weighted_rss = 0.0;
     let mut h_cc = 0.0;
     let mut h_cs = 0.0;
     let mut h_ss = 0.0;
+    let mut h_cd = 0.0;
+    let mut h_sd = 0.0;
+    let mut h_dd = 0.0;
     for (k, rd) in ring_data.iter().enumerate() {
         let a_k = a_scales[k];
         let sig = sigmas[k];
@@ -1012,10 +1249,16 @@ fn solve_polarization_irls(
         let mut w_sum = 0.0;
         let mut bc_sum = 0.0;
         let mut bs_sum = 0.0;
+        let mut bd_sum = 0.0;
         for sm in &rd.samples {
             let bc = -rd.alpha * sm.cos2;
             let bs = -rd.alpha * sm.sin2;
-            let resid = (sm.y / a_k - 1.0) - (c_hat * bc + s_hat * bs);
+            let bd = if fit_pedestal {
+                sm.inv_sa_norm / a_k
+            } else {
+                0.0
+            };
+            let resid = (sm.y / a_k - 1.0) - (c_hat * bc + s_hat * bs + d_hat * bd);
             let u = (resid / sig).abs();
             let w = if u <= DELTA_HUBER {
                 inv_s2
@@ -1023,23 +1266,30 @@ fn solve_polarization_irls(
                 inv_s2 * (DELTA_HUBER / u)
             };
             // Winsorize standardized residuals so a single corrupted/sentinel
-            // bin (e.g. unmasked u32::MAX Eiger gap) cannot explode s² and
-            // collapse SNR to 0 while Huber IRLS already downweighted it.
+            // bin cannot explode s² and collapse SNR to 0 while Huber IRLS
+            // already downweighted it.
             let u_clip = u.min(2.0 * DELTA_HUBER);
             weighted_rss += u_clip * u_clip;
             w_sum += w;
             bc_sum += w * bc;
             bs_sum += w * bs;
+            bd_sum += w * bd;
         }
         if w_sum <= 1e-18 {
             continue;
         }
         let bc_bar = bc_sum / w_sum;
         let bs_bar = bs_sum / w_sum;
+        let bd_bar = bd_sum / w_sum;
         for sm in &rd.samples {
             let bc = -rd.alpha * sm.cos2;
             let bs = -rd.alpha * sm.sin2;
-            let resid = (sm.y / a_k - 1.0) - (c_hat * bc + s_hat * bs);
+            let bd = if fit_pedestal {
+                sm.inv_sa_norm / a_k
+            } else {
+                0.0
+            };
+            let resid = (sm.y / a_k - 1.0) - (c_hat * bc + s_hat * bs + d_hat * bd);
             let u = (resid / sig).abs();
             let w = if u <= DELTA_HUBER {
                 inv_s2
@@ -1048,25 +1298,43 @@ fn solve_polarization_irls(
             };
             let dbc = bc - bc_bar;
             let dbs = bs - bs_bar;
+            let dbd = bd - bd_bar;
             h_cc += w * dbc * dbc;
             h_cs += w * dbc * dbs;
             h_ss += w * dbs * dbs;
+            if fit_pedestal {
+                h_cd += w * dbc * dbd;
+                h_sd += w * dbs * dbd;
+                h_dd += w * dbd * dbd;
+            }
         }
     }
 
-    let det = h_cc * h_ss - h_cs * h_cs;
+    let use_pedestal_cov = fit_pedestal && h_dd > 1e-10;
+    let (eff_cc, eff_cs, eff_ss) = if use_pedestal_cov {
+        (
+            h_cc - h_cd * h_cd / h_dd,
+            h_cs - h_cd * h_sd / h_dd,
+            h_ss - h_sd * h_sd / h_dd,
+        )
+    } else {
+        (h_cc, h_cs, h_ss)
+    };
+
+    let det = eff_cc * eff_ss - eff_cs * eff_cs;
     if det <= 1e-18 {
         return Err(PolarizationRot3Error::InsufficientSignal(
             "degenerate Fisher information matrix for (c, s)".into(),
         ));
     }
 
-    let dof = n_samples.saturating_sub(n_rings_used + 2).max(1) as f64;
+    let n_global = if use_pedestal_cov { 3 } else { 2 };
+    let dof = n_samples.saturating_sub(n_rings_used + n_global).max(1) as f64;
     let s2 = (weighted_rss / dof).max(1e-12);
-    // Covariance Σ = s² · H⁻¹
-    let cov_cc = s2 * h_ss / det;
-    let cov_cs = -s2 * h_cs / det;
-    let cov_ss = s2 * h_cc / det;
+    // Covariance Σ = s² · H_eff⁻¹
+    let cov_cc = s2 * eff_ss / det;
+    let cov_cs = -s2 * eff_cs / det;
+    let cov_ss = s2 * eff_cc / det;
 
     let beta = c_hat.hypot(s_hat);
     let rot3_rad = wrap_half_pi(0.5 * s_hat.atan2(c_hat));
@@ -1081,8 +1349,9 @@ fn solve_polarization_irls(
         0.5 * PI
     };
 
-    // Wald significance √([c, s] · Σ⁻¹ · [c, s]) = √((c² H_cc + 2cs H_cs + s² H_ss) / s²).
-    let quad = (c_hat * c_hat * h_cc + 2.0 * c_hat * s_hat * h_cs + s_hat * s_hat * h_ss).max(0.0);
+    // Wald significance √([c, s] · Σ⁻¹ · [c, s]) = √((c² H_eff_cc + 2cs H_eff_cs + s² H_eff_ss) / s²).
+    let quad =
+        (c_hat * c_hat * eff_cc + 2.0 * c_hat * s_hat * eff_cs + s_hat * s_hat * eff_ss).max(0.0);
     let modulation_snr = (quad / s2).sqrt();
 
     let reliable = modulation_snr >= 5.0
@@ -1463,12 +1732,148 @@ mod tests {
             &c_ceo2,
             0.99,
             &PolarizationRot3Options::default(),
+        )
+        .expect("ceo2_side returns unreliable ring result");
+        assert!(
+            !res_side.reliable,
+            "narrow strip ceo2_side must not be marked reliable: {res_side:?}"
         );
-        if let Ok(r) = res_side {
-            assert!(
-                !r.reliable,
-                "narrow strip ceo2_side must not be marked reliable: {r:?}"
-            );
+    }
+
+    #[test]
+    fn diffuse_unbiased_with_tilted_dark_pedestal_low_counts_and_gaps() {
+        let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+        let pol_factor = 0.99;
+
+        // 1. C1 regression: heavily tilted detector (rot1 = 20°, rot2 = -10°)
+        //    with a 25% additive dark pedestal D = 50 on top of S = 200 diffuse.
+        //    Without the ⟨1/Ω⟩ pedestal regressor this biases rot3 by 3-5°.
+        let true_rot3_deg = 19.0;
+        let truth = make_poni(true_rot3_deg, 20.0, -10.0, 230.0);
+        let dim1 = 512usize;
+        let dim2 = 512usize;
+        let tc = TrigonometricConstants::new(&truth);
+        let p3 = truth.distance;
+        let mut img_ped = vec![0.0_f64; dim1 * dim2];
+        for r in 0..dim1 {
+            let p1 = (r as f64 + 0.5) * truth.pixel1 - truth.poni1;
+            for c in 0..dim2 {
+                let p2 = (c as f64 + 0.5) * truth.pixel2 - truth.poni2;
+                let x1 = f_x1(&p1, &p2, &p3, &tc);
+                let x2 = f_x2(&p1, &p2, &p3, &tc);
+                let x3 = f_x3(&p1, &p2, &p3, &tc);
+                let tth = f_tth(&x1, &x2, &x3);
+                let az = f_azimuth(&x1, &x2);
+                let sa = f_solid_angle(&p1, &p2, &p3);
+                let cos2 = tth.cos().powi(2);
+                let sin2 = tth.sin().powi(2);
+                let pol = 0.5 * (1.0 + cos2 - pol_factor * sin2 * (2.0 * az).cos());
+                let diffuse = 200.0 * (-2.0 * tth).exp() + 60.0;
+                // Constant additive electronic pedestal (not multiplied by Ω)
+                img_ped[r * dim2 + c] = 50.0 + diffuse * sa * pol;
+            }
         }
+        let mut input = truth.clone();
+        input.rot3 = 0.0;
+        let res_ped = calibrate_rot3_polarization(
+            &img_ped,
+            dim1,
+            dim2,
+            None,
+            &input,
+            &cal,
+            pol_factor,
+            &PolarizationRot3Options {
+                source: PolarizationRot3Source::Diffuse,
+                ..Default::default()
+            },
+        )
+        .expect("tilted pedestal diffuse fit");
+        let err_ped = wrap_half_pi(res_ped.rot3_rad - truth.rot3)
+            .abs()
+            .to_degrees();
+        assert!(
+            err_ped < 1.0 && res_ped.reliable,
+            "tilted dark pedestal biased diffuse rot3: got {:.2}° (err={err_ped:.2}°, β={:.2}, snr={:.1})",
+            res_ped.rot3_rad.to_degrees(),
+            res_ped.fitted_polarization_ratio,
+            res_ped.modulation_snr,
+        );
+
+        // 2. Low-count Poisson diffuse (mean ~3 counts/px) + Pilatus -1 and
+        //    Eiger u32::MAX gap lines through beam center.
+        let truth_low = make_poni(-33.0, 4.0, -3.0, 256.0);
+        let tc_low = TrigonometricConstants::new(&truth_low);
+        let mut img_low = vec![0.0_f64; dim1 * dim2];
+        let mut rng_state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next_u01 = || -> f64 {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((rng_state >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+        };
+        for r in 0..dim1 {
+            let p1 = (r as f64 + 0.5) * truth_low.pixel1 - truth_low.poni1;
+            for c in 0..dim2 {
+                // Inject horizontal Pilatus -1 gap and vertical Eiger u32::MAX gap
+                if (252..=260).contains(&r) {
+                    img_low[r * dim2 + c] = -1.0;
+                    continue;
+                }
+                if (252..=260).contains(&c) {
+                    img_low[r * dim2 + c] = u32::MAX as f64;
+                    continue;
+                }
+                let p2 = (c as f64 + 0.5) * truth_low.pixel2 - truth_low.poni2;
+                let x1 = f_x1(&p1, &p2, &p3, &tc_low);
+                let x2 = f_x2(&p1, &p2, &p3, &tc_low);
+                let x3 = f_x3(&p1, &p2, &p3, &tc_low);
+                let tth = f_tth(&x1, &x2, &x3);
+                let az = f_azimuth(&x1, &x2);
+                let sa = f_solid_angle(&p1, &p2, &p3);
+                let cos2 = tth.cos().powi(2);
+                let sin2 = tth.sin().powi(2);
+                let pol = 0.5 * (1.0 + cos2 - pol_factor * sin2 * (2.0 * az).cos());
+                let lambda = (4.0 * sa * pol).max(0.01);
+                // Knuth Poisson draw for low counts (~3 photons/px)
+                let limit = (-lambda).exp();
+                let mut k = 0u32;
+                let mut p = 1.0;
+                loop {
+                    k += 1;
+                    p *= next_u01();
+                    if p <= limit {
+                        break;
+                    }
+                }
+                img_low[r * dim2 + c] = (k - 1) as f64;
+            }
+        }
+        let mut input_low = truth_low.clone();
+        input_low.rot3 = 0.0;
+        let res_low = calibrate_rot3_polarization(
+            &img_low,
+            dim1,
+            dim2,
+            None,
+            &input_low,
+            &cal,
+            pol_factor,
+            &PolarizationRot3Options {
+                source: PolarizationRot3Source::Diffuse,
+                ..Default::default()
+            },
+        )
+        .expect("low-count Poisson diffuse fit");
+        let err_low = wrap_half_pi(res_low.rot3_rad - truth_low.rot3)
+            .abs()
+            .to_degrees();
+        assert!(
+            err_low < 2.5 && res_low.reliable,
+            "low-count Poisson diffuse failed: got {:.2}° (err={err_low:.2}°, β={:.2}, snr={:.1})",
+            res_low.rot3_rad.to_degrees(),
+            res_low.fitted_polarization_ratio,
+            res_low.modulation_snr,
+        );
     }
 }

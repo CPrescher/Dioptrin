@@ -2313,12 +2313,12 @@ class PolarizationRot3Result:
 
     @property
     def n_rings_used(self) -> int:
-        """Number of calibrant rings that contributed to the polarization fit."""
+        """Number of calibrant rings (or radial diffuse bands) that contributed to the fit."""
         ...
 
     @property
     def n_samples(self) -> int:
-        """Total number of ``(ring, azimuth)`` samples used in the fit."""
+        """Total number of ``(ring/band, azimuth)`` samples used in the fit."""
         ...
 
     @property

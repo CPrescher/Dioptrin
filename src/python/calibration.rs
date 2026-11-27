@@ -1086,7 +1086,7 @@ impl PyPolarizationRot3Result {
         match self.inner.source_used {
             PolarizationRot3Source::Rings => "rings",
             PolarizationRot3Source::Diffuse => "diffuse",
-            PolarizationRot3Source::Auto => "auto",
+            PolarizationRot3Source::Auto => unreachable!("source_used is always resolved"),
         }
     }
     #[getter]
@@ -1211,9 +1211,9 @@ pub fn calibrate_rot3_polarization_py(
         "auto" => PolarizationRot3Source::Auto,
         "rings" => PolarizationRot3Source::Rings,
         "diffuse" => PolarizationRot3Source::Diffuse,
-        other => {
+        _ => {
             return Err(PyValueError::new_err(format!(
-                "invalid source {other:?}; expected 'auto', 'rings', or 'diffuse'"
+                "invalid source {source:?}; expected 'auto', 'rings', or 'diffuse'"
             )));
         }
     };
