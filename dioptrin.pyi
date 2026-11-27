@@ -1650,6 +1650,21 @@ class Calibrant:
     """
 
     @staticmethod
+    def builtin(name: str) -> Calibrant:
+        """
+        Load a built-in calibrant by name (e.g. ``"CeO2"``, ``"LaB6"``, ``"Si"``).
+
+        Raises:
+            ValueError: If no built-in calibrant matches ``name``
+        """
+        ...
+
+    @staticmethod
+    def builtin_names() -> list[str]:
+        """Return the names of all built-in calibrants bundled with Dioptrin."""
+        ...
+
+    @staticmethod
     def from_file(path: str) -> Calibrant:
         """
         Load a calibrant from a pyFAI-style ``.D`` file.

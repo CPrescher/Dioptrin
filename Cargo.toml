@@ -16,6 +16,7 @@ categories = ["science", "science::materials"]
 # itself, and takes dioptrin.pyi from [tool.maturin] include in pyproject.toml.
 include = [
     "/src/**",
+    "/calibrants/*.D",
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE",

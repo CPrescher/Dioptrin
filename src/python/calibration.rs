@@ -31,6 +31,19 @@ pub struct PyCalibrant {
 
 #[pymethods]
 impl PyCalibrant {
+    /// Load a built-in calibrant by name (e.g. `"CeO2"`, `"LaB6"`, `"Si"`).
+    #[staticmethod]
+    fn builtin(name: &str) -> PyResult<Self> {
+        let cal = Calibrant::builtin(name).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner: cal })
+    }
+
+    /// Return the names of all built-in calibrants bundled with Dioptrin.
+    #[staticmethod]
+    fn builtin_names() -> Vec<&'static str> {
+        Calibrant::builtin_names().to_vec()
+    }
+
     /// Load a calibrant from a pyFAI-style `.D` file.
     #[staticmethod]
     fn from_file(path: &str) -> PyResult<Self> {

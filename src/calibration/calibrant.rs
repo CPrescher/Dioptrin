@@ -20,7 +20,83 @@ pub struct Calibrant {
     pub intensities: Vec<Option<f64>>,
 }
 
+const BUILTIN_CALIBRANTS: &[(&str, &str)] = &[
+    ("AgBh", include_str!("../../calibrants/AgBh.D")),
+    ("Al", include_str!("../../calibrants/Al.D")),
+    ("Au", include_str!("../../calibrants/Au.D")),
+    ("C14H30O", include_str!("../../calibrants/C14H30O.D")),
+    ("CeO2", include_str!("../../calibrants/CeO2.D")),
+    ("Cr2O3", include_str!("../../calibrants/Cr2O3.D")),
+    ("CrOx", include_str!("../../calibrants/CrOx.D")),
+    ("CuO", include_str!("../../calibrants/CuO.D")),
+    ("LaB6", include_str!("../../calibrants/LaB6.D")),
+    (
+        "LaB6_SRM660a",
+        include_str!("../../calibrants/LaB6_SRM660a.D"),
+    ),
+    (
+        "LaB6_SRM660b",
+        include_str!("../../calibrants/LaB6_SRM660b.D"),
+    ),
+    (
+        "LaB6_SRM660c",
+        include_str!("../../calibrants/LaB6_SRM660c.D"),
+    ),
+    ("NaCl", include_str!("../../calibrants/NaCl.D")),
+    ("Ni", include_str!("../../calibrants/Ni.D")),
+    ("PBBA", include_str!("../../calibrants/PBBA.D")),
+    ("Si", include_str!("../../calibrants/Si.D")),
+    ("Si_SRM640", include_str!("../../calibrants/Si_SRM640.D")),
+    ("Si_SRM640a", include_str!("../../calibrants/Si_SRM640a.D")),
+    ("Si_SRM640b", include_str!("../../calibrants/Si_SRM640b.D")),
+    ("Si_SRM640c", include_str!("../../calibrants/Si_SRM640c.D")),
+    ("Si_SRM640d", include_str!("../../calibrants/Si_SRM640d.D")),
+    ("Si_SRM640e", include_str!("../../calibrants/Si_SRM640e.D")),
+    ("TiO2", include_str!("../../calibrants/TiO2.D")),
+    ("ZnO", include_str!("../../calibrants/ZnO.D")),
+    (
+        "alpha_Al2O3",
+        include_str!("../../calibrants/alpha_Al2O3.D"),
+    ),
+    (
+        "cristobaltite",
+        include_str!("../../calibrants/cristobaltite.D"),
+    ),
+    ("quartz", include_str!("../../calibrants/quartz.D")),
+];
+
+const BUILTIN_NAMES: &[&str] = &[
+    "AgBh",
+    "Al",
+    "Au",
+    "C14H30O",
+    "CeO2",
+    "Cr2O3",
+    "CrOx",
+    "CuO",
+    "LaB6",
+    "LaB6_SRM660a",
+    "LaB6_SRM660b",
+    "LaB6_SRM660c",
+    "NaCl",
+    "Ni",
+    "PBBA",
+    "Si",
+    "Si_SRM640",
+    "Si_SRM640a",
+    "Si_SRM640b",
+    "Si_SRM640c",
+    "Si_SRM640d",
+    "Si_SRM640e",
+    "TiO2",
+    "ZnO",
+    "alpha_Al2O3",
+    "cristobaltite",
+    "quartz",
+];
+
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CalibrantError {
     Io(std::io::Error),
     /// File parsed but contained no d-spacing entries.
@@ -30,6 +106,8 @@ pub enum CalibrantError {
         line: usize,
         content: String,
     },
+    /// No built-in calibrant matched the requested name.
+    UnknownBuiltin(String),
 }
 
 impl fmt::Display for CalibrantError {
@@ -44,6 +122,9 @@ impl fmt::Display for CalibrantError {
                     line, content
                 )
             }
+            CalibrantError::UnknownBuiltin(name) => {
+                write!(f, "unknown built-in calibrant: {:?}", name)
+            }
         }
     }
 }
@@ -56,7 +137,40 @@ impl From<std::io::Error> for CalibrantError {
     }
 }
 
+fn find_builtin(name: &str) -> Option<(&'static str, &'static str)> {
+    BUILTIN_CALIBRANTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .or_else(|| {
+            BUILTIN_CALIBRANTS
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        })
+        .copied()
+}
+
 impl Calibrant {
+    /// Names of all built-in calibrants bundled with Dioptrin.
+    pub fn builtin_names() -> &'static [&'static str] {
+        BUILTIN_NAMES
+    }
+
+    /// Raw `.D` contents of a built-in calibrant (exact match, then ASCII
+    /// case-insensitive fallback).
+    pub fn builtin_str(name: &str) -> Option<&'static str> {
+        find_builtin(name).map(|(_, contents)| contents)
+    }
+
+    /// Load a built-in calibrant by name (e.g. `"CeO2"`, `"LaB6"`, `"Si"`).
+    ///
+    /// Matches exact names first, then falls back to ASCII case-insensitive
+    /// matching.
+    pub fn builtin(name: &str) -> Result<Self, CalibrantError> {
+        let (canonical, contents) =
+            find_builtin(name).ok_or_else(|| CalibrantError::UnknownBuiltin(name.to_string()))?;
+        Self::from_d_str(canonical, contents)
+    }
+
     /// Construct from an explicit list of d-spacings (Å).
     ///
     /// Non-finite and non-positive values are ignored.
@@ -192,7 +306,7 @@ fn parse_comment_intensity(comment: &str) -> Option<f64> {
     let _mult = tokens.next()?;
     let intensity: f64 = tokens.next()?.parse().ok()?;
     if intensity.is_finite() && intensity >= 0.0 {
-        Some(intensity)
+        Some(if intensity == 0.0 { 0.0 } else { intensity })
     } else {
         None
     }
@@ -232,5 +346,67 @@ mod tests {
         );
         assert_eq!(cal2.d_spacings, vec![3.0, 1.5]);
         assert_eq!(cal2.intensities, vec![Some(100.0), Some(20.0)]);
+    }
+
+    #[test]
+    fn all_builtin_calibrants_parse_and_inorganic_ones_have_intensities_and_high_q() {
+        let names = Calibrant::builtin_names();
+        assert_eq!(names.len(), 27);
+        assert_eq!(
+            names,
+            &BUILTIN_CALIBRANTS
+                .iter()
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()[..]
+        );
+        for &name in names {
+            let cal = Calibrant::builtin(name)
+                .unwrap_or_else(|e| panic!("failed to load built-in {name}: {e}"));
+            assert_eq!(cal.name, name);
+            assert!(cal.n_rings() > 0, "{name} should have rings");
+            assert!(Calibrant::builtin_str(name).is_some());
+            assert!(
+                cal.intensities
+                    .iter()
+                    .flatten()
+                    .all(|v| !v.is_sign_negative()),
+                "{name} contains negative zero or negative intensity"
+            );
+        }
+        // Case-insensitive lookup returns canonical name.
+        let ceo2 = Calibrant::builtin("ceo2").unwrap();
+        assert_eq!(ceo2.name, "CeO2");
+        assert!(ceo2.n_rings() > 150, "CeO2 should extend down to ~0.25 A");
+        assert!(ceo2.d_spacings.last().copied().unwrap() < 0.26);
+
+        // Unknown name returns UnknownBuiltin error.
+        assert!(matches!(
+            Calibrant::builtin("not_a_calibrant"),
+            Err(CalibrantError::UnknownBuiltin(_))
+        ));
+
+        // All enriched inorganic calibrants must have parsed intensities on every line.
+        for name in [
+            "CeO2",
+            "LaB6",
+            "LaB6_SRM660c",
+            "Si",
+            "Si_SRM640e",
+            "Al",
+            "Au",
+            "Ni",
+            "NaCl",
+            "TiO2",
+            "ZnO",
+            "alpha_Al2O3",
+            "Cr2O3",
+            "quartz",
+        ] {
+            let cal = Calibrant::builtin(name).unwrap();
+            assert!(
+                cal.intensities.iter().all(|v| v.is_some()),
+                "{name} has lines with missing intensity"
+            );
+        }
     }
 }
