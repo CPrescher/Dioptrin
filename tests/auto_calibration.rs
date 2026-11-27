@@ -998,3 +998,143 @@ fn extract_ring_peaks_and_refine_image_from_perturbed_poni() {
         "wrong calibrant (LaB6 on CeO2) must be rejected"
     );
 }
+
+#[test]
+#[ignore = "requires untracked local fixture test_data/LaB6_OffCenter_PE.tif"]
+fn auto_calibrate_and_refine_lab6_offcenter_extends_to_full_detector_rings() {
+    use dioptrin::calibration::{RefineImageOptions, refine_image};
+
+    let frame = Frame::from_tiff("test_data/LaB6_OffCenter_PE.tif".into()).expect("load tiff");
+    let cal =
+        Calibrant::from_d_file("test_data/calibrants/LaB6_SRM660b.D").expect("load calibrant");
+    let wavelength = 3.344e-11;
+    let pixel = 200e-6;
+
+    let (auto_res, auto_diag) = auto_calibrate_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        &cal,
+        wavelength,
+        pixel,
+        pixel,
+        &AutoCalibrateImageOptions::default(),
+    )
+    .expect("auto_calibrate_image LaB6_OffCenter_PE");
+
+    println!(
+        "auto_calibrate_image LaB6_OffCenter_PE: rings={}, D={:.5}m, poni=({:.2}, {:.2})px, rot=({:.3}°, {:.3}°), rms={:.5}°",
+        auto_diag.n_identified_ellipses,
+        auto_res.poni.distance,
+        auto_res.poni.poni1 / pixel,
+        auto_res.poni.poni2 / pixel,
+        auto_res.poni.rot1.to_degrees(),
+        auto_res.poni.rot2.to_degrees(),
+        auto_res.rms_rad.to_degrees(),
+    );
+
+    let ref_res = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &auto_res.poni,
+        &cal,
+        &RefineImageOptions {
+            polarization_factor: Some(0.99),
+            ..Default::default()
+        },
+    )
+    .expect("refine_image LaB6_OffCenter_PE");
+
+    println!(
+        "refine_image         LaB6_OffCenter_PE: rings={}, pts={}, D={:.5}m, poni=({:.2}, {:.2})px, rot=({:.3}°, {:.3}°, {:.2}°), rms={:.5}°",
+        ref_res.n_rings,
+        ref_res.points.len(),
+        ref_res.calibration.poni.distance,
+        ref_res.calibration.poni.poni1 / pixel,
+        ref_res.calibration.poni.poni2 / pixel,
+        ref_res.calibration.poni.rot1.to_degrees(),
+        ref_res.calibration.poni.rot2.to_degrees(),
+        ref_res.calibration.poni.rot3.to_degrees(),
+        ref_res.calibration.rms_rad.to_degrees(),
+    );
+    let mut per_ring = std::collections::BTreeMap::<usize, usize>::new();
+    for r in ref_res.points.ring.iter().flatten() {
+        *per_ring.entry(*r).or_default() += 1;
+    }
+    let max_ring_idx = per_ring.keys().copied().max().unwrap_or(0);
+    println!("max ring index reached: {max_ring_idx}");
+
+    // Must extend all the way into outer rings (past index 60) with zero drift.
+    assert!(
+        auto_diag.n_identified_ellipses >= 35,
+        "expected >= 35 rings, got {}",
+        auto_diag.n_identified_ellipses
+    );
+    assert!(
+        ref_res.n_rings >= 35 && max_ring_idx >= 60,
+        "expected refine_image >= 35 rings reaching index >= 60, got {} rings (max idx {max_ring_idx})",
+        ref_res.n_rings
+    );
+    let dp1 = (ref_res.calibration.poni.poni1 - auto_res.poni.poni1).abs() / pixel;
+    let dp2 = (ref_res.calibration.poni.poni2 - auto_res.poni.poni2).abs() / pixel;
+    assert!(
+        dp1.max(dp2) < 10.0,
+        "refine_image drifted from auto_calibrate_image by ({dp1:.1}, {dp2:.1}) px"
+    );
+}
+
+#[test]
+fn refine_image_respects_explicit_ring_caps() {
+    use dioptrin::calibration::{RefineImageOptions, refine_image};
+
+    let frame = Frame::from_tiff("test_data/CeO2_Pilatus1M.tif".into()).expect("load CeO2");
+    let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2.D");
+    let truth = Poni::load("test_data/v1.poni").expect("load v1.poni");
+
+    let capped_rings = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &truth,
+        &cal,
+        &RefineImageOptions {
+            max_rings: Some(4),
+            ..Default::default()
+        },
+    )
+    .expect("capped max_rings=4 should succeed");
+    assert!(
+        capped_rings.n_rings <= 4,
+        "expected <= 4 rings when max_rings=Some(4), got {}",
+        capped_rings.n_rings
+    );
+
+    let capped_idx = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &truth,
+        &cal,
+        &RefineImageOptions {
+            max_ring_index: 6,
+            ..Default::default()
+        },
+    )
+    .expect("capped max_ring_index=6 should succeed");
+    let max_idx = capped_idx
+        .points
+        .ring
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_idx < 6,
+        "expected all ring indices < 6 when max_ring_index=6, got {max_idx}"
+    );
+}
