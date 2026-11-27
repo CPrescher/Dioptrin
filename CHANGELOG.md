@@ -5,7 +5,7 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.18.0] - 2026-11-27
 
 ### Added
 
@@ -17,11 +17,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alpha_Al2O3`, `Cr2O3`, `quartz`, SRMs, `AgBh`, etc.) with precomputed
   relative powder intensities (0–100) and high-Q extensions down to `0.25 Å`
   for the inorganic calibrants.
+- **Auto-calibration progress & cancellation API**:
+  `calibration::auto_calibrate_image_with_progress`, `AutoCalibrateStage`,
+  `AutoCalibrateProgress`, and `AutoCalibrateError::Cancelled` in Rust for live
+  UI progress reporting (stage, subsampled peaks, ring center, candidate PONI,
+  RMS) and cooperative cancellation.
+- **Auto-adaptive auto-calibration options**: `intensity_limit`,
+  `peak_threshold_sigma`, and `search_half_width_px` on
+  `AutoCalibrateImageOptions` (and corresponding kwargs on Python
+  `dioptrin.auto_calibrate_image`). When omitted, saturation plateaus, peak SNR
+  threshold, and radial ring extraction window adapt automatically to the image.
+- **Spotty diffraction simulation mode**: `simulation::SpottyOptions` and
+  `SimulationOptions::spotty` in Rust (plus `spotty_spots_per_ring`,
+  `spotty_azimuthal_fwhm_rad`, and `spotty_continuous_fraction` kwargs on
+  Python `dioptrin.simulate_diffraction`) to simulate coarse-grained / spotty
+  Debye–Scherrer rings.
 
 ### Changed
 
 - Marked `CalibrantError` as `#[non_exhaustive]` and added
   `CalibrantError::UnknownBuiltin(String)`.
+- Hardened `auto_calibrate_image` across challenging geometries (steep tilts up
+  to 35° with beam-centered grid search, dense high-energy patterns, broad
+  rings, spotty rings, off-detector beam centers, narrow strips, and
+  beamstop/outlier artifacts) using an `O(1)` spacing-aware `RingLut`,
+  intensity-weighted ring recall validation, grazing-tilt/mirror-twin checks,
+  and greedy basin deduplication.
 
 ### Performance
 
