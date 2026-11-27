@@ -173,8 +173,9 @@ pub fn grid_search(
 
     // Deterministic uniform-stride subsample of peaks.
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
-        peaks.iter().step_by(step).copied().collect()
+        let n = peaks.len();
+        let m = options.max_peaks_for_grid.max(1);
+        (0..m).map(|i| peaks[(i * n) / m]).collect()
     } else {
         peaks.to_vec()
     };
@@ -265,29 +266,43 @@ pub fn grid_search(
     })
 }
 
-/// Precomputed O(1) lookup table mapping a 2θ value to its nearest calibrant
-/// ring, with a spacing-aware tolerance so dense high-order rings cannot absorb
-/// arbitrary peaks at an artificially tiny detector distance while never
-/// shrinking below the coarse grid discretization error.
+/// Compact LUT entry for `sin(2θ / 2)` lookup in the hot 5D grid loop.
+#[derive(Copy, Clone)]
+struct RingLutEntry {
+    s_near: f32,
+    local_tol: f32,
+    inv_tol: f32,
+    ring_idx: u16,
+}
+
+/// Precomputed O(1) lookup table mapping `s = sin(2θ / 2)` to its nearest
+/// calibrant ring, with a spacing-aware tolerance so dense high-order rings
+/// cannot absorb arbitrary peaks at an artificially tiny detector distance
+/// while never shrinking below the coarse grid discretization error.
+///
+/// Indexing by `sin(2θ / 2) = sqrt(0.5 * (1 - z / ||r||))` avoids `atan2` in
+/// the inner 5D grid loop while staying nearly linear in `2θ` over `(0, π)`.
 struct RingLut {
-    inv_step: f64,
-    /// `(tth_near, ring_idx, local_tol, inv_two_sigma2)` per bin.
-    entries: Vec<(f64, u16, f64, f64)>,
+    inv_step: f32,
+    entries: Vec<RingLutEntry>,
 }
 
 impl RingLut {
-    const STEP: f64 = 2.0e-4;
+    const STEP: f64 = 1.0e-4;
 
-    fn build(tth_targets: &[f64], tol: f64) -> Option<Self> {
+    fn build(tth_targets: &[f64], tol_rad: f64) -> Option<Self> {
         if tth_targets.is_empty() {
             return None;
         }
-        let max_tth = tth_targets.iter().copied().fold(0.0_f64, f64::max) + tol + Self::STEP;
-        let n_bins = ((max_tth / Self::STEP).ceil() as usize).clamp(1, 20_000);
+        let s_targets: Vec<f64> = tth_targets.iter().map(|&t| (0.5 * t).sin()).collect();
+        let max_s =
+            (s_targets.iter().copied().fold(0.0_f64, f64::max) + 0.5 * tol_rad + Self::STEP)
+                .min(1.0);
+        let n_bins = ((max_s / Self::STEP).ceil() as usize).clamp(1, 10_001);
 
         let n_rings = tth_targets.len();
-        let min_local_tol = (0.15 * tol).min(1.0e-3);
-        let mut ring_params: Vec<(f64, f64)> = Vec::with_capacity(n_rings);
+        let min_local_tol_rad = (0.15 * tol_rad).min(1.0e-3);
+        let mut ring_params: Vec<(f32, f32)> = Vec::with_capacity(n_rings);
         for k in 0..n_rings {
             let gap_lo = if k > 0 {
                 (tth_targets[k] - tth_targets[k - 1]).abs()
@@ -300,55 +315,64 @@ impl RingLut {
                 f64::INFINITY
             };
             let spacing = gap_lo.min(gap_hi);
-            let local_tol = if spacing.is_finite() {
-                tol.min(0.45 * spacing).max(min_local_tol)
+            let local_tol_rad = if spacing.is_finite() {
+                tol_rad.min(0.45 * spacing).max(min_local_tol_rad)
             } else {
-                tol
+                tol_rad
             };
-            let sigma = (0.4 * local_tol).max(1.0e-6);
-            ring_params.push((local_tol, 0.5 / (sigma * sigma)));
+            // Convert angular tolerance to sin(2θ / 2) tolerance via d(sin(θ))/d(2θ) = 0.5 cos(θ).
+            let local_tol_s =
+                (0.5 * (0.5 * tth_targets[k]).cos().max(0.05) * local_tol_rad).max(1.0e-6) as f32;
+            ring_params.push((local_tol_s, 1.0_f32 / local_tol_s));
         }
 
         let mut entries = Vec::with_capacity(n_bins);
         let mut cursor = 0usize;
         for b in 0..n_bins {
-            let tth = (b as f64 + 0.5) * Self::STEP;
+            let s = (b as f64 + 0.5) * Self::STEP;
             while cursor + 1 < n_rings
-                && (tth_targets[cursor + 1] - tth).abs() <= (tth_targets[cursor] - tth).abs()
+                && (s_targets[cursor + 1] - s).abs() <= (s_targets[cursor] - s).abs()
             {
                 cursor += 1;
             }
-            let (local_tol, inv_two_sigma2) = ring_params[cursor];
-            entries.push((
-                tth_targets[cursor],
-                cursor as u16,
+            let (local_tol, inv_tol) = ring_params[cursor];
+            entries.push(RingLutEntry {
+                s_near: s_targets[cursor] as f32,
                 local_tol,
-                inv_two_sigma2,
-            ));
+                inv_tol,
+                ring_idx: cursor as u16,
+            });
         }
 
         Some(Self {
-            inv_step: 1.0 / Self::STEP,
+            inv_step: (1.0 / Self::STEP) as f32,
             entries,
         })
     }
 
-    #[inline]
-    fn lookup(&self, tth: f64) -> Option<(f64, u16, f64, f64)> {
-        if !tth.is_finite() || tth < 0.0 {
-            return None;
-        }
-        let idx = (tth * self.inv_step) as usize;
+    #[inline(always)]
+    fn lookup(&self, s: f32) -> Option<RingLutEntry> {
+        let idx = (s * self.inv_step) as usize;
         self.entries.get(idx).copied()
     }
 }
 
-/// Shared parallel scorer for a list of `(d, p1, p2, r1, r2)` grid cells.
+type ScoredCell = (f32, usize, usize, (f64, f64, f64, f64, f64));
+
+/// Shared parallel scorer grouped by `(r1, r2)` rotation pairs.
 ///
-/// Ranks cells by Gaussian-weighted residual concentration and deduplicates
-/// near-identical cells so `top_k` covers distinct basins.
-fn score_cells_top_k(
-    cells: &[(f64, f64, f64, f64, f64)],
+/// Hoisting the rotation matrix lets us pre-rotate all working peaks once per
+/// `(r1, r2)` pair so each `(d, p1, p2)` cell only adds a 3-vector offset.
+/// Each `(r1, r2)` slice retains only its local top cells before merging and
+/// greedy basin deduplication.
+#[allow(clippy::too_many_arguments)]
+fn score_rot_grid_top_k(
+    rots: &[f64],
+    distances: &[f64],
+    offsets: &[f64],
+    hint_d1_px: f64,
+    hint_d2_px: f64,
+    beam_centered: bool,
     working: &[(f64, f64)],
     lut: &RingLut,
     pixel1: f64,
@@ -356,50 +380,175 @@ fn score_cells_top_k(
     wavelength_m: f64,
     top_k: usize,
 ) -> Vec<GridSearchCandidate> {
-    if cells.is_empty() || working.is_empty() {
+    if rots.is_empty() || distances.is_empty() || offsets.is_empty() || working.is_empty() {
         return Vec::new();
     }
 
-    let scored: Vec<(f64, usize, usize, (f64, f64, f64, f64, f64))> = cells
+    let working_m: Vec<(f64, f64)> = working
+        .iter()
+        .map(|&(d1, d2)| ((d1 + 0.5) * pixel1, (d2 + 0.5) * pixel2))
+        .collect();
+
+    let mut rot_pairs: Vec<(f64, f64)> = Vec::with_capacity(rots.len() * rots.len());
+    for &r1 in rots {
+        if beam_centered && r1.cos().abs() < 1e-4 {
+            continue;
+        }
+        for &r2 in rots {
+            rot_pairs.push((r1, r2));
+        }
+    }
+
+    let base_p1: Vec<f64> = offsets
+        .iter()
+        .map(|&off1| (hint_d1_px + off1 + 0.5) * pixel1)
+        .collect();
+    let base_p2: Vec<f64> = offsets
+        .iter()
+        .map(|&off2| (hint_d2_px + off2 + 0.5) * pixel2)
+        .collect();
+
+    let k_target = top_k.max(1);
+
+    let mut merged: Vec<ScoredCell> = rot_pairs
         .par_iter()
-        .map(|&(d, p1, p2, r1, r2)| {
+        .flat_map(|&(r1, r2)| {
             let tc = TrigConsts::new(r1, r2);
-            let mut ring_mask_lo = 0u64;
-            let mut ring_mask_hi = 0u64;
-            let mut weight_sum = 0.0_f64;
-            let mut count = 0usize;
-            for &(d1, d2) in working {
-                let tth = tth_at(d1, d2, d, p1, p2, pixel1, pixel2, &tc);
-                if let Some((t_near, k_near, local_tol, inv_two_sigma2)) = lut.lookup(tth) {
-                    let r = (tth - t_near).abs();
-                    if r < local_tol {
-                        if k_near < 64 {
-                            ring_mask_lo |= 1u64 << k_near;
-                        } else if k_near < 128 {
-                            ring_mask_hi |= 1u64 << (k_near - 64);
+            let r00 = tc.cr2;
+            let r01 = tc.sr1 * tc.sr2;
+            let r02 = -tc.cr1 * tc.sr2;
+            let r11 = tc.cr1;
+            let r12 = tc.sr1;
+            let r20 = tc.sr2;
+            let r21 = -tc.cr2 * tc.sr1;
+            let r22 = tc.cr1 * tc.cr2;
+
+            // Pre-rotate all working peaks once for this (r1, r2).
+            let rot_peaks: Vec<[f32; 3]> = working_m
+                .iter()
+                .map(|&(ym, xm)| {
+                    [
+                        (ym * r00 + xm * r01) as f32,
+                        (xm * r11) as f32,
+                        (ym * r20 + xm * r21) as f32,
+                    ]
+                })
+                .collect();
+
+            let (shift1_per_d, shift2_per_d) = if beam_centered {
+                (-r2.tan() / tc.cr1, tc.sr1 / tc.cr1)
+            } else {
+                (0.0, 0.0)
+            };
+
+            // Keep the top 2 `(p1, p2)` cells for each distance `d` at this
+            // `(r1, r2)` so neither a broad false distance basin nor a competing
+            // PONI offset at the same distance can crowd out the true basin.
+            let mut per_d_best: Vec<ScoredCell> = Vec::with_capacity(distances.len() * 2);
+
+            for &d in distances {
+                let s1 = d * shift1_per_d;
+                let s2 = d * shift2_per_d;
+                let d_r02 = d * r02;
+                let d_r12 = d * r12;
+                let d_r22 = d * r22;
+                let mut best1: Option<ScoredCell> = None;
+                let mut best2: Option<ScoredCell> = None;
+
+                for &bp1 in &base_p1 {
+                    let p1 = bp1 + s1;
+                    let p1_r00 = -p1 * r00 + d_r02;
+                    let p1_r20 = -p1 * r20 + d_r22;
+
+                    for &bp2 in &base_p2 {
+                        let p2 = bp2 + s2;
+                        let ox = (p1_r00 - p2 * r01) as f32;
+                        let oy = (-p2 * r11 + d_r12) as f32;
+                        let oz = (p1_r20 - p2 * r21) as f32;
+
+                        let mut ring_mask_lo = 0u64;
+                        let mut ring_mask_hi = 0u64;
+                        let mut weight_sum = 0.0_f32;
+                        let mut count = 0usize;
+
+                        for &[px, py, pz] in &rot_peaks {
+                            let x = px + ox;
+                            let y = py + oy;
+                            let z = pz + oz;
+                            let norm2 = x * x + y * y + z * z;
+                            if norm2 <= 0.0 {
+                                continue;
+                            }
+                            let norm = norm2.sqrt();
+                            // Cancellation-free sin(2θ / 2) for small 2θ (e.g. AgBh at 0.1 Å):
+                            // sin²(θ) = (1 - z/n)/2 = (x² + y²) / (2 * n * (n + z)) when z >= 0.
+                            let s = if z >= 0.0 {
+                                let r2 = x * x + y * y;
+                                (r2 / (2.0_f32 * norm * (norm + z))).sqrt()
+                            } else {
+                                (0.5_f32 * (1.0 - (z / norm).clamp(-1.0, 1.0)))
+                                    .max(0.0)
+                                    .sqrt()
+                            };
+                            if let Some(e) = lut.lookup(s) {
+                                let r = (s - e.s_near).abs();
+                                if r < e.local_tol {
+                                    if e.ring_idx < 64 {
+                                        ring_mask_lo |= 1u64 << e.ring_idx;
+                                    } else if e.ring_idx < 128 {
+                                        ring_mask_hi |= 1u64 << (e.ring_idx - 64);
+                                    }
+                                    // Fast 3rd-order rational approximation of
+                                    // exp(-r² / (2·(0.4·tol)²)) = exp(-3.125·u²),
+                                    // matching the Gaussian kernel to ~1% with no exp().
+                                    let u = r * e.inv_tol;
+                                    let x = 3.125_f32 * u * u;
+                                    let x2 = x * x;
+                                    weight_sum += 1.0_f32
+                                        / (1.0_f32 + x + 0.5_f32 * x2 + 0.1667_f32 * x2 * x);
+                                    count += 1;
+                                }
+                            }
                         }
-                        weight_sum += (-(r * r) * inv_two_sigma2).exp();
-                        count += 1;
+
+                        if count > 0 {
+                            let beats1 = best1.is_none_or(|b| weight_sum > b.0);
+                            let beats2 = !beats1 && best2.is_none_or(|b| weight_sum > b.0);
+                            if beats1 || beats2 {
+                                let n_rings = (ring_mask_lo.count_ones()
+                                    + ring_mask_hi.count_ones())
+                                    as usize;
+                                let entry = (weight_sum, n_rings, count, (d, p1, p2, r1, r2));
+                                if beats1 {
+                                    best2 = best1;
+                                    best1 = Some(entry);
+                                } else {
+                                    best2 = Some(entry);
+                                }
+                            }
+                        }
                     }
                 }
+                if let Some(entry) = best1 {
+                    per_d_best.push(entry);
+                }
+                if let Some(entry) = best2 {
+                    per_d_best.push(entry);
+                }
             }
-            let n_rings = (ring_mask_lo.count_ones() + ring_mask_hi.count_ones()) as usize;
-            (weight_sum, n_rings, count, (d, p1, p2, r1, r2))
+            per_d_best
         })
         .collect();
 
-    let mut sorted = scored;
-    sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    merged.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     // Greedy basin deduplication so `top_k` explores distinct local optima.
-    let k_target = top_k.max(1);
-    let mut chosen: Vec<(f64, usize, usize, (f64, f64, f64, f64, f64))> =
-        Vec::with_capacity(k_target);
+    let mut chosen: Vec<ScoredCell> = Vec::with_capacity(k_target);
     let p_tol1 = 35.0 * pixel1;
     let p_tol2 = 35.0 * pixel2;
     let rot_tol = 4.0_f64.to_radians();
 
-    for entry in sorted {
+    for entry in merged {
         if entry.2 == 0 {
             continue;
         }
@@ -442,7 +591,7 @@ fn score_cells_top_k(
 }
 
 /// Like `grid_search` but returns the top-K cells (sorted best-first by
-/// Gaussian-weighted residual score). Each candidate is independent of the others;
+/// residual concentration score). Each candidate is independent of the others;
 /// the caller is expected to L-M refine each and pick the lowest-residual
 /// result to disambiguate between basins with similar grid-score.
 #[allow(clippy::too_many_arguments)]
@@ -472,8 +621,9 @@ pub fn grid_search_top_k(
     };
 
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
-        peaks.iter().step_by(step).copied().collect()
+        let n = peaks.len();
+        let m = options.max_peaks_for_grid.max(1);
+        (0..m).map(|i| peaks[(i * n) / m]).collect()
     } else {
         peaks.to_vec()
     };
@@ -490,24 +640,13 @@ pub fn grid_search_top_k(
         options.poni_grid_steps,
     );
 
-    let mut cells: Vec<(f64, f64, f64, f64, f64)> =
-        Vec::with_capacity(distances.len() * rots.len().pow(2) * poni_offsets.len().pow(2));
-    for &d in &distances {
-        for &r1 in &rots {
-            for &r2 in &rots {
-                for &off1 in &poni_offsets {
-                    for &off2 in &poni_offsets {
-                        let p1 = (poni_d1_hint_px + off1 + 0.5) * pixel1;
-                        let p2 = (poni_d2_hint_px + off2 + 0.5) * pixel2;
-                        cells.push((d, p1, p2, r1, r2));
-                    }
-                }
-            }
-        }
-    }
-
-    score_cells_top_k(
-        &cells,
+    score_rot_grid_top_k(
+        &rots,
+        &distances,
+        &poni_offsets,
+        poni_d1_hint_px,
+        poni_d2_hint_px,
+        false,
         &working,
         &lut,
         pixel1,
@@ -552,8 +691,9 @@ pub(crate) fn grid_search_top_k_beam_centered(
     };
 
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
-        peaks.iter().step_by(step).copied().collect()
+        let n = peaks.len();
+        let m = options.max_peaks_for_grid.max(1);
+        (0..m).map(|i| peaks[(i * n) / m]).collect()
     } else {
         peaks.to_vec()
     };
@@ -570,30 +710,13 @@ pub(crate) fn grid_search_top_k_beam_centered(
         options.poni_grid_steps,
     );
 
-    let mut cells: Vec<(f64, f64, f64, f64, f64)> =
-        Vec::with_capacity(distances.len() * rots.len().pow(2) * beam_offsets.len().pow(2));
-    for &d in &distances {
-        for &r1 in &rots {
-            let (sr1, cr1) = r1.sin_cos();
-            if cr1.abs() < 1e-4 {
-                continue;
-            }
-            let shift2 = d * (sr1 / cr1);
-            for &r2 in &rots {
-                let shift1 = -d * r2.tan() / cr1;
-                for &off1 in &beam_offsets {
-                    let p1 = (beam_d1_hint_px + off1 + 0.5) * pixel1 + shift1;
-                    for &off2 in &beam_offsets {
-                        let p2 = (beam_d2_hint_px + off2 + 0.5) * pixel2 + shift2;
-                        cells.push((d, p1, p2, r1, r2));
-                    }
-                }
-            }
-        }
-    }
-
-    score_cells_top_k(
-        &cells,
+    score_rot_grid_top_k(
+        &rots,
+        &distances,
+        &beam_offsets,
+        beam_d1_hint_px,
+        beam_d2_hint_px,
+        true,
         &working,
         &lut,
         pixel1,
@@ -745,5 +868,80 @@ mod tests {
         // Distance within ~25%
         let d_rel = (result.poni.distance - poni.distance).abs() / poni.distance;
         assert!(d_rel < 0.3, "distance off by {:.2}%", d_rel * 100.0);
+    }
+
+    #[test]
+    fn ring_lut_maps_small_and_dense_angles() {
+        // Small-angle AgBh-like rings (~2 mrad spacing) plus denser outer rings.
+        let targets = vec![0.002, 0.004, 0.006, 0.10, 0.105, 0.40];
+        let lut = RingLut::build(&targets, 8.0e-3).expect("build RingLut");
+        for (k, &tth) in targets.iter().enumerate() {
+            let s = (0.5 * tth).sin() as f32;
+            let entry = lut.lookup(s).expect("lookup hit");
+            assert_eq!(entry.ring_idx as usize, k);
+            assert!((entry.s_near - s).abs() < 1e-4);
+            assert!(entry.local_tol > 0.0 && entry.inv_tol.is_finite());
+        }
+        assert!(lut.lookup(0.99).is_none());
+    }
+
+    #[test]
+    fn grid_search_top_k_recovers_tilted_geometry_deterministically() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 100e-6;
+        poni.pixel2 = 100e-6;
+        poni.distance = 0.2;
+        poni.poni1 = 512.0 * 100e-6;
+        poni.poni2 = 512.0 * 100e-6;
+        poni.rot1 = 22.0_f64.to_radians();
+        poni.rot2 = -8.0_f64.to_radians();
+        poni.wavelength = 1.0e-10;
+        let geom = Geometry::new(1024, 1024, poni.clone());
+        let cal = synthetic_calibrant();
+        let peaks = make_peaks_for(&geom, 32, 6);
+
+        let opts = GridSearchOptions {
+            distance_min: 0.08,
+            distance_max: 0.5,
+            distance_steps: 14,
+            rot_max: 35.0_f64.to_radians(),
+            rot_steps: 9,
+            poni_search_radius_px: 80.0,
+            poni_grid_steps: 3,
+            tolerance_rad: 8.0e-3,
+            max_peaks_for_grid: 300,
+            max_ring_index: 10,
+            top_k: 12,
+        };
+        let a = grid_search_top_k(
+            &peaks,
+            512.0,
+            512.0,
+            &cal,
+            poni.wavelength,
+            poni.pixel1,
+            poni.pixel2,
+            &opts,
+        );
+        let b = grid_search_top_k(
+            &peaks,
+            512.0,
+            512.0,
+            &cal,
+            poni.wavelength,
+            poni.pixel1,
+            poni.pixel2,
+            &opts,
+        );
+        assert!(!a.is_empty());
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a[0].poni.distance, b[0].poni.distance);
+        assert!(
+            a.iter().any(|c| {
+                (c.poni.distance - poni.distance).abs() / poni.distance < 0.25
+                    && (c.poni.rot1 - poni.rot1).abs() < 12.0_f64.to_radians()
+            }),
+            "top_k should include a candidate near the true tilted basin"
+        );
     }
 }
