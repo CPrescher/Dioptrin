@@ -5,6 +5,39 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] - 2026-11-27
+
+### Added
+
+- **Post-calibration `rot3` determination from X-ray linear polarization**
+  (`calibrate_rot3_polarization`, Python `dioptrin.calibrate_rot3_polarization`):
+  works after any calibration workflow (`refine`, `auto_calibrate`,
+  `auto_calibrate_image`, or a loaded `.poni`). Integrates excess ring intensity
+  in constant-width `2θ` bands with flanking background subtraction and exact
+  solid-angle normalization, drops partially masked/saturated bins to prevent
+  peak-clipping bias, and fits free `(c, s)` via Schur-complement Huber IRLS
+  using exact pixel-averaged `⟨cos 2χ₀⟩`/`⟨sin 2χ₀⟩` to recover unbiased
+  `rot3`, 2×2 Fisher uncertainty, Wald `modulation_snr`,
+  `fitted_polarization_ratio`, and a `reliable` quality gate.
+- **`AutoCalibrateImageOptions::polarization_factor`** (and Python
+  `polarization_factor` keyword on `auto_calibrate_image`): optionally runs
+  `calibrate_rot3_polarization` post-refinement and updates `poni.rot3` when
+  the fit passes the `reliable` quality gates.
+
+### Fixed
+
+- **Zero-config local-MAD adaptive peak detection**: added a 2D-strided `8×8`
+  `LocalNoiseGrid` and uniformity-guided threshold adaptation in
+  `auto_calibrate_image` so off-center or uneven patterns (such as
+  `LaB6_OffCenter_PE`) sample rings uniformly even when a caller forwards a
+  fixed starting `peak_threshold_sigma`, without flooding spotty or noisy
+  images into the background noise floor.
+- **2D PONI local-maxima retention in `grid_search_top_k`**: prevented adjacent
+  cells in a single false PONI basin from evicting a separate true basin in
+  legacy `auto_calibrate` grid search (fixing `ceo2_side` strip calibration).
+- **Auto-calibration docs**: regenerated `docs/images/auto_cal_pipeline.png`
+  with the true `0.4066 Å` Pilatus wavelength.
+
 ## [0.18.1] - 2026-11-27
 
 ### Added
