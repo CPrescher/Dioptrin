@@ -5,6 +5,40 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-11-27
+
+### Added
+
+- **Auto-calibration user guide** (`docs/auto-calibration.md`): step-by-step
+  explanation of the 5-stage pipeline with real `CeO2` Pilatus 1M walkthrough
+  plots and a challenging-regime gallery.
+
+### Fixed
+
+- **Gap-edge peak suppression & masking**: switched peak-extraction smoothing
+  and background estimation in `auto_calibrate_image` to mask-aware normalized
+  convolution (`blur(img * mask) / blur(mask)`), eliminating artificial edge
+  ridges along module gaps, beamstops, and circular detector rims. Added
+  automatic internal zero-gap row/column detection and flat-field-tolerant
+  auto-saturation plateau detection.
+- **Hot pixels, dense calibrants & progressive ring refinement**: added a
+  raw-noise isolated 1-px hot-pixel filter (preserving real Pilatus 1-px Bragg
+  spots), `8×8` spatially balanced peak selection, intensity-prioritized 1D
+  distance indexing, progressive 2D ring expansion (`6 → 12 → up to 28`), and
+  automatic relaxed-threshold retry on verification failure (fixing
+  `LaB6_OffCenter_PE` ring count and improving the 31-case stress matrix to
+  **30/31 blind, 30/31 hinted, 0 false positives**).
+
+### Performance
+
+- **3–15× faster `auto_calibrate_image`**: replaced the 161-tap Gaussian
+  background blur with a parallel 3-pass $O(1)$ `f32` sliding-window box blur,
+  added early-exit in radial candidate refinement, hoisted `(rot1, rot2)`
+  rotation matrices with L1-resident `f32` pre-rotated peaks and a
+  cancellation-free `sin(2θ/2)` `RingLut` (3rd-order rational Gaussian, zero
+  `atan2`/`exp`) in the 5D grid search, and parallelized grid candidate L-M
+  refinement with Rayon.
+
 ## [0.18.0] - 2026-11-27
 
 ### Added
