@@ -1713,35 +1713,62 @@ fn build_valid_mask(
     explicit_upper_limit: Option<f64>,
 ) -> (Vec<bool>, f64, f64) {
     let n = dim1 * dim2;
-    // Auto-detect flat-topped saturation plateaus (e.g. 16-bit CCDs clipping at
-    // 65535) when the caller did not pass an explicit `intensity_limit`.
-    // Require >= 8 sampled pixels within 0.1% of the maximum value >= 65_000 so
-    // genuinely bright 32-bit/summed powder rings are not falsely masked out.
+    // Auto-detect flat-topped hardware saturation plateaus at any bit depth
+    // (12-bit 4095, 14-bit 16383, 16-bit 65535, 20-bit, or dark-subtracted
+    // ceilings) when the caller did not pass an explicit `intensity_limit`.
+    // Skips user-masked pixels and requires >= 8 cardinally-adjacent pixel
+    // pairs near `max_v` (`>= 0.995 * max_v`, `|v - nb| <= 0.005 * max_v`) so
+    // unsaturated bright 32-bit/summed powder rings are not falsely masked.
     let upper_limit = match explicit_upper_limit {
         Some(lim) => lim,
         None => {
-            let step = (n / 32_768).max(1);
-            let mut max_v = 0.0_f64;
-            let mut k = 0;
-            while k < n {
-                let v = image[k];
-                if v.is_finite() && v < 4.0e9 && v > max_v {
-                    max_v = v;
-                }
-                k += step;
-            }
-            if max_v >= 65_000.0 {
-                let sat_thresh = 0.999 * max_v;
-                let mut n_sat = 0usize;
-                let mut k = 0;
-                while k < n {
-                    let v = image[k];
-                    if v.is_finite() && v < 4.0e9 && v >= sat_thresh {
-                        n_sat += 1;
+            let max_v = (0..n)
+                .into_par_iter()
+                .filter_map(|k| {
+                    if user_mask.is_some_and(|m| m[k]) {
+                        return None;
                     }
-                    k += step;
+                    let v = image[k];
+                    (v.is_finite() && v < 4.0e9).then_some(v)
+                })
+                .reduce(|| 0.0_f64, f64::max);
+            if max_v >= 4_000.0 && dim1 >= 2 && dim2 >= 2 {
+                let sat_thresh = 0.995 * max_v;
+                let flat_eps = 0.005 * max_v;
+                let flat_pairs: usize = (0..dim1)
+                    .into_par_iter()
+                    .map(|i| {
+                        let row = i * dim2;
+                        let mut pairs = 0usize;
+                        for j in 0..dim2 {
+                            let idx = row + j;
+                            if user_mask.is_some_and(|m| m[idx]) {
+                                continue;
+                            }
+                            let v = image[idx];
+                            if v.is_finite() && v < 4.0e9 && v >= sat_thresh {
+                                if j + 1 < dim2
+                                    && !user_mask.is_some_and(|m| m[idx + 1])
+                                    && (v - image[idx + 1]).abs() <= flat_eps
+                                {
+                                    pairs += 1;
+                                }
+                                if i + 1 < dim1
+                                    && !user_mask.is_some_and(|m| m[idx + dim2])
+                                    && (v - image[idx + dim2]).abs() <= flat_eps
+                                {
+                                    pairs += 1;
+                                }
+                            }
+                        }
+                        pairs
+                    })
+                    .sum();
+                if flat_pairs >= 8 {
+                    0.995 * max_v
+                } else {
+                    4.0e9
                 }
-                if n_sat >= 8 { 0.995 * max_v } else { 4.0e9 }
             } else {
                 4.0e9
             }
@@ -3278,7 +3305,7 @@ fn extract_ring_peaks_2d_with_tangent(
             } else if r_ring_px < 250.0 {
                 tangent_half_px.min(1)
             } else {
-                tangent_half_px
+                tangent_half_px.min(4)
             };
             let th = eff_tangent_half as isize;
             let mut min_cnt = 2 * eff_tangent_half + 1;
@@ -3354,7 +3381,7 @@ fn extract_ring_peaks_2d_with_tangent(
             } else {
                 1.0
             };
-            let snr_mult = if eff_tangent_half > 0 { 3.0 } else { 2.5 };
+            let snr_mult = if eff_tangent_half > 0 { 3.2 } else { 2.5 };
             let min_peak_snr = snr_mult * s_loc / n_eff.sqrt();
             if (best_val - m_loc) < min_peak_snr || (best_val - min_val) < min_peak_snr {
                 continue;
@@ -3370,7 +3397,146 @@ fn extract_ring_peaks_2d_with_tangent(
                 0.0
             };
             let s_refined = (best_idx as isize - w) as f64 + sub;
-            pts.push(d1 + s_refined * u1, d2 + s_refined * u2, Some(ring_k));
+
+            // When tangent averaging is active, distinguish a continuous ring
+            // from an isolated Bragg spot grazing the edge of the tangent strip:
+            // - If a single spot dominates the strip, snap onto its interior
+            //   tangent peak (skipping edge-grazed spots so dots never land in
+            //   dark space 4 px beside a spot).
+            // - On a continuous ring, require the center ray itself to carry
+            //   genuine ring signal above background.
+            let mut s_final = s_refined;
+            let mut t_refined = 0.0_f64;
+            if th > 0 {
+                let b1 = d1 + s_refined * u1;
+                let b2 = d2 + s_refined * u2;
+                let mut tap_vals = [0.0_f64; 9];
+                let mut tap_ok = [false; 9];
+                let n_taps_u = (2 * eff_tangent_half + 1).min(9);
+                let mut valid_vals = Vec::with_capacity(n_taps_u);
+                let mut max_ti = eff_tangent_half;
+                let mut max_tv = f64::NEG_INFINITY;
+                for ti in 0..n_taps_u {
+                    let kt = ti as isize - th;
+                    let td = kt as f64 * 1.5;
+                    if let Some(v) = sample_bilinear_valid(
+                        residual,
+                        valid,
+                        dim1,
+                        dim2,
+                        b1 + td * t1,
+                        b2 + td * t2,
+                    ) {
+                        tap_vals[ti] = v;
+                        tap_ok[ti] = true;
+                        valid_vals.push(v);
+                        if v > max_tv {
+                            max_tv = v;
+                            max_ti = ti;
+                        }
+                    }
+                }
+                if valid_vals.is_empty() {
+                    continue;
+                }
+                let mid = valid_vals.len() / 2;
+                valid_vals.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+                let tap_med = valid_vals[mid];
+                let center_v = if tap_ok[eff_tangent_half] {
+                    tap_vals[eff_tangent_half]
+                } else {
+                    tap_med
+                };
+
+                let is_spotty_strip = (max_tv - m_loc) >= 5.0 * s_loc
+                    && (max_tv - m_loc) > 2.5 * (tap_med - m_loc).max(s_loc);
+                if is_spotty_strip {
+                    // Isolated Bragg spot: reject if it's on the strip boundary
+                    // (would be an off-center graze), otherwise snap onto the
+                    // spot's actual 2D center (tangent + radial re-refinement).
+                    if max_ti == 0 || max_ti + 1 >= n_taps_u {
+                        continue;
+                    }
+                    if !tap_ok[max_ti - 1] || !tap_ok[max_ti + 1] {
+                        continue;
+                    }
+                    let tm = tap_vals[max_ti - 1];
+                    let t0 = tap_vals[max_ti];
+                    let tp = tap_vals[max_ti + 1];
+                    let tden = tm - 2.0 * t0 + tp;
+                    let tsub = if tden.abs() > 1e-12 {
+                        (0.5 * (tm - tp) / tden).clamp(-0.5, 0.5)
+                    } else {
+                        0.0
+                    };
+                    t_refined = ((max_ti as isize - th) as f64 + tsub) * 1.5;
+
+                    // Re-refine radial position along the single ray through the
+                    // snapped spot center so both radial and tangent coords land
+                    // dead-center on the Bragg spot; skip if radial check fails.
+                    let sc1 = d1 + t_refined * t1;
+                    let sc2 = d2 + t_refined * t2;
+                    let mut r_best_s = s_refined;
+                    let mut r_best_v = f64::NEG_INFINITY;
+                    let mut r_line = Vec::with_capacity(2 * w_eff + 1);
+                    let mut r_ok = true;
+                    for s in -w..=w {
+                        let sd = s as f64;
+                        match sample_bilinear_valid(
+                            residual,
+                            valid,
+                            dim1,
+                            dim2,
+                            sc1 + sd * u1,
+                            sc2 + sd * u2,
+                        ) {
+                            Some(v) => {
+                                if v > r_best_v {
+                                    r_best_v = v;
+                                    r_best_s = sd;
+                                }
+                                r_line.push(v);
+                            }
+                            None => {
+                                r_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !r_ok || r_line.len() < 5 {
+                        continue;
+                    }
+                    let r_idx = (r_best_s.round() as isize + w) as usize;
+                    if r_idx == 0 || r_idx + 1 >= r_line.len() || (r_best_v - m_loc) < 2.5 * s_loc {
+                        continue;
+                    }
+                    let rm = r_line[r_idx - 1];
+                    let r0 = r_line[r_idx];
+                    let rp = r_line[r_idx + 1];
+                    let rden = rm - 2.0 * r0 + rp;
+                    let rsub = if rden.abs() > 1e-12 {
+                        (0.5 * (rm - rp) / rden).clamp(-0.5, 0.5)
+                    } else {
+                        0.0
+                    };
+                    s_final = (r_idx as isize - w) as f64 + rsub;
+                } else if (center_v - m_loc) < 0.45 * (best_val - m_loc)
+                    || (center_v - min_val) < 1.5 * s_loc / n_eff.sqrt()
+                {
+                    continue;
+                }
+            }
+
+            let out_d1 = d1 + s_final * u1 + t_refined * t1;
+            let out_d2 = d2 + s_final * u2 + t_refined * t2;
+            // Dedupe adjacent overlapping strips that snapped to the same spot.
+            if ring_pts > 0
+                && let (Some(&prev_d1), Some(&prev_d2)) = (pts.d1.last(), pts.d2.last())
+                && (out_d1 - prev_d1).hypot(out_d2 - prev_d2) < 1.5
+            {
+                continue;
+            }
+            pts.push(out_d1, out_d2, Some(ring_k));
             ring_pts += 1;
         }
 
@@ -4202,5 +4368,56 @@ mod tests {
             matches!(res, Err(AutoCalibrateError::Cancelled)),
             "expected Cancelled during retry, got {res:?}"
         );
+    }
+
+    #[test]
+    fn build_valid_mask_auto_detects_saturation_plateaus() {
+        let (dim1, dim2) = (64, 64);
+
+        // 1. 14-bit clipped 4x4 plateau at 16_383 (plus a masked 1e7 hot pixel).
+        let mut img = vec![100.0; dim1 * dim2];
+        for i in 20..24 {
+            for j in 20..24 {
+                img[i * dim2 + j] = 16_383.0;
+            }
+        }
+        let mut mask = vec![false; dim1 * dim2];
+        img[5 * dim2 + 5] = 1.0e7;
+        mask[5 * dim2 + 5] = true;
+        let (valid, _, upper) = build_valid_mask(&img, Some(&mask), dim1, dim2, None);
+        assert!(
+            upper < 16_380.0 && upper > 16_000.0,
+            "expected 14-bit ceiling ~16300, got {upper}"
+        );
+        assert!(!valid[21 * dim2 + 21], "saturated core must be masked");
+
+        // 2. Dark-subtracted 16-bit plateau (65_420..65_535, within 0.2%).
+        let mut img_dark = vec![50.0; dim1 * dim2];
+        for i in 30..34 {
+            for j in 30..34 {
+                img_dark[i * dim2 + j] = 65_535.0 - ((i + j) % 7) as f64 * 15.0;
+            }
+        }
+        let (valid_d, _, upper_d) = build_valid_mask(&img_dark, None, dim1, dim2, None);
+        assert!(
+            upper_d < 65_500.0 && upper_d > 64_000.0,
+            "expected dark-subtracted 16-bit ceiling, got {upper_d}"
+        );
+        assert!(!valid_d[31 * dim2 + 31]);
+
+        // 3. Unsaturated smooth Gaussian peak at 30_000 must stay unmasked.
+        let mut img_unsat = vec![50.0; dim1 * dim2];
+        for i in 0..dim1 {
+            for j in 0..dim2 {
+                let d2 = (i as f64 - 32.0).powi(2) + (j as f64 - 32.0).powi(2);
+                img_unsat[i * dim2 + j] += 30_000.0 * (-d2 / 8.0).exp();
+            }
+        }
+        let (valid_u, _, upper_u) = build_valid_mask(&img_unsat, None, dim1, dim2, None);
+        assert!(
+            upper_u > 3.9e9,
+            "unsaturated peak should not trigger ceiling, got {upper_u}"
+        );
+        assert!(valid_u[32 * dim2 + 32]);
     }
 }
