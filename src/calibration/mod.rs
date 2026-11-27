@@ -49,7 +49,8 @@ pub use grid_search::{
     GridSearchCandidate, GridSearchOptions, GridSearchResult, grid_search, grid_search_top_k,
 };
 pub use image_auto::{
-    AutoCalibrateImageOptions, auto_calibrate_image, auto_calibrate_image_with_mask,
+    AutoCalibrateImageOptions, AutoCalibrateProgress, AutoCalibrateStage, auto_calibrate_image,
+    auto_calibrate_image_with_mask, auto_calibrate_image_with_progress,
 };
 pub use inversion::{InvertedGeometry, aggregate, invert};
 pub use massif::{ImagePeakOptions, MassifOptions, PreparedMassif, find_peaks, find_peaks_image};

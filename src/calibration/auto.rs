@@ -172,6 +172,8 @@ pub enum AutoCalibrateError {
     NoConfidentIdentity,
     /// The final refinement failed.
     Refine(CalibrationError),
+    /// Cancelled early by the caller's progress callback.
+    Cancelled,
 }
 
 impl std::fmt::Display for AutoCalibrateError {
@@ -186,6 +188,7 @@ impl std::fmt::Display for AutoCalibrateError {
                 )
             }
             AutoCalibrateError::Refine(err) => write!(f, "refinement failed: {}", err),
+            AutoCalibrateError::Cancelled => write!(f, "auto-calibration cancelled"),
         }
     }
 }

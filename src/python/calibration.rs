@@ -846,6 +846,12 @@ pub fn auto_calibrate_py(
 ///                         detectors (default `True`)
 /// * `max_iter`          — maximum L-M iterations per refinement pass (default `200`)
 /// * `tol`               — L-M convergence tolerance (default `1e-9`)
+/// * `intensity_limit`   — optional upper intensity cutoff; when `None` (default), auto-detects
+///                         flat-topped saturation plateaus (`>= 65_000`)
+/// * `peak_threshold_sigma` — optional MAD peak threshold multiplier; when `None` (default),
+///                         starts at `3.5σ` and relaxes automatically on faint images
+/// * `search_half_width_px` — optional 2D ring-profile search half-width (pixels); when `None`
+///                         (default), adapts to the 1D ring width and local inter-ring spacing
 #[pyfunction]
 #[pyo3(name = "auto_calibrate_image")]
 #[pyo3(signature = (
@@ -860,6 +866,9 @@ pub fn auto_calibrate_py(
     max_ring_index=65,
     max_iter=200,
     tol=1e-9,
+    intensity_limit=None,
+    peak_threshold_sigma=None,
+    search_half_width_px=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn auto_calibrate_image_py(
@@ -879,6 +888,9 @@ pub fn auto_calibrate_image_py(
     max_ring_index: usize,
     max_iter: usize,
     tol: f64,
+    intensity_limit: Option<f64>,
+    peak_threshold_sigma: Option<f64>,
+    search_half_width_px: Option<usize>,
 ) -> PyResult<PyAutoCalibrateResult> {
     let view = image.as_array();
     let shape = view.shape();
@@ -899,6 +911,9 @@ pub fn auto_calibrate_image_py(
         refine_mask,
         enable_tilt_fallback,
         max_ring_index,
+        intensity_limit,
+        peak_threshold_sigma,
+        search_half_width_px,
         max_iter,
         tol,
     };

@@ -12,7 +12,8 @@ use crate::detector;
 use crate::geometry::Geometry;
 use crate::poni::Poni;
 use crate::simulation::{
-    PeakProfile, RingIntensity, SimulationError, SimulationOptions, simulate_diffraction,
+    PeakProfile, RingIntensity, SimulationError, SimulationOptions, SpottyOptions,
+    simulate_diffraction,
 };
 
 use super::calibration::PyCalibrant;
@@ -171,10 +172,16 @@ fn parse_ring_intensity(obj: &Bound<'_, PyAny>, fallback: f64) -> PyResult<RingI
 ///                           `Integrator` and pyFAI).
 /// * `polarization_factor` — optional linear polarization factor in `[-1, 1]` (default `None`).
 /// * `mask_value`          — value written to built-in detector mask gaps, or `None` (default `0.0`).
-/// * `poisson_noise`       — apply Poisson shot noise (default `False`).
-/// * `readout_noise`       — Gaussian readout noise std dev (default `0.0`; may produce negative,
-///                           non-integer pixel values).
-/// * `rng_seed`            — deterministic RNG seed for noise (default `0x5EED_D109_7A50_0001`).
+/// * `poisson_noise`              — apply Poisson shot noise (default `False`).
+/// * `readout_noise`              — Gaussian readout noise std dev (default `0.0`; may produce negative,
+///                                  non-integer pixel values).
+/// * `rng_seed`                   — deterministic RNG seed for noise/spots (default `0x5EED_D109_7A50_0001`).
+/// * `spotty_spots_per_ring`      — optional number of discrete crystallite spots per ring; when set,
+///                                  enables coarse-grain ("spotty") azimuthal modulation (default `None`).
+/// * `spotty_azimuthal_fwhm_rad`  — azimuthal FWHM of each spot in radians when `spotty_spots_per_ring`
+///                                  is set (default `0.03`).
+/// * `spotty_continuous_fraction` — continuous ring amplitude in `[0, 1]` superposed under discrete
+///                                  spots when `spotty_spots_per_ring` is set (default `0.0`).
 ///
 /// Returns a 2D `numpy.ndarray` (`float64`) of shape `(dim1, dim2)`.
 #[pyfunction]
@@ -198,6 +205,9 @@ fn parse_ring_intensity(obj: &Bound<'_, PyAny>, fallback: f64) -> PyResult<RingI
     poisson_noise=false,
     readout_noise=0.0,
     rng_seed=0x5EED_D109_7A50_0001,
+    spotty_spots_per_ring=None,
+    spotty_azimuthal_fwhm_rad=0.03,
+    spotty_continuous_fraction=0.0,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn simulate_diffraction_py<'py>(
@@ -220,6 +230,9 @@ pub fn simulate_diffraction_py<'py>(
     poisson_noise: bool,
     readout_noise: f64,
     rng_seed: u64,
+    spotty_spots_per_ring: Option<usize>,
+    spotty_azimuthal_fwhm_rad: f64,
+    spotty_continuous_fraction: f64,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let geom = resolve_geometry(geometry, shape, detector)?;
     let cal = resolve_calibrant(calibrant)?;
@@ -228,6 +241,11 @@ pub fn simulate_diffraction_py<'py>(
         Some(obj) => parse_ring_intensity(obj, fallback_intensity)?,
         None => RingIntensity::Uniform,
     };
+    let spotty = spotty_spots_per_ring.map(|spots_per_ring| SpottyOptions {
+        spots_per_ring,
+        azimuthal_fwhm_rad: spotty_azimuthal_fwhm_rad,
+        continuous_fraction: spotty_continuous_fraction,
+    });
 
     let options = SimulationOptions {
         profile: parsed_profile,
@@ -235,6 +253,7 @@ pub fn simulate_diffraction_py<'py>(
         i_max,
         background,
         ring_intensity: parsed_intensity,
+        spotty,
         oversampling,
         apply_solid_angle,
         polarization_factor,
