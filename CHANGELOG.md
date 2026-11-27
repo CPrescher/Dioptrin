@@ -5,6 +5,40 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-11-27
+
+### Added
+
+- **Diffuse-background `rot3` polarization fallback** in `calibrate_rot3_polarization`:
+  - Added `PolarizationRot3Source::{Auto, Rings, Diffuse}` (default `Auto`),
+    new `PolarizationRot3Options::source` field, and `PolarizationRot3Result::source_used`
+    (Python: `source="auto" | "rings" | "diffuse"` parameter and `source_used`
+    property on `PolarizationRot3Result`).
+  - In `Auto` mode, tries calibrant powder rings first (fast and immune to
+    constant dark-pedestal bias when rings are smooth); when powder rings are
+    spotty, weak, or unreliable (e.g. `CeO2_Pilatus1M`, `LaB6_40keV_MarCCD`,
+    `LaB6_OffCenter_PE`, `eiger_0000`), automatically falls back to
+    **between-rings diffuse scattering** binned into 48 radial `2θ` bands via
+    a zero-allocation Rayon clipped mean (accurate down to low-count 2–4
+    photons/px frames).
+  - On tilted detectors (`hypot(rot1, rot2) >= 3°`), includes a shared additive
+    dark-pedestal regressor `D · ⟨1/Ω⟩` in the Schur-complement Huber IRLS to
+    eliminate `D / Ω(χ)` `cos(2χ)` bias and propagate its covariance into `rot3`.
+
+### Fixed
+
+- **Winsorized Huber residual scale & detector sentinel/plateau filtering** in
+  `calibrate_rot3_polarization`: winsorizes standardized residuals in `s²` so
+  a single corrupted/sentinel bin cannot collapse `SNR` to `0`, skips exact
+  Eiger `u32::MAX` (`4_294_967_295`) gap sentinels, detects adjacent saturation
+  plateaus (`14-bit` / `16-bit` / `20-bit` Pilatus), and always excludes
+  negative gap pixels (`-1`/`-2`) in diffuse mode.
+
+### Breaking Changes
+
+- Added public fields `PolarizationRot3Options::source` and
+  `PolarizationRot3Result::source_used` (structs are not `#[non_exhaustive]`).
+
 ## [0.18.5] - 2026-11-27
 
 ### Fixed
