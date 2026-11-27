@@ -8,11 +8,11 @@ use pyo3::types::{PyDict, PyList};
 use crate::calibration::{
     AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
     CalibrationOptions, CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions,
-    Loss, MassifOptions, ParamMask, PolarizationRot3Options, PolarizationRot3Result, RansacOptions,
-    RansacResult, RefineImageOptions, RefineImageResult, RingCenterOptions, RingIdOptions,
-    RingIdResult, auto_calibrate, auto_calibrate_image_with_mask, calibrate_rot3_polarization,
-    estimate_ring_center, extract_ring_peaks, find_peaks, find_peaks_image, identify_rings,
-    ransac_ellipses, refine, refine_image,
+    Loss, MassifOptions, ParamMask, PolarizationRot3Options, PolarizationRot3Result,
+    PolarizationRot3Source, RansacOptions, RansacResult, RefineImageOptions, RefineImageResult,
+    RingCenterOptions, RingIdOptions, RingIdResult, auto_calibrate, auto_calibrate_image_with_mask,
+    calibrate_rot3_polarization, estimate_ring_center, extract_ring_peaks, find_peaks,
+    find_peaks_image, identify_rings, ransac_ellipses, refine, refine_image,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -1082,6 +1082,14 @@ impl PyPolarizationRot3Result {
         self.inner.reliable
     }
     #[getter]
+    fn source_used(&self) -> &'static str {
+        match self.inner.source_used {
+            PolarizationRot3Source::Rings => "rings",
+            PolarizationRot3Source::Diffuse => "diffuse",
+            PolarizationRot3Source::Auto => "auto",
+        }
+    }
+    #[getter]
     fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
         let p = &self.inner.poni;
@@ -1098,18 +1106,20 @@ impl PyPolarizationRot3Result {
     }
     fn __repr__(&self) -> String {
         format!(
-            "PolarizationRot3Result(rot3={:.4} rad [{:.2}°], uncertainty={:.2}°, snr={:.1}, rings={})",
+            "PolarizationRot3Result(rot3={:.4} rad [{:.2}°], uncertainty={:.2}°, snr={:.1}, rings={}, source={:?})",
             self.inner.rot3_rad,
             self.inner.rot3_rad.to_degrees(),
             self.inner.uncertainty_rad.to_degrees(),
             self.inner.modulation_snr,
-            self.inner.n_rings_used
+            self.inner.n_rings_used,
+            self.source_used()
         )
     }
 }
 
 /// Calibrate `rot3` from the azimuthal intensity modulation of powder rings
-/// under a known linear X-ray polarization factor `polarization_factor`.
+/// and/or between-rings diffuse scattering under a known linear X-ray
+/// polarization factor `polarization_factor`.
 ///
 /// Works after **any** calibration workflow — manual peak picking + `refine`,
 /// `auto_calibrate`, `auto_calibrate_image`, or a loaded `.poni` file.
@@ -1127,6 +1137,7 @@ impl PyPolarizationRot3Result {
     ring_half_width_rad=None,
     min_samples_per_ring=12,
     min_total_samples=24,
+    source="auto",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn calibrate_rot3_polarization_py(
@@ -1142,6 +1153,7 @@ pub fn calibrate_rot3_polarization_py(
     ring_half_width_rad: Option<f64>,
     min_samples_per_ring: usize,
     min_total_samples: usize,
+    source: &str,
 ) -> PyResult<PyPolarizationRot3Result> {
     let view = image.as_array();
     let shape = view.shape();
@@ -1195,7 +1207,18 @@ pub fn calibrate_rot3_polarization_py(
         None => None,
     };
 
+    let source_enum = match source.to_ascii_lowercase().as_str() {
+        "auto" => PolarizationRot3Source::Auto,
+        "rings" => PolarizationRot3Source::Rings,
+        "diffuse" => PolarizationRot3Source::Diffuse,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "invalid source {other:?}; expected 'auto', 'rings', or 'diffuse'"
+            )));
+        }
+    };
     let opts = PolarizationRot3Options {
+        source: source_enum,
         n_az_bins,
         min_tth_rad: min_tth_deg.to_radians(),
         max_rings,

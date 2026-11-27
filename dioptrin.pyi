@@ -2337,6 +2337,11 @@ class PolarizationRot3Result:
         ...
 
     @property
+    def source_used(self) -> Literal["rings", "diffuse"]:
+        """Which signal source produced the fit (``"rings"`` or ``"diffuse"``)."""
+        ...
+
+    @property
     def poni(self) -> dict[str, float]:
         """Copy of the input PONI dict with ``rot3`` updated."""
         ...
@@ -2354,10 +2359,16 @@ def calibrate_rot3_polarization(
     ring_half_width_rad: Optional[float] = None,
     min_samples_per_ring: int = 12,
     min_total_samples: int = 24,
+    source: Literal["auto", "rings", "diffuse"] = "auto",
 ) -> PolarizationRot3Result:
     """
     Calibrate ``rot3`` from the azimuthal intensity modulation of powder rings
-    under a known linear X-ray polarization factor.
+    and/or between-rings diffuse scattering under a known linear X-ray
+    polarization factor.
+
+    With ``source="auto"`` (default), tries calibrant powder rings first and
+    automatically falls back to between-rings diffuse background when rings
+    are spotty or unreliable.
 
     Works after any calibration workflow — manual peak picking + ``refine``,
     ``auto_calibrate``, ``auto_calibrate_image``, or a loaded ``.poni`` file.

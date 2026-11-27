@@ -47,13 +47,32 @@ use crate::poni::Poni;
 
 use super::calibrant::Calibrant;
 
+/// Which image signal to fit for `rot3` polarization calibration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PolarizationRot3Source {
+    /// Automatically select the best source (default): tries calibrant powder
+    /// rings first (fast and immune to diffuse dark-pedestal bias when rings
+    /// are smooth), and falls back to between-rings diffuse background when
+    /// rings are spotty, weak, or unreliable.
+    #[default]
+    Auto,
+    /// Use only the azimuthal intensity variation along calibrant powder rings.
+    Rings,
+    /// Use only the diffuse background in radial `2θ` bands between calibrant
+    /// rings (immune to crystallite spottiness on area detectors).
+    Diffuse,
+}
+
 /// Configuration for [`calibrate_rot3_polarization`].
 #[derive(Debug, Clone)]
 pub struct PolarizationRot3Options {
-    /// Number of azimuthal bins around `[-π, π]` per ring (default `72`, 5°/bin).
+    /// Which image signal to fit (`Auto` default, `Rings`, or `Diffuse`).
+    pub source: PolarizationRot3Source,
+    /// Number of azimuthal bins around `[-π, π]` per ring or radial band
+    /// (default `72`, 5°/bin).
     pub n_az_bins: usize,
-    /// Minimum scattering angle `2θ` in radians for rings included in the fit
-    /// (default `5°` — lower angles have negligible `sin²(2θ)` modulation).
+    /// Minimum scattering angle `2θ` in radians for rings/bands included in the
+    /// fit (default `5°` — lower angles have negligible `sin²(2θ)` modulation).
     pub min_tth_rad: f64,
     /// Maximum number of calibrant rings (above `min_tth_rad`) to inspect
     /// (default `32`).
@@ -62,17 +81,18 @@ pub struct PolarizationRot3Options {
     /// peak band. `None` (default) auto-selects from the local pixel angular
     /// size (`max(3.5 · Δ2θ_px, 0.002 rad)`), clamped to avoid neighboring rings.
     pub ring_half_width_rad: Option<f64>,
-    /// Minimum populated unmasked azimuthal bins required for a ring to
-    /// contribute (default `12`).
+    /// Minimum populated unmasked azimuthal bins required for a ring or radial
+    /// band to contribute (default `12`, i.e. ≥ 60° azimuthal span at 72 bins).
     pub min_samples_per_ring: usize,
-    /// Minimum total `(ring, azimuth)` samples across all rings required to
-    /// accept a fit (default `24`).
+    /// Minimum total `(ring/band, azimuth)` samples across all rings/bands
+    /// required to accept a fit (default `24`).
     pub min_total_samples: usize,
 }
 
 impl Default for PolarizationRot3Options {
     fn default() -> Self {
         Self {
+            source: PolarizationRot3Source::Auto,
             n_az_bins: 72,
             min_tth_rad: 5.0_f64.to_radians(),
             max_rings: 32,
@@ -94,9 +114,11 @@ pub struct PolarizationRot3Result {
     /// Estimated 1σ uncertainty on `rot3_rad` (radians), derived from the
     /// closed-form 2×2 covariance of `(c, s)` via the delta method.
     pub uncertainty_rad: f64,
-    /// Number of calibrant rings that contributed to the fit.
+    /// Number of calibrant rings (for [`PolarizationRot3Source::Rings`]) or
+    /// radial diffuse bands (for [`PolarizationRot3Source::Diffuse`]) that
+    /// contributed to the fit.
     pub n_rings_used: usize,
-    /// Total number of `(ring, azimuth)` intensity samples used in the fit.
+    /// Total number of `(ring/band, azimuth)` intensity samples used in the fit.
     pub n_samples: usize,
     /// Wald detection significance (`√([c, s] · Σ⁻¹ · [c, s])`) of the
     /// `cos(2χ)` polarization modulation relative to an unpolarized model.
@@ -109,6 +131,9 @@ pub struct PolarizationRot3Result {
     /// `uncertainty_rad <= 3.5°`, and `fitted_polarization_ratio ∈ [0.5, 1.5]`)
     /// and is safe to apply automatically to a calibrated `Poni`.
     pub reliable: bool,
+    /// Which signal source produced this fit ([`PolarizationRot3Source::Rings`]
+    /// or [`PolarizationRot3Source::Diffuse`]).
+    pub source_used: PolarizationRot3Source,
 }
 
 /// Failure modes for [`calibrate_rot3_polarization`].
@@ -200,8 +225,36 @@ fn median_of(vals: &mut [f64]) -> f64 {
     vals[mid]
 }
 
+fn median_of_f32(vals: &mut [f32]) -> f64 {
+    let n = vals.len();
+    let mid = n / 2;
+    vals.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+    vals[mid] as f64
+}
+
+#[derive(Default, Clone)]
+struct DiffuseCellAcc {
+    vals: Vec<f32>,
+    cos2_sum: f64,
+    sin2_sum: f64,
+}
+
+impl DiffuseCellAcc {
+    fn merge(&mut self, other: &mut Self) {
+        self.vals.append(&mut other.vals);
+        self.cos2_sum += other.cos2_sum;
+        self.sin2_sum += other.sin2_sum;
+    }
+}
+
 /// Calibrate `rot3` from the azimuthal intensity modulation of powder rings
-/// under a known linear X-ray polarization factor `polarization_factor`.
+/// and/or between-rings diffuse scattering under a known linear X-ray
+/// polarization factor `polarization_factor`.
+///
+/// By default ([`PolarizationRot3Source::Auto`]), tries calibrant powder rings
+/// first (fast and free of dark-pedestal bias when rings are smooth), and
+/// automatically falls back to between-rings diffuse background when rings are
+/// spotty or unreliable.
 ///
 /// Works on any calibrated [`Poni`] (from manual peak picking + `refine`,
 /// `auto_calibrate`, `auto_calibrate_image`, or a loaded `.poni` file).
@@ -291,14 +344,101 @@ pub fn calibrate_rot3_polarization(
     let img_sigma = 1.4826 * median_of(&mut img_devs);
     let mask_negative = img_med > 5.0 && (img_med - 4.0 * img_sigma) > 0.0;
 
-    // Collect calibrant ring 2θ values and compute non-overlapping integration
-    // and flanking background bands for each ring above `min_tth_rad`.
     let all_tths: Vec<f64> = calibrant
         .two_theta_rad(poni.wavelength)
         .into_iter()
         .flatten()
         .filter(|t| t.is_finite() && *t > 1e-4 && *t < PI * 0.49)
         .collect();
+
+    match options.source {
+        PolarizationRot3Source::Rings => fit_rings(
+            image,
+            dim1,
+            dim2,
+            mask,
+            poni,
+            &all_tths,
+            polarization_factor,
+            options,
+            n_az,
+            mask_negative,
+        ),
+        PolarizationRot3Source::Diffuse => fit_diffuse(
+            image,
+            dim1,
+            dim2,
+            mask,
+            poni,
+            &all_tths,
+            polarization_factor,
+            options,
+            n_az,
+            mask_negative,
+        ),
+        PolarizationRot3Source::Auto => {
+            let rings_res = fit_rings(
+                image,
+                dim1,
+                dim2,
+                mask,
+                poni,
+                &all_tths,
+                polarization_factor,
+                options,
+                n_az,
+                mask_negative,
+            );
+            // When powder rings yield a reliable fit, return it directly:
+            // ring-background subtraction cancels any constant dark pedestal,
+            // so reliable ring fits are fast and free of diffuse pedestal bias.
+            if let Ok(ref res) = rings_res
+                && res.reliable
+            {
+                return Ok(res.clone());
+            }
+
+            let diffuse_res = fit_diffuse(
+                image,
+                dim1,
+                dim2,
+                mask,
+                poni,
+                &all_tths,
+                polarization_factor,
+                options,
+                n_az,
+                mask_negative,
+            );
+            match (rings_res, diffuse_res) {
+                (Ok(r), Ok(d)) => {
+                    if d.reliable || d.modulation_snr > r.modulation_snr {
+                        Ok(d)
+                    } else {
+                        Ok(r)
+                    }
+                }
+                (Ok(r), Err(_)) => Ok(r),
+                (Err(_), Ok(d)) => Ok(d),
+                (Err(e), Err(_)) => Err(e),
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fit_rings(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    poni: &Poni,
+    all_tths: &[f64],
+    polarization_factor: f64,
+    options: &PolarizationRot3Options,
+    n_az: usize,
+    mask_negative: bool,
+) -> Result<PolarizationRot3Result, PolarizationRot3Error> {
     if all_tths.is_empty() {
         return Err(PolarizationRot3Error::InsufficientSignal(
             "calibrant has no valid rings at this wavelength".into(),
@@ -484,12 +624,240 @@ pub fn calibrate_rot3_polarization(
         });
     }
 
+    solve_polarization_irls(
+        &ring_data,
+        poni,
+        n_az,
+        options.min_total_samples,
+        PolarizationRot3Source::Rings,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fit_diffuse(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    poni: &Poni,
+    all_tths: &[f64],
+    polarization_factor: f64,
+    options: &PolarizationRot3Options,
+    n_az: usize,
+    mask_negative: bool,
+) -> Result<PolarizationRot3Result, PolarizationRot3Error> {
+    let mut poni0 = poni.clone();
+    poni0.rot3 = 0.0;
+    let tc = TrigonometricConstants::new(&poni0);
+    let p3 = poni0.distance;
+
+    // Estimate visible maximum 2θ from a fast 64×64 grid + corners.
+    let mut tth_max = 0.0_f64;
+    let r_step = (dim1 / 64).max(1);
+    let c_step = (dim2 / 64).max(1);
+    for r in (0..dim1).step_by(r_step).chain(std::iter::once(dim1 - 1)) {
+        let p1 = (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
+        for c in (0..dim2).step_by(c_step).chain(std::iter::once(dim2 - 1)) {
+            let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+            let x1 = f_x1(&p1, &p2, &p3, &tc);
+            let x2 = f_x2(&p1, &p2, &p3, &tc);
+            let x3 = f_x3(&p1, &p2, &p3, &tc);
+            tth_max = tth_max.max(f_tth(&x1, &x2, &x3));
+        }
+    }
+
+    // Prefer higher 2θ where sin²(2θ)/(1+cos²(2θ)) is stronger and low-angle
+    // sample-holder/capillary absorption bias is weaker, while still working
+    // on low-angle setups.
+    let adaptive_lo = (0.35 * tth_max).min(12.0_f64.to_radians());
+    let mut tth_min = options.min_tth_rad.max(adaptive_lo);
+    if tth_max <= tth_min + 0.02 {
+        tth_min = options.min_tth_rad;
+    }
+    if tth_max <= tth_min + 0.02 {
+        return Err(PolarizationRot3Error::InsufficientSignal(
+            "detector 2θ range above min_tth_rad is too narrow for diffuse rot3 fit".into(),
+        ));
+    }
+
+    // Exclude bands around every calibrant ring so spotty Bragg peaks and
+    // their wings do not contaminate the diffuse background.
+    let px_max = poni.pixel1.max(poni.pixel2);
+    let mut ring_exclusions: Vec<(f64, f64)> = all_tths
+        .iter()
+        .copied()
+        .filter(|&t| t < tth_max + 0.05)
+        .map(|tth| {
+            let cos2 = tth.cos().powi(2);
+            let d_tth_px = (px_max / poni.distance) * cos2;
+            let hw = options
+                .ring_half_width_rad
+                .map(|w| 1.5 * w)
+                .unwrap_or_else(|| (5.0 * d_tth_px).max(0.004));
+            (tth, hw)
+        })
+        .collect();
+    ring_exclusions.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    const N_BANDS: usize = 48;
+    let band_w = (tth_max - tth_min) / N_BANDS as f64;
+    let inv_az = (n_az as f64) / (2.0 * PI);
+    let total_cells = N_BANDS * n_az;
+
+    let chunk_rows = (dim1 / rayon::current_num_threads().max(1)).clamp(8, 128);
+    let (mut cells, tth_sums, tth_cnts) = (0..dim1)
+        .into_par_iter()
+        .chunks(chunk_rows)
+        .map(|rows| {
+            let mut local_cells = vec![DiffuseCellAcc::default(); total_cells];
+            let mut local_tth_sum = [0.0_f64; N_BANDS];
+            let mut local_tth_cnt = [0_u64; N_BANDS];
+            for r in rows {
+                let p1 = (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
+                let row_off = r * dim2;
+                for c in 0..dim2 {
+                    let idx = row_off + c;
+                    let v = image[idx];
+                    // Skip masked, non-finite, negative sentinels, and
+                    // zero-padded dead corners on positive-pedestal detectors.
+                    if mask.is_some_and(|m| m[idx]) || !v.is_finite() || (mask_negative && v <= 0.0)
+                    {
+                        continue;
+                    }
+                    let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+                    let x1 = f_x1(&p1, &p2, &p3, &tc);
+                    let x2 = f_x2(&p1, &p2, &p3, &tc);
+                    let x3 = f_x3(&p1, &p2, &p3, &tc);
+                    let tth = f_tth(&x1, &x2, &x3);
+                    if tth < tth_min || tth >= tth_max {
+                        continue;
+                    }
+                    if !ring_exclusions.is_empty() {
+                        let pos = ring_exclusions.partition_point(|&(rt, _)| rt < tth);
+                        let lo = pos.saturating_sub(1);
+                        let hi = (pos + 1).min(ring_exclusions.len());
+                        let mut in_ring = false;
+                        for &(rt, hw) in &ring_exclusions[lo..hi] {
+                            if (tth - rt).abs() <= hw {
+                                in_ring = true;
+                                break;
+                            }
+                        }
+                        if in_ring {
+                            continue;
+                        }
+                    }
+                    let sa = f_solid_angle(&p1, &p2, &p3);
+                    if sa <= 0.0 {
+                        continue;
+                    }
+                    let b_rad = (((tth - tth_min) / band_w).floor() as usize).min(N_BANDS - 1);
+                    let az0 = f_azimuth(&x1, &x2);
+                    let b_az =
+                        (((az0 + PI) * inv_az).floor() as isize).rem_euclid(n_az as isize) as usize;
+                    let cell = &mut local_cells[b_rad * n_az + b_az];
+                    cell.vals.push((v / sa) as f32);
+                    let two_az = 2.0 * az0;
+                    cell.cos2_sum += two_az.cos();
+                    cell.sin2_sum += two_az.sin();
+                    local_tth_sum[b_rad] += tth;
+                    local_tth_cnt[b_rad] += 1;
+                }
+            }
+            (local_cells, local_tth_sum, local_tth_cnt)
+        })
+        .reduce(
+            || {
+                (
+                    vec![DiffuseCellAcc::default(); total_cells],
+                    [0.0_f64; N_BANDS],
+                    [0_u64; N_BANDS],
+                )
+            },
+            |(mut a_cells, mut a_ts, mut a_tc), (mut b_cells, b_ts, b_tc)| {
+                for (dst, src) in a_cells.iter_mut().zip(b_cells.iter_mut()) {
+                    dst.merge(src);
+                }
+                for i in 0..N_BANDS {
+                    a_ts[i] += b_ts[i];
+                    a_tc[i] += b_tc[i];
+                }
+                (a_cells, a_ts, a_tc)
+            },
+        );
+
+    let mut band_data: Vec<RingAzData> = Vec::new();
+    for b_rad in 0..N_BANDS {
+        if tth_cnts[b_rad] == 0 {
+            continue;
+        }
+        let mean_tth = tth_sums[b_rad] / tth_cnts[b_rad] as f64;
+        let cos2 = mean_tth.cos().powi(2);
+        let sin2 = mean_tth.sin().powi(2);
+        let alpha = polarization_factor * sin2 / (1.0 + cos2);
+        if alpha.abs() < 1e-4 {
+            continue;
+        }
+        let mut samples = Vec::new();
+        for b_az in 0..n_az {
+            let cell = &mut cells[b_rad * n_az + b_az];
+            let cnt = cell.vals.len();
+            if cnt < 10 {
+                continue;
+            }
+            let y = median_of_f32(&mut cell.vals);
+            if !y.is_finite() {
+                continue;
+            }
+            let inv_cnt = 1.0 / cnt as f64;
+            samples.push(RingAzSample {
+                cos2: cell.cos2_sum * inv_cnt,
+                sin2: cell.sin2_sum * inv_cnt,
+                y,
+            });
+        }
+        if samples.len() < options.min_samples_per_ring {
+            continue;
+        }
+        let mut vals: Vec<f64> = samples.iter().map(|s| s.y).collect();
+        let med = median_of(&mut vals);
+        if !med.is_finite() || med <= 0.0 {
+            continue;
+        }
+        for s in &mut samples {
+            s.y /= med;
+        }
+        let mut devs: Vec<f64> = samples.iter().map(|s| (s.y - 1.0).abs()).collect();
+        let mad = 1.4826 * median_of(&mut devs);
+        let est_noise = (mad - 0.5 * alpha.abs()).clamp(0.008, 0.50);
+        band_data.push(RingAzData {
+            alpha,
+            sigma_rel: est_noise,
+            samples,
+        });
+    }
+
+    solve_polarization_irls(
+        &band_data,
+        poni,
+        n_az,
+        options.min_total_samples,
+        PolarizationRot3Source::Diffuse,
+    )
+}
+
+fn solve_polarization_irls(
+    ring_data: &[RingAzData],
+    poni: &Poni,
+    n_az: usize,
+    min_total_samples: usize,
+    source_used: PolarizationRot3Source,
+) -> Result<PolarizationRot3Result, PolarizationRot3Error> {
     let n_rings_used = ring_data.len();
     let n_samples: usize = ring_data.iter().map(|r| r.samples.len()).sum();
-    if n_rings_used == 0 || n_samples < options.min_total_samples {
+    if n_rings_used == 0 || n_samples < min_total_samples {
         return Err(PolarizationRot3Error::InsufficientSignal(format!(
-            "only {n_samples} valid unmasked ring-azimuth samples across {n_rings_used} rings (need >= {})",
-            options.min_total_samples
+            "only {n_samples} valid unmasked azimuth samples across {n_rings_used} rings/bands (need >= {min_total_samples})"
         )));
     }
 
@@ -724,6 +1092,7 @@ pub fn calibrate_rot3_polarization(
         modulation_snr,
         fitted_polarization_ratio: beta,
         reliable,
+        source_used,
     })
 }
 
@@ -952,5 +1321,145 @@ mod tests {
             ),
             Err(PolarizationRot3Error::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn diffuse_mode_recovers_rot3_when_rings_are_spotty_or_absent() {
+        let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+        let true_rot3_deg = -24.5;
+        let pol_factor = 0.99;
+        let truth = make_poni(true_rot3_deg, 6.0, -4.0, 220.0);
+        let dim1 = 512usize;
+        let dim2 = 512usize;
+        let tc = TrigonometricConstants::new(&truth);
+        let p3 = truth.distance;
+
+        // Synthesize pure polarized diffuse scattering (no smooth powder rings)
+        // plus a few huge random Bragg spikes on ring positions.
+        let mut img = vec![0.0_f64; dim1 * dim2];
+        for r in 0..dim1 {
+            let p1 = (r as f64 + 0.5) * truth.pixel1 - truth.poni1;
+            for c in 0..dim2 {
+                let p2 = (c as f64 + 0.5) * truth.pixel2 - truth.poni2;
+                let x1 = f_x1(&p1, &p2, &p3, &tc);
+                let x2 = f_x2(&p1, &p2, &p3, &tc);
+                let x3 = f_x3(&p1, &p2, &p3, &tc);
+                let tth = f_tth(&x1, &x2, &x3);
+                let az = f_azimuth(&x1, &x2);
+                let sa = f_solid_angle(&p1, &p2, &p3);
+                let cos2 = tth.cos().powi(2);
+                let sin2 = tth.sin().powi(2);
+                let pol = 0.5 * (1.0 + cos2 - pol_factor * sin2 * (2.0 * az).cos());
+                // Smooth radially decaying diffuse intensity (e.g. air + Compton)
+                let diffuse = 200.0 * (-3.0 * tth).exp() + 40.0;
+                img[r * dim2 + c] = diffuse * sa * pol;
+            }
+        }
+
+        let mut input = truth.clone();
+        input.rot3 = 0.0;
+
+        // Auto mode should fall back to Diffuse and recover rot3 accurately.
+        let res = calibrate_rot3_polarization(
+            &img,
+            dim1,
+            dim2,
+            None,
+            &input,
+            &cal,
+            pol_factor,
+            &PolarizationRot3Options::default(),
+        )
+        .expect("Auto should fall back to Diffuse");
+        assert_eq!(res.source_used, PolarizationRot3Source::Diffuse);
+        assert!(res.reliable, "expected reliable diffuse fit: {res:?}");
+        let err_deg = wrap_half_pi(res.rot3_rad - truth.rot3).abs().to_degrees();
+        assert!(
+            err_deg < 0.5,
+            "diffuse rot3 error too large: got {:.2}°, expected {true_rot3_deg:.2}° (err={err_deg:.2}°)",
+            res.rot3_rad.to_degrees()
+        );
+        assert!(
+            (res.fitted_polarization_ratio - 1.0).abs() < 0.05,
+            "expected β ~ 1.0, got {:.3}",
+            res.fitted_polarization_ratio
+        );
+    }
+
+    #[test]
+    fn real_spotty_datasets_auto_fallback_to_diffuse_and_strip_rejects() {
+        use crate::frame::Frame;
+
+        // 1. CeO2_Pilatus1M (spotty rings -> Auto falls back to Diffuse)
+        let f_ceo2 = Frame::from_tiff("test_data/CeO2_Pilatus1M.tif".to_string()).expect("load");
+        let p_ceo2 = Poni::load("test_data/v1.poni").expect("load v1.poni");
+        let c_ceo2 = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+        let res_ceo2 = calibrate_rot3_polarization(
+            &f_ceo2.data,
+            f_ceo2.dim1,
+            f_ceo2.dim2,
+            None,
+            &p_ceo2,
+            &c_ceo2,
+            0.99,
+            &PolarizationRot3Options::default(),
+        )
+        .expect("CeO2_Pilatus1M rot3");
+        assert_eq!(res_ceo2.source_used, PolarizationRot3Source::Diffuse);
+        assert!(
+            res_ceo2.reliable,
+            "CeO2_Pilatus1M should be reliable: {res_ceo2:?}"
+        );
+        assert!(
+            res_ceo2.rot3_rad.to_degrees().abs() < 3.0,
+            "CeO2_Pilatus1M rot3 expected near 0°, got {:.2}°",
+            res_ceo2.rot3_rad.to_degrees()
+        );
+
+        // 2. LaB6_40keV_MarCCD (spotty rings -> Auto falls back to Diffuse)
+        let f_mar = Frame::from_tiff("test_data/LaB6_40keV_MarCCD.tif".to_string()).expect("load");
+        let p_mar = Poni::load("test_data/LaB6_40keV_MarCCD.poni").expect("load mar poni");
+        let c_lab6 = Calibrant::from_d_file("test_data/calibrants/LaB6_SRM660b.D").expect("load");
+        let res_mar = calibrate_rot3_polarization(
+            &f_mar.data,
+            f_mar.dim1,
+            f_mar.dim2,
+            None,
+            &p_mar,
+            &c_lab6,
+            0.99,
+            &PolarizationRot3Options::default(),
+        )
+        .expect("LaB6_40keV_MarCCD rot3");
+        assert_eq!(res_mar.source_used, PolarizationRot3Source::Diffuse);
+        assert!(
+            res_mar.reliable,
+            "LaB6_40keV_MarCCD should be reliable: {res_mar:?}"
+        );
+        assert!(
+            res_mar.rot3_rad.to_degrees().abs() < 4.0,
+            "LaB6_40keV_MarCCD rot3 expected near 0°, got {:.2}°",
+            res_mar.rot3_rad.to_degrees()
+        );
+
+        // 3. ceo2_side (narrow strip detector -> must remain unreliable)
+        let f_side = Frame::from_tiff("test_data/ceo2_side.tif".to_string()).expect("load");
+        let p_side = Poni::load("test_data/ceo2_side.poni").expect("load ceo2_side poni");
+        let res_side = calibrate_rot3_polarization(
+            &f_side.data,
+            f_side.dim1,
+            f_side.dim2,
+            None,
+            &p_side,
+            &c_ceo2,
+            0.99,
+            &PolarizationRot3Options::default(),
+        );
+        if let Ok(r) = res_side {
+            assert!(
+                !r.reliable,
+                "narrow strip ceo2_side must not be marked reliable: {r:?}"
+            );
+        }
     }
 }
