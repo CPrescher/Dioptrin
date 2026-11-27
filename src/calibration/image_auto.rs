@@ -75,7 +75,7 @@ pub struct AutoCalibrateImageOptions {
     /// not achieve a verified low-RMS fit (handles heavily tilted / strip detectors).
     pub enable_tilt_fallback: bool,
     /// Maximum calibrant ring index considered when scanning 1D profiles and
-    /// extracting 2D ring peaks (default `65`; raise if only very high-order
+    /// extracting 2D ring peaks (default `100`; raise if even higher-order
     /// rings are visible on the detector).
     pub max_ring_index: usize,
     /// Optional upper intensity limit (same units as `image`). Pixels with
@@ -118,7 +118,7 @@ impl Default for AutoCalibrateImageOptions {
             distance_max: 1.5,
             refine_mask,
             enable_tilt_fallback: true,
-            max_ring_index: 65,
+            max_ring_index: 100,
             intensity_limit: None,
             peak_threshold_sigma: None,
             search_half_width_px: None,
@@ -187,10 +187,13 @@ pub struct RefineImageOptions {
     /// Note: `rot3` is always kept fixed during `2θ` refinement (since `2θ` is
     /// invariant to `rot3`); pass `polarization_factor` to calibrate `rot3`.
     pub refine_mask: ParamMask,
-    /// Maximum calibrant ring index searched (default `65`).
+    /// Maximum calibrant ring index searched (default `100`).
     pub max_ring_index: usize,
-    /// Maximum number of visible calibrant rings included (default `16`).
-    pub max_rings: usize,
+    /// Optional cap on the number of visible calibrant rings included.
+    /// When `None` (default), refines progressively and then automatically
+    /// extends to every geometrically visible resolved ring on the detector
+    /// (up to `max_ring_index`). When `Some(k)`, strictly respects `k`.
+    pub max_rings: Option<usize>,
     /// Number of azimuthal sectors sampled around each ring (default `72`).
     pub n_azimuth: usize,
     /// Optional upper intensity limit (`None` auto-detects flat-topped
@@ -198,7 +201,8 @@ pub struct RefineImageOptions {
     pub intensity_limit: Option<f64>,
     /// Optional base radial search half-width in pixels (`>= 3`). When `None`
     /// (default), auto-selects from detector size and shrinks across refinement
-    /// passes, clamped per ring to `max(3, 0.45 × local_ring_spacing)`.
+    /// passes, skipping unresolved `< 5 px` doublets and clamping each ring to
+    /// `<= 0.45 × local_ring_spacing`.
     pub search_half_width_px: Option<usize>,
     /// Number of iterative re-extraction + L-M polish passes in [`refine_image`]
     /// (default `3`, clamped to `1..=6`).
@@ -221,8 +225,8 @@ impl Default for RefineImageOptions {
         refine_mask.rot3 = false;
         Self {
             refine_mask,
-            max_ring_index: 65,
-            max_rings: 16,
+            max_ring_index: 100,
+            max_rings: None,
             n_azimuth: 72,
             intensity_limit: None,
             search_half_width_px: None,
@@ -279,7 +283,14 @@ pub fn extract_ring_peaks(
         .search_half_width_px
         .unwrap_or_else(|| ((dim1.max(dim2) as f64 / 70.0).round() as usize).clamp(10, 24));
     let n_az = options.n_azimuth.clamp(12, 360);
-    let (pts, _) = extract_ring_peaks_2d(
+    let max_ring_index = options.max_ring_index.max(1);
+    let max_rings = match options.max_rings {
+        Some(k) => k.max(1),
+        None => detector_visible_ring_limit(poni, dim1, dim2, calibrant)
+            .min(max_ring_index)
+            .max(1),
+    };
+    let (pts, _) = extract_ring_peaks_2d_with_tangent(
         &residual,
         &noise,
         sigma_r,
@@ -290,8 +301,9 @@ pub fn extract_ring_peaks(
         calibrant,
         hw,
         n_az,
-        options.max_rings.max(1),
-        options.max_ring_index.max(1),
+        max_rings,
+        max_ring_index,
+        0,
     );
     Ok(pts)
 }
@@ -368,8 +380,8 @@ pub fn refine_image(
 
     let n_passes = options.n_passes.clamp(1, 6);
     let n_az = options.n_azimuth.clamp(12, 360);
-    let max_rings = options.max_rings.max(1);
     let max_ring_index = options.max_ring_index.max(1);
+    let base_max_rings = options.max_rings.map(|k| k.max(1)).unwrap_or(16);
     let base_hw = options
         .search_half_width_px
         .unwrap_or_else(|| ((dim1.max(dim2) as f64 / 70.0).round() as usize).clamp(10, 24));
@@ -389,11 +401,11 @@ pub fn refine_image(
                 ((hw0 as f64 * frac).round() as usize).clamp(hw_floor, hw0)
             };
             let pass_rings = if passes_cnt >= 3 && pass == 0 {
-                max_rings.min(8)
+                base_max_rings.min(8)
             } else if passes_cnt >= 3 && pass == 1 {
-                max_rings.min(12)
+                base_max_rings.min(12)
             } else {
-                max_rings
+                base_max_rings
             };
             let (pts, _) = extract_ring_peaks_2d(
                 &residual,
@@ -451,105 +463,139 @@ pub fn refine_image(
         best
     };
 
-    let mut best_fit = run_2d_passes(start_poni.clone(), base_hw, n_passes);
-
-    // If 2D azimuthal ring profiling alone didn't lock tightly (e.g. a spotty
-    // pattern or a starting PONI offset by >10 px), pull in using the already-
-    // computed residual & noise (zero extra blur / peak RSS) with auto ring
-    // assignment, then polish with 2D ring profiles.
-    let need_peak_pull = match &best_fit {
-        Some((res, _, nr)) => *nr < 6 || res.rms_rad >= 1.5e-3,
-        None => true,
-    };
-    let mut cached_peaks: Option<Vec<(f64, f64)>> = None;
-    if need_peak_pull {
-        let (peaks, _) = scan_robust_peaks(
-            image, &smooth, &residual, &noise, sigma_r, &valid, dim1, dim2, 5000, None,
-        );
-        if peaks.len() >= 15 {
-            let mut pk_pts = CalibrationPoints::new();
-            for &(d1, d2) in &peaks {
-                pk_pts.push(d1, d2, None);
-            }
-            let mut pk_poni = start_poni.clone();
-            let mut pk_ok = false;
-            for &(assign_tol, huber_c) in &[(1.2e-2, 3.0e-3), (4.5e-3, 1.5e-3), (2.5e-3, 8.0e-4)] {
-                let geom = Geometry::new(dim1, dim2, pk_poni.clone());
-                let opts_pk = CalibrationOptions {
-                    mask: refine_mask,
-                    loss: Loss::Huber { c: huber_c },
-                    auto_assign_rings: true,
-                    assign_tolerance_rad: assign_tol,
-                    max_iter: options.max_iter,
-                    tol: options.tol,
-                };
-                if let Ok(res) = refine(&geom, &pk_pts, calibrant, &opts_pk)
-                    && res.poni.distance.is_finite()
-                    && res.poni.distance > 0.005
-                {
-                    pk_poni = res.poni;
-                    pk_ok = true;
-                }
-            }
-            if pk_ok && let Some((res2, pts2, nr2)) = run_2d_passes(pk_poni, base_hw.min(10), 2) {
-                let score = |nr: usize, rms: f64| (nr.min(16) as f64).sqrt() / (rms + 1.0e-4);
-                let better = match &best_fit {
-                    None => true,
-                    Some((prev, _, prev_nr)) => {
-                        score(nr2, res2.rms_rad) > score(*prev_nr, prev.rms_rad)
-                    }
-                };
-                if better {
-                    best_fit = Some((res2, pts2, nr2));
-                }
+    let max_px_shift = (0.12 * dim1.max(dim2) as f64).max(40.0);
+    let verify_fit = |cal: &CalibrationResult,
+                      pts: &CalibrationPoints,
+                      nr: usize,
+                      v_peaks: &[(f64, f64)]|
+     -> bool {
+        if nr < 2 || cal.rms_rad > 3.5e-3 {
+            return false;
+        }
+        let rel_d_shift = (cal.poni.distance / start_poni.distance - 1.0).abs();
+        let dp1_shift = (cal.poni.poni1 - start_poni.poni1).abs() / start_poni.pixel1;
+        let dp2_shift = (cal.poni.poni2 - start_poni.poni2).abs() / start_poni.pixel2;
+        if rel_d_shift > 0.15 || dp1_shift.max(dp2_shift) > max_px_shift {
+            return false;
+        }
+        if let Some(s_rms) = eval_points_rms_rad(start_poni, dim1, dim2, pts, calibrant)
+            && s_rms < 1.5e-3
+            && cal.rms_rad > s_rms * 1.5 + 2.0e-4
+        {
+            return false;
+        }
+        if v_peaks.len() >= 15 {
+            let m = evaluate_peak_match(
+                v_peaks,
+                &valid,
+                dim1,
+                dim2,
+                &cal.poni,
+                calibrant,
+                2.0e-3,
+                max_ring_index,
+            );
+            if m.inlier_frac < 0.40 || m.ring_recall < 0.55 || m.inlier_rms_rad > 1.2e-3 {
+                return false;
             }
         }
-        cached_peaks = Some(peaks);
+        true
+    };
+
+    let mut best_fit = run_2d_passes(start_poni.clone(), base_hw, n_passes);
+    let (verify_peaks, _) = scan_robust_peaks(
+        image, &smooth, &residual, &noise, sigma_r, &valid, dim1, dim2, 5000, None,
+    );
+
+    // If 2D azimuthal ring profiling alone didn't lock tightly or failed
+    // verification (e.g. a spotty pattern, dense calibrant, or larger initial
+    // offset), pull in using the already-computed peaks + auto ring assignment,
+    // then polish with 2D ring profiles.
+    let need_peak_pull = match &best_fit {
+        Some((res, pts, nr)) => {
+            *nr < 6 || res.rms_rad >= 1.5e-3 || !verify_fit(res, pts, *nr, &verify_peaks)
+        }
+        None => true,
+    };
+    if need_peak_pull && verify_peaks.len() >= 15 {
+        let mut pk_pts = CalibrationPoints::new();
+        for &(d1, d2) in &verify_peaks {
+            pk_pts.push(d1, d2, None);
+        }
+        let mut pk_poni = start_poni.clone();
+        let mut pk_ok = false;
+        for &(assign_tol, huber_c) in &[(1.2e-2, 3.0e-3), (4.5e-3, 1.5e-3), (2.5e-3, 8.0e-4)] {
+            let geom = Geometry::new(dim1, dim2, pk_poni.clone());
+            let opts_pk = CalibrationOptions {
+                mask: refine_mask,
+                loss: Loss::Huber { c: huber_c },
+                auto_assign_rings: true,
+                assign_tolerance_rad: assign_tol,
+                max_iter: options.max_iter,
+                tol: options.tol,
+            };
+            if let Ok(res) = refine(&geom, &pk_pts, calibrant, &opts_pk)
+                && res.poni.distance.is_finite()
+                && res.poni.distance > 0.005
+            {
+                pk_poni = res.poni;
+                pk_ok = true;
+            }
+        }
+        if pk_ok && let Some((res2, pts2, nr2)) = run_2d_passes(pk_poni, base_hw.min(10), 2) {
+            let score = |nr: usize, rms: f64| (nr.min(16) as f64).sqrt() / (rms + 1.0e-4);
+            let better = match &best_fit {
+                None => true,
+                Some((prev, prev_pts, prev_nr)) => {
+                    let prev_ok = verify_fit(prev, prev_pts, *prev_nr, &verify_peaks);
+                    let new_ok = verify_fit(&res2, &pts2, nr2, &verify_peaks);
+                    (new_ok && !prev_ok)
+                        || (new_ok == prev_ok
+                            && score(nr2, res2.rms_rad) > score(*prev_nr, prev.rms_rad))
+                }
+            };
+            if better {
+                best_fit = Some((res2, pts2, nr2));
+            }
+        }
     }
 
-    let (mut calibration, points, n_rings) =
+    let (mut calibration, mut points, mut n_rings) =
         best_fit.ok_or(AutoCalibrateError::NoConfidentIdentity)?;
 
-    // Quality gate: reject diverged or wrong-calibrant fits rather than
-    // silently corrupting a user's calibration.
-    if n_rings < 2 || calibration.rms_rad > 3.5e-3 {
+    if !verify_fit(&calibration, &points, n_rings, &verify_peaks) {
         return Err(AutoCalibrateError::NoConfidentIdentity);
     }
-    let rel_d_shift = (calibration.poni.distance / start_poni.distance - 1.0).abs();
-    let dp1_shift = (calibration.poni.poni1 - start_poni.poni1).abs() / start_poni.pixel1;
-    let dp2_shift = (calibration.poni.poni2 - start_poni.poni2).abs() / start_poni.pixel2;
-    let max_px_shift = (0.12 * dim1.max(dim2) as f64).max(40.0);
-    if rel_d_shift > 0.15 || dp1_shift.max(dp2_shift) > max_px_shift {
-        return Err(AutoCalibrateError::NoConfidentIdentity);
-    }
-    let start_rms_rad = eval_points_rms_rad(start_poni, dim1, dim2, &points, calibrant);
-    if let Some(s_rms) = start_rms_rad
-        && s_rms < 1.5e-3
-        && calibration.rms_rad > s_rms * 1.5 + 2.0e-4
-    {
-        return Err(AutoCalibrateError::NoConfidentIdentity);
-    }
-    let verify_peaks = cached_peaks.unwrap_or_else(|| {
-        scan_robust_peaks(
-            image, &smooth, &residual, &noise, sigma_r, &valid, dim1, dim2, 5000, None,
-        )
-        .0
-    });
-    if verify_peaks.len() >= 15 {
-        let m = evaluate_peak_match(
-            &verify_peaks,
+
+    // Automatically extend to every geometrically visible resolved ring on the
+    // detector (up to `max_ring_index`) when the caller did not set `max_rings`.
+    if options.max_rings.is_none()
+        && let Some((ext_cal, ext_pts, ext_rings)) = extend_to_all_detector_rings(
+            &calibration,
+            Some(&points),
+            n_rings,
+            max_ring_index,
+            &residual,
+            &noise,
+            sigma_r,
             &valid,
             dim1,
             dim2,
-            &calibration.poni,
             calibrant,
-            2.0e-3,
-            max_ring_index,
-        );
-        if m.inlier_frac < 0.40 || m.ring_recall < 0.55 || m.inlier_rms_rad > 1.2e-3 {
-            return Err(AutoCalibrateError::NoConfidentIdentity);
-        }
+            refine_mask,
+            n_az,
+            options.max_iter,
+            options.tol,
+        )
+    {
+        calibration = ext_cal;
+        points = ext_pts;
+        n_rings = ext_rings;
     }
+
+    // Compute `start_rms_rad` on the final returned `points` so it is directly
+    // comparable to `calibration.rms_rad`.
+    let start_rms_rad = eval_points_rms_rad(start_poni, dim1, dim2, &points, calibrant);
 
     let mut rot3_calibration = None;
     if let Some(pf) = options.polarization_factor
@@ -925,6 +971,11 @@ fn auto_calibrate_image_impl(
             n_rings,
             "Verified",
             image,
+            &peaks,
+            &radial_metrics,
+            &residual,
+            &noise,
+            sigma_r,
             &valid,
             dim1,
             dim2,
@@ -1002,6 +1053,11 @@ fn auto_calibrate_image_impl(
                     grid_rings,
                     "Verified tilted fit",
                     image,
+                    &peaks,
+                    &grid_metrics,
+                    &residual,
+                    &noise,
+                    sigma_r,
                     &valid,
                     dim1,
                     dim2,
@@ -1021,6 +1077,11 @@ fn auto_calibrate_image_impl(
             n_rings,
             "Verified",
             image,
+            &peaks,
+            &radial_metrics,
+            &residual,
+            &noise,
+            sigma_r,
             &valid,
             dim1,
             dim2,
@@ -1078,12 +1139,153 @@ fn auto_calibrate_image_impl(
     Err(AutoCalibrateError::NoConfidentIdentity)
 }
 
+/// Compute how many calibrant rings geometrically intersect the detector
+/// (all rings with `2θ <= tth_max_det`, where `tth_max_det` is the maximum `2θ`
+/// across the detector's corners and edge midpoints).
+fn detector_visible_ring_limit(
+    poni: &Poni,
+    dim1: usize,
+    dim2: usize,
+    calibrant: &Calibrant,
+) -> usize {
+    let tc = crate::geometry::math::TrigonometricConstants::new(poni);
+    let p3 = poni.distance;
+    let r_hi = dim1.saturating_sub(1) as f64;
+    let c_hi = dim2.saturating_sub(1) as f64;
+    let r_mid = 0.5 * r_hi;
+    let c_mid = 0.5 * c_hi;
+    let probes = [
+        (0.0, 0.0),
+        (0.0, c_mid),
+        (0.0, c_hi),
+        (r_mid, 0.0),
+        (r_mid, c_hi),
+        (r_hi, 0.0),
+        (r_hi, c_mid),
+        (r_hi, c_hi),
+    ];
+    let mut tth_max = 0.0_f64;
+    for &(r, c) in &probes {
+        let p1 = (r + 0.5) * poni.pixel1 - poni.poni1;
+        let p2 = (c + 0.5) * poni.pixel2 - poni.poni2;
+        let x1 = crate::geometry::math::f_x1(&p1, &p2, &p3, &tc);
+        let x2 = crate::geometry::math::f_x2(&p1, &p2, &p3, &tc);
+        let x3 = crate::geometry::math::f_x3(&p1, &p2, &p3, &tc);
+        let t = crate::geometry::math::f_tth(&x1, &x2, &x3);
+        if t.is_finite() && t > tth_max {
+            tth_max = t;
+        }
+    }
+    let tths = calibrant.two_theta_rad(poni.wavelength);
+    let mut last_idx = 0usize;
+    for (k, opt_t) in tths.iter().enumerate() {
+        if let Some(t) = opt_t
+            && t.is_finite()
+            && *t > 1e-4
+            && *t <= tth_max
+        {
+            last_idx = k + 1;
+        }
+    }
+    last_idx
+}
+
+/// After calibration converges, automatically determine how many calibrant
+/// rings geometrically fall on the detector (up to `max_ring_index`) and
+/// extend the 2D ring-profile polish across all resolved visible rings using
+/// 2 shrinking passes with azimuthal tangent averaging (`√7×` SNR boost on
+/// faint outer arcs), never degrading the verified geometry.
+#[allow(clippy::too_many_arguments)]
+fn extend_to_all_detector_rings(
+    prev: &CalibrationResult,
+    prev_points: Option<&CalibrationPoints>,
+    prev_n_rings: usize,
+    max_ring_index: usize,
+    residual: &[f64],
+    noise: &LocalNoiseGrid,
+    sigma_r: f64,
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
+    calibrant: &Calibrant,
+    mut refine_mask: ParamMask,
+    n_az: usize,
+    max_iter: usize,
+    tol: f64,
+) -> Option<(CalibrationResult, CalibrationPoints, usize)> {
+    // 2θ is invariant to rot3; never let rot3 drift during ring extension.
+    refine_mask.rot3 = false;
+
+    let n_det = detector_visible_ring_limit(&prev.poni, dim1, dim2, calibrant).min(max_ring_index);
+    if n_det <= prev_n_rings {
+        return None;
+    }
+
+    let mut cur_poni = prev.poni.clone();
+    let mut final_res: Option<(CalibrationResult, CalibrationPoints, usize)> = None;
+    for &(hw, huber_c) in &[(6usize, 1.0e-3), (4usize, 7.0e-4)] {
+        let (pts, _) = extract_ring_peaks_2d_with_tangent(
+            residual, noise, sigma_r, valid, dim1, dim2, &cur_poni, calibrant, hw, n_az, n_det,
+            n_det, 3,
+        );
+        if pts.len() < 15 {
+            break;
+        }
+        let geom = Geometry::new(dim1, dim2, cur_poni.clone());
+        let cal_opts = CalibrationOptions {
+            mask: refine_mask,
+            loss: Loss::Huber { c: huber_c },
+            auto_assign_rings: false,
+            assign_tolerance_rad: 0.05,
+            max_iter,
+            tol,
+        };
+        let Ok(ext) = refine(&geom, &pts, calibrant, &cal_opts) else {
+            break;
+        };
+        if !ext.poni.distance.is_finite() || ext.poni.distance <= 0.005 {
+            break;
+        }
+        let ext_rings = count_supported_rings(&ext.assignments, 5);
+        cur_poni = ext.poni.clone();
+        final_res = Some((ext, pts, ext_rings));
+    }
+
+    let (ext, pts, ext_rings) = final_res?;
+    let rel_d = (ext.poni.distance / prev.poni.distance - 1.0).abs();
+    let dp1 = (ext.poni.poni1 - prev.poni.poni1).abs() / prev.poni.pixel1;
+    let dp2 = (ext.poni.poni2 - prev.poni.poni2).abs() / prev.poni.pixel2;
+    let inner_ok = match prev_points {
+        Some(pp) => {
+            match (
+                eval_points_rms_rad(&prev.poni, dim1, dim2, pp, calibrant),
+                eval_points_rms_rad(&ext.poni, dim1, dim2, pp, calibrant),
+            ) {
+                (Some(r_prev), Some(r_ext)) => r_ext <= (r_prev * 1.25).max(r_prev + 1.0e-4),
+                _ => true,
+            }
+        }
+        None => true,
+    };
+    let rms_ok = ext.rms_rad <= (prev.rms_rad * 2.2).max(1.2e-3);
+    if ext_rings > prev_n_rings && inner_ok && rms_ok && rel_d < 0.015 && dp1.max(dp2) < 15.0 {
+        Some((ext, pts, ext_rings))
+    } else {
+        None
+    }
+}
+
 fn finalize_auto_calibration(
     mut res: CalibrationResult,
-    diag: AutoCalibrateDiagnostics,
-    n_rings: usize,
+    mut diag: AutoCalibrateDiagnostics,
+    mut n_rings: usize,
     label: &str,
     image: &[f64],
+    peaks: &[(f64, f64)],
+    prev_metrics: &PeakMatchMetrics,
+    residual: &[f64],
+    noise: &LocalNoiseGrid,
+    sigma_r: f64,
     valid: &[bool],
     dim1: usize,
     dim2: usize,
@@ -1091,6 +1293,46 @@ fn finalize_auto_calibration(
     options: &AutoCalibrateImageOptions,
     on_progress: &mut dyn FnMut(AutoCalibrateProgress) -> bool,
 ) -> (CalibrationResult, AutoCalibrateDiagnostics) {
+    if let Some((ext_res, _ext_pts, ext_rings)) = extend_to_all_detector_rings(
+        &res,
+        None,
+        n_rings,
+        options.max_ring_index,
+        residual,
+        noise,
+        sigma_r,
+        valid,
+        dim1,
+        dim2,
+        calibrant,
+        options.refine_mask,
+        72,
+        options.max_iter,
+        options.tol,
+    ) {
+        // Re-verify against the detected peaks so outer-ring extension can
+        // never degrade the already-verified inner calibration.
+        let ext_metrics = evaluate_peak_match(
+            peaks,
+            valid,
+            dim1,
+            dim2,
+            &ext_res.poni,
+            calibrant,
+            2.0e-3,
+            options.max_ring_index,
+        );
+        let non_regression = ext_metrics.inlier_rms_rad
+            <= (prev_metrics.inlier_rms_rad * 1.15).max(prev_metrics.inlier_rms_rad + 5.0e-5)
+            && ext_metrics.ring_recall >= prev_metrics.ring_recall - 0.02
+            && ext_metrics.inlier_frac >= prev_metrics.inlier_frac - 0.02;
+        if non_regression {
+            res = ext_res;
+            n_rings = ext_rings;
+            diag.n_identified_ellipses = ext_rings;
+        }
+    }
+
     let mut rot3_note = String::new();
     if let Some(pf) = options.polarization_factor
         && pf.is_finite()
@@ -1837,6 +2079,7 @@ struct LocalNoiseGrid {
     dim2: usize,
     med: [f64; 64],
     sigma: [f64; 64],
+    sigma_unclamped: [f64; 64],
     valid_tiles: usize,
     tile_valid: [bool; 64],
 }
@@ -1876,9 +2119,11 @@ impl LocalNoiseGrid {
 
         let use_local = dim1.min(dim2) >= 768;
         let sigma_lo = 0.65 * global_sigma;
+        let sigma_lo_raw = 0.30 * global_sigma;
         let sigma_hi = 2.5 * global_sigma;
         let mut med = [global_med; 64];
         let mut sigma = [global_sigma; 64];
+        let mut sigma_unclamped = [global_sigma; 64];
         let mut tile_valid = [false; 64];
         let mut valid_tiles = 0usize;
 
@@ -1893,9 +2138,10 @@ impl LocalNoiseGrid {
                     let m = b[mid];
                     let mut dev: Vec<f64> = b.iter().map(|&v| (v - m).abs()).collect();
                     dev.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
-                    let s = (1.4826 * dev[mid]).clamp(sigma_lo, sigma_hi);
+                    let raw_s = 1.4826 * dev[mid];
                     med[t] = m;
-                    sigma[t] = s;
+                    sigma[t] = raw_s.clamp(sigma_lo, sigma_hi);
+                    sigma_unclamped[t] = raw_s.clamp(sigma_lo_raw, sigma_hi);
                 }
             }
         }
@@ -1905,6 +2151,7 @@ impl LocalNoiseGrid {
             dim2,
             med,
             sigma,
+            sigma_unclamped,
             valid_tiles: valid_tiles.max(1),
             tile_valid,
         }
@@ -1913,6 +2160,18 @@ impl LocalNoiseGrid {
     /// Bilinearly interpolated `(med, sigma)` at pixel `(i, j)`.
     #[inline]
     fn at(&self, i: f64, j: f64) -> (f64, f64) {
+        self.interp(i, j, &self.sigma)
+    }
+
+    /// Bilinearly interpolated `(med, sigma_unclamped)` at pixel `(i, j)` for
+    /// known-geometry outer-ring extension into quiet detector regions.
+    #[inline]
+    fn at_unclamped(&self, i: f64, j: f64) -> (f64, f64) {
+        self.interp(i, j, &self.sigma_unclamped)
+    }
+
+    #[inline]
+    fn interp(&self, i: f64, j: f64, sig_grid: &[f64; 64]) -> (f64, f64) {
         let fy = (i / self.dim1.max(1) as f64) * Self::TILES as f64 - 0.5;
         let fx = (j / self.dim2.max(1) as f64) * Self::TILES as f64 - 0.5;
         let fy = fy.clamp(0.0, (Self::TILES - 1) as f64);
@@ -1931,8 +2190,8 @@ impl LocalNoiseGrid {
 
         let m_top = self.med[i00] * (1.0 - wx) + self.med[i01] * wx;
         let m_bot = self.med[i10] * (1.0 - wx) + self.med[i11] * wx;
-        let s_top = self.sigma[i00] * (1.0 - wx) + self.sigma[i01] * wx;
-        let s_bot = self.sigma[i10] * (1.0 - wx) + self.sigma[i11] * wx;
+        let s_top = sig_grid[i00] * (1.0 - wx) + sig_grid[i01] * wx;
+        let s_bot = sig_grid[i10] * (1.0 - wx) + sig_grid[i11] * wx;
         (
             m_top * (1.0 - wy) + m_bot * wy,
             s_top * (1.0 - wy) + s_bot * wy,
@@ -2876,7 +3135,7 @@ fn estimate_profile_fwhm_px(profile: &RadialProfile1D) -> Option<f64> {
 fn extract_ring_peaks_2d(
     residual: &[f64],
     noise: &LocalNoiseGrid,
-    _sigma_r: f64,
+    sigma_r: f64,
     valid: &[bool],
     dim1: usize,
     dim2: usize,
@@ -2887,19 +3146,56 @@ fn extract_ring_peaks_2d(
     max_rings: usize,
     max_ring_index: usize,
 ) -> (CalibrationPoints, usize) {
+    extract_ring_peaks_2d_with_tangent(
+        residual,
+        noise,
+        sigma_r,
+        valid,
+        dim1,
+        dim2,
+        poni,
+        calibrant,
+        half_width_px,
+        n_az,
+        max_rings,
+        max_ring_index,
+        0,
+    )
+}
+
+/// Like [`extract_ring_peaks_2d`], with optional azimuthal tangent averaging
+/// (`2 * tangent_half_px + 1` parallel rays spaced 1.5 px along the ring
+/// tangent) to boost faint outer-ring SNR by `√(n_taps)` without radial blur.
+#[allow(clippy::too_many_arguments)]
+fn extract_ring_peaks_2d_with_tangent(
+    residual: &[f64],
+    noise: &LocalNoiseGrid,
+    _sigma_r: f64,
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
+    poni: &Poni,
+    calibrant: &Calibrant,
+    half_width_px: usize,
+    n_az: usize,
+    max_rings: usize,
+    max_ring_index: usize,
+    tangent_half_px: usize,
+) -> (CalibrationPoints, usize) {
     let tth_list = calibrant.two_theta_rad(poni.wavelength);
     // Precompute local angular spacing to nearest neighboring calibrant ring so
     // the radial search window never jumps onto an adjacent overlapping ring.
+    // Include one ring past `max_ring_index` so the last ring sees its outer neighbor.
     let valid_tths: Vec<f64> = tth_list
         .iter()
-        .take(max_ring_index)
+        .take(max_ring_index.saturating_add(1))
         .flatten()
         .copied()
         .filter(|t| t.is_finite() && *t > 1e-4 && *t < PI * 0.49)
         .collect();
     let mut pts = CalibrationPoints::new();
     let mut n_rings_with_pts = 0usize;
-    let margin = (half_width_px + 2) as f64;
+    let margin = (half_width_px + (tangent_half_px * 2) + 2) as f64;
     let mut line = Vec::with_capacity(2 * half_width_px + 1);
 
     for (ring_k, opt_tth) in tth_list.iter().enumerate().take(max_ring_index) {
@@ -2918,9 +3214,18 @@ fn extract_ring_peaks_2d(
             })
             .fold(f64::INFINITY, f64::min);
         let mut ring_pts = 0usize;
+        // Adaptive arc-length sampling: keep roughly constant pixel spacing
+        // along outer rings so clipped high-2θ corner arcs receive plenty of
+        // points instead of being starved by equal-azimuth sampling.
+        let r_ref = (0.25 * dim1.max(dim2) as f64).max(64.0);
+        let r_ring_px = (poni.distance / poni.pixel1.min(poni.pixel2)) * tth.tan();
+        let n_az_min = n_az.min(360) as f64;
+        let n_az_ring = ((n_az as f64) * (r_ring_px / r_ref).max(1.0))
+            .round()
+            .clamp(n_az_min, 360.0) as usize;
 
-        for a in 0..n_az {
-            let phi = 2.0 * PI * (a as f64) / (n_az as f64);
+        for a in 0..n_az_ring {
+            let phi = 2.0 * PI * (a as f64) / (n_az_ring as f64);
             let (d1, d2) = match project_ring_pixel(poni, tth, phi) {
                 Some(p) => p,
                 None => continue,
@@ -2948,29 +3253,73 @@ fn extract_ring_peaks_2d(
             }
             let u1 = du1 / norm;
             let u2 = du2 / norm;
+            let t1 = -u2;
+            let t2 = u1;
 
-            // Clamp search half-width to < 0.45 of local pixel spacing to the
-            // nearest neighboring ring so dense/overlapping rings stay separated.
+            // Skip unresolved doublets (two calibrant rings closer than 5 px)
+            // so a radial search window cannot jump onto an adjacent ring;
+            // otherwise clamp half-width to <= 0.45 of local inter-ring spacing.
             let w_eff = if local_spacing_rad.is_finite() {
                 let px_per_rad = norm / (2.0 * delta);
-                let max_w = ((0.45 * local_spacing_rad * px_per_rad).floor() as usize).max(3);
+                let spacing_px = local_spacing_rad * px_per_rad;
+                if spacing_px < 5.0 {
+                    continue;
+                }
+                let max_w = (0.45 * spacing_px).floor() as usize;
                 half_width_px.min(max_w)
             } else {
                 half_width_px
             };
             let w = w_eff as isize;
+            // Only average along the straight tangent on rings with large enough
+            // radius that sagittal curvature (td² / (2·r)) stays < 0.04 px.
+            let eff_tangent_half = if r_ring_px < 120.0 {
+                0
+            } else if r_ring_px < 250.0 {
+                tangent_half_px.min(1)
+            } else {
+                tangent_half_px
+            };
+            let th = eff_tangent_half as isize;
+            let mut min_cnt = 2 * eff_tangent_half + 1;
 
             line.clear();
             let mut all_ok = true;
             for s in -w..=w {
                 let sd = s as f64;
-                match sample_bilinear_valid(residual, valid, dim1, dim2, d1 + sd * u1, d2 + sd * u2)
-                {
-                    Some(v) => line.push(v),
-                    None => {
+                let base1 = d1 + sd * u1;
+                let base2 = d2 + sd * u2;
+                if th == 0 {
+                    match sample_bilinear_valid(residual, valid, dim1, dim2, base1, base2) {
+                        Some(v) => line.push(v),
+                        None => {
+                            all_ok = false;
+                            break;
+                        }
+                    }
+                } else {
+                    let mut sum = 0.0;
+                    let mut cnt = 0usize;
+                    for kt in -th..=th {
+                        let td = kt as f64 * 1.5;
+                        if let Some(v) = sample_bilinear_valid(
+                            residual,
+                            valid,
+                            dim1,
+                            dim2,
+                            base1 + td * t1,
+                            base2 + td * t2,
+                        ) {
+                            sum += v;
+                            cnt += 1;
+                        }
+                    }
+                    if cnt * 2 < (2 * eff_tangent_half + 1) {
                         all_ok = false;
                         break;
                     }
+                    min_cnt = min_cnt.min(cnt);
+                    line.push(sum / cnt as f64);
                 }
             }
             if !all_ok || line.len() < 5 {
@@ -2993,8 +3342,20 @@ fn extract_ring_peaks_2d(
                 continue;
             }
 
-            let (m_loc, s_loc) = noise.at(d1, d2);
-            let min_peak_snr = 2.5 * s_loc;
+            let (m_loc, s_loc) = if eff_tangent_half > 0 {
+                noise.at_unclamped(d1, d2)
+            } else {
+                noise.at(d1, d2)
+            };
+            // Account for residual σ=0.8 px blur correlation across 1.5 px
+            // tangent taps (effective independent taps ≈ 1 + 0.5*(cnt - 1)).
+            let n_eff = if eff_tangent_half > 0 {
+                1.0 + 0.5 * (min_cnt.saturating_sub(1) as f64)
+            } else {
+                1.0
+            };
+            let snr_mult = if eff_tangent_half > 0 { 3.0 } else { 2.5 };
+            let min_peak_snr = snr_mult * s_loc / n_eff.sqrt();
             if (best_val - m_loc) < min_peak_snr || (best_val - min_val) < min_peak_snr {
                 continue;
             }

@@ -2136,7 +2136,7 @@ def auto_calibrate_image(
     distance_max: float = 1.5,
     fix: Optional[list[str]] = None,
     enable_tilt_fallback: bool = True,
-    max_ring_index: int = 65,
+    max_ring_index: int = 100,
     max_iter: int = 200,
     tol: float = 1e-9,
     intensity_limit: Optional[float] = None,
@@ -2166,7 +2166,7 @@ def auto_calibrate_image(
         fix: Parameter names to lock during refinement (default ["wavelength", "rot3"])
         enable_tilt_fallback: Fall back to 5D grid search for tilted/strip detectors
         max_ring_index: Maximum calibrant ring index considered in 1D/2D matching
-            (default 65)
+            (default 100)
         max_iter: Maximum L-M iterations per pass (default 200)
         tol: Relative cost tolerance for convergence (default 1e-9)
         intensity_limit: Optional upper intensity limit; when ``None`` (default),
@@ -2395,8 +2395,8 @@ def extract_ring_peaks(
     poni: Union[Integrator, dict[str, float]],
     calibrant: Calibrant,
     mask: Optional[NDArray[np.bool_]] = None,
-    max_ring_index: int = 65,
-    max_rings: int = 16,
+    max_ring_index: int = 100,
+    max_rings: Optional[int] = None,
     n_azimuth: int = 72,
     intensity_limit: Optional[float] = None,
     search_half_width_px: Optional[int] = None,
@@ -2414,8 +2414,8 @@ def refine_image(
     calibrant: Calibrant,
     mask: Optional[NDArray[np.bool_]] = None,
     fix: Optional[list[str]] = None,
-    max_ring_index: int = 65,
-    max_rings: int = 16,
+    max_ring_index: int = 100,
+    max_rings: Optional[int] = None,
     n_azimuth: int = 72,
     n_passes: int = 3,
     intensity_limit: Optional[float] = None,
