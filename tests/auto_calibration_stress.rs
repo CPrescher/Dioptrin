@@ -1013,4 +1013,72 @@ fn auto_calibrate_module_gaps_faint_ring_spots_and_dense_cr2o3() {
         "Cr2O3 distance mismatch: {}",
         res_cr.poni.distance
     );
+
+    // 4. Pilatus-like 1-px spotty CeO2 (1024×1024, 172 µm, FWHM 0.3 mrad, 60 spots/ring):
+    //    must preserve real single-pixel Bragg spots and calibrate accurately.
+    let truth_pil_spot = make_poni(172e-6, 172e-6, 0.20, 512.0, 512.0, 2.0, -1.5, 0.31);
+    let geom_pil_spot = Geometry::new(1024, 1024, truth_pil_spot.clone());
+    let frame_pil_spot = simulate_diffraction(
+        &geom_pil_spot,
+        &ceo2,
+        &SimulationOptions {
+            fwhm_rad: 3.0e-4,
+            spotty: Some(SpottyOptions {
+                spots_per_ring: 60,
+                azimuthal_fwhm_rad: 0.015,
+                continuous_fraction: 0.0,
+            }),
+            ..sim_realistic()
+        },
+    )
+    .expect("sim pilatus spotty");
+    let (res_ps, _) = auto_calibrate_image(
+        &frame_pil_spot.data,
+        1024,
+        1024,
+        &ceo2,
+        truth_pil_spot.wavelength,
+        truth_pil_spot.pixel1,
+        truth_pil_spot.pixel2,
+        &AutoCalibrateImageOptions::default(),
+    )
+    .expect("Pilatus 1-px spotty CeO2 should calibrate");
+    assert!(
+        (res_ps.poni.distance - truth_pil_spot.distance).abs() / truth_pil_spot.distance < 0.01,
+        "Pilatus spotty distance mismatch: {}",
+        res_ps.poni.distance
+    );
+
+    // 5. 2000 isolated 1-px hot pixels on 1024×1024 CeO2: must reject hot pixels
+    //    and recover exact geometry (no 27-px drift).
+    let truth_hp = make_poni(100e-6, 100e-6, 0.25, 512.0, 512.0, 2.0, -1.5, 0.31);
+    let geom_hp = Geometry::new(1024, 1024, truth_hp.clone());
+    let mut frame_hp = simulate_diffraction(&geom_hp, &ceo2, &sim_realistic()).expect("sim hp");
+    let mut rng: u64 = 0xfeed_face_cafe_babe;
+    for _ in 0..2000 {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let r = 8 + ((rng >> 16) as usize % (1024 - 16));
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let c = 8 + ((rng >> 16) as usize % (1024 - 16));
+        frame_hp.data[r * 1024 + c] += 40_000.0;
+    }
+    let (res_hp, _) = auto_calibrate_image(
+        &frame_hp.data,
+        1024,
+        1024,
+        &ceo2,
+        truth_hp.wavelength,
+        truth_hp.pixel1,
+        truth_hp.pixel2,
+        &AutoCalibrateImageOptions::default(),
+    )
+    .expect("2000 hot pixels CeO2 should calibrate cleanly");
+    let hp_dp1 = (res_hp.poni.poni1 - truth_hp.poni1).abs() / truth_hp.pixel1;
+    let hp_dp2 = (res_hp.poni.poni2 - truth_hp.poni2).abs() / truth_hp.pixel2;
+    assert!(
+        (res_hp.poni.distance - truth_hp.distance).abs() / truth_hp.distance < 0.01
+            && hp_dp1.max(hp_dp2) < 5.0,
+        "2000 hot pixels drifted: d={}, dp=({hp_dp1:.1}, {hp_dp2:.1})px",
+        res_hp.poni.distance
+    );
 }

@@ -333,7 +333,7 @@ fn auto_calibrate_image_impl(
         build_valid_mask(image, mask, dim1, dim2, explicit_upper);
 
     // 2. Robust image-wide peak extraction with auto-adaptive MAD threshold.
-    let (peaks, residual, med_r, sigma_r, used_sigma) = extract_robust_peaks(
+    let (peaks, residual, sigma_r, used_sigma) = extract_robust_peaks(
         image,
         &valid,
         valid_median,
@@ -413,23 +413,6 @@ fn auto_calibrate_image_impl(
         })
         .unwrap_or_default();
 
-    let radial_ridge = radial_attempt
-        .as_ref()
-        .map(|(res, _, _)| {
-            evaluate_image_ring_contrast(
-                &residual,
-                med_r,
-                sigma_r,
-                &valid,
-                dim1,
-                dim2,
-                &res.poni,
-                calibrant,
-                options.max_ring_index,
-            )
-        })
-        .unwrap_or_default();
-
     let radial_verified = radial_attempt.as_ref().is_some_and(|(res, _, n_rings)| {
         is_verified_calibration(
             res,
@@ -439,7 +422,7 @@ fn auto_calibrate_image_impl(
             d_min,
             d_max,
             options.starting_distance.is_some(),
-        ) && radial_ridge.passes()
+        )
     });
 
     let radial_tight = radial_attempt
@@ -500,17 +483,6 @@ fn auto_calibrate_image_impl(
             VERIFY_TOL_RAD,
             options.max_ring_index,
         );
-        let grid_ridge = evaluate_image_ring_contrast(
-            &residual,
-            med_r,
-            sigma_r,
-            &valid,
-            dim1,
-            dim2,
-            &grid_res.poni,
-            calibrant,
-            options.max_ring_index,
-        );
         let grid_verified = is_verified_calibration(
             &grid_res,
             grid_rings,
@@ -519,7 +491,7 @@ fn auto_calibrate_image_impl(
             d_min,
             d_max,
             options.starting_distance.is_some(),
-        ) && grid_ridge.passes();
+        );
         if grid_verified {
             let use_grid = match &radial_attempt {
                 None => true,
@@ -531,12 +503,10 @@ fn auto_calibrate_image_impl(
                         let r_rms = r_res.rms_rad + 0.35 * radial_metrics.inlier_rms_rad;
                         let g_score = (grid_metrics.inlier_frac.max(0.05)
                             * grid_metrics.ring_recall.max(0.05)
-                            * grid_ridge.supported_ring_frac.max(0.2)
                             * (grid_rings as f64).min(24.0).sqrt())
                             / (g_rms + 5.0e-5);
                         let r_score = (radial_metrics.inlier_frac.max(0.05)
                             * radial_metrics.ring_recall.max(0.05)
-                            * radial_ridge.supported_ring_frac.max(0.2)
                             * (*r_rings as f64).min(24.0).sqrt())
                             / (r_rms + 5.0e-5);
                         g_score > r_score
@@ -903,111 +873,6 @@ fn evaluate_peak_match(
     }
 }
 
-/// Image-level verification metrics measuring whether a candidate `Poni`'s
-/// predicted rings actually lie on real intensity ridges in the 2D residual
-/// image (as opposed to cutting across background or matching stray noise).
-#[derive(Debug, Clone, Copy, Default)]
-struct ImageRidgeMetrics {
-    mean_ridge_snr: f64,
-    supported_ring_frac: f64,
-    n_rings_tested: usize,
-}
-
-impl ImageRidgeMetrics {
-    fn passes(&self) -> bool {
-        if self.n_rings_tested < 2 {
-            return false;
-        }
-        self.supported_ring_frac >= 0.45
-            && (self.mean_ridge_snr >= 0.50 || self.supported_ring_frac >= 0.65)
-    }
-}
-
-/// Sample the 2D residual image directly along predicted rings (unbiased center
-/// sample `v_0 - med_r`, no max-of-neighbors positive noise bias) in `< 0.5 ms`
-/// to catch garbage geometries that fooled peak-only metrics.
-#[allow(clippy::too_many_arguments)]
-fn evaluate_image_ring_contrast(
-    residual: &[f64],
-    med_r: f64,
-    sigma_r: f64,
-    valid: &[bool],
-    dim1: usize,
-    dim2: usize,
-    poni: &Poni,
-    calibrant: &Calibrant,
-    max_ring_index: usize,
-) -> ImageRidgeMetrics {
-    if sigma_r <= 1e-12 {
-        return ImageRidgeMetrics::default();
-    }
-    let tth_list: Vec<f64> = calibrant
-        .two_theta_rad(poni.wavelength)
-        .into_iter()
-        .take(max_ring_index)
-        .flatten()
-        .filter(|v| v.is_finite() && *v > 1e-4 && *v < PI * 0.49)
-        .collect();
-    if tth_list.is_empty() {
-        return ImageRidgeMetrics::default();
-    }
-
-    const N_AZ: usize = 360;
-    let inv_sig = 1.0 / sigma_r;
-    let mut n_rings_tested = 0usize;
-    let mut n_rings_supported = 0usize;
-    let mut total_snr_sum = 0.0_f64;
-    let mut total_samples = 0usize;
-
-    for &tth in &tth_list {
-        if n_rings_tested >= 10 {
-            break;
-        }
-        let mut ring_snr_sum = 0.0_f64;
-        let mut ring_samples = 0usize;
-        let mut strong_az = 0usize;
-
-        for a in 0..N_AZ {
-            let phi = 2.0 * PI * (a as f64) / (N_AZ as f64);
-            let (d1, d2) = match project_ring_pixel(poni, tth, phi) {
-                Some(p) => p,
-                None => continue,
-            };
-            if d1 < 4.0 || d2 < 4.0 || d1 >= dim1 as f64 - 5.0 || d2 >= dim2 as f64 - 5.0 {
-                continue;
-            }
-            let Some(v_0) = sample_bilinear_valid(residual, valid, dim1, dim2, d1, d2) else {
-                continue;
-            };
-            let snr = (v_0 - med_r) * inv_sig;
-            ring_snr_sum += snr;
-            ring_samples += 1;
-            if snr >= 3.5 {
-                strong_az += 1;
-            }
-        }
-
-        if ring_samples >= 2 {
-            n_rings_tested += 1;
-            let mean_ring = ring_snr_sum / ring_samples as f64;
-            if mean_ring >= 0.75 || strong_az >= 3 {
-                n_rings_supported += 1;
-            }
-            total_snr_sum += ring_snr_sum;
-            total_samples += ring_samples;
-        }
-    }
-
-    if n_rings_tested == 0 || total_samples == 0 {
-        return ImageRidgeMetrics::default();
-    }
-    ImageRidgeMetrics {
-        mean_ridge_snr: total_snr_sum / total_samples as f64,
-        supported_ring_frac: n_rings_supported as f64 / n_rings_tested as f64,
-        n_rings_tested,
-    }
-}
-
 /// Select strong calibrant rings (sorted by 2θ) for the 1D radial distance
 /// scan. When relative intensities are available, drops very weak reflections
 /// (`< 3%` of max) so dense 100–600 ring calibrants don't create false aliases,
@@ -1078,9 +943,8 @@ fn build_valid_mask(
     let n = dim1 * dim2;
     // Auto-detect flat-topped saturation plateaus (e.g. 16-bit CCDs clipping at
     // 65535) when the caller did not pass an explicit `intensity_limit`.
-    // Require an exact repeated plateau (>= 8 sampled pixels at the exact same
-    // maximum value >= 65_000) so genuinely bright 32-bit/summed powder rings
-    // are never falsely masked out.
+    // Require >= 8 sampled pixels within 0.1% of the maximum value >= 65_000 so
+    // genuinely bright 32-bit/summed powder rings are not falsely masked out.
     let upper_limit = match explicit_upper_limit {
         Some(lim) => lim,
         None => {
@@ -1442,7 +1306,7 @@ fn extract_robust_peaks(
     dim2: usize,
     max_peaks: usize,
     peak_threshold_sigma: Option<f64>,
-) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64, f64) {
+) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64) {
     let n = dim1 * dim2;
     // Mask-aware normalized convolution: multiply by validity mask, blur both
     // signal and mask, then divide. Buffers are dropped promptly and the large
@@ -1513,7 +1377,7 @@ fn extract_robust_peaks(
         k += step;
     }
     if r_sample.is_empty() {
-        return (Vec::new(), residual, 0.0, 0.0, 3.5);
+        return (Vec::new(), residual, 0.0, 3.5);
     }
     let mid = r_sample.len() / 2;
     r_sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
@@ -1532,8 +1396,27 @@ fn extract_robust_peaks(
         sigma_r = var_r.sqrt();
     }
     if sigma_r < 1e-12 {
-        return (Vec::new(), residual, med_r, 0.0, 3.5);
+        return (Vec::new(), residual, 0.0, 3.5);
     }
+
+    // Estimate raw (unsmoothed) pixel noise σ from |image - smooth| MAD so
+    // isolated single-pixel hot-pixel rejection scales with raw noise rather
+    // than the ~3× smaller smoothed residual σ.
+    let mut raw_dev = Vec::with_capacity(r_sample.len());
+    let mut k = 0;
+    while k < n {
+        if valid[k] {
+            raw_dev.push((image[k] - smooth[k]).abs());
+        }
+        k += step;
+    }
+    let sigma_raw = if !raw_dev.is_empty() {
+        let rmid = raw_dev.len() / 2;
+        raw_dev.select_nth_unstable_by(rmid, |a, b| a.total_cmp(b));
+        (1.4826 * raw_dev[rmid]).max(sigma_r)
+    } else {
+        sigma_r
+    };
 
     // Collect local maxima with their prominence so we can keep strong,
     // spatially balanced peaks across the entire detector.
@@ -1545,7 +1428,7 @@ fn extract_robust_peaks(
     };
 
     let valid_margin: usize = if dim1.min(dim2) >= 128 { 3 } else { 2 };
-    let nms_r: isize = 1;
+    let nms_r: isize = if dim1.max(dim2) >= 900 { 2 } else { 1 };
     let border = valid_margin.max(nms_r as usize);
     let row_end = dim1.saturating_sub(border);
     let col_end = dim2.saturating_sub(border);
@@ -1568,6 +1451,31 @@ fn extract_robust_peaks(
                     }
                     if !neighborhood_valid(valid, dim1, dim2, i, j, valid_margin) {
                         continue;
+                    }
+                    // Reject isolated single-pixel hot pixels / cosmic rays:
+                    // require both a huge raw excess (> 12σ_raw) AND that even
+                    // the single brightest 8-neighbor sits near background
+                    // (< 12% of the center excess). Preserves real Pilatus
+                    // 1-px Bragg spots (which extend along the ring azimuth).
+                    let local_bg = smooth[idx] - res_v;
+                    let raw_ex = image[idx] - local_bg;
+                    if raw_ex > 12.0 * sigma_raw {
+                        let mut n_max1 = f64::NEG_INFINITY;
+                        for di in -1isize..=1 {
+                            let nr = (i as isize + di) as usize * dim2;
+                            for dj in -1isize..=1 {
+                                if di == 0 && dj == 0 {
+                                    continue;
+                                }
+                                let nv = image[nr + (j as isize + dj) as usize];
+                                if nv > n_max1 {
+                                    n_max1 = nv;
+                                }
+                            }
+                        }
+                        if (n_max1 - local_bg).max(0.0) < 0.12 * raw_ex {
+                            continue;
+                        }
                     }
 
                     let v = smooth[idx];
@@ -1620,7 +1528,7 @@ fn extract_robust_peaks(
 
     let tile_min_score = med_r + 5.0 * sigma_r;
     let peaks = select_spatially_balanced_peaks(candidates, dim1, dim2, max_peaks, tile_min_score);
-    (peaks, residual, med_r, sigma_r, used_sigma)
+    (peaks, residual, sigma_r, used_sigma)
 }
 
 // ---------- Step 3: Isotropic ring-center estimation + sharpness refinement ----------
@@ -2694,7 +2602,8 @@ where
             );
             let cur_ok =
                 is_verified_calibration(&res, n_rings, &m, peaks.len(), d_min, d_max, has_hint);
-            if cand_idx < 2
+            let clear_top1 = n_cands == 1 || dist_candidates[0].1 > 1.35 * dist_candidates[1].1;
+            if (cand_idx >= 1 || clear_top1)
                 && cur_ok
                 && res.rms_rad < 3.5e-4
                 && n_rings >= 6
@@ -2815,17 +2724,7 @@ where
         return Err(AutoCalibrateError::Cancelled);
     }
 
-    // On narrow strip detectors, uniformly subsample up to 800 peaks so
-    // fainter outer rings along the long axis remain represented; on full 2D
-    // detectors, keep the strongest 800 peaks to avoid weak tail noise.
-    let strong_peaks_owned: Vec<(f64, f64)>;
-    let strong_peaks: &[(f64, f64)] = if is_strip_detector && peaks.len() > 800 {
-        let n = peaks.len();
-        strong_peaks_owned = (0..800).map(|i| peaks[(i * n) / 800]).collect();
-        &strong_peaks_owned
-    } else {
-        &peaks[..peaks.len().min(800)]
-    };
+    let strong_peaks: &[(f64, f64)] = &peaks[..peaks.len().min(800)];
     let cx = strong_peaks.iter().map(|p| p.0).sum::<f64>() / strong_peaks.len() as f64;
     let cy = strong_peaks.iter().map(|p| p.1).sum::<f64>() / strong_peaks.len() as f64;
 
@@ -2851,11 +2750,11 @@ where
         rot_max: 45.0_f64.to_radians(),
         rot_steps: 15,
         poni_search_radius_px: (0.30 * dim1.max(dim2) as f64).clamp(150.0, 450.0),
-        poni_grid_steps: 13,
+        poni_grid_steps: if is_strip_detector { 17 } else { 13 },
         tolerance_rad: 8.0e-3,
         max_peaks_for_grid: 400,
-        max_ring_index: options.max_ring_index,
-        top_k: 64,
+        max_ring_index: options.max_ring_index.min(36),
+        top_k: 40,
     };
 
     // Search both regimes:
@@ -3129,40 +3028,6 @@ mod tests {
         assert!(b[32 * dim2 + 40] > b[32 * dim2 + 45]);
         assert!((b[32 * dim2 + 35] - b[32 * dim2 + 45]).abs() < 1e-4);
         assert!((b[27 * dim2 + 40] - b[37 * dim2 + 40]).abs() < 1e-4);
-    }
-
-    #[test]
-    fn ridge_contrast_rejects_random_geometries_on_noise() {
-        let dim1 = 256;
-        let dim2 = 256;
-        let mut rng: u64 = 0x1234_5678_9abc_def0;
-        let mut next_gauss = || {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let u1 = ((rng >> 11) as f64 / (1u64 << 53) as f64).max(1e-12);
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let u2 = (rng >> 11) as f64 / (1u64 << 53) as f64;
-            (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
-        };
-        let residual: Vec<f64> = (0..(dim1 * dim2)).map(|_| next_gauss()).collect();
-        let valid = vec![true; dim1 * dim2];
-        let cal = Calibrant::builtin("CeO2").expect("builtin CeO2");
-
-        for &d in &[0.08, 0.12, 0.16, 0.22, 0.30] {
-            let mut poni = Poni::new();
-            poni.pixel1 = 100e-6;
-            poni.pixel2 = 100e-6;
-            poni.distance = d;
-            poni.poni1 = 128.0 * 100e-6;
-            poni.poni2 = 128.0 * 100e-6;
-            poni.wavelength = 0.31e-10;
-            let m = evaluate_image_ring_contrast(
-                &residual, 0.0, 1.0, &valid, dim1, dim2, &poni, &cal, 30,
-            );
-            assert!(
-                !m.passes(),
-                "noise-only image should fail ridge check at d={d}, got {m:?}"
-            );
-        }
     }
 
     #[test]

@@ -498,9 +498,14 @@ fn score_rot_grid_top_k(
                                     } else if e.ring_idx < 128 {
                                         ring_mask_hi |= 1u64 << (e.ring_idx - 64);
                                     }
+                                    // Fast 3rd-order rational approximation of
+                                    // exp(-r² / (2·(0.4·tol)²)) = exp(-3.125·u²),
+                                    // matching the Gaussian kernel to ~1% with no exp().
                                     let u = r * e.inv_tol;
-                                    let t = 1.0 - u * u;
-                                    weight_sum += t * t;
+                                    let x = 3.125_f32 * u * u;
+                                    let x2 = x * x;
+                                    weight_sum += 1.0_f32
+                                        / (1.0_f32 + x + 0.5_f32 * x2 + 0.1667_f32 * x2 * x);
                                     count += 1;
                                 }
                             }

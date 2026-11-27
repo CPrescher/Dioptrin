@@ -572,7 +572,13 @@ fn auto_calibrate_image_lab6_offcenter_pe_blind_and_hinted() {
             "expected distance ~0.500 m, got {}",
             res.poni.distance
         );
-        assert!(res.rms_rad < 1e-3, "RMS too high: {:e}", res.rms_rad);
+        assert!(
+            res.rms_rad < 1e-3,
+            "RMS too high: {:e} (poni={:?}, rings={})",
+            res.rms_rad,
+            res.poni,
+            diag.n_identified_ellipses
+        );
         assert!(
             diag.n_identified_ellipses >= 12,
             "expected >= 12 rings, got {}",
@@ -616,7 +622,13 @@ fn auto_calibrate_image_ceo2_side_strip_blind_and_hinted() {
         )
         .unwrap_or_else(|e| panic!("ceo2_side failed: {e}\ntrace:\n{}", trace.join("\n")));
 
-        assert!(res.rms_rad < 1e-3, "RMS too high: {:e}", res.rms_rad);
+        assert!(
+            res.rms_rad < 1e-3,
+            "RMS too high: {:e} (poni={:?}, rings={})",
+            res.rms_rad,
+            res.poni,
+            diag.n_identified_ellipses
+        );
         assert!(
             diag.n_identified_ellipses >= 8,
             "expected >= 8 rings, got {}",
