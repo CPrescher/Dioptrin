@@ -5,6 +5,26 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.3] - 2026-11-27
+
+### Added
+
+- **Zero-config image-based refinement & ring-peak extraction**
+  (`extract_ring_peaks`, `refine_image`, `RefineImageOptions`,
+  `RefineImageResult`; Python: `dioptrin.extract_ring_peaks`,
+  `dioptrin.refine_image`, `dioptrin.RefineImageResult`):
+  - `extract_ring_peaks` samples sub-pixel control points uniformly around all
+    visible calibrant rings predicted by a `Poni` using the mask-aware DoG
+    residual and `8×8` `LocalNoiseGrid` (`2.5 × sigma_loc` prominence, clamped
+    per ring to avoid neighboring rings).
+  - `refine_image` runs progressive multi-pass 2D ring-profile extraction +
+    Huber-weighted Levenberg–Marquardt (with automatic local-MAD detected-peak
+    pull-in fallback reusing the precomputed residual/noise buffers), verifies
+    fits against `start_rms_rad`, divergence bounds, and `evaluate_peak_match`
+    (rejecting wrong calibrants or diverged fits), locks `rot3` during `2θ`
+    refinement, and optionally calibrates `rot3` via
+    `calibrate_rot3_polarization`.
+
 ## [0.18.2] - 2026-11-27
 
 ### Added
