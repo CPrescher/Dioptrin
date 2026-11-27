@@ -173,8 +173,9 @@ pub fn grid_search(
 
     // Deterministic uniform-stride subsample of peaks.
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
-        peaks.iter().step_by(step).copied().collect()
+        let n = peaks.len();
+        let m = options.max_peaks_for_grid.max(1);
+        (0..m).map(|i| peaks[(i * n) / m]).collect()
     } else {
         peaks.to_vec()
     };
@@ -408,7 +409,6 @@ fn score_rot_grid_top_k(
         .collect();
 
     let k_target = top_k.max(1);
-    let local_keep = (k_target / 2).clamp(16, 32);
 
     let mut merged: Vec<ScoredCell> = rot_pairs
         .par_iter()
@@ -441,8 +441,10 @@ fn score_rot_grid_top_k(
                 (0.0, 0.0)
             };
 
-            let mut local_top: Vec<ScoredCell> = Vec::with_capacity(local_keep + 1);
-            let mut min_score = 0.0_f32;
+            // Keep the top 2 `(p1, p2)` cells for each distance `d` at this
+            // `(r1, r2)` so neither a broad false distance basin nor a competing
+            // PONI offset at the same distance can crowd out the true basin.
+            let mut per_d_best: Vec<ScoredCell> = Vec::with_capacity(distances.len() * 2);
 
             for &d in distances {
                 let s1 = d * shift1_per_d;
@@ -450,6 +452,8 @@ fn score_rot_grid_top_k(
                 let d_r02 = d * r02;
                 let d_r12 = d * r12;
                 let d_r22 = d * r22;
+                let mut best1: Option<ScoredCell> = None;
+                let mut best2: Option<ScoredCell> = None;
 
                 for &bp1 in &base_p1 {
                     let p1 = bp1 + s1;
@@ -475,8 +479,17 @@ fn score_rot_grid_top_k(
                             if norm2 <= 0.0 {
                                 continue;
                             }
-                            let cos_tth = (z / norm2.sqrt()).clamp(-1.0, 1.0);
-                            let s = (0.5_f32 * (1.0 - cos_tth)).max(0.0).sqrt();
+                            let norm = norm2.sqrt();
+                            // Cancellation-free sin(2θ / 2) for small 2θ (e.g. AgBh at 0.1 Å):
+                            // sin²(θ) = (1 - z/n)/2 = (x² + y²) / (2 * n * (n + z)) when z >= 0.
+                            let s = if z >= 0.0 {
+                                let r2 = x * x + y * y;
+                                (r2 / (2.0_f32 * norm * (norm + z))).sqrt()
+                            } else {
+                                (0.5_f32 * (1.0 - (z / norm).clamp(-1.0, 1.0)))
+                                    .max(0.0)
+                                    .sqrt()
+                            };
                             if let Some(e) = lut.lookup(s) {
                                 let r = (s - e.s_near).abs();
                                 if r < e.local_tol {
@@ -493,29 +506,32 @@ fn score_rot_grid_top_k(
                             }
                         }
 
-                        if count > 0 && (local_top.len() < local_keep || weight_sum > min_score) {
-                            let n_rings =
-                                (ring_mask_lo.count_ones() + ring_mask_hi.count_ones()) as usize;
-                            let entry = (weight_sum, n_rings, count, (d, p1, p2, r1, r2));
-                            if local_top.len() < local_keep {
-                                local_top.push(entry);
-                                if local_top.len() == local_keep {
-                                    local_top.sort_by(|a, b| b.0.total_cmp(&a.0));
-                                    min_score = local_top[local_keep - 1].0;
+                        if count > 0 {
+                            let beats1 = best1.is_none_or(|b| weight_sum > b.0);
+                            let beats2 = !beats1 && best2.is_none_or(|b| weight_sum > b.0);
+                            if beats1 || beats2 {
+                                let n_rings = (ring_mask_lo.count_ones()
+                                    + ring_mask_hi.count_ones())
+                                    as usize;
+                                let entry = (weight_sum, n_rings, count, (d, p1, p2, r1, r2));
+                                if beats1 {
+                                    best2 = best1;
+                                    best1 = Some(entry);
+                                } else {
+                                    best2 = Some(entry);
                                 }
-                            } else {
-                                let pos = local_top
-                                    .partition_point(|x| x.0 >= weight_sum)
-                                    .min(local_keep - 1);
-                                local_top.insert(pos, entry);
-                                local_top.truncate(local_keep);
-                                min_score = local_top[local_keep - 1].0;
                             }
                         }
                     }
                 }
+                if let Some(entry) = best1 {
+                    per_d_best.push(entry);
+                }
+                if let Some(entry) = best2 {
+                    per_d_best.push(entry);
+                }
             }
-            local_top
+            per_d_best
         })
         .collect();
 
@@ -600,8 +616,9 @@ pub fn grid_search_top_k(
     };
 
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
-        peaks.iter().step_by(step).copied().collect()
+        let n = peaks.len();
+        let m = options.max_peaks_for_grid.max(1);
+        (0..m).map(|i| peaks[(i * n) / m]).collect()
     } else {
         peaks.to_vec()
     };
@@ -669,8 +686,9 @@ pub(crate) fn grid_search_top_k_beam_centered(
     };
 
     let working: Vec<(f64, f64)> = if peaks.len() > options.max_peaks_for_grid {
-        let step = peaks.len().div_ceil(options.max_peaks_for_grid);
-        peaks.iter().step_by(step).copied().collect()
+        let n = peaks.len();
+        let m = options.max_peaks_for_grid.max(1);
+        (0..m).map(|i| peaks[(i * n) / m]).collect()
     } else {
         peaks.to_vec()
     };
@@ -845,5 +863,80 @@ mod tests {
         // Distance within ~25%
         let d_rel = (result.poni.distance - poni.distance).abs() / poni.distance;
         assert!(d_rel < 0.3, "distance off by {:.2}%", d_rel * 100.0);
+    }
+
+    #[test]
+    fn ring_lut_maps_small_and_dense_angles() {
+        // Small-angle AgBh-like rings (~2 mrad spacing) plus denser outer rings.
+        let targets = vec![0.002, 0.004, 0.006, 0.10, 0.105, 0.40];
+        let lut = RingLut::build(&targets, 8.0e-3).expect("build RingLut");
+        for (k, &tth) in targets.iter().enumerate() {
+            let s = (0.5 * tth).sin() as f32;
+            let entry = lut.lookup(s).expect("lookup hit");
+            assert_eq!(entry.ring_idx as usize, k);
+            assert!((entry.s_near - s).abs() < 1e-4);
+            assert!(entry.local_tol > 0.0 && entry.inv_tol.is_finite());
+        }
+        assert!(lut.lookup(0.99).is_none());
+    }
+
+    #[test]
+    fn grid_search_top_k_recovers_tilted_geometry_deterministically() {
+        let mut poni = Poni::new();
+        poni.pixel1 = 100e-6;
+        poni.pixel2 = 100e-6;
+        poni.distance = 0.2;
+        poni.poni1 = 512.0 * 100e-6;
+        poni.poni2 = 512.0 * 100e-6;
+        poni.rot1 = 22.0_f64.to_radians();
+        poni.rot2 = -8.0_f64.to_radians();
+        poni.wavelength = 1.0e-10;
+        let geom = Geometry::new(1024, 1024, poni.clone());
+        let cal = synthetic_calibrant();
+        let peaks = make_peaks_for(&geom, 32, 6);
+
+        let opts = GridSearchOptions {
+            distance_min: 0.08,
+            distance_max: 0.5,
+            distance_steps: 14,
+            rot_max: 35.0_f64.to_radians(),
+            rot_steps: 9,
+            poni_search_radius_px: 80.0,
+            poni_grid_steps: 3,
+            tolerance_rad: 8.0e-3,
+            max_peaks_for_grid: 300,
+            max_ring_index: 10,
+            top_k: 12,
+        };
+        let a = grid_search_top_k(
+            &peaks,
+            512.0,
+            512.0,
+            &cal,
+            poni.wavelength,
+            poni.pixel1,
+            poni.pixel2,
+            &opts,
+        );
+        let b = grid_search_top_k(
+            &peaks,
+            512.0,
+            512.0,
+            &cal,
+            poni.wavelength,
+            poni.pixel1,
+            poni.pixel2,
+            &opts,
+        );
+        assert!(!a.is_empty());
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a[0].poni.distance, b[0].poni.distance);
+        assert!(
+            a.iter().any(|c| {
+                (c.poni.distance - poni.distance).abs() / poni.distance < 0.25
+                    && (c.poni.rot1 - poni.rot1).abs() < 12.0_f64.to_radians()
+            }),
+            "top_k should include a candidate near the true tilted basin"
+        );
     }
 }

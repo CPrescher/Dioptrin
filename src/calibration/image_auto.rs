@@ -333,7 +333,7 @@ fn auto_calibrate_image_impl(
         build_valid_mask(image, mask, dim1, dim2, explicit_upper);
 
     // 2. Robust image-wide peak extraction with auto-adaptive MAD threshold.
-    let (peaks, residual, sigma_r, used_sigma) = extract_robust_peaks(
+    let (peaks, residual, med_r, sigma_r, used_sigma) = extract_robust_peaks(
         image,
         &valid,
         valid_median,
@@ -418,6 +418,7 @@ fn auto_calibrate_image_impl(
         .map(|(res, _, _)| {
             evaluate_image_ring_contrast(
                 &residual,
+                med_r,
                 sigma_r,
                 &valid,
                 dim1,
@@ -501,6 +502,7 @@ fn auto_calibrate_image_impl(
         );
         let grid_ridge = evaluate_image_ring_contrast(
             &residual,
+            med_r,
             sigma_r,
             &valid,
             dim1,
@@ -605,7 +607,7 @@ fn auto_calibrate_image_impl(
         }) {
             return Err(AutoCalibrateError::Cancelled);
         }
-        if let Ok((res, diag)) = auto_calibrate_image_impl(
+        match auto_calibrate_image_impl(
             image,
             dim1,
             dim2,
@@ -618,7 +620,9 @@ fn auto_calibrate_image_impl(
             on_progress,
             false,
         ) {
-            return Ok((res, diag));
+            Ok((res, diag)) => return Ok((res, diag)),
+            Err(AutoCalibrateError::Cancelled) => return Err(AutoCalibrateError::Cancelled),
+            Err(_) => {}
         }
     }
 
@@ -914,16 +918,18 @@ impl ImageRidgeMetrics {
         if self.n_rings_tested < 2 {
             return false;
         }
-        self.supported_ring_frac >= 0.40
-            && (self.mean_ridge_snr >= 0.25 || self.supported_ring_frac >= 0.60)
+        self.supported_ring_frac >= 0.45
+            && (self.mean_ridge_snr >= 0.50 || self.supported_ring_frac >= 0.65)
     }
 }
 
-/// Sample the 2D residual image along predicted rings vs off-ring flanks in
-/// `< 0.5 ms` to catch garbage geometries that fooled peak-only metrics.
+/// Sample the 2D residual image directly along predicted rings (unbiased center
+/// sample `v_0 - med_r`, no max-of-neighbors positive noise bias) in `< 0.5 ms`
+/// to catch garbage geometries that fooled peak-only metrics.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_image_ring_contrast(
     residual: &[f64],
+    med_r: f64,
     sigma_r: f64,
     valid: &[bool],
     dim1: usize,
@@ -946,29 +952,17 @@ fn evaluate_image_ring_contrast(
         return ImageRidgeMetrics::default();
     }
 
-    const N_AZ: usize = 72;
+    const N_AZ: usize = 360;
     let inv_sig = 1.0 / sigma_r;
     let mut n_rings_tested = 0usize;
     let mut n_rings_supported = 0usize;
     let mut total_snr_sum = 0.0_f64;
     let mut total_samples = 0usize;
 
-    for (k, &tth) in tth_list.iter().enumerate() {
+    for &tth in &tth_list {
         if n_rings_tested >= 10 {
             break;
         }
-        let gap_lo = if k > 0 {
-            tth - tth_list[k - 1]
-        } else {
-            f64::INFINITY
-        };
-        let gap_hi = if k + 1 < tth_list.len() {
-            tth_list[k + 1] - tth
-        } else {
-            f64::INFINITY
-        };
-        let spacing_rad = gap_lo.min(gap_hi);
-
         let mut ring_snr_sum = 0.0_f64;
         let mut ring_samples = 0usize;
         let mut strong_az = 0usize;
@@ -979,72 +973,24 @@ fn evaluate_image_ring_contrast(
                 Some(p) => p,
                 None => continue,
             };
-            if d1 < 8.0 || d2 < 8.0 || d1 >= dim1 as f64 - 9.0 || d2 >= dim2 as f64 - 9.0 {
+            if d1 < 4.0 || d2 < 4.0 || d1 >= dim1 as f64 - 5.0 || d2 >= dim2 as f64 - 5.0 {
                 continue;
             }
-            let delta = 1e-4;
-            let (p_hi, p_lo) = match (
-                project_ring_pixel(poni, tth + delta, phi),
-                project_ring_pixel(poni, (tth - delta).max(1e-5), phi),
-            ) {
-                (Some(hi), Some(lo)) => (hi, lo),
-                _ => continue,
-            };
-            let du1 = p_hi.0 - p_lo.0;
-            let du2 = p_hi.1 - p_lo.1;
-            let norm = du1.hypot(du2);
-            if norm < 1e-9 {
-                continue;
-            }
-            let u1 = du1 / norm;
-            let u2 = du2 / norm;
-            let flank = if spacing_rad.is_finite() {
-                let px_per_rad = norm / (2.0 * delta);
-                (0.42 * spacing_rad * px_per_rad).clamp(3.0, 8.0)
-            } else {
-                6.0
-            };
-
-            let (Some(v_m1), Some(v_0), Some(v_p1), Some(v_in), Some(v_out)) = (
-                sample_bilinear_valid(residual, valid, dim1, dim2, d1 - u1, d2 - u2),
-                sample_bilinear_valid(residual, valid, dim1, dim2, d1, d2),
-                sample_bilinear_valid(residual, valid, dim1, dim2, d1 + u1, d2 + u2),
-                sample_bilinear_valid(
-                    residual,
-                    valid,
-                    dim1,
-                    dim2,
-                    d1 - flank * u1,
-                    d2 - flank * u2,
-                ),
-                sample_bilinear_valid(
-                    residual,
-                    valid,
-                    dim1,
-                    dim2,
-                    d1 + flank * u1,
-                    d2 + flank * u2,
-                ),
-            ) else {
+            let Some(v_0) = sample_bilinear_valid(residual, valid, dim1, dim2, d1, d2) else {
                 continue;
             };
-            let v_on = v_m1.max(v_0).max(v_p1);
-            // `residual` is already locally background-subtracted; using the
-            // maximum of direct residual SNR and flank-relative contrast avoids
-            // false rejections in dense high-2θ regions where ±flank lands on
-            // neighboring rings, while still scoring ~0 on empty background.
-            let snr = v_on.max(v_on - 0.5 * (v_in + v_out)) * inv_sig;
+            let snr = (v_0 - med_r) * inv_sig;
             ring_snr_sum += snr;
             ring_samples += 1;
-            if snr >= 2.5 {
+            if snr >= 3.5 {
                 strong_az += 1;
             }
         }
 
-        if ring_samples >= 3 {
+        if ring_samples >= 2 {
             n_rings_tested += 1;
             let mean_ring = ring_snr_sum / ring_samples as f64;
-            if mean_ring >= 0.45 || strong_az >= 2 {
+            if mean_ring >= 0.75 || strong_az >= 3 {
                 n_rings_supported += 1;
             }
             total_snr_sum += ring_snr_sum;
@@ -1062,22 +1008,21 @@ fn evaluate_image_ring_contrast(
     }
 }
 
-/// Select a clean subset of innermost strong calibrant rings (sorted by 2θ) for
-/// coarse initial indexing (1D distance scan, 5D grid search, and image-ridge
-/// verification) so dense 100–600 ring calibrants cannot create false aliases.
+/// Select strong calibrant rings (sorted by 2θ) for the 1D radial distance
+/// scan. When relative intensities are available, drops very weak reflections
+/// (`< 3%` of max) so dense 100–600 ring calibrants don't create false aliases,
+/// while still honoring `max_ring_index` for high-order-only geometries.
 fn select_initial_tth_rings(
     calibrant: &Calibrant,
     wavelength_m: f64,
     max_ring_index: usize,
-    cap: usize,
 ) -> Vec<f64> {
     let raw = calibrant.two_theta_rad(wavelength_m);
     let intensities = &calibrant.intensities;
     let has_intensities = intensities.iter().any(|v| v.is_some());
-    let window = max_ring_index.min(cap * 2).max(cap);
-    let mut pairs: Vec<(f64, f64)> = raw
+    let pairs: Vec<(f64, f64)> = raw
         .into_iter()
-        .take(window)
+        .take(max_ring_index)
         .enumerate()
         .filter_map(|(k, opt_t)| {
             let t = opt_t.filter(|v| v.is_finite() && *v > 1e-4 && *v < PI * 0.49)?;
@@ -1092,15 +1037,13 @@ fn select_initial_tth_rings(
     if has_intensities && max_i > 0.0 {
         let strong: Vec<f64> = pairs
             .iter()
-            .filter(|&&(_, w)| w >= 0.04 * max_i)
+            .filter(|&&(_, w)| w >= 0.03 * max_i)
             .map(|&(t, _)| t)
-            .take(cap)
             .collect();
         if strong.len() >= 6 {
             return strong;
         }
     }
-    pairs.truncate(cap);
     pairs.into_iter().map(|(t, _)| t).collect()
 }
 
@@ -1152,20 +1095,17 @@ fn build_valid_mask(
                 k += step;
             }
             if max_v >= 65_000.0 {
-                let mut n_exact_max = 0usize;
+                let sat_thresh = 0.999 * max_v;
+                let mut n_sat = 0usize;
                 let mut k = 0;
                 while k < n {
                     let v = image[k];
-                    if v.is_finite() && (v - max_v).abs() <= 1e-6 {
-                        n_exact_max += 1;
+                    if v.is_finite() && v < 4.0e9 && v >= sat_thresh {
+                        n_sat += 1;
                     }
                     k += step;
                 }
-                if n_exact_max >= 8 {
-                    0.995 * max_v
-                } else {
-                    4.0e9
-                }
+                if n_sat >= 8 { 0.995 * max_v } else { 4.0e9 }
             } else {
                 4.0e9
             }
@@ -1210,35 +1150,29 @@ fn build_valid_mask(
 
     // Automatically detect internal exact-zero module gap rows/columns (e.g.
     // Pilatus/Eiger/Jungfrau gaps encoded as 0.0 rather than -1.0) on images
-    // with a positive background baseline.
+    // with a positive background baseline. Single row-major pass for cache locality.
     if p50_pos > 10.0 && dim1 >= 32 && dim2 >= 32 {
         let row_zero_thresh = (dim2 * 3) / 4;
+        let col_zero_thresh = (dim1 * 3) / 4;
         let mut gap_rows = vec![false; dim1];
+        let mut col_zeros = vec![0usize; dim2];
         for i in 0..dim1 {
             let row = i * dim2;
             let mut zc = 0usize;
             for j in 0..dim2 {
                 if image[row + j] == 0.0 {
                     zc += 1;
+                    col_zeros[j] += 1;
                 }
             }
             if zc >= row_zero_thresh {
                 gap_rows[i] = true;
             }
         }
-        let col_zero_thresh = (dim1 * 3) / 4;
-        let mut gap_cols = vec![false; dim2];
-        for j in 0..dim2 {
-            let mut zc = 0usize;
-            for i in 0..dim1 {
-                if image[i * dim2 + j] == 0.0 {
-                    zc += 1;
-                }
-            }
-            if zc >= col_zero_thresh {
-                gap_cols[j] = true;
-            }
-        }
+        let gap_cols: Vec<bool> = col_zeros
+            .into_iter()
+            .map(|c| c >= col_zero_thresh)
+            .collect();
         for i in 0..dim1 {
             if gap_rows[i] {
                 let lo = i.saturating_sub(1);
@@ -1390,9 +1324,10 @@ fn neighborhood_valid(
 
 // ---------- Step 2: Robust image-wide peak extraction ----------
 
-/// 1D horizontal sliding-window box blur with clamp-to-edge boundaries.
-/// Strictly O(1) per pixel regardless of `radius`, parallelized across rows.
-fn box_blur_horizontal(src: &[f64], dst: &mut [f64], dim1: usize, dim2: usize, radius: usize) {
+/// 1D horizontal sliding-window box blur (`f32` storage, `f64` accumulator)
+/// with clamp-to-edge boundaries. Strictly O(1) per pixel regardless of
+/// `radius`, parallelized across rows.
+fn box_blur_horizontal_f32(src: &[f32], dst: &mut [f32], dim1: usize, dim2: usize, radius: usize) {
     if dim1 == 0 || dim2 == 0 {
         return;
     }
@@ -1402,23 +1337,22 @@ fn box_blur_horizontal(src: &[f64], dst: &mut [f64], dim1: usize, dim2: usize, r
         .enumerate()
         .for_each(|(i, out_row)| {
             let in_row = &src[i * dim2..(i + 1) * dim2];
-            let mut acc = in_row[0] * (radius + 1) as f64;
+            let mut acc = in_row[0] as f64 * (radius + 1) as f64;
             for k in 1..=radius {
-                acc += in_row[k.min(dim2 - 1)];
+                acc += in_row[k.min(dim2 - 1)] as f64;
             }
             let last = dim2 - 1;
             for x in 0..dim2 {
-                out_row[x] = acc * inv_w;
+                out_row[x] = (acc * inv_w) as f32;
                 let add_idx = (x + radius + 1).min(last);
                 let sub_idx = x.saturating_sub(radius);
-                acc += in_row[add_idx] - in_row[sub_idx];
+                acc += in_row[add_idx] as f64 - in_row[sub_idx] as f64;
             }
         });
 }
 
 /// Cache-friendly tiled parallel transpose `(dim1 × dim2) -> (dim2 × dim1)`.
-fn transpose_f64(src: &[f64], dim1: usize, dim2: usize) -> Vec<f64> {
-    let mut dst = vec![0.0; dim1 * dim2];
+fn transpose_f32(src: &[f32], dst: &mut [f32], dim1: usize, dim2: usize) {
     const TILE: usize = 32;
     dst.par_chunks_mut(TILE * dim1)
         .enumerate()
@@ -1435,41 +1369,40 @@ fn transpose_f64(src: &[f64], dim1: usize, dim2: usize) -> Vec<f64> {
                 }
             }
         });
-    dst
 }
 
-/// Fast 3-pass separable box blur approximating a Gaussian of standard deviation `sigma`.
-///
-/// 3 box passes of half-width `r` have variance `r * (r + 1)` and run in O(1)
-/// per pixel independent of `sigma`, making large background blurs (σ = 6..20)
-/// ~30–50× faster than direct 161-tap Gaussian convolution.
-fn fast_gaussian_blur_bg(src: &[f64], dim1: usize, dim2: usize, sigma: f64) -> Vec<f64> {
+/// Fast, low-memory 3-pass separable box blur (`f32`, reusing 2 scratch buffers)
+/// approximating a Gaussian of standard deviation `sigma`.
+fn fast_gaussian_blur_bg_f32(src: &[f32], dim1: usize, dim2: usize, sigma: f64) -> Vec<f32> {
     let r = ((sigma * sigma + 0.25).sqrt() - 0.5).round().max(1.0) as usize;
     let n = dim1 * dim2;
-    let mut a = vec![0.0; n];
-    let mut b = vec![0.0; n];
+    let mut a = vec![0.0_f32; n];
+    let mut b = vec![0.0_f32; n];
 
     // 3 horizontal passes: src -> a -> b -> a
-    box_blur_horizontal(src, &mut a, dim1, dim2, r);
-    box_blur_horizontal(&a, &mut b, dim1, dim2, r);
-    box_blur_horizontal(&b, &mut a, dim1, dim2, r);
+    box_blur_horizontal_f32(src, &mut a, dim1, dim2, r);
+    box_blur_horizontal_f32(&a, &mut b, dim1, dim2, r);
+    box_blur_horizontal_f32(&b, &mut a, dim1, dim2, r);
 
-    // Transpose once, run 3 horizontal passes on columns, transpose back.
-    let t = transpose_f64(&a, dim1, dim2);
-    box_blur_horizontal(&t, &mut b, dim2, dim1, r);
-    box_blur_horizontal(&b, &mut a, dim2, dim1, r);
-    box_blur_horizontal(&a, &mut b, dim2, dim1, r);
-    transpose_f64(&b, dim2, dim1)
+    // Transpose a -> b, run 3 horizontal passes on columns (b -> a -> b -> a), transpose a -> b.
+    transpose_f32(&a, &mut b, dim1, dim2);
+    box_blur_horizontal_f32(&b, &mut a, dim2, dim1, r);
+    box_blur_horizontal_f32(&a, &mut b, dim2, dim1, r);
+    box_blur_horizontal_f32(&b, &mut a, dim2, dim1, r);
+    transpose_f32(&a, &mut b, dim2, dim1);
+    b
 }
 
 /// Select up to `max_peaks` strongest peaks while guaranteeing spatial
-/// representation across an `8×8` detector tile grid so bright inner rings or
-/// single-crystal spots cannot starve fainter outer rings.
+/// representation across an `8×8` detector tile grid for genuinely strong
+/// peaks (`>= tile_min_score`), so bright inner rings or single-crystal spots
+/// cannot starve fainter outer rings without filling empty tiles with noise.
 fn select_spatially_balanced_peaks(
     mut candidates: Vec<(f64, f64, f64)>,
     dim1: usize,
     dim2: usize,
     max_peaks: usize,
+    tile_min_score: f64,
 ) -> Vec<(f64, f64)> {
     candidates.sort_by(|a, b| b.2.total_cmp(&a.2));
     if candidates.len() <= max_peaks {
@@ -1486,7 +1419,8 @@ fn select_spatially_balanced_peaks(
         let ti = ((d1 / dim1 as f64) * TILES as f64).clamp(0.0, (TILES - 1) as f64) as usize;
         let tj = ((d2 / dim2 as f64) * TILES as f64).clamp(0.0, (TILES - 1) as f64) as usize;
         let t = ti * TILES + tj;
-        if tile_counts[t] < per_tile_quota && selected.len() < max_peaks {
+        if score >= tile_min_score && tile_counts[t] < per_tile_quota && selected.len() < max_peaks
+        {
             tile_counts[t] += 1;
             selected.push((d1, d2, score));
         } else {
@@ -1508,54 +1442,65 @@ fn extract_robust_peaks(
     dim2: usize,
     max_peaks: usize,
     peak_threshold_sigma: Option<f64>,
-) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64) {
+) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64, f64) {
     let n = dim1 * dim2;
     // Mask-aware normalized convolution: multiply by validity mask, blur both
-    // signal and mask, then divide. Unlike filling gaps with the global median,
-    // normalized convolution produces zero artificial edge ridges along module
-    // gaps, beamstops, or circular detector borders even on steep backgrounds.
-    let masked_img: Vec<f64> = image
-        .par_iter()
-        .zip(valid.par_iter())
-        .map(|(&v, &ok)| if ok { v } else { 0.0 })
-        .collect();
-    let mask_f: Vec<f64> = valid
-        .par_iter()
-        .map(|&ok| if ok { 1.0 } else { 0.0 })
-        .collect();
+    // signal and mask, then divide. Buffers are dropped promptly and the large
+    // background blur runs sequentially in f32 (each blur already saturates
+    // all Rayon threads) to keep peak RSS low on 4096×4096 detectors.
+    let (smooth, bg_mask_f32): (Vec<f64>, Vec<f32>) = {
+        let masked_img: Vec<f64> = image
+            .par_iter()
+            .zip(valid.par_iter())
+            .map(|(&v, &ok)| if ok { v } else { 0.0 })
+            .collect();
+        let smooth_num = gaussian_blur(&masked_img, dim1, dim2, 0.8);
+        drop(masked_img);
 
-    let (smooth_num, smooth_den) = rayon::join(
-        || gaussian_blur(&masked_img, dim1, dim2, 0.8),
-        || gaussian_blur(&mask_f, dim1, dim2, 0.8),
-    );
-    let smooth: Vec<f64> = smooth_num
-        .par_iter()
-        .zip(smooth_den.par_iter())
-        .zip(valid.par_iter())
-        .map(
-            |((&num, &den), &ok)| {
-                if ok && den > 0.25 { num / den } else { 0.0 }
-            },
-        )
-        .collect();
+        let mask_f64: Vec<f64> = valid
+            .par_iter()
+            .map(|&ok| if ok { 1.0 } else { 0.0 })
+            .collect();
+        let smooth_den = gaussian_blur(&mask_f64, dim1, dim2, 0.8);
+        drop(mask_f64);
+
+        let mut smooth_out = vec![0.0_f64; n];
+        let mut bg_mask = vec![0.0_f32; n];
+        smooth_out
+            .par_iter_mut()
+            .zip(bg_mask.par_iter_mut())
+            .enumerate()
+            .for_each(|(k, (s, m))| {
+                if valid[k] && smooth_den[k] > 0.25 {
+                    *s = smooth_num[k] / smooth_den[k];
+                    *m = 1.0_f32;
+                }
+            });
+        (smooth_out, bg_mask)
+    };
 
     let sigma_bg = (dim1.max(dim2) as f64 / 80.0).clamp(6.0, 20.0);
-    let (bg_num, bg_den) = rayon::join(
-        || fast_gaussian_blur_bg(&smooth, dim1, dim2, sigma_bg),
-        || fast_gaussian_blur_bg(&mask_f, dim1, dim2, sigma_bg),
-    );
+    let residual: Vec<f64> = {
+        let smooth_f32: Vec<f32> = smooth.par_iter().map(|&v| v as f32).collect();
+        let bg_num = fast_gaussian_blur_bg_f32(&smooth_f32, dim1, dim2, sigma_bg);
+        drop(smooth_f32);
+        let bg_den = fast_gaussian_blur_bg_f32(&bg_mask_f32, dim1, dim2, sigma_bg);
+        drop(bg_mask_f32);
 
-    let residual: Vec<f64> = smooth
-        .par_iter()
-        .zip(bg_num.par_iter())
-        .zip(bg_den.par_iter())
-        .zip(valid.par_iter())
-        .map(
-            |(((&s, &bn), &bd), &ok)| {
-                if ok && bd > 0.15 { s - bn / bd } else { 0.0 }
-            },
-        )
-        .collect();
+        smooth
+            .par_iter()
+            .zip(bg_num.par_iter())
+            .zip(bg_den.par_iter())
+            .zip(valid.par_iter())
+            .map(|(((&s, &bn), &bd), &ok)| {
+                if ok && bd > 0.15 {
+                    s - (bn / bd) as f64
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    };
 
     // Robust median and MAD of residual over valid pixels (subsampled).
     let step = (n / 32_768).max(1);
@@ -1568,7 +1513,7 @@ fn extract_robust_peaks(
         k += step;
     }
     if r_sample.is_empty() {
-        return (Vec::new(), residual, 0.0, 3.5);
+        return (Vec::new(), residual, 0.0, 0.0, 3.5);
     }
     let mid = r_sample.len() / 2;
     r_sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
@@ -1587,7 +1532,7 @@ fn extract_robust_peaks(
         sigma_r = var_r.sqrt();
     }
     if sigma_r < 1e-12 {
-        return (Vec::new(), residual, 0.0, 3.5);
+        return (Vec::new(), residual, med_r, 0.0, 3.5);
     }
 
     // Collect local maxima with their prominence so we can keep strong,
@@ -1600,7 +1545,7 @@ fn extract_robust_peaks(
     };
 
     let valid_margin: usize = if dim1.min(dim2) >= 128 { 3 } else { 2 };
-    let nms_r: isize = if dim1.max(dim2) >= 900 { 2 } else { 1 };
+    let nms_r: isize = 1;
     let border = valid_margin.max(nms_r as usize);
     let row_end = dim1.saturating_sub(border);
     let col_end = dim2.saturating_sub(border);
@@ -1622,34 +1567,6 @@ fn extract_robust_peaks(
                         continue;
                     }
                     if !neighborhood_valid(valid, dim1, dim2, i, j, valid_margin) {
-                        continue;
-                    }
-                    // Reject isolated single-pixel hot pixels / cosmic rays:
-                    // a real diffraction peak (even 1-px wide) has at least 2
-                    // elevated neighbors along the ring or PSF, whereas a hot
-                    // pixel spikes far above its 2nd-brightest 8-neighbor.
-                    let raw_c = image[idx];
-                    let mut n_max1 = f64::NEG_INFINITY;
-                    let mut n_max2 = f64::NEG_INFINITY;
-                    for di in -1isize..=1 {
-                        let nr = (i as isize + di) as usize * dim2;
-                        for dj in -1isize..=1 {
-                            if di == 0 && dj == 0 {
-                                continue;
-                            }
-                            let nv = image[nr + (j as isize + dj) as usize];
-                            if nv > n_max1 {
-                                n_max2 = n_max1;
-                                n_max1 = nv;
-                            } else if nv > n_max2 {
-                                n_max2 = nv;
-                            }
-                        }
-                    }
-                    let local_bg = smooth[idx] - res_v;
-                    if raw_c - local_bg > 8.0 * sigma_r
-                        && (n_max2 - local_bg).max(0.0) < 0.15 * (raw_c - local_bg)
-                    {
                         continue;
                     }
 
@@ -1701,8 +1618,9 @@ fn extract_robust_peaks(
         }
     }
 
-    let peaks = select_spatially_balanced_peaks(candidates, dim1, dim2, max_peaks);
-    (peaks, residual, sigma_r, used_sigma)
+    let tile_min_score = med_r + 5.0 * sigma_r;
+    let peaks = select_spatially_balanced_peaks(candidates, dim1, dim2, max_peaks, tile_min_score);
+    (peaks, residual, med_r, sigma_r, used_sigma)
 }
 
 // ---------- Step 3: Isotropic ring-center estimation + sharpness refinement ----------
@@ -1794,8 +1712,6 @@ struct RadialProfile1D {
 #[allow(clippy::too_many_arguments)]
 fn build_radial_profile_1d(
     image: &[f64],
-    residual: &[f64],
-    sigma_r: f64,
     valid: &[bool],
     dim1: usize,
     dim2: usize,
@@ -1819,15 +1735,6 @@ fn build_radial_profile_1d(
         return None;
     }
 
-    // Cap extreme local spot spikes (> 35σ above local background) so bright
-    // single-crystal spots on top of a faint continuous powder ring do not
-    // overwhelm the radial mean profile.
-    let spot_excess_cap = if sigma_r > 0.0 {
-        35.0 * sigma_r
-    } else {
-        f64::INFINITY
-    };
-
     let chunk_rows = (dim1 / rayon::current_num_threads().max(1)).max(32);
     let (sum, count) = (0..dim1)
         .into_par_iter()
@@ -1847,13 +1754,7 @@ fn build_radial_profile_1d(
                     let dx = j as f64 * scale2 - center_iso.1;
                     let bin = (dy2 + dx * dx).sqrt() as usize;
                     if bin < r_max {
-                        let r_ex = residual[idx];
-                        let val = if r_ex > spot_excess_cap {
-                            image[idx] - (r_ex - spot_excess_cap)
-                        } else {
-                            image[idx]
-                        };
-                        local_sum[bin] += val;
+                        local_sum[bin] += image[idx];
                         local_cnt[bin] += 1;
                     }
                 }
@@ -2097,10 +1998,8 @@ fn scan_distances_1d(
     max_ring_index: usize,
     top_k: usize,
 ) -> Vec<(f64, f64)> {
-    // Use a clean subset of innermost strong rings for initial 1D distance
-    // indexing so dense 100–600 ring calibrants cannot create false aliases.
     let mut tan_rings: Vec<f64> =
-        select_initial_tth_rings(calibrant, wavelength_m, max_ring_index.max(10), 16)
+        select_initial_tth_rings(calibrant, wavelength_m, max_ring_index.max(10))
             .into_iter()
             .map(|t| t.tan())
             .filter(|&t| t.is_finite() && t > 0.0)
@@ -2505,7 +2404,7 @@ fn iterative_2d_refine(
                     None => true,
                     Some((prev, prev_rings)) => {
                         if supported > *prev_rings {
-                            res.rms_rad <= (prev.rms_rad * 2.5).max(1.0e-3)
+                            res.rms_rad <= (prev.rms_rad * 1.6).max(5.0e-4)
                         } else {
                             supported >= *prev_rings.min(&3) && res.rms_rad <= prev.rms_rad * 1.25
                         }
@@ -2640,9 +2539,9 @@ where
         dist_candidates.push((d0, 1.0));
     } else {
         let mut r_min_valid_hint: Option<usize> = None;
-        if let Some(profile) = build_radial_profile_1d(
-            image, residual, sigma_r, valid, dim1, dim2, center_iso, scale1, scale2,
-        ) {
+        if let Some(profile) =
+            build_radial_profile_1d(image, valid, dim1, dim2, center_iso, scale1, scale2)
+        {
             r_min_valid_hint = Some(profile.r_min_obs);
             est_fwhm_px = estimate_profile_fwhm_px(&profile);
             n_detected_1d = n_detected_1d.max(profile.peaks_r.len());
@@ -2795,12 +2694,13 @@ where
             );
             let cur_ok =
                 is_verified_calibration(&res, n_rings, &m, peaks.len(), d_min, d_max, has_hint);
-            if cur_ok
-                && res.rms_rad < 4.5e-4
-                && n_rings >= 5
-                && m.inlier_frac >= 0.60
-                && m.ring_recall >= 0.70
-                && m.inlier_rms_rad < 6.0e-4
+            if cand_idx < 2
+                && cur_ok
+                && res.rms_rad < 3.5e-4
+                && n_rings >= 6
+                && m.inlier_frac >= 0.70
+                && m.ring_recall >= 0.75
+                && m.inlier_rms_rad < 5.0e-4
             {
                 slam_dunk = true;
             }
@@ -2915,7 +2815,17 @@ where
         return Err(AutoCalibrateError::Cancelled);
     }
 
-    let strong_peaks: &[(f64, f64)] = &peaks[..peaks.len().min(800)];
+    // On narrow strip detectors, uniformly subsample up to 800 peaks so
+    // fainter outer rings along the long axis remain represented; on full 2D
+    // detectors, keep the strongest 800 peaks to avoid weak tail noise.
+    let strong_peaks_owned: Vec<(f64, f64)>;
+    let strong_peaks: &[(f64, f64)] = if is_strip_detector && peaks.len() > 800 {
+        let n = peaks.len();
+        strong_peaks_owned = (0..800).map(|i| peaks[(i * n) / 800]).collect();
+        &strong_peaks_owned
+    } else {
+        &peaks[..peaks.len().min(800)]
+    };
     let cx = strong_peaks.iter().map(|p| p.0).sum::<f64>() / strong_peaks.len() as f64;
     let cy = strong_peaks.iter().map(|p| p.1).sum::<f64>() / strong_peaks.len() as f64;
 
@@ -2943,13 +2853,9 @@ where
         poni_search_radius_px: (0.30 * dim1.max(dim2) as f64).clamp(150.0, 450.0),
         poni_grid_steps: 13,
         tolerance_rad: 8.0e-3,
-        max_peaks_for_grid: 300,
-        max_ring_index: if is_strip_detector {
-            options.max_ring_index
-        } else {
-            options.max_ring_index.min(36)
-        },
-        top_k: 40,
+        max_peaks_for_grid: 400,
+        max_ring_index: options.max_ring_index,
+        top_k: 64,
     };
 
     // Search both regimes:
@@ -3056,11 +2962,15 @@ where
         CalibrationResult,
         &super::grid_search::GridSearchCandidate,
         f64,
+        usize,
     )> = candidates
         .par_iter()
-        .filter_map(|cand| refine_and_score(&cand.poni).map(|(res, score)| (res, cand, score)))
-        .max_by(|a, b| a.2.total_cmp(&b.2));
-    let Some((mut grid_res, winning, mut grid_score)) = best_grid else {
+        .enumerate()
+        .filter_map(|(idx, cand)| {
+            refine_and_score(&cand.poni).map(|(res, score)| (res, cand, score, idx))
+        })
+        .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.3.cmp(&a.3)));
+    let Some((mut grid_res, winning, mut grid_score, _)) = best_grid else {
         return Ok(None);
     };
 
@@ -3201,5 +3111,104 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fast_box_blur_preserves_constant_and_symmetry() {
+        let dim1 = 64;
+        let dim2 = 80;
+        let constant = vec![42.5_f32; dim1 * dim2];
+        let blurred = fast_gaussian_blur_bg_f32(&constant, dim1, dim2, 6.0);
+        for &v in &blurred {
+            assert!((v - 42.5).abs() < 1e-4, "constant drift: {v}");
+        }
+
+        let mut impulse = vec![0.0_f32; dim1 * dim2];
+        impulse[32 * dim2 + 40] = 1000.0;
+        let b = fast_gaussian_blur_bg_f32(&impulse, dim1, dim2, 6.0);
+        assert!(b[32 * dim2 + 40] > b[32 * dim2 + 45]);
+        assert!((b[32 * dim2 + 35] - b[32 * dim2 + 45]).abs() < 1e-4);
+        assert!((b[27 * dim2 + 40] - b[37 * dim2 + 40]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ridge_contrast_rejects_random_geometries_on_noise() {
+        let dim1 = 256;
+        let dim2 = 256;
+        let mut rng: u64 = 0x1234_5678_9abc_def0;
+        let mut next_gauss = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u1 = ((rng >> 11) as f64 / (1u64 << 53) as f64).max(1e-12);
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u2 = (rng >> 11) as f64 / (1u64 << 53) as f64;
+            (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+        };
+        let residual: Vec<f64> = (0..(dim1 * dim2)).map(|_| next_gauss()).collect();
+        let valid = vec![true; dim1 * dim2];
+        let cal = Calibrant::builtin("CeO2").expect("builtin CeO2");
+
+        for &d in &[0.08, 0.12, 0.16, 0.22, 0.30] {
+            let mut poni = Poni::new();
+            poni.pixel1 = 100e-6;
+            poni.pixel2 = 100e-6;
+            poni.distance = d;
+            poni.poni1 = 128.0 * 100e-6;
+            poni.poni2 = 128.0 * 100e-6;
+            poni.wavelength = 0.31e-10;
+            let m = evaluate_image_ring_contrast(
+                &residual, 0.0, 1.0, &valid, dim1, dim2, &poni, &cal, 30,
+            );
+            assert!(
+                !m.passes(),
+                "noise-only image should fail ridge check at d={d}, got {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_during_retry_returns_cancelled() {
+        // Pure noise with a few bright fake spots so primary fails verification
+        // and triggers the automatic retry; cancel as soon as retry begins.
+        let dim1 = 128;
+        let dim2 = 128;
+        let mut img = vec![100.0; dim1 * dim2];
+        for k in 0..40 {
+            let r = 10 + (k * 23) % 108;
+            let c = 10 + (k * 37) % 108;
+            for dr in 0..3 {
+                for dc in 0..3 {
+                    img[(r + dr) * dim2 + (c + dc)] = 500.0;
+                }
+            }
+        }
+        let cal = Calibrant::builtin("CeO2").expect("builtin CeO2");
+        let opts = AutoCalibrateImageOptions {
+            enable_tilt_fallback: false,
+            ..Default::default()
+        };
+        let mut saw_retry = false;
+        let res = auto_calibrate_image_with_progress(
+            &img,
+            dim1,
+            dim2,
+            None,
+            &cal,
+            0.31e-10,
+            100e-6,
+            100e-6,
+            &opts,
+            |ev| {
+                if ev.message.contains("retrying") {
+                    saw_retry = true;
+                    return false;
+                }
+                true
+            },
+        );
+        assert!(saw_retry, "expected retry message to fire");
+        assert!(
+            matches!(res, Err(AutoCalibrateError::Cancelled)),
+            "expected Cancelled during retry, got {res:?}"
+        );
     }
 }

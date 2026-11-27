@@ -598,17 +598,23 @@ fn auto_calibrate_image_ceo2_side_strip_blind_and_hinted() {
             starting_distance,
             ..AutoCalibrateImageOptions::default()
         };
-        let (res, diag) = auto_calibrate_image(
+        let mut trace = Vec::new();
+        let (res, diag) = dioptrin::calibration::auto_calibrate_image_with_progress(
             &frame.data,
             frame.dim1,
             frame.dim2,
+            None,
             &cal,
             truth.wavelength,
             truth.pixel1,
             truth.pixel2,
             &opts,
+            |ev| {
+                trace.push(format!("{:?}: {}", ev.stage, ev.message));
+                true
+            },
         )
-        .expect("ceo2_side auto-calibration should succeed");
+        .unwrap_or_else(|e| panic!("ceo2_side failed: {e}\ntrace:\n{}", trace.join("\n")));
 
         assert!(res.rms_rad < 1e-3, "RMS too high: {:e}", res.rms_rad);
         assert!(
@@ -625,4 +631,115 @@ fn auto_calibrate_image_ceo2_side_strip_blind_and_hinted() {
             5e-3,
         );
     }
+}
+
+#[test]
+#[ignore = "requires untracked local fixture test_data/LaB6_OffCenter_PE.tif"]
+fn auto_calibrate_lab6_offcenter_pe_quarter_sections() {
+    use std::time::Instant;
+
+    let frame = Frame::from_tiff("test_data/LaB6_OffCenter_PE.tif".to_string()).expect("load tiff");
+    let cal =
+        Calibrant::from_d_file("test_data/calibrants/LaB6_SRM660b.D").expect("load calibrant");
+    let wavelength = 3.344e-11;
+    let pixel = 200e-6;
+
+    // Reference geometry from the full 2048×2048 image.
+    let (full_res, _) = auto_calibrate_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        &cal,
+        wavelength,
+        pixel,
+        pixel,
+        &AutoCalibrateImageOptions::default(),
+    )
+    .expect("full LaB6_OffCenter_PE calibration");
+    let truth = full_res.poni;
+    println!(
+        "\nFull-frame truth: D={:.4} m, poni=({:.1}, {:.1}) px, rot=({:.2}°, {:.2}°)",
+        truth.distance,
+        truth.poni1 / pixel,
+        truth.poni2 / pixel,
+        truth.rot1.to_degrees(),
+        truth.rot2.to_degrees(),
+    );
+
+    // 1/4 area sections (1024×1024) tiled across a 3×3 grid covering every region.
+    let crop_h = frame.dim1 / 2;
+    let crop_w = frame.dim2 / 2;
+    let offsets = [0usize, frame.dim1 / 4, frame.dim1 / 2];
+
+    println!(
+        "{:<18} | {:<40} | {:<40}",
+        "SECTION (r0,c0)", "BLIND (d0=None)", "HINTED (d0=0.50 m)"
+    );
+    println!("{}", "-".repeat(104));
+
+    let mut blind_ok = 0usize;
+    let mut hinted_ok = 0usize;
+    let mut total = 0usize;
+
+    for &r0 in &offsets {
+        for &c0 in &offsets {
+            total += 1;
+            let mut crop = Vec::with_capacity(crop_h * crop_w);
+            for i in r0..(r0 + crop_h) {
+                let row = i * frame.dim2;
+                crop.extend_from_slice(&frame.data[row + c0..row + c0 + crop_w]);
+            }
+            let expected_p1 = truth.poni1 - (r0 as f64) * pixel;
+            let expected_p2 = truth.poni2 - (c0 as f64) * pixel;
+
+            let mut cols = Vec::new();
+            for (idx, d0) in [None, Some(0.50)].into_iter().enumerate() {
+                let opts = AutoCalibrateImageOptions {
+                    starting_distance: d0,
+                    ..AutoCalibrateImageOptions::default()
+                };
+                let t0 = Instant::now();
+                let out = auto_calibrate_image(
+                    &crop, crop_h, crop_w, &cal, wavelength, pixel, pixel, &opts,
+                );
+                let ms = t0.elapsed().as_millis();
+                match out {
+                    Ok((res, diag)) => {
+                        let rel_d = (res.poni.distance - truth.distance).abs() / truth.distance;
+                        let dp1 = (res.poni.poni1 - expected_p1).abs() / pixel;
+                        let dp2 = (res.poni.poni2 - expected_p2).abs() / pixel;
+                        let drot = (res.poni.rot1 - truth.rot1)
+                            .abs()
+                            .max((res.poni.rot2 - truth.rot2).abs())
+                            .to_degrees();
+                        let ok = rel_d < 0.015 && dp1.max(dp2) < 15.0 && drot < 0.75;
+                        if ok {
+                            if idx == 0 {
+                                blind_ok += 1;
+                            } else {
+                                hinted_ok += 1;
+                            }
+                        }
+                        let tag = if ok { "OK  " } else { "WRNG" };
+                        cols.push(format!(
+                            "{tag} d={:.2}% p={:.1}px r={:.2}° {}r {ms}ms",
+                            rel_d * 100.0,
+                            dp1.max(dp2),
+                            drot,
+                            diag.n_identified_ellipses
+                        ));
+                    }
+                    Err(e) => {
+                        cols.push(format!("ERR  ({e:?}) {ms}ms"));
+                    }
+                }
+            }
+            println!(
+                "({:>4},{:>4}) {:>4}x{:<4} | {:<40} | {:<40}",
+                r0, c0, crop_h, crop_w, cols[0], cols[1]
+            );
+        }
+    }
+    println!("{}", "-".repeat(104));
+    println!("SUMMARY: blind {blind_ok}/{total} passed, hinted {hinted_ok}/{total} passed\n");
 }
