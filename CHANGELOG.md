@@ -5,6 +5,36 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.4] - 2026-11-27
+
+### Added
+
+- **Automatic full-detector ring extension** in `auto_calibrate_image` and
+  `refine_image`: after calibration converges, computes the maximum `2θ`
+  visible across the detector corners/edges (`detector_visible_ring_limit`) and
+  runs a 2-pass shrinking polish (`6 → 4 px`, `rot3` locked) across all
+  resolved visible rings (up to `max_ring_index`, default `100`), gated by
+  inner-point and peak-match non-regression checks so outer-ring extension can
+  never degrade a verified fit.
+- **Radius-adaptive arc-length sampling** in `extract_ring_peaks_2d`: scales
+  per-ring azimuthal sampling `n_az_ring` proportionally to ring radius (up to
+  `360`) so clipped high-`2θ` corner arcs maintain roughly constant pixel
+  spacing instead of being starved by equal-azimuth sampling.
+- **Azimuthal tangent averaging + quiet-region local noise**: uses
+  curvature-gated 7-ray tangent averaging (`r >= 250 px`, correlation-adjusted
+  `n_eff` at `3.0σ`) with `LocalNoiseGrid::at_unclamped` (`0.30 × global_sigma`
+  floor) during outer-ring extension, reaching ring index `#67`+ (42 supported
+  rings) on `LaB6_OffCenter_PE`.
+
+### Changed
+
+- **`RefineImageOptions::max_rings`** is now `Option<usize>` (Python:
+  `max_rings: Optional[int] = None`): `None` auto-extends to all visible rings
+  up to `max_ring_index`, while `Some(k)` strictly respects the caller's cap.
+- **`extract_ring_peaks_2d`** skips unresolved `< 5 px` outer-ring doublets
+  instead of forcing a `±3 px` window, and `refine_image` retries peak-pull
+  whenever the 2D fit fails verification.
+
 ## [0.18.3] - 2026-11-27
 
 ### Added
