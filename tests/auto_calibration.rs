@@ -1202,4 +1202,44 @@ fn ring_extension_does_not_hallucinate_absent_outer_rings() {
         5.0,
         5e-3,
     );
+
+    // 14-bit saturation (clipped at 16_383, well below 65_000): must auto-detect
+    // the flat-topped plateau and still calibrate accurately without explicit intensity_limit.
+    let mut sat14 = simulate_diffraction(
+        &geom,
+        &full_cal,
+        &SimulationOptions {
+            fwhm_rad: 2.0e-3,
+            ring_intensity: RingIntensity::FromCalibrant { fallback: 40_000.0 },
+            background: 50.0,
+            poisson_noise: true,
+            readout_noise: 5.0,
+            rng_seed: 910,
+            ..Default::default()
+        },
+    )
+    .expect("simulate 14-bit saturated");
+    for v in &mut sat14.data {
+        if *v > 16_383.0 {
+            *v = 16_383.0;
+        }
+    }
+    let res_sat14 = refine_image(
+        &sat14.data,
+        sat14.dim1,
+        sat14.dim2,
+        None,
+        &truth,
+        &full_cal,
+        &RefineImageOptions::default(),
+    )
+    .expect("refine_image on 14-bit saturated image should succeed");
+    assert_poni_close(
+        "14-bit saturated CeO2",
+        &res_sat14.calibration.poni,
+        &truth,
+        1e-3,
+        1.0,
+        2e-3,
+    );
 }
