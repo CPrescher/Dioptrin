@@ -1138,3 +1138,68 @@ fn refine_image_respects_explicit_ring_caps() {
         "expected all ring indices < 6 when max_ring_index=6, got {max_idx}"
     );
 }
+
+#[test]
+fn ring_extension_does_not_hallucinate_absent_outer_rings() {
+    use dioptrin::calibration::{RefineImageOptions, refine_image};
+    use dioptrin::geometry::Geometry;
+    use dioptrin::simulation::{RingIntensity, SimulationOptions, simulate_diffraction};
+
+    let full_cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2.D");
+    // Render only the first 5 rings into a noisy 1024×1024 image, then refine
+    // with the full CeO2 calibrant (15+ rings on detector): extension must not
+    // hallucinate phantom outer rings from background noise.
+    let five_ring_cal = Calibrant::from_d_spacings("CeO2-5", full_cal.d_spacings[..5].to_vec());
+    let truth = Poni {
+        pixel1: 172e-6,
+        pixel2: 172e-6,
+        distance: 0.18,
+        poni1: 512.0 * 172e-6,
+        poni2: 512.0 * 172e-6,
+        rot1: 2.0_f64.to_radians(),
+        rot2: -1.5_f64.to_radians(),
+        rot3: 0.0,
+        wavelength: 0.4066e-10,
+        ..Poni::new()
+    };
+    let geom = Geometry::new(1024, 1024, truth.clone());
+    let frame = simulate_diffraction(
+        &geom,
+        &five_ring_cal,
+        &SimulationOptions {
+            fwhm_rad: 2.0e-3,
+            ring_intensity: RingIntensity::FromCalibrant { fallback: 1_500.0 },
+            background: 50.0,
+            poisson_noise: true,
+            readout_noise: 5.0,
+            rng_seed: 909,
+            ..Default::default()
+        },
+    )
+    .expect("simulate 5-ring CeO2");
+
+    let res = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &truth,
+        &full_cal,
+        &RefineImageOptions::default(),
+    )
+    .expect("refine_image on 5-ring CeO2 should succeed");
+
+    assert!(
+        res.n_rings <= 6,
+        "extension hallucinated phantom outer rings: expected <= 6, got {}",
+        res.n_rings
+    );
+    assert_poni_close(
+        "5-ring CeO2 no phantom extension",
+        &res.calibration.poni,
+        &truth,
+        2e-3,
+        5.0,
+        5e-3,
+    );
+}

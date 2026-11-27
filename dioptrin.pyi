@@ -2166,7 +2166,7 @@ def auto_calibrate_image(
         fix: Parameter names to lock during refinement (default ["wavelength", "rot3"])
         enable_tilt_fallback: Fall back to 5D grid search for tilted/strip detectors
         max_ring_index: Maximum calibrant ring index considered in 1D/2D matching
-            (default 65)
+            (default 100)
         max_iter: Maximum L-M iterations per pass (default 200)
         tol: Relative cost tolerance for convergence (default 1e-9)
         intensity_limit: Optional upper intensity limit; when ``None`` (default),

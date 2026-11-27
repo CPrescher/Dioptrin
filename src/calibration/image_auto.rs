@@ -303,7 +303,7 @@ pub fn extract_ring_peaks(
         n_az,
         max_rings,
         max_ring_index,
-        if options.max_rings.is_none() { 2 } else { 0 },
+        0,
     );
     Ok(pts)
 }
@@ -971,6 +971,8 @@ fn auto_calibrate_image_impl(
             n_rings,
             "Verified",
             image,
+            &peaks,
+            &radial_metrics,
             &residual,
             &noise,
             sigma_r,
@@ -1051,6 +1053,8 @@ fn auto_calibrate_image_impl(
                     grid_rings,
                     "Verified tilted fit",
                     image,
+                    &peaks,
+                    &grid_metrics,
                     &residual,
                     &noise,
                     sigma_r,
@@ -1073,6 +1077,8 @@ fn auto_calibrate_image_impl(
             n_rings,
             "Verified",
             image,
+            &peaks,
+            &radial_metrics,
             &residual,
             &noise,
             sigma_r,
@@ -1275,6 +1281,8 @@ fn finalize_auto_calibration(
     mut n_rings: usize,
     label: &str,
     image: &[f64],
+    peaks: &[(f64, f64)],
+    prev_metrics: &PeakMatchMetrics,
     residual: &[f64],
     noise: &LocalNoiseGrid,
     sigma_r: f64,
@@ -1302,9 +1310,27 @@ fn finalize_auto_calibration(
         options.max_iter,
         options.tol,
     ) {
-        res = ext_res;
-        n_rings = ext_rings;
-        diag.n_identified_ellipses = ext_rings;
+        // Re-verify against the detected peaks so outer-ring extension can
+        // never degrade the already-verified inner calibration.
+        let ext_metrics = evaluate_peak_match(
+            peaks,
+            valid,
+            dim1,
+            dim2,
+            &ext_res.poni,
+            calibrant,
+            2.0e-3,
+            options.max_ring_index,
+        );
+        let non_regression = ext_metrics.inlier_rms_rad
+            <= (prev_metrics.inlier_rms_rad * 1.15).max(prev_metrics.inlier_rms_rad + 5.0e-5)
+            && ext_metrics.ring_recall >= prev_metrics.ring_recall - 0.02
+            && ext_metrics.inlier_frac >= prev_metrics.inlier_frac - 0.02;
+        if non_regression {
+            res = ext_res;
+            n_rings = ext_rings;
+            diag.n_identified_ellipses = ext_rings;
+        }
     }
 
     let mut rot3_note = String::new();
@@ -2093,7 +2119,7 @@ impl LocalNoiseGrid {
 
         let use_local = dim1.min(dim2) >= 768;
         let sigma_lo = 0.65 * global_sigma;
-        let sigma_lo_raw = 0.15 * global_sigma;
+        let sigma_lo_raw = 0.30 * global_sigma;
         let sigma_hi = 2.5 * global_sigma;
         let mut med = [global_med; 64];
         let mut sigma = [global_sigma; 64];
@@ -3193,9 +3219,10 @@ fn extract_ring_peaks_2d_with_tangent(
         // points instead of being starved by equal-azimuth sampling.
         let r_ref = (0.25 * dim1.max(dim2) as f64).max(64.0);
         let r_ring_px = (poni.distance / poni.pixel1.min(poni.pixel2)) * tth.tan();
+        let n_az_min = n_az.min(360) as f64;
         let n_az_ring = ((n_az as f64) * (r_ring_px / r_ref).max(1.0))
             .round()
-            .clamp(n_az as f64, 360.0) as usize;
+            .clamp(n_az_min, 360.0) as usize;
 
         for a in 0..n_az_ring {
             let phi = 2.0 * PI * (a as f64) / (n_az_ring as f64);
@@ -3254,7 +3281,7 @@ fn extract_ring_peaks_2d_with_tangent(
                 tangent_half_px
             };
             let th = eff_tangent_half as isize;
-            let n_taps = (2 * eff_tangent_half + 1) as f64;
+            let mut min_cnt = 2 * eff_tangent_half + 1;
 
             line.clear();
             let mut all_ok = true;
@@ -3291,6 +3318,7 @@ fn extract_ring_peaks_2d_with_tangent(
                         all_ok = false;
                         break;
                     }
+                    min_cnt = min_cnt.min(cnt);
                     line.push(sum / cnt as f64);
                 }
             }
@@ -3314,12 +3342,20 @@ fn extract_ring_peaks_2d_with_tangent(
                 continue;
             }
 
-            let (m_loc, s_loc) = if tangent_half_px > 0 {
+            let (m_loc, s_loc) = if eff_tangent_half > 0 {
                 noise.at_unclamped(d1, d2)
             } else {
                 noise.at(d1, d2)
             };
-            let min_peak_snr = 2.5 * s_loc / n_taps.sqrt();
+            // Account for residual σ=0.8 px blur correlation across 1.5 px
+            // tangent taps (effective independent taps ≈ 1 + 0.5*(cnt - 1)).
+            let n_eff = if eff_tangent_half > 0 {
+                1.0 + 0.5 * (min_cnt.saturating_sub(1) as f64)
+            } else {
+                1.0
+            };
+            let snr_mult = if eff_tangent_half > 0 { 3.0 } else { 2.5 };
+            let min_peak_snr = snr_mult * s_loc / n_eff.sqrt();
             if (best_val - m_loc) < min_peak_snr || (best_val - min_val) < min_peak_snr {
                 continue;
             }
