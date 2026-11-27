@@ -96,6 +96,7 @@ const BUILTIN_NAMES: &[&str] = &[
 ];
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CalibrantError {
     Io(std::io::Error),
     /// File parsed but contained no d-spacing entries.
@@ -136,6 +137,18 @@ impl From<std::io::Error> for CalibrantError {
     }
 }
 
+fn find_builtin(name: &str) -> Option<(&'static str, &'static str)> {
+    BUILTIN_CALIBRANTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .or_else(|| {
+            BUILTIN_CALIBRANTS
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        })
+        .copied()
+}
+
 impl Calibrant {
     /// Names of all built-in calibrants bundled with Dioptrin.
     pub fn builtin_names() -> &'static [&'static str] {
@@ -145,15 +158,7 @@ impl Calibrant {
     /// Raw `.D` contents of a built-in calibrant (exact match, then ASCII
     /// case-insensitive fallback).
     pub fn builtin_str(name: &str) -> Option<&'static str> {
-        BUILTIN_CALIBRANTS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .or_else(|| {
-                BUILTIN_CALIBRANTS
-                    .iter()
-                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            })
-            .map(|(_, contents)| *contents)
+        find_builtin(name).map(|(_, contents)| contents)
     }
 
     /// Load a built-in calibrant by name (e.g. `"CeO2"`, `"LaB6"`, `"Si"`).
@@ -161,16 +166,9 @@ impl Calibrant {
     /// Matches exact names first, then falls back to ASCII case-insensitive
     /// matching.
     pub fn builtin(name: &str) -> Result<Self, CalibrantError> {
-        let (canonical, contents) = BUILTIN_CALIBRANTS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .or_else(|| {
-                BUILTIN_CALIBRANTS
-                    .iter()
-                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            })
-            .ok_or_else(|| CalibrantError::UnknownBuiltin(name.to_string()))?;
-        Self::from_d_str(*canonical, contents)
+        let (canonical, contents) =
+            find_builtin(name).ok_or_else(|| CalibrantError::UnknownBuiltin(name.to_string()))?;
+        Self::from_d_str(canonical, contents)
     }
 
     /// Construct from an explicit list of d-spacings (Å).
@@ -308,7 +306,7 @@ fn parse_comment_intensity(comment: &str) -> Option<f64> {
     let _mult = tokens.next()?;
     let intensity: f64 = tokens.next()?.parse().ok()?;
     if intensity.is_finite() && intensity >= 0.0 {
-        Some(intensity)
+        Some(if intensity == 0.0 { 0.0 } else { intensity })
     } else {
         None
     }
@@ -354,12 +352,26 @@ mod tests {
     fn all_builtin_calibrants_parse_and_inorganic_ones_have_intensities_and_high_q() {
         let names = Calibrant::builtin_names();
         assert_eq!(names.len(), 27);
+        assert_eq!(
+            names,
+            &BUILTIN_CALIBRANTS
+                .iter()
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()[..]
+        );
         for &name in names {
             let cal = Calibrant::builtin(name)
                 .unwrap_or_else(|e| panic!("failed to load built-in {name}: {e}"));
             assert_eq!(cal.name, name);
             assert!(cal.n_rings() > 0, "{name} should have rings");
             assert!(Calibrant::builtin_str(name).is_some());
+            assert!(
+                cal.intensities
+                    .iter()
+                    .flatten()
+                    .all(|v| !v.is_sign_negative()),
+                "{name} contains negative zero or negative intensity"
+            );
         }
         // Case-insensitive lookup returns canonical name.
         let ceo2 = Calibrant::builtin("ceo2").unwrap();

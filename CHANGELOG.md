@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **27 built-in calibrants**: `Calibrant::builtin(name)`,
+  `Calibrant::builtin_names()`, and `Calibrant::builtin_str(name)` in Rust,
+  plus `dioptrin.Calibrant.builtin(name)` and
+  `dioptrin.Calibrant.builtin_names()` in Python. Bundles all 27 standard `.D`
+  calibrants (`CeO2`, `LaB6`, `Si`, `Al`, `Au`, `Ni`, `NaCl`, `TiO2`, `ZnO`,
+  `alpha_Al2O3`, `Cr2O3`, `quartz`, SRMs, `AgBh`, etc.) with precomputed
+  relative powder intensities (0–100) and high-Q extensions down to `0.25 Å`
+  for the inorganic calibrants.
+
+### Changed
+
+- Marked `CalibrantError` as `#[non_exhaustive]` and added
+  `CalibrantError::UnknownBuiltin(String)`.
+
 ## [0.17.0] - 2026-11-26
 
 ### Added
