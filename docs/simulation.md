@@ -40,6 +40,10 @@ For each pixel $(r, c)$:
      `fallback` (default `0.1`, or `1.0` if no ring lists an intensity).
    - `Custom(weights)`: explicit non-negative per-ring weights aligned with
      `calibrant.d_spacings` (sorted descending in $d$, i.e. ascending in $2\theta$).
+   - **Spotty / coarse-grain rings** (`spotty: Some(SpottyOptions { .. })` in Rust,
+     or `spotty_spots_per_ring=...` in Python): modulates each ring azimuthally
+     with deterministic Gaussian crystallite spots of width `azimuthal_fwhm_rad`,
+     optionally superposed on a continuous ring background (`continuous_fraction`).
 4. **Physical corrections**:
    - `apply_solid_angle` (default `true`): multiplies the ring signal by
      `Geometry::calc_solid_angle()` (matching `Integrator`, which always divides
@@ -93,6 +97,7 @@ let options = SimulationOptions {
     i_max: 5000.0,
     background: 25.0,
     ring_intensity: RingIntensity::FromCalibrant { fallback: 0.1 },
+    spotty: None,
     oversampling: 2,
     apply_solid_angle: true,
     polarization_factor: Some(0.95),

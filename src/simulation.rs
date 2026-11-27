@@ -56,6 +56,35 @@ pub enum RingIntensity {
     Custom(Vec<f64>),
 }
 
+/// Configuration for coarse-grain ("spotty") Debye–Scherrer rings.
+///
+/// Models a powder sample with a finite number of diffracting crystallites per
+/// ring, producing discrete azimuthal spots along each Bragg cone, optionally
+/// superposed on a continuous ring background.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpottyOptions {
+    /// Number of discrete crystallite spots placed around `[−π, π)` on each
+    /// active Bragg ring. Must be `>= 1`. Default: `24`.
+    pub spots_per_ring: usize,
+    /// Azimuthal full width at half maximum (FWHM) of each spot in radians
+    /// (e.g. `0.03` rad ≈ 1.7°). Must be finite and `> 0.0`. Default: `0.03`.
+    pub azimuthal_fwhm_rad: f64,
+    /// Relative continuous ring amplitude in `[0.0, 1.0]` superposed beneath
+    /// the discrete spots (`0.0` = purely discrete spots, `0.2` = grainy ring).
+    /// Default: `0.0`.
+    pub continuous_fraction: f64,
+}
+
+impl Default for SpottyOptions {
+    fn default() -> Self {
+        Self {
+            spots_per_ring: 24,
+            azimuthal_fwhm_rad: 0.03,
+            continuous_fraction: 0.0,
+        }
+    }
+}
+
 /// Configuration for [`simulate_diffraction`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimulationOptions {
@@ -71,6 +100,10 @@ pub struct SimulationOptions {
     pub background: f64,
     /// Per-ring relative intensity model. Default: [`RingIntensity::Uniform`].
     pub ring_intensity: RingIntensity,
+    /// Optional coarse-grain ("spotty") azimuthal modulation along each ring.
+    /// When `None`, rings are azimuthally uniform (before polarization/solid-angle).
+    /// Default: `None`.
+    pub spotty: Option<SpottyOptions>,
     /// Subpixel oversampling factor per axis. `N` evaluates an `N × N` uniform
     /// grid inside each pixel and averages the result; `1` evaluates at pixel
     /// centers only. Default: `1`.
@@ -96,8 +129,9 @@ pub struct SimulationOptions {
     /// `0.0` disables readout noise. Note that additive Gaussian noise may
     /// produce negative, non-integer pixel values. Default: `0.0`.
     pub readout_noise: f64,
-    /// Deterministic RNG seed used when `poisson_noise` is enabled or
-    /// `readout_noise > 0.0`. Output is independent of thread count.
+    /// Deterministic RNG seed used when `poisson_noise` is enabled,
+    /// `readout_noise > 0.0`, or `spotty` is `Some(...)`. Output is independent
+    /// of thread count.
     pub rng_seed: u64,
 }
 
@@ -109,6 +143,7 @@ impl Default for SimulationOptions {
             i_max: 1000.0,
             background: 0.0,
             ring_intensity: RingIntensity::Uniform,
+            spotty: None,
             oversampling: 1,
             apply_solid_angle: true,
             polarization_factor: None,
@@ -192,6 +227,10 @@ pub fn simulate_diffraction(
 
     let rings = build_active_rings(calibrant, wavelength, options);
     let evaluator = ProfileEvaluator::new(options.profile, options.fwhm_rad);
+    let spotty_eval = options
+        .spotty
+        .as_ref()
+        .map(|s| SpottyEvaluator::new(s, rings.len(), options.rng_seed));
 
     let solid_angle = if options.apply_solid_angle {
         Some(geometry.calc_solid_angle())
@@ -241,23 +280,29 @@ pub fn simulate_diffraction(
 
                 let c_f = c as f64;
 
+                let need_az = pol_factor.is_some() || spotty_eval.is_some();
                 let (mut signal, center_tth_az) = if n_sub == 1 {
-                    let (tth, az) = eval_tth_az(
-                        &transform,
-                        affine.as_ref(),
-                        r_f + 0.5,
-                        c_f + 0.5,
-                        pol_factor.is_some(),
-                    );
-                    (evaluator.eval(&rings, tth), (tth, az))
+                    let (tth, az) =
+                        eval_tth_az(&transform, affine.as_ref(), r_f + 0.5, c_f + 0.5, need_az);
+                    let sig = match spotty_eval.as_ref() {
+                        Some(se) => evaluator.eval_spotty(&rings, se, tth, az),
+                        None => evaluator.eval(&rings, tth),
+                    };
+                    (sig, (tth, az))
                 } else {
                     let mut sum = 0.0;
                     for sr in 0..n_sub {
                         let d1 = r_f + (sr as f64 + 0.5) * inv_n_sub;
                         for sc in 0..n_sub {
                             let d2 = c_f + (sc as f64 + 0.5) * inv_n_sub;
-                            let tth = eval_tth(&transform, affine.as_ref(), d1, d2);
-                            sum += evaluator.eval(&rings, tth);
+                            if let Some(se) = spotty_eval.as_ref() {
+                                let (tth, az) =
+                                    eval_tth_az(&transform, affine.as_ref(), d1, d2, true);
+                                sum += evaluator.eval_spotty(&rings, se, tth, az);
+                            } else {
+                                let tth = eval_tth(&transform, affine.as_ref(), d1, d2);
+                                sum += evaluator.eval(&rings, tth);
+                            }
                         }
                     }
                     let center = if pol_factor.is_some() {
@@ -386,6 +431,27 @@ fn validate_options(
             }
         }
     }
+    if let Some(spotty) = &options.spotty {
+        if spotty.spots_per_ring == 0 {
+            return Err(SimulationError::InvalidOption(
+                "spotty.spots_per_ring must be >= 1".to_string(),
+            ));
+        }
+        if !spotty.azimuthal_fwhm_rad.is_finite() || spotty.azimuthal_fwhm_rad <= 0.0 {
+            return Err(SimulationError::InvalidOption(format!(
+                "spotty.azimuthal_fwhm_rad must be finite and > 0, got {}",
+                spotty.azimuthal_fwhm_rad
+            )));
+        }
+        if !spotty.continuous_fraction.is_finite()
+            || !(0.0..=1.0).contains(&spotty.continuous_fraction)
+        {
+            return Err(SimulationError::InvalidOption(format!(
+                "spotty.continuous_fraction must be in [0.0, 1.0], got {}",
+                spotty.continuous_fraction
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -505,6 +571,122 @@ impl ProfileEvaluator {
                 sum
             }
         }
+    }
+
+    #[inline]
+    fn eval_spotty(
+        &self,
+        rings: &[(f64, f64)],
+        spotty: &SpottyEvaluator,
+        tth: f64,
+        az: f64,
+    ) -> f64 {
+        match self.profile {
+            PeakProfile::Gaussian => {
+                let lo = tth - self.gaussian_cutoff;
+                let hi = tth + self.gaussian_cutoff;
+                let start = rings.partition_point(|&(rt, _)| rt < lo);
+                let mut sum = 0.0;
+                for (offset, &(rt, amp)) in rings[start..].iter().enumerate() {
+                    if rt > hi {
+                        break;
+                    }
+                    let d = tth - rt;
+                    let radial = (-d * d * self.inv_2sigma2).exp();
+                    let az_mod = spotty.eval(start + offset, az);
+                    sum += amp * radial * az_mod;
+                }
+                sum
+            }
+            PeakProfile::Lorentzian => {
+                let mut sum = 0.0;
+                for (ring_idx, &(rt, amp)) in rings.iter().enumerate() {
+                    let d = tth - rt;
+                    let radial = 1.0 / (1.0 + d * d * self.inv_gamma2);
+                    if radial > 1e-9 {
+                        sum += amp * radial * spotty.eval(ring_idx, az);
+                    }
+                }
+                sum
+            }
+            PeakProfile::PseudoVoigt { eta } => {
+                let one_minus_eta = 1.0 - eta;
+                let mut sum = 0.0;
+                for (ring_idx, &(rt, amp)) in rings.iter().enumerate() {
+                    let d = tth - rt;
+                    let d2 = d * d;
+                    let g = if d.abs() <= self.gaussian_cutoff {
+                        (-d2 * self.inv_2sigma2).exp()
+                    } else {
+                        0.0
+                    };
+                    let l = 1.0 / (1.0 + d2 * self.inv_gamma2);
+                    let radial = one_minus_eta * g + eta * l;
+                    if radial > 1e-9 {
+                        sum += amp * radial * spotty.eval(ring_idx, az);
+                    }
+                }
+                sum
+            }
+        }
+    }
+}
+
+/// Deterministic per-ring azimuthal spot evaluator.
+struct SpottyEvaluator {
+    /// Per-ring `(phi_rad, rel_amp)` sorted by `phi_rad ∈ [-π, π)`.
+    ring_spots: Vec<Vec<(f64, f64)>>,
+    inv_2sigma2: f64,
+    cutoff: f64,
+    continuous_fraction: f64,
+}
+
+impl SpottyEvaluator {
+    fn new(opts: &SpottyOptions, n_rings: usize, seed: u64) -> Self {
+        let ln2 = std::f64::consts::LN_2;
+        let inv_2sigma2 = 4.0 * ln2 / (opts.azimuthal_fwhm_rad * opts.azimuthal_fwhm_rad);
+        let sigma = opts.azimuthal_fwhm_rad / (2.0 * (2.0 * ln2).sqrt());
+        let cutoff = (6.0 * sigma).min(std::f64::consts::PI);
+
+        let mut ring_spots = Vec::with_capacity(n_rings);
+        for ring_idx in 0..n_rings {
+            let mut rng = RowRng::new(seed ^ 0x5907_7900_0000_0001, ring_idx as u64);
+            let mut spots = Vec::with_capacity(opts.spots_per_ring);
+            for _ in 0..opts.spots_per_ring {
+                let phi = (rng.uniform_open() * 2.0 - 1.0) * std::f64::consts::PI;
+                let rel_amp = 0.4 + rng.uniform_open(); // [0.4, 1.4]
+                spots.push((phi, rel_amp));
+            }
+            spots.sort_by(|a, b| a.0.total_cmp(&b.0));
+            ring_spots.push(spots);
+        }
+
+        Self {
+            ring_spots,
+            inv_2sigma2,
+            cutoff,
+            continuous_fraction: opts.continuous_fraction,
+        }
+    }
+
+    #[inline]
+    fn eval(&self, ring_idx: usize, az: f64) -> f64 {
+        let mut sum = self.continuous_fraction;
+        let spots = &self.ring_spots[ring_idx];
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let pi = std::f64::consts::PI;
+        for &(phi, rel_amp) in spots {
+            let mut dphi = az - phi;
+            if dphi > pi {
+                dphi -= two_pi;
+            } else if dphi < -pi {
+                dphi += two_pi;
+            }
+            if dphi.abs() <= self.cutoff {
+                sum += rel_amp * (-dphi * dphi * self.inv_2sigma2).exp();
+            }
+        }
+        sum
     }
 }
 
@@ -1342,5 +1524,102 @@ mod tests {
         let var = frame.data.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
         assert!((mean - 5.0).abs() < 0.1, "mean={mean}");
         assert!((var - 5.0).abs() < 0.25, "var={var}");
+    }
+
+    #[test]
+    fn spotty_mode_modulates_azimuth_and_preserves_ring_tth() {
+        let mut poni = test_poni();
+        poni.rot1 = 0.0;
+        poni.rot2 = 0.0;
+        let geom = Geometry::new(256, 256, poni.clone());
+        let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").unwrap();
+
+        let opts_spotty = SimulationOptions {
+            fwhm_rad: 2.0e-3,
+            i_max: 1000.0,
+            background: 0.0,
+            spotty: Some(SpottyOptions {
+                spots_per_ring: 16,
+                azimuthal_fwhm_rad: 0.03,
+                continuous_fraction: 0.0,
+            }),
+            rng_seed: 99,
+            ..Default::default()
+        };
+        let f1 = simulate_diffraction(&geom, &cal, &opts_spotty).unwrap();
+        let f2 = simulate_diffraction(&geom, &cal, &opts_spotty).unwrap();
+        assert_eq!(f1.data, f2.data, "spotty simulation must be deterministic");
+
+        // Compare against uniform ring: spotty image must have strong azimuthal
+        // modulation (many near-zero pixels on rings + bright discrete spots).
+        let f_uniform = simulate_diffraction(
+            &geom,
+            &cal,
+            &SimulationOptions {
+                spotty: None,
+                ..opts_spotty.clone()
+            },
+        )
+        .unwrap();
+        let sum_spotty: f64 = f1.data.iter().sum();
+        let sum_uniform: f64 = f_uniform.data.iter().sum();
+        assert!(sum_spotty > 0.0);
+        assert!(
+            sum_spotty < sum_uniform * 0.5,
+            "purely spotty rings should have much less total flux than uniform rings"
+        );
+
+        // 1D integrated peak still lands at the exact first CeO2 Bragg angle.
+        let mut integrator = Integrator::new(geom);
+        integrator.set_radial_unit(RadialUnit::TthRad);
+        let (radial, intensity) = integrator.integrate1d(&f1, 1000);
+        let tth0 = cal.two_theta_rad(poni.wavelength)[0].unwrap();
+        let mut best_i = 0;
+        let mut best_v = f64::NEG_INFINITY;
+        for (i, (&r, &v)) in radial.iter().zip(&intensity).enumerate() {
+            if (r - tth0).abs() < 0.005 && v > best_v {
+                best_v = v;
+                best_i = i;
+            }
+        }
+        assert!(
+            best_v > 10.0,
+            "expected visible peak at first ring, got {best_v}"
+        );
+        let dr = radial[1] - radial[0];
+        assert!((radial[best_i] - tth0).abs() <= dr * 2.0);
+    }
+
+    #[test]
+    fn spotty_mode_validates_invalid_options() {
+        let geom = Geometry::new(16, 16, test_poni());
+        let cal = Calibrant::from_d_spacings("one", vec![3.0]);
+        for bad in [
+            SpottyOptions {
+                spots_per_ring: 0,
+                ..Default::default()
+            },
+            SpottyOptions {
+                azimuthal_fwhm_rad: 0.0,
+                ..Default::default()
+            },
+            SpottyOptions {
+                continuous_fraction: -0.1,
+                ..Default::default()
+            },
+            SpottyOptions {
+                continuous_fraction: 1.5,
+                ..Default::default()
+            },
+        ] {
+            let opts = SimulationOptions {
+                spotty: Some(bad),
+                ..Default::default()
+            };
+            assert!(matches!(
+                simulate_diffraction(&geom, &cal, &opts),
+                Err(SimulationError::InvalidOption(_))
+            ));
+        }
     }
 }

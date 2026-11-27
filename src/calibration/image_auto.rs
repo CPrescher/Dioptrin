@@ -47,7 +47,7 @@ use crate::poni::Poni;
 use super::auto::{AutoCalibrateDiagnostics, AutoCalibrateError};
 use super::calibrant::Calibrant;
 use super::center::{RingCenterOptions, estimate_ring_center};
-use super::grid_search::{GridSearchOptions, grid_search_top_k};
+use super::grid_search::{GridSearchOptions, grid_search_top_k, grid_search_top_k_beam_centered};
 use super::massif::gaussian_blur;
 use super::refinement::{
     CalibrationOptions, CalibrationPoints, CalibrationResult, Loss, ParamMask, refine,
@@ -78,6 +78,22 @@ pub struct AutoCalibrateImageOptions {
     /// extracting 2D ring peaks (default `65`; raise if only very high-order
     /// rings are visible on the detector).
     pub max_ring_index: usize,
+    /// Optional upper intensity limit (same units as `image`). Pixels with
+    /// values `>= limit` are excluded during masking (useful for rejecting
+    /// saturated pixels or bright single-crystal spots, e.g. `Some(55_000.0)`).
+    /// When `None` (default), non-finite values, uint32 dead-pixel sentinels
+    /// (`>= 4e9`), and auto-detected flat-topped saturation plateaus
+    /// (`>= 65_000`) are excluded automatically.
+    pub intensity_limit: Option<f64>,
+    /// Optional MAD-based peak detection threshold multiplier (`med + factor * sigma`).
+    /// When `None` (default), starts at `3.5σ` and automatically relaxes to
+    /// `2.5σ` / `2.0σ` on faint images with few detected peaks.
+    pub peak_threshold_sigma: Option<f64>,
+    /// Optional base half-width (pixels) for the 2D ring-profile peak search.
+    /// When `None` (default), the search width adapts automatically to the
+    /// measured 1D ring width and is clamped per-ring to `< 0.45` of the local
+    /// inter-ring spacing so adjacent dense/overlapping rings cannot steal peaks.
+    pub search_half_width_px: Option<usize>,
     /// Maximum L-M iterations per refinement pass.
     pub max_iter: usize,
     /// L-M convergence tolerance.
@@ -96,9 +112,62 @@ impl Default for AutoCalibrateImageOptions {
             refine_mask,
             enable_tilt_fallback: true,
             max_ring_index: 65,
+            intensity_limit: None,
+            peak_threshold_sigma: None,
+            search_half_width_px: None,
             max_iter: 200,
             tol: 1e-9,
         }
+    }
+}
+
+/// Stage of the end-to-end image auto-calibration pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoCalibrateStage {
+    /// Building valid-pixel mask and detecting image-wide peaks.
+    DetectingPeaks,
+    /// Estimating isotropic ring center via 3-point circle RANSAC + sharpness refinement.
+    EstimatingCenter,
+    /// Scanning 1D radial profiles for candidate sample-to-detector distances.
+    ScanningDistances,
+    /// Refining candidate geometries against 2D ring profiles and detected peaks.
+    RefiningCandidate,
+    /// Running coarse 5D grid search fallback (tilted / strip detector).
+    GridSearch,
+    /// Polishing the best grid-search geometry against 2D ring profiles.
+    PolishingGrid,
+    /// Calibration verified and complete.
+    Done,
+}
+
+/// Live progress and intermediate plottable diagnostics emitted during
+/// [`auto_calibrate_image_with_progress`].
+#[derive(Debug, Clone)]
+pub struct AutoCalibrateProgress {
+    pub stage: AutoCalibrateStage,
+    /// Human-readable status message describing the current step.
+    pub message: String,
+    /// Fractional progress in `[0.0, 1.0]`.
+    pub progress: f64,
+    /// Subsampled detected peaks `(d1, d2)` in pixel coordinates so a UI can
+    /// plot the points the algorithm is using.
+    pub peaks: Option<Vec<(f64, f64)>>,
+    /// Estimated ring center `(d1, d2)` in pixel coordinates once found.
+    pub ring_center_px: Option<(f64, f64)>,
+    /// Best candidate `Poni` found so far (for live ring overlay previews).
+    pub candidate_poni: Option<Poni>,
+    /// RMS 2θ residual (radians) of `candidate_poni`, if available.
+    pub candidate_rms_rad: Option<f64>,
+    /// Number of supported calibrant rings for `candidate_poni`, if available.
+    pub n_rings: Option<usize>,
+}
+
+fn subsample_preview_peaks(peaks: &[(f64, f64)], max_count: usize) -> Vec<(f64, f64)> {
+    if peaks.len() <= max_count {
+        peaks.to_vec()
+    } else {
+        let step = peaks.len().div_ceil(max_count);
+        peaks.iter().step_by(step).copied().collect()
     }
 }
 
@@ -130,17 +199,8 @@ pub fn auto_calibrate_image(
 
 /// Automatically calibrate a 2D powder diffraction image with an optional pixel mask.
 ///
-/// # Arguments
-///
-/// * `image` — row-major 2D detector frame of length `dim1 * dim2` (same
-///   orientation convention as [`crate::frame::Frame`], i.e. row 0 at bottom).
-/// * `dim1`, `dim2` — image height (rows, slow axis) and width (cols, fast axis).
-/// * `mask` — optional row-major boolean mask of length `dim1 * dim2` where
-///   `true` marks an excluded/masked pixel (pyFAI / Dioptas convention).
-/// * `calibrant` — reference powder calibrant (e.g. LaB6, CeO2).
-/// * `wavelength_m` — X-ray wavelength in metres (must be finite and `> 0`).
-/// * `pixel1`, `pixel2` — pixel pitch along `dim1` and `dim2` in metres (finite and `> 0`).
-/// * `options` — optional starting distance and solver knobs.
+/// Convenience wrapper around [`auto_calibrate_image_with_progress`] without a
+/// progress callback.
 pub fn auto_calibrate_image_with_mask(
     image: &[f64],
     dim1: usize,
@@ -152,6 +212,43 @@ pub fn auto_calibrate_image_with_mask(
     pixel2: f64,
     options: &AutoCalibrateImageOptions,
 ) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError> {
+    auto_calibrate_image_with_progress(
+        image,
+        dim1,
+        dim2,
+        mask,
+        calibrant,
+        wavelength_m,
+        pixel1,
+        pixel2,
+        options,
+        |_| true,
+    )
+}
+
+/// Automatically calibrate a 2D powder diffraction image with an optional pixel
+/// mask and a live progress / cancellation callback.
+///
+/// `on_progress` is invoked at major pipeline stages with an
+/// [`AutoCalibrateProgress`] snapshot containing human-readable status text,
+/// detected peaks, estimated ring center, and intermediate candidate `Poni`
+/// geometries suitable for live plotting. Returning `false` from `on_progress`
+/// cancels calibration early with [`AutoCalibrateError::Cancelled`].
+pub fn auto_calibrate_image_with_progress<F>(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    calibrant: &Calibrant,
+    wavelength_m: f64,
+    pixel1: f64,
+    pixel2: f64,
+    options: &AutoCalibrateImageOptions,
+    mut on_progress: F,
+) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError>
+where
+    F: FnMut(AutoCalibrateProgress) -> bool,
+{
     let expected_len = dim1
         .checked_mul(dim2)
         .ok_or_else(|| AutoCalibrateError::InvalidInput("image dimensions overflow".into()))?;
@@ -198,14 +295,49 @@ pub fn auto_calibrate_image_with_mask(
 
     let (d_min, d_max) = distance_bounds(options);
 
-    // 1. Automatic valid-pixel mask (combined with optional user mask).
-    let (valid, valid_median) = build_valid_mask(image, mask, dim1, dim2);
+    // 1. Automatic valid-pixel mask (combined with optional user mask and
+    //    explicit or auto-detected upper saturation limit).
+    let explicit_upper = options
+        .intensity_limit
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let (valid, valid_median, effective_upper) =
+        build_valid_mask(image, mask, dim1, dim2, explicit_upper);
 
-    // 2. Robust image-wide peak extraction (also returns lightly-smoothed residual & noise floor).
-    let (peaks, residual, sigma_r) =
-        extract_robust_peaks(image, &valid, valid_median, dim1, dim2, 5000);
+    // 2. Robust image-wide peak extraction with auto-adaptive MAD threshold.
+    let (peaks, residual, sigma_r, used_sigma) = extract_robust_peaks(
+        image,
+        &valid,
+        valid_median,
+        dim1,
+        dim2,
+        5000,
+        options.peak_threshold_sigma,
+    );
     if peaks.len() < 15 {
         return Err(AutoCalibrateError::NoEllipses);
+    }
+
+    let sat_note = if effective_upper < 3.9e9 {
+        format!(", upper limit {:.0}", effective_upper)
+    } else {
+        String::new()
+    };
+    if !on_progress(AutoCalibrateProgress {
+        stage: AutoCalibrateStage::DetectingPeaks,
+        message: format!(
+            "Detected {} peaks ({:.1}σ{})",
+            peaks.len(),
+            used_sigma,
+            sat_note
+        ),
+        progress: 0.15,
+        peaks: Some(subsample_preview_peaks(&peaks, 600)),
+        ring_center_px: None,
+        candidate_poni: None,
+        candidate_rms_rad: None,
+        n_rings: None,
+    }) {
+        return Err(AutoCalibrateError::Cancelled);
     }
 
     let is_strip_detector = (dim1.max(dim2) as f64) / (dim1.min(dim2) as f64).max(1.0) > 2.5;
@@ -232,30 +364,63 @@ pub fn auto_calibrate_image_with_mask(
             d_min,
             d_max,
             options,
-        )
+            &mut on_progress,
+        )?
     };
 
-    let radial_inlier_frac = radial_attempt
+    let radial_metrics = radial_attempt
         .as_ref()
-        .map(|(res, _, _)| peak_inlier_fraction(&peaks, &res.poni, calibrant, VERIFY_TOL_RAD))
-        .unwrap_or(0.0);
+        .map(|(res, _, _)| {
+            evaluate_peak_match(
+                &peaks,
+                &valid,
+                dim1,
+                dim2,
+                &res.poni,
+                calibrant,
+                VERIFY_TOL_RAD,
+                options.max_ring_index,
+            )
+        })
+        .unwrap_or_default();
 
     let radial_verified = radial_attempt.as_ref().is_some_and(|(res, _, n_rings)| {
         is_verified_calibration(
             res,
             *n_rings,
-            radial_inlier_frac,
+            &radial_metrics,
+            peaks.len(),
             d_min,
             d_max,
             options.starting_distance.is_some(),
         )
     });
 
+    let radial_tight = radial_attempt
+        .as_ref()
+        .is_some_and(|(res, _, n_rings)| res.rms_rad < 4.5e-4 && *n_rings >= 4);
+
     if !is_strip_detector
         && radial_verified
-        && radial_inlier_frac >= 0.55
-        && let Some((res, diag, _)) = radial_attempt
+        && radial_tight
+        && radial_metrics.inlier_frac >= 0.55
+        && radial_metrics.ring_recall >= 0.65
+        && radial_metrics.inlier_rms_rad < 6.5e-4
+        && let Some((res, diag, n_rings)) = radial_attempt
     {
+        let _ = on_progress(AutoCalibrateProgress {
+            stage: AutoCalibrateStage::Done,
+            message: format!(
+                "Verified ({n_rings} rings, RMS {:.4}°)",
+                res.rms_rad.to_degrees()
+            ),
+            progress: 1.0,
+            peaks: None,
+            ring_center_px: None,
+            candidate_poni: Some(res.poni.clone()),
+            candidate_rms_rad: Some(res.rms_rad),
+            n_rings: Some(n_rings),
+        });
         return Ok((res, diag));
     }
 
@@ -276,14 +441,24 @@ pub fn auto_calibrate_image_with_mask(
             d_max,
             is_strip_detector,
             options,
-        )
+            &mut on_progress,
+        )?
     {
-        let grid_inlier_frac =
-            peak_inlier_fraction(&peaks, &grid_res.poni, calibrant, VERIFY_TOL_RAD);
+        let grid_metrics = evaluate_peak_match(
+            &peaks,
+            &valid,
+            dim1,
+            dim2,
+            &grid_res.poni,
+            calibrant,
+            VERIFY_TOL_RAD,
+            options.max_ring_index,
+        );
         let grid_verified = is_verified_calibration(
             &grid_res,
             grid_rings,
-            grid_inlier_frac,
+            &grid_metrics,
+            peaks.len(),
             d_min,
             d_max,
             options.starting_distance.is_some(),
@@ -295,20 +470,52 @@ pub fn auto_calibrate_image_with_mask(
                     if !radial_verified {
                         true
                     } else {
-                        let g_score = grid_inlier_frac.max(0.05) / (grid_res.rms_rad + 5.0e-5);
-                        let r_score = radial_inlier_frac.max(0.05) / (r_res.rms_rad + 5.0e-5);
+                        let g_rms = grid_res.rms_rad + 0.35 * grid_metrics.inlier_rms_rad;
+                        let r_rms = r_res.rms_rad + 0.35 * radial_metrics.inlier_rms_rad;
+                        let g_score = (grid_metrics.inlier_frac.max(0.05)
+                            * grid_metrics.ring_recall.max(0.05))
+                            / (g_rms + 5.0e-5);
+                        let r_score = (radial_metrics.inlier_frac.max(0.05)
+                            * radial_metrics.ring_recall.max(0.05))
+                            / (r_rms + 5.0e-5);
                         g_score > r_score
                     }
                 }
             };
             if use_grid {
+                let _ = on_progress(AutoCalibrateProgress {
+                    stage: AutoCalibrateStage::Done,
+                    message: format!(
+                        "Verified tilted fit ({grid_rings} rings, RMS {:.4}°)",
+                        grid_res.rms_rad.to_degrees()
+                    ),
+                    progress: 1.0,
+                    peaks: None,
+                    ring_center_px: None,
+                    candidate_poni: Some(grid_res.poni.clone()),
+                    candidate_rms_rad: Some(grid_res.rms_rad),
+                    n_rings: Some(grid_rings),
+                });
                 return Ok((grid_res, grid_diag));
             }
         }
     }
 
     // Return the radial result only if it actually passed verification.
-    if radial_verified && let Some((res, diag, _)) = radial_attempt {
+    if radial_verified && let Some((res, diag, n_rings)) = radial_attempt {
+        let _ = on_progress(AutoCalibrateProgress {
+            stage: AutoCalibrateStage::Done,
+            message: format!(
+                "Verified ({n_rings} rings, RMS {:.4}°)",
+                res.rms_rad.to_degrees()
+            ),
+            progress: 1.0,
+            peaks: None,
+            ring_center_px: None,
+            candidate_poni: Some(res.poni.clone()),
+            candidate_rms_rad: Some(res.rms_rad),
+            n_rings: Some(n_rings),
+        });
         return Ok((res, diag));
     }
 
@@ -337,10 +544,18 @@ fn count_supported_rings(assignments: &[Option<usize>], min_pts_per_ring: usize)
     counts.values().filter(|&&c| c >= min_pts_per_ring).count()
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PeakMatchMetrics {
+    inlier_frac: f64,
+    inlier_rms_rad: f64,
+    ring_recall: f64,
+}
+
 fn is_verified_calibration(
     res: &CalibrationResult,
     n_rings: usize,
-    inlier_frac: f64,
+    metrics: &PeakMatchMetrics,
+    n_total_peaks: usize,
     d_min: f64,
     d_max: f64,
     has_distance_hint: bool,
@@ -350,11 +565,15 @@ fn is_verified_calibration(
         || !res.rms_rad.is_finite()
         || res.rms_rad >= 1.5e-3
         || n_rings < 3
-        || inlier_frac < 0.45
+        || metrics.inlier_frac < 0.45
+        || metrics.ring_recall < 0.55
+        || !metrics.inlier_rms_rad.is_finite()
+        || metrics.inlier_rms_rad >= 1.5e-3
     {
         return false;
     }
-    if res.assignments.iter().filter(|a| a.is_some()).count() < 40 {
+    let min_assigned = ((n_total_peaks * 2) / 3).clamp(15, 40);
+    if res.assignments.iter().filter(|a| a.is_some()).count() < min_assigned {
         return false;
     }
     if has_distance_hint && (res.poni.distance < d_min * 0.5 || res.poni.distance > d_max * 1.5) {
@@ -385,27 +604,92 @@ fn rotation_matrix(poni: &Poni) -> [[f64; 3]; 3] {
     ]
 }
 
-fn peak_inlier_fraction(
+/// Evaluate unbiased image-wide peak agreement with a candidate geometry:
+///
+/// - Uses a spacing-aware tolerance `min(tol_rad, 0.35 * local_ring_spacing)` so
+///   artificially small distances with dense high-order rings cannot score 100%
+///   inliers by chance.
+/// - Computes `ring_recall` over the predicted calibrant rings inside the
+///   observed 2θ span `[p02, p98]` (weighted by calibrant intensity when known),
+///   catching sub-multiple aliases (e.g. `D / √2` on LaB6 where half of the
+///   predicted rings are completely absent).
+fn evaluate_peak_match(
     peaks: &[(f64, f64)],
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
     poni: &Poni,
     calibrant: &Calibrant,
     tol_rad: f64,
-) -> f64 {
+    max_ring_index: usize,
+) -> PeakMatchMetrics {
     if peaks.is_empty() {
-        return 0.0;
+        return PeakMatchMetrics::default();
     }
-    let targets: Vec<f64> = calibrant
+    let max_cal_i = calibrant
+        .intensities
+        .iter()
+        .filter_map(|&v| v)
+        .fold(0.0_f64, f64::max);
+
+    let mut raw_targets: Vec<(f64, f64)> = calibrant
         .two_theta_rad(poni.wavelength)
         .into_iter()
-        .flatten()
-        .take(35)
+        .enumerate()
+        .take(max_ring_index.max(35))
+        .filter_map(|(idx, opt_t)| {
+            let t = opt_t?;
+            if !t.is_finite() || t <= 1e-4 {
+                return None;
+            }
+            let w = if max_cal_i > 0.0 {
+                calibrant
+                    .intensities
+                    .get(idx)
+                    .copied()
+                    .flatten()
+                    .map(|v| (v / max_cal_i).sqrt().max(0.15))
+                    .unwrap_or(0.25)
+            } else {
+                1.0
+            };
+            Some((t, w))
+        })
         .collect();
-    if targets.is_empty() {
-        return 0.0;
+    if raw_targets.is_empty() {
+        return PeakMatchMetrics::default();
     }
-    let r = rotation_matrix(poni);
+    raw_targets.sort_by(|a, b| a.0.total_cmp(&b.0));
 
+    let n_t = raw_targets.len();
+    // (tth, local_tol, weight)
+    let mut targets: Vec<(f64, f64, f64)> = Vec::with_capacity(n_t);
+    for k in 0..n_t {
+        let gap_lo = if k > 0 {
+            raw_targets[k].0 - raw_targets[k - 1].0
+        } else {
+            f64::INFINITY
+        };
+        let gap_hi = if k + 1 < n_t {
+            raw_targets[k + 1].0 - raw_targets[k].0
+        } else {
+            f64::INFINITY
+        };
+        let spacing = gap_lo.min(gap_hi);
+        let local_tol = if spacing.is_finite() {
+            tol_rad.min(0.35 * spacing).max(2.0e-4)
+        } else {
+            tol_rad
+        };
+        targets.push((raw_targets[k].0, local_tol, raw_targets[k].1));
+    }
+
+    let r = rotation_matrix(poni);
     let mut hits = 0usize;
+    let mut sq_err_sum = 0.0_f64;
+    let mut ring_hits = vec![0usize; n_t];
+    let mut obs_tths = Vec::with_capacity(peaks.len());
+
     for &(d1, d2) in peaks {
         let p1 = (d1 + 0.5) * poni.pixel1 - poni.poni1;
         let p2 = (d2 + 0.5) * poni.pixel2 - poni.poni2;
@@ -414,11 +698,102 @@ fn peak_inlier_fraction(
         let y = p1 * r[1][0] + p2 * r[1][1] + p3 * r[1][2];
         let z = p1 * r[2][0] + p2 * r[2][1] + p3 * r[2][2];
         let tth = (x * x + y * y).sqrt().atan2(z);
-        if targets.iter().any(|&t| (tth - t).abs() <= tol_rad) {
+        if !tth.is_finite() {
+            continue;
+        }
+        obs_tths.push(tth);
+
+        let pos = targets.partition_point(|&(t, _, _)| t < tth);
+        let mut best_k = usize::MAX;
+        let mut best_err = f64::INFINITY;
+        for cand_k in [pos.saturating_sub(1), pos] {
+            if cand_k < n_t {
+                let err = (tth - targets[cand_k].0).abs();
+                if err < best_err {
+                    best_err = err;
+                    best_k = cand_k;
+                }
+            }
+        }
+        if best_k != usize::MAX && best_err <= targets[best_k].1 {
             hits += 1;
+            sq_err_sum += best_err * best_err;
+            ring_hits[best_k] += 1;
         }
     }
-    hits as f64 / peaks.len() as f64
+
+    if hits == 0 || obs_tths.is_empty() {
+        return PeakMatchMetrics::default();
+    }
+
+    let inlier_frac = hits as f64 / peaks.len() as f64;
+    let inlier_rms_rad = (sq_err_sum / hits as f64).sqrt();
+
+    // Compute observed 2θ span [p02, p98] (robust to a few stray outlier spots
+    // and beamstop-masked inner regions).
+    obs_tths.sort_by(|a, b| a.total_cmp(b));
+    let n_obs = obs_tths.len();
+    let tth_lo = obs_tths[(n_obs / 50).min(n_obs - 1)];
+    let tth_hi = obs_tths[((n_obs * 49) / 50).min(n_obs - 1)];
+
+    let min_hits_for_ring = 2usize;
+    // Direct beam position in pixel coordinates (for checking whether an inner
+    // missing ring lies well outside any central beamstop).
+    let beam_px = project_ring_pixel(poni, 0.0, 0.0);
+    let mut visible_w = 0.0_f64;
+    let mut hit_w = 0.0_f64;
+    let mut n_checked = 0usize;
+    for (k, &(tth_k, local_tol, w)) in targets.iter().enumerate() {
+        if tth_k - local_tol > tth_hi {
+            break;
+        }
+        if tth_k + local_tol < tth_lo {
+            // Check whether this inner ring projects cleanly onto valid
+            // detector pixels outside a central beamstop (~40 px radius).
+            // Catches sub-multiple aliases (e.g. D/√2 on LaB6) where the
+            // innermost predicted ring is completely absent.
+            let mut n_valid_az = 0usize;
+            for a in 0..16 {
+                let phi = 2.0 * PI * (a as f64) / 16.0;
+                if let Some((d1, d2)) = project_ring_pixel(poni, tth_k, phi)
+                    && d1 >= 4.0
+                    && d2 >= 4.0
+                    && d1 < (dim1 as f64 - 5.0)
+                    && d2 < (dim2 as f64 - 5.0)
+                {
+                    let far_from_beam = beam_px
+                        .map(|(b1, b2)| (d1 - b1).hypot(d2 - b2) >= 40.0)
+                        .unwrap_or(true);
+                    let idx = (d1.round() as usize) * dim2 + (d2.round() as usize);
+                    if far_from_beam && valid[idx] {
+                        n_valid_az += 1;
+                    }
+                }
+            }
+            if n_valid_az < 8 {
+                continue;
+            }
+        }
+        visible_w += w;
+        if ring_hits[k] >= min_hits_for_ring {
+            hit_w += w;
+        }
+        n_checked += 1;
+        if n_checked >= 16 {
+            break;
+        }
+    }
+    let ring_recall = if visible_w > 0.0 {
+        hit_w / visible_w
+    } else {
+        0.0
+    };
+
+    PeakMatchMetrics {
+        inlier_frac,
+        inlier_rms_rad,
+        ring_recall,
+    }
 }
 
 // ---------- Step 1: Automatic valid-pixel mask ----------
@@ -447,11 +822,45 @@ fn build_valid_mask(
     user_mask: Option<&[bool]>,
     dim1: usize,
     dim2: usize,
-) -> (Vec<bool>, f64) {
+    explicit_upper_limit: Option<f64>,
+) -> (Vec<bool>, f64, f64) {
     let n = dim1 * dim2;
+    // Auto-detect flat-topped saturation plateaus (e.g. 16-bit CCDs clipping at
+    // 65535) when the caller did not pass an explicit `intensity_limit`.
+    let upper_limit = match explicit_upper_limit {
+        Some(lim) => lim,
+        None => {
+            let step = (n / 16_384).max(1);
+            let mut max_v = 0.0_f64;
+            let mut k = 0;
+            while k < n {
+                let v = image[k];
+                if v.is_finite() && v < 4.0e9 && v > max_v {
+                    max_v = v;
+                }
+                k += step;
+            }
+            if max_v >= 65_000.0 {
+                let sat_thresh = 0.999 * max_v;
+                let mut n_sat = 0usize;
+                let mut k = 0;
+                while k < n {
+                    let v = image[k];
+                    if v.is_finite() && v < 4.0e9 && v >= sat_thresh {
+                        n_sat += 1;
+                    }
+                    k += step;
+                }
+                if n_sat >= 3 { 0.995 * max_v } else { 4.0e9 }
+            } else {
+                4.0e9
+            }
+        }
+    };
     let (p50_finite, sigma_finite) =
-        subsample_median_and_mad(image, |v| v.is_finite() && v < 4.0e9);
-    let (p50_pos, _) = subsample_median_and_mad(image, |v| v.is_finite() && v > 0.0 && v < 4.0e9);
+        subsample_median_and_mad(image, |v| v.is_finite() && v < upper_limit);
+    let (p50_pos, _) =
+        subsample_median_and_mad(image, |v| v.is_finite() && v > 0.0 && v < upper_limit);
 
     // Positive-baseline images (e.g. photon-counting Pilatus/Eiger or CCD with dark offset)
     // use negative values as sentinel gap/bad-pixel markers (-1, -2). Dark-subtracted float
@@ -470,7 +879,7 @@ fn build_valid_mask(
             continue;
         }
         let v = image[idx];
-        if !v.is_finite() || v >= 4.0e9 {
+        if !v.is_finite() || v >= upper_limit {
             valid[idx] = false;
             continue;
         }
@@ -565,7 +974,7 @@ fn build_valid_mask(
         }
     };
 
-    (valid, valid_median)
+    (valid, valid_median, upper_limit)
 }
 
 #[inline]
@@ -617,7 +1026,8 @@ fn extract_robust_peaks(
     dim1: usize,
     dim2: usize,
     max_peaks: usize,
-) -> (Vec<(f64, f64)>, Vec<f64>, f64) {
+    peak_threshold_sigma: Option<f64>,
+) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64) {
     let n = dim1 * dim2;
     let filled: Vec<f64> = (0..n)
         .map(|k| if valid[k] { image[k] } else { valid_median })
@@ -640,7 +1050,7 @@ fn extract_robust_peaks(
         k += step;
     }
     if r_sample.is_empty() {
-        return (Vec::new(), residual, 0.0);
+        return (Vec::new(), residual, 0.0, 3.5);
     }
     let mid = r_sample.len() / 2;
     r_sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
@@ -659,63 +1069,78 @@ fn extract_robust_peaks(
         sigma_r = var_r.sqrt();
     }
     if sigma_r < 1e-12 {
-        return (Vec::new(), residual, 0.0);
+        return (Vec::new(), residual, 0.0, 3.5);
     }
-
-    let threshold = med_r + 3.5 * sigma_r;
 
     // Collect local maxima with their prominence so we can keep the strongest
     // peaks across the ENTIRE detector instead of truncating in row order.
+    // When `peak_threshold_sigma` is `None`, start at 3.5σ and automatically
+    // relax to 2.5σ / 2.0σ on faint images with few detected peaks.
+    let sigma_schedule: Vec<f64> = match peak_threshold_sigma {
+        Some(s) if s.is_finite() => vec![s.clamp(1.5, 20.0)],
+        _ => vec![3.5, 2.5, 2.0],
+    };
+
+    let mut used_sigma = sigma_schedule[0];
     let mut candidates: Vec<(f64, f64, f64)> = Vec::new();
-    for i in 2..(dim1.saturating_sub(2)) {
-        let row = i * dim2;
-        for j in 2..(dim2.saturating_sub(2)) {
-            let idx = row + j;
-            let res_v = residual[idx];
-            if res_v <= threshold {
-                continue;
-            }
-            if !neighborhood_valid(valid, dim1, dim2, i, j, 2) {
-                continue;
-            }
-            let v = smooth[idx];
-            let mut is_max = true;
-            'nbr: for di in -1isize..=1 {
-                let nr = (i as isize + di) as usize * dim2;
-                for dj in -1isize..=1 {
-                    if di == 0 && dj == 0 {
-                        continue;
-                    }
-                    let nc = (j as isize + dj) as usize;
-                    if smooth[nr + nc] > v {
-                        is_max = false;
-                        break 'nbr;
+    for (pass_idx, &sig_mult) in sigma_schedule.iter().enumerate() {
+        used_sigma = sig_mult;
+        let threshold = med_r + sig_mult * sigma_r;
+        candidates.clear();
+        for i in 2..(dim1.saturating_sub(2)) {
+            let row = i * dim2;
+            for j in 2..(dim2.saturating_sub(2)) {
+                let idx = row + j;
+                let res_v = residual[idx];
+                if res_v <= threshold {
+                    continue;
+                }
+                if !neighborhood_valid(valid, dim1, dim2, i, j, 2) {
+                    continue;
+                }
+                let v = smooth[idx];
+                let mut is_max = true;
+                'nbr: for di in -1isize..=1 {
+                    let nr = (i as isize + di) as usize * dim2;
+                    for dj in -1isize..=1 {
+                        if di == 0 && dj == 0 {
+                            continue;
+                        }
+                        let nc = (j as isize + dj) as usize;
+                        if smooth[nr + nc] > v {
+                            is_max = false;
+                            break 'nbr;
+                        }
                     }
                 }
-            }
-            if !is_max {
-                continue;
-            }
-            // Parabolic sub-pixel refinement along row and col.
-            let vm_r = smooth[(i - 1) * dim2 + j];
-            let vp_r = smooth[(i + 1) * dim2 + j];
-            let denom_r = vm_r - 2.0 * v + vp_r;
-            let off_r = if denom_r.abs() > 1e-12 {
-                (0.5 * (vm_r - vp_r) / denom_r).clamp(-0.5, 0.5)
-            } else {
-                0.0
-            };
+                if !is_max {
+                    continue;
+                }
+                // Parabolic sub-pixel refinement along row and col.
+                let vm_r = smooth[(i - 1) * dim2 + j];
+                let vp_r = smooth[(i + 1) * dim2 + j];
+                let denom_r = vm_r - 2.0 * v + vp_r;
+                let off_r = if denom_r.abs() > 1e-12 {
+                    (0.5 * (vm_r - vp_r) / denom_r).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                };
 
-            let vm_c = smooth[idx - 1];
-            let vp_c = smooth[idx + 1];
-            let denom_c = vm_c - 2.0 * v + vp_c;
-            let off_c = if denom_c.abs() > 1e-12 {
-                (0.5 * (vm_c - vp_c) / denom_c).clamp(-0.5, 0.5)
-            } else {
-                0.0
-            };
+                let vm_c = smooth[idx - 1];
+                let vp_c = smooth[idx + 1];
+                let denom_c = vm_c - 2.0 * v + vp_c;
+                let off_c = if denom_c.abs() > 1e-12 {
+                    (0.5 * (vm_c - vp_c) / denom_c).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                };
 
-            candidates.push((i as f64 + off_r, j as f64 + off_c, res_v));
+                candidates.push((i as f64 + off_r, j as f64 + off_c, res_v));
+            }
+        }
+        let target_min = if pass_idx == 0 { 25 } else { 20 };
+        if candidates.len() >= target_min {
+            break;
         }
     }
 
@@ -724,7 +1149,7 @@ fn extract_robust_peaks(
         candidates.truncate(max_peaks);
     }
     let peaks = candidates.into_iter().map(|(d1, d2, _)| (d1, d2)).collect();
-    (peaks, residual, sigma_r)
+    (peaks, residual, sigma_r, used_sigma)
 }
 
 // ---------- Step 3: Isotropic ring-center estimation + sharpness refinement ----------
@@ -995,6 +1420,7 @@ fn build_peak_radial_profile_1d(
     center_iso: (f64, f64),
     scale1: f64,
     scale2: f64,
+    r_min_valid_hint: Option<usize>,
 ) -> Option<RadialProfile1D> {
     if iso_peaks.len() < 15 {
         return None;
@@ -1044,7 +1470,13 @@ fn build_peak_radial_profile_1d(
             / 16.0;
     }
 
-    let snr: Vec<f64> = smooth.iter().map(|&c| c * 4.0).collect();
+    // Scale peak-count SNR up gently for sparse spotty patterns (< 200 total
+    // peaks) where even a true ring has only ~10–15 discrete spots spread over
+    // a few radial bins.
+    let sparse_boost = (200.0 / (iso_peaks.len().max(30) as f64))
+        .sqrt()
+        .clamp(1.0, 2.5);
+    let snr: Vec<f64> = smooth.iter().map(|&c| c * 4.0 * sparse_boost).collect();
 
     let mut raw_peaks: Vec<(usize, f64)> = Vec::new();
     for r in (r_min_obs.max(2))..r_max_obs.min(r_max - 2) {
@@ -1066,9 +1498,18 @@ fn build_peak_radial_profile_1d(
         return None;
     }
 
+    // Use the detector's valid-pixel inner radius (with a small floor to remain
+    // robust to central beamstops) so `scan_distances_1d` still penalizes
+    // sub-multiple distance aliases (e.g. D/√2) that predict missing inner rings
+    // inside the innermost detected peak.
+    let r_min_effective = match r_min_valid_hint {
+        Some(rv) => rv.max(35).min(r_min_obs),
+        None => r_min_obs,
+    };
+
     Some(RadialProfile1D {
         snr,
-        r_min_obs,
+        r_min_obs: r_min_effective,
         r_max_obs,
         peaks_r,
     })
@@ -1265,6 +1706,37 @@ fn sample_bilinear_valid(
     Some(top * (1.0 - fy) + bot * fy)
 }
 
+/// Estimate median ring FWHM (in isotropic pixels) from the strongest peaks of
+/// a 1D radial SNR profile, used to auto-adapt the 2D ring search half-width.
+fn estimate_profile_fwhm_px(profile: &RadialProfile1D) -> Option<f64> {
+    let n = profile.snr.len();
+    let mut widths: Vec<f64> = Vec::new();
+    for &(r_pk, peak_snr) in profile.peaks_r.iter().take(8) {
+        let center = r_pk.round() as usize;
+        if center == 0 || center + 1 >= n || peak_snr <= 0.0 {
+            continue;
+        }
+        let half = 0.5 * profile.snr[center].max(peak_snr);
+        let mut lo = center;
+        while lo > 0 && profile.snr[lo] > half && (center - lo) < 30 {
+            lo -= 1;
+        }
+        let mut hi = center;
+        while hi + 1 < n && profile.snr[hi] > half && (hi - center) < 30 {
+            hi += 1;
+        }
+        let w = (hi - lo) as f64;
+        if (1.0..50.0).contains(&w) {
+            widths.push(w);
+        }
+    }
+    if widths.is_empty() {
+        return None;
+    }
+    widths.sort_by(|a, b| a.total_cmp(b));
+    Some(widths[widths.len() / 2])
+}
+
 /// Sample sub-pixel ring maxima along azimuthal sectors for each visible
 /// calibrant ring predicted by `poni`, using the background-subtracted residual.
 fn extract_ring_peaks_2d(
@@ -1281,9 +1753,17 @@ fn extract_ring_peaks_2d(
     max_ring_index: usize,
 ) -> (CalibrationPoints, usize) {
     let tth_list = calibrant.two_theta_rad(poni.wavelength);
+    // Precompute local angular spacing to nearest neighboring calibrant ring so
+    // the radial search window never jumps onto an adjacent overlapping ring.
+    let valid_tths: Vec<f64> = tth_list
+        .iter()
+        .take(max_ring_index)
+        .flatten()
+        .copied()
+        .filter(|t| t.is_finite() && *t > 1e-4 && *t < PI * 0.49)
+        .collect();
     let mut pts = CalibrationPoints::new();
     let mut n_rings_with_pts = 0usize;
-    let w = half_width_px as isize;
     let margin = (half_width_px + 2) as f64;
     let mut line = Vec::with_capacity(2 * half_width_px + 1);
     let min_peak_snr = 2.5 * sigma_r;
@@ -1296,6 +1776,13 @@ fn extract_ring_peaks_2d(
             Some(t) if t.is_finite() && *t > 1e-4 && *t < PI * 0.49 => *t,
             _ => continue,
         };
+        let local_spacing_rad = valid_tths
+            .iter()
+            .filter_map(|&other| {
+                let d = (other - tth).abs();
+                (d > 1e-6).then_some(d)
+            })
+            .fold(f64::INFINITY, f64::min);
         let mut ring_pts = 0usize;
 
         for a in 0..n_az {
@@ -1327,6 +1814,17 @@ fn extract_ring_peaks_2d(
             }
             let u1 = du1 / norm;
             let u2 = du2 / norm;
+
+            // Clamp search half-width to < 0.45 of local pixel spacing to the
+            // nearest neighboring ring so dense/overlapping rings stay separated.
+            let w_eff = if local_spacing_rad.is_finite() {
+                let px_per_rad = norm / (2.0 * delta);
+                let max_w = ((0.45 * local_spacing_rad * px_per_rad).floor() as usize).max(3);
+                half_width_px.min(max_w)
+            } else {
+                half_width_px
+            };
+            let w = w_eff as isize;
 
             line.clear();
             let mut all_ok = true;
@@ -1488,7 +1986,8 @@ fn refine_on_detected_peaks(
     last
 }
 
-fn try_radial_profile_calibration(
+#[allow(clippy::type_complexity)]
+fn try_radial_profile_calibration<F>(
     image: &[f64],
     residual: &[f64],
     sigma_r: f64,
@@ -1503,7 +2002,11 @@ fn try_radial_profile_calibration(
     d_min: f64,
     d_max: f64,
     options: &AutoCalibrateImageOptions,
-) -> Option<(CalibrationResult, AutoCalibrateDiagnostics, usize)> {
+    on_progress: &mut F,
+) -> Result<Option<(CalibrationResult, AutoCalibrateDiagnostics, usize)>, AutoCalibrateError>
+where
+    F: FnMut(AutoCalibrateProgress) -> bool,
+{
     // Work in an isotropic metric coordinate frame scaled by p_min so non-square
     // pixels (pixel1 != pixel2) still form circles for center estimation and 1D profiles.
     let p_min = pixel1.min(pixel2);
@@ -1530,21 +2033,43 @@ fn try_radial_profile_calibration(
         max_radius_px: max_radius,
         ..RingCenterOptions::default()
     };
-    let coarse_center = estimate_ring_center(&ransac_peaks, &center_opts)?;
+    let Some(coarse_center) = estimate_ring_center(&ransac_peaks, &center_opts) else {
+        return Ok(None);
+    };
     let center_iso =
         refine_center_sharpness(&iso_peaks, (coarse_center.d1, coarse_center.d2), max_radius);
+    let center_px = (center_iso.0 / scale1, center_iso.1 / scale2);
+    if !on_progress(AutoCalibrateProgress {
+        stage: AutoCalibrateStage::EstimatingCenter,
+        message: format!(
+            "Estimated ring center ({:.1}, {:.1}) px",
+            center_px.0, center_px.1
+        ),
+        progress: 0.30,
+        peaks: None,
+        ring_center_px: Some(center_px),
+        candidate_poni: None,
+        candidate_rms_rad: None,
+        n_rings: None,
+    }) {
+        return Err(AutoCalibrateError::Cancelled);
+    }
 
     // If distance is fixed and a starting_distance was supplied, use it directly.
     let mut dist_candidates: Vec<(f64, f64)> = Vec::new();
     let mut n_detected_1d = 0usize;
+    let mut est_fwhm_px: Option<f64> = None;
     if !options.refine_mask.distance
         && let Some(d0) = options.starting_distance
     {
         dist_candidates.push((d0, 1.0));
     } else {
+        let mut r_min_valid_hint: Option<usize> = None;
         if let Some(profile) =
             build_radial_profile_1d(image, valid, dim1, dim2, center_iso, scale1, scale2)
         {
+            r_min_valid_hint = Some(profile.r_min_obs);
+            est_fwhm_px = estimate_profile_fwhm_px(&profile);
             n_detected_1d = n_detected_1d.max(profile.peaks_r.len());
             dist_candidates.extend(scan_distances_1d(
                 &profile,
@@ -1555,12 +2080,18 @@ fn try_radial_profile_calibration(
                 d_max,
                 options.starting_distance,
                 options.max_ring_index,
-                4,
+                6,
             ));
         }
-        if let Some(peak_profile) =
-            build_peak_radial_profile_1d(&iso_peaks, dim1, dim2, center_iso, scale1, scale2)
-        {
+        if let Some(peak_profile) = build_peak_radial_profile_1d(
+            &iso_peaks,
+            dim1,
+            dim2,
+            center_iso,
+            scale1,
+            scale2,
+            r_min_valid_hint,
+        ) {
             n_detected_1d = n_detected_1d.max(peak_profile.peaks_r.len());
             for (d, sc) in scan_distances_1d(
                 &peak_profile,
@@ -1571,7 +2102,7 @@ fn try_radial_profile_calibration(
                 d_max,
                 options.starting_distance,
                 options.max_ring_index,
-                4,
+                6,
             ) {
                 if dist_candidates
                     .iter()
@@ -1583,16 +2114,43 @@ fn try_radial_profile_calibration(
         }
     }
     if dist_candidates.is_empty() {
-        return None;
+        return Ok(None);
+    }
+
+    if !on_progress(AutoCalibrateProgress {
+        stage: AutoCalibrateStage::ScanningDistances,
+        message: format!(
+            "Found {} distance candidates (top {:.1} mm)",
+            dist_candidates.len(),
+            dist_candidates[0].0 * 1e3
+        ),
+        progress: 0.42,
+        peaks: None,
+        ring_center_px: Some(center_px),
+        candidate_poni: None,
+        candidate_rms_rad: None,
+        n_rings: None,
+    }) {
+        return Err(AutoCalibrateError::Cancelled);
     }
 
     // Convert isotropic center back to detector metres (pyFAI pixel-center +0.5 convention).
     let bootstrap_p1 = center_iso.0 * p_min + 0.5 * pixel1;
     let bootstrap_p2 = center_iso.1 * p_min + 0.5 * pixel2;
+    let fine_w = options
+        .search_half_width_px
+        .map(|w| w.clamp(3, 24))
+        .unwrap_or_else(|| {
+            est_fwhm_px
+                .map(|w| (w * 1.1).round().clamp(4.0, 12.0) as usize)
+                .unwrap_or(4)
+        });
+    let mid_w = (fine_w * 2).clamp(7, 20);
+    let coarse_w = (fine_w * 3).clamp(14, 28);
     let passes = [
-        (14usize, 3.0e-3, 96usize, 16usize),
-        (7, 1.5e-3, 128, 22),
-        (4, 8.0e-4, 128, 22),
+        (coarse_w, 3.0e-3, 96usize, 16usize),
+        (mid_w, 1.5e-3, 128, 22),
+        (fine_w, 8.0e-4, 128, 22),
     ];
 
     let has_hint = options.starting_distance.is_some();
@@ -1603,7 +2161,8 @@ fn try_radial_profile_calibration(
         f64,
         bool,
     )> = None;
-    for &(d_cand, d_score) in &dist_candidates {
+    let n_cands = dist_candidates.len().max(1);
+    for (cand_idx, &(d_cand, d_score)) in dist_candidates.iter().enumerate() {
         let mut init = Poni::new();
         init.pixel1 = pixel1;
         init.pixel2 = pixel2;
@@ -1630,11 +2189,24 @@ fn try_radial_profile_calibration(
         let peak_res = refine_on_detected_peaks(peaks, dim1, dim2, init, calibrant, options);
 
         for (res, n_rings) in [smooth_res, peak_res].into_iter().flatten() {
-            let inlier_frac = peak_inlier_fraction(peaks, &res.poni, calibrant, 2.0e-3);
+            let m = evaluate_peak_match(
+                peaks,
+                valid,
+                dim1,
+                dim2,
+                &res.poni,
+                calibrant,
+                2.0e-3,
+                options.max_ring_index,
+            );
             let cur_ok =
-                is_verified_calibration(&res, n_rings, inlier_frac, d_min, d_max, has_hint);
-            let quality = (inlier_frac.max(0.05) * (n_rings as f64).sqrt() * d_score.max(0.1))
-                / (res.rms_rad + 3.0e-5);
+                is_verified_calibration(&res, n_rings, &m, peaks.len(), d_min, d_max, has_hint);
+            let eff_rms = res.rms_rad + 0.35 * m.inlier_rms_rad;
+            let quality = (m.inlier_frac.max(0.05)
+                * m.ring_recall.max(0.05).powi(2)
+                * (n_rings as f64).sqrt()
+                * d_score.max(0.1))
+                / (eff_rms + 5.0e-5);
             let is_better = match &best {
                 None => true,
                 Some((_, _, _, b_qual, best_ok)) => {
@@ -1656,14 +2228,55 @@ fn try_radial_profile_calibration(
                 best = Some((res, diag, n_rings, quality, cur_ok));
             }
         }
+
+        let frac = 0.45 + 0.30 * ((cand_idx + 1) as f64 / n_cands as f64);
+        let (cand_poni, cand_rms, cand_rings, detail) = match &best {
+            Some((r, _, nr, _, _)) => (
+                Some(r.poni.clone()),
+                Some(r.rms_rad),
+                Some(*nr),
+                format!(
+                    "Refining candidate {}/{} (best {:.1} mm, {} rings, RMS {:.4}°)",
+                    cand_idx + 1,
+                    n_cands,
+                    r.poni.distance * 1e3,
+                    nr,
+                    r.rms_rad.to_degrees()
+                ),
+            ),
+            None => (
+                None,
+                None,
+                None,
+                format!(
+                    "Refining candidate {}/{} ({:.1} mm)",
+                    cand_idx + 1,
+                    n_cands,
+                    d_cand * 1e3
+                ),
+            ),
+        };
+        if !on_progress(AutoCalibrateProgress {
+            stage: AutoCalibrateStage::RefiningCandidate,
+            message: detail,
+            progress: frac,
+            peaks: None,
+            ring_center_px: Some(center_px),
+            candidate_poni: cand_poni,
+            candidate_rms_rad: cand_rms,
+            n_rings: cand_rings,
+        }) {
+            return Err(AutoCalibrateError::Cancelled);
+        }
     }
 
-    best.map(|(res, diag, n_rings, _, _)| (res, diag, n_rings))
+    Ok(best.map(|(res, diag, n_rings, _, _)| (res, diag, n_rings)))
 }
 
 // ---------- Step 6: Tilt / strip-detector fallback ----------
 
-fn try_grid_fallback(
+#[allow(clippy::type_complexity)]
+fn try_grid_fallback<F>(
     residual: &[f64],
     sigma_r: f64,
     valid: &[bool],
@@ -1678,7 +2291,24 @@ fn try_grid_fallback(
     d_max: f64,
     is_strip_detector: bool,
     options: &AutoCalibrateImageOptions,
-) -> Option<(CalibrationResult, AutoCalibrateDiagnostics, usize)> {
+    on_progress: &mut F,
+) -> Result<Option<(CalibrationResult, AutoCalibrateDiagnostics, usize)>, AutoCalibrateError>
+where
+    F: FnMut(AutoCalibrateProgress) -> bool,
+{
+    if !on_progress(AutoCalibrateProgress {
+        stage: AutoCalibrateStage::GridSearch,
+        message: "Running 5D tilted/strip grid search…".into(),
+        progress: 0.78,
+        peaks: None,
+        ring_center_px: None,
+        candidate_poni: None,
+        candidate_rms_rad: None,
+        n_rings: None,
+    }) {
+        return Err(AutoCalibrateError::Cancelled);
+    }
+
     let strong_peaks: &[(f64, f64)] = &peaks[..peaks.len().min(800)];
     let cx = strong_peaks.iter().map(|p| p.0).sum::<f64>() / strong_peaks.len() as f64;
     let cy = strong_peaks.iter().map(|p| p.1).sum::<f64>() / strong_peaks.len() as f64;
@@ -1693,8 +2323,8 @@ fn try_grid_fallback(
             }
         }
         _ => {
-            let hi = d_max.min(0.6).max(d_min * 1.5);
-            (d_min, hi, 18)
+            let hi = d_max.min(0.8).max(d_min * 1.5);
+            (d_min, hi, 24)
         }
     };
 
@@ -1708,35 +2338,108 @@ fn try_grid_fallback(
         poni_grid_steps: 13,
         tolerance_rad: 8.0e-3,
         max_peaks_for_grid: 400,
-        max_ring_index: options.max_ring_index.min(12),
+        max_ring_index: options.max_ring_index,
         top_k: 40,
     };
 
-    let candidates = grid_search_top_k(
-        strong_peaks,
-        cx,
-        cy,
-        calibrant,
-        wavelength_m,
-        pixel1,
-        pixel2,
-        &grid_opts,
+    // Search both regimes:
+    // 1. PONI near peak centroid (side/off-axis tilted detectors where the detector
+    //    faces the sample at high 2θ and the direct beam is far off-detector).
+    // 2. Direct beam near peak centroid (tilted detectors where the beam stays
+    //    near/on the detector and PONI shifts off-detector by D·tan(tilt)).
+    let (mut candidates, beam_candidates) = rayon::join(
+        || {
+            grid_search_top_k(
+                strong_peaks,
+                cx,
+                cy,
+                calibrant,
+                wavelength_m,
+                pixel1,
+                pixel2,
+                &grid_opts,
+            )
+        },
+        || {
+            if is_strip_detector {
+                Vec::new()
+            } else {
+                let mut beam_opts = grid_opts.clone();
+                beam_opts.poni_grid_steps = 9;
+                grid_search_top_k_beam_centered(
+                    strong_peaks,
+                    cx,
+                    cy,
+                    calibrant,
+                    wavelength_m,
+                    pixel1,
+                    pixel2,
+                    &beam_opts,
+                )
+            }
+        },
     );
+    candidates.extend(beam_candidates);
     if candidates.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut pts = CalibrationPoints::new();
     for &(d1, d2) in strong_peaks {
         pts.push(d1, d2, None);
     }
-    let refine_opts = CalibrationOptions {
+    let refine_opts_coarse = CalibrationOptions {
         mask: options.refine_mask,
         loss: Loss::Huber { c: 2.0e-3 },
         auto_assign_rings: true,
         assign_tolerance_rad: grid_opts.tolerance_rad.max(5.0e-3),
         max_iter: options.max_iter,
         tol: options.tol,
+    };
+    let refine_opts_fine = CalibrationOptions {
+        mask: options.refine_mask,
+        loss: Loss::Huber { c: 1.0e-3 },
+        auto_assign_rings: true,
+        assign_tolerance_rad: 3.0e-3,
+        max_iter: options.max_iter,
+        tol: options.tol,
+    };
+
+    let max_rot_rad = 60.0_f64.to_radians();
+    let refine_and_score = |start_poni: &Poni| -> Option<(CalibrationResult, f64)> {
+        let geom = Geometry::new(dim1, dim2, start_poni.clone());
+        let res_coarse = refine(&geom, &pts, calibrant, &refine_opts_coarse).ok()?;
+        if !res_coarse.poni.distance.is_finite()
+            || res_coarse.poni.distance <= 0.005
+            || res_coarse.poni.rot1.abs() > max_rot_rad
+            || res_coarse.poni.rot2.abs() > max_rot_rad
+        {
+            return None;
+        }
+        let geom_fine = Geometry::new(dim1, dim2, res_coarse.poni.clone());
+        let res = refine(&geom_fine, &pts, calibrant, &refine_opts_fine)
+            .ok()
+            .filter(|r| {
+                r.poni.distance.is_finite()
+                    && r.poni.distance > 0.005
+                    && r.poni.rot1.abs() <= max_rot_rad
+                    && r.poni.rot2.abs() <= max_rot_rad
+                    && count_supported_rings(&r.assignments, 5) >= 3
+            })
+            .unwrap_or(res_coarse);
+        let m = evaluate_peak_match(
+            strong_peaks,
+            valid,
+            dim1,
+            dim2,
+            &res.poni,
+            calibrant,
+            2.0e-3,
+            options.max_ring_index,
+        );
+        let eff_rms = res.rms_rad + 0.35 * m.inlier_rms_rad;
+        let score = (m.inlier_frac * m.ring_recall.max(0.05).powi(2)) / (eff_rms + 2.0e-4);
+        Some((res, score))
     };
 
     let mut best_grid: Option<(
@@ -1745,25 +2448,67 @@ fn try_grid_fallback(
         f64,
     )> = None;
     for cand in &candidates {
-        let geom = Geometry::new(dim1, dim2, cand.poni.clone());
-        if let Ok(res) = refine(&geom, &pts, calibrant, &refine_opts) {
-            if !res.poni.distance.is_finite() || res.poni.distance <= 0.005 {
-                continue;
-            }
-            let inlier_frac = peak_inlier_fraction(strong_peaks, &res.poni, calibrant, 2.0e-3);
-            let score = inlier_frac / (res.rms_rad + 2.0e-4);
-            if best_grid.as_ref().is_none_or(|(_, _, s)| score > *s) {
-                best_grid = Some((res, cand, score));
-            }
+        if let Some((res, score)) = refine_and_score(&cand.poni)
+            && best_grid.as_ref().is_none_or(|(_, _, s)| score > *s)
+        {
+            best_grid = Some((res, cand, score));
         }
     }
-    let (grid_res, winning, grid_score) = best_grid?;
+    let Some((mut grid_res, winning, mut grid_score)) = best_grid else {
+        return Ok(None);
+    };
+
+    // Check the mirror-tilt twin around the direct-beam intersection: for a
+    // tilted detector where the beam is near the detector, `(rot1, rot2)` and
+    // `(-rot1, -rot2)` produce nearly identical ellipse axis ratios and differ
+    // only in the small sign of the center shift. Testing the twin takes ~1 ms
+    // and breaks any mirror-tilt local minimum.
+    let p = &grid_res.poni;
+    if p.rot1.abs().max(p.rot2.abs()) > 5.0_f64.to_radians() && p.rot1.cos().abs() > 0.2 {
+        let b1 = p.poni1 + p.distance * p.rot2.tan() / p.rot1.cos();
+        let b2 = p.poni2 - p.distance * p.rot1.tan();
+        let mut twin = p.clone();
+        twin.rot1 = -p.rot1;
+        twin.rot2 = -p.rot2;
+        twin.poni1 = b1 - twin.distance * twin.rot2.tan() / twin.rot1.cos();
+        twin.poni2 = b2 + twin.distance * twin.rot1.tan();
+        if let Some((twin_res, twin_score)) = refine_and_score(&twin)
+            && twin_score > grid_score
+        {
+            grid_res = twin_res;
+            grid_score = twin_score;
+        }
+    }
+
+    let grid_n_rings = count_supported_rings(&grid_res.assignments, 5);
+    if !on_progress(AutoCalibrateProgress {
+        stage: AutoCalibrateStage::PolishingGrid,
+        message: format!(
+            "Polishing tilted geometry ({:.1} mm, {} rings, RMS {:.4}°)",
+            grid_res.poni.distance * 1e3,
+            grid_n_rings,
+            grid_res.rms_rad.to_degrees()
+        ),
+        progress: 0.90,
+        peaks: None,
+        ring_center_px: None,
+        candidate_poni: Some(grid_res.poni.clone()),
+        candidate_rms_rad: Some(grid_res.rms_rad),
+        n_rings: Some(grid_n_rings),
+    }) {
+        return Err(AutoCalibrateError::Cancelled);
+    }
 
     let n_az = if is_strip_detector { 360 } else { 128 };
-    let polish_ring_cap = options.max_ring_index.min(18);
+    let polish_ring_cap = options.max_ring_index;
+    let polish_fine = options
+        .search_half_width_px
+        .map(|w| w.clamp(3, 16))
+        .unwrap_or(4);
+    let polish_coarse = (polish_fine * 2).clamp(8, 20);
     let polish_passes = [
-        (8usize, 1.5e-3, n_az, polish_ring_cap),
-        (4, 8.0e-4, n_az, polish_ring_cap),
+        (polish_coarse, 1.5e-3, n_az, 24usize),
+        (polish_fine, 8.0e-4, n_az, 24usize),
     ];
     if let Some((polished, n_rings)) = iterative_2d_refine(
         residual,
@@ -1777,8 +2522,18 @@ fn try_grid_fallback(
         polish_ring_cap,
         &polish_passes,
     ) {
-        let pol_inlier_frac = peak_inlier_fraction(strong_peaks, &polished.poni, calibrant, 2.0e-3);
-        let pol_score = pol_inlier_frac / (polished.rms_rad + 2.0e-4);
+        let m = evaluate_peak_match(
+            strong_peaks,
+            valid,
+            dim1,
+            dim2,
+            &polished.poni,
+            calibrant,
+            2.0e-3,
+            options.max_ring_index,
+        );
+        let eff_rms = polished.rms_rad + 0.35 * m.inlier_rms_rad;
+        let pol_score = (m.inlier_frac * m.ring_recall.max(0.05).powi(2)) / (eff_rms + 2.0e-4);
         if n_rings >= 3 && pol_score >= grid_score * 0.9 {
             let diag = AutoCalibrateDiagnostics {
                 n_detected_ellipses: candidates.len(),
@@ -1787,7 +2542,7 @@ fn try_grid_fallback(
                 bootstrap_ring_center_d1: winning.poni.poni1,
                 bootstrap_ring_center_d2: winning.poni.poni2,
             };
-            return Some((polished, diag, n_rings));
+            return Ok(Some((polished, diag, n_rings)));
         }
     }
 
@@ -1799,7 +2554,7 @@ fn try_grid_fallback(
         bootstrap_ring_center_d1: winning.poni.poni1,
         bootstrap_ring_center_d2: winning.poni.poni2,
     };
-    Some((grid_res, diag, n_rings))
+    Ok(Some((grid_res, diag, n_rings)))
 }
 
 #[cfg(test)]

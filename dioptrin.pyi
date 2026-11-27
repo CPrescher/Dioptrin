@@ -2134,6 +2134,9 @@ def auto_calibrate_image(
     max_ring_index: int = 65,
     max_iter: int = 200,
     tol: float = 1e-9,
+    intensity_limit: Optional[float] = None,
+    peak_threshold_sigma: Optional[float] = None,
+    search_half_width_px: Optional[int] = None,
 ) -> AutoCalibrateResult:
     """
     End-to-end automatic calibration directly from a 2D diffraction image
@@ -2160,6 +2163,12 @@ def auto_calibrate_image(
             (default 65)
         max_iter: Maximum L-M iterations per pass (default 200)
         tol: Relative cost tolerance for convergence (default 1e-9)
+        intensity_limit: Optional upper intensity limit; when ``None`` (default),
+            auto-detects flat-topped saturation plateaus (``>= 65_000``)
+        peak_threshold_sigma: Optional MAD peak threshold multiplier; when ``None``
+            (default), starts at ``3.5σ`` and relaxes automatically on faint images
+        search_half_width_px: Optional 2D ring-profile search half-width in pixels;
+            when ``None`` (default), adapts to 1D ring width and local inter-ring spacing
 
     Note:
         In the returned ``AutoCalibrateResult``, ``n_identified_ellipses`` reports
@@ -2228,6 +2237,9 @@ def simulate_diffraction(
     poisson_noise: bool = False,
     readout_noise: float = 0.0,
     rng_seed: int = 0x5EED_D109_7A50_0001,
+    spotty_spots_per_ring: Optional[int] = None,
+    spotty_azimuthal_fwhm_rad: float = 0.03,
+    spotty_continuous_fraction: float = 0.0,
 ) -> np.ndarray:
     """
     Simulate a 2D powder diffraction image for a given geometry and calibrant.
@@ -2261,7 +2273,13 @@ def simulate_diffraction(
         poisson_noise: Apply Poisson shot noise to pixel intensities
         readout_noise: Standard deviation of additive Gaussian readout noise
             (may produce negative, non-integer pixel values)
-        rng_seed: Deterministic RNG seed for noise (unsigned 64-bit)
+        rng_seed: Deterministic RNG seed for noise and spotty crystallites (unsigned 64-bit)
+        spotty_spots_per_ring: Optional number of discrete crystallite spots per ring;
+            when set, enables coarse-grain ("spotty") azimuthal modulation
+        spotty_azimuthal_fwhm_rad: Azimuthal FWHM of each spot in radians when
+            ``spotty_spots_per_ring`` is set
+        spotty_continuous_fraction: Continuous ring amplitude in ``[0, 1]`` superposed
+            under discrete spots when ``spotty_spots_per_ring`` is set
 
     Returns:
         2D float64 NumPy array of shape ``(dim1, dim2)``

@@ -106,7 +106,7 @@ impl Default for RingCenterOptions {
 pub struct RingCenter {
     pub d1: f64,
     pub d2: f64,
-    /// Score of the chosen candidate (sum of top-K radial-bin counts).
+    /// Score of the chosen candidate (sum of squared top-K radial-bin counts).
     /// Useful for diagnosing how well-supported the estimate is.
     pub score: usize,
     /// Number of RANSAC trials that yielded valid (non-colinear) fits.
@@ -173,11 +173,14 @@ fn radial_band_score(
         }
     }
     if top_k >= hist.len() {
-        return hist.iter().sum();
+        return hist.iter().map(|&c| c.saturating_mul(c)).sum();
     }
     // Partial-sort: select the top_k values without sorting everything.
+    // Summing `c²` (quadratic concentration) strictly rewards concentrating
+    // peaks into fewer, sharper radial rings even when the pattern has fewer
+    // rings than `top_k`.
     hist.sort_unstable_by(|a, b| b.cmp(a));
-    hist.iter().take(top_k).sum()
+    hist.iter().take(top_k).map(|&c| c.saturating_mul(c)).sum()
 }
 
 /// Estimate the beam center via 3-point circle RANSAC + radial-band scoring.
