@@ -5,6 +5,25 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.5] - 2026-11-27
+
+### Fixed
+
+- **2D Bragg-spot snapping & center-ray check** in `extract_ring_peaks_2d_with_tangent`:
+  when 7-ray azimuthal tangent averaging encounters an isolated bright crystallite
+  spot (`max >= 5σ` and `> 2.5 × median`), snaps the control point in 2D onto the
+  spot's true center (parabolic tangent interpolation + single-ray radial
+  re-refinement, deduplicated within `1.5 px`) instead of placing an offset pick
+  at the fixed azimuth grid angle; continuous rings also require the center ray to
+  carry genuine signal (`>= 45%` of excess and `>= 1.5σ`) so spots 3–4 px away
+  cannot emit false picks in empty space.
+- **Data-driven saturation plateau detection** in `build_valid_mask`: replaces
+  the hardcoded `>= 65 000` subsampled threshold with a full-image, mask-aware
+  adjacent-plateau scan (`max_v >= 4 000`, `>= 8` adjacent pixel pairs within
+  `0.5%` of `max_v`), automatically masking clipped saturation plateaus across
+  12-bit, 14-bit (`16 383`), 16-bit (`65 535`), dark-subtracted, and 20-bit
+  detectors without masking unsaturated bright powder rings.
+
 ## [0.18.4] - 2026-11-27
 
 ### Added
