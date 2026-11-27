@@ -8,8 +8,9 @@ use pyo3::types::{PyDict, PyList};
 use crate::calibration::{
     AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
     CalibrationOptions, CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions,
-    Loss, MassifOptions, ParamMask, RansacOptions, RansacResult, RingCenterOptions, RingIdOptions,
-    RingIdResult, auto_calibrate, auto_calibrate_image_with_mask, estimate_ring_center, find_peaks,
+    Loss, MassifOptions, ParamMask, PolarizationRot3Options, PolarizationRot3Result, RansacOptions,
+    RansacResult, RingCenterOptions, RingIdOptions, RingIdResult, auto_calibrate,
+    auto_calibrate_image_with_mask, calibrate_rot3_polarization, estimate_ring_center, find_peaks,
     find_peaks_image, identify_rings, ransac_ellipses, refine,
 };
 use crate::geometry::Geometry;
@@ -882,6 +883,7 @@ pub fn auto_calibrate_py(
     intensity_limit=None,
     peak_threshold_sigma=None,
     search_half_width_px=None,
+    polarization_factor=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn auto_calibrate_image_py(
@@ -904,6 +906,7 @@ pub fn auto_calibrate_image_py(
     intensity_limit: Option<f64>,
     peak_threshold_sigma: Option<f64>,
     search_half_width_px: Option<usize>,
+    polarization_factor: Option<f64>,
 ) -> PyResult<PyAutoCalibrateResult> {
     let view = image.as_array();
     let shape = view.shape();
@@ -927,6 +930,7 @@ pub fn auto_calibrate_image_py(
         intensity_limit,
         peak_threshold_sigma,
         search_half_width_px,
+        polarization_factor,
         max_iter,
         tol,
     };
@@ -1037,4 +1041,182 @@ pub fn estimate_ring_center_py(
         rng_seed,
     };
     estimate_ring_center(&peaks, &opts).map(|c| (c.d1, c.d2))
+}
+
+// ---------- polarization-based rot3 calibration ----------
+
+#[pyclass(name = "PolarizationRot3Result")]
+pub struct PyPolarizationRot3Result {
+    inner: PolarizationRot3Result,
+}
+
+#[pymethods]
+impl PyPolarizationRot3Result {
+    #[getter]
+    fn rot3(&self) -> f64 {
+        self.inner.rot3_rad
+    }
+    #[getter]
+    fn uncertainty_rad(&self) -> f64 {
+        self.inner.uncertainty_rad
+    }
+    #[getter]
+    fn n_rings_used(&self) -> usize {
+        self.inner.n_rings_used
+    }
+    #[getter]
+    fn n_samples(&self) -> usize {
+        self.inner.n_samples
+    }
+    #[getter]
+    fn modulation_snr(&self) -> f64 {
+        self.inner.modulation_snr
+    }
+    #[getter]
+    fn fitted_polarization_ratio(&self) -> f64 {
+        self.inner.fitted_polarization_ratio
+    }
+    #[getter]
+    fn reliable(&self) -> bool {
+        self.inner.reliable
+    }
+    #[getter]
+    fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let p = &self.inner.poni;
+        d.set_item("pixel1", p.pixel1)?;
+        d.set_item("pixel2", p.pixel2)?;
+        d.set_item("distance", p.distance)?;
+        d.set_item("poni1", p.poni1)?;
+        d.set_item("poni2", p.poni2)?;
+        d.set_item("rot1", p.rot1)?;
+        d.set_item("rot2", p.rot2)?;
+        d.set_item("rot3", p.rot3)?;
+        d.set_item("wavelength", p.wavelength)?;
+        Ok(d)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "PolarizationRot3Result(rot3={:.4} rad [{:.2}°], uncertainty={:.2}°, snr={:.1}, rings={})",
+            self.inner.rot3_rad,
+            self.inner.rot3_rad.to_degrees(),
+            self.inner.uncertainty_rad.to_degrees(),
+            self.inner.modulation_snr,
+            self.inner.n_rings_used
+        )
+    }
+}
+
+/// Calibrate `rot3` from the azimuthal intensity modulation of powder rings
+/// under a known linear X-ray polarization factor `polarization_factor`.
+///
+/// Works after **any** calibration workflow — manual peak picking + `refine`,
+/// `auto_calibrate`, `auto_calibrate_image`, or a loaded `.poni` file.
+#[pyfunction]
+#[pyo3(name = "calibrate_rot3_polarization")]
+#[pyo3(signature = (
+    image,
+    poni,
+    calibrant,
+    polarization_factor=0.99,
+    mask=None,
+    n_az_bins=72,
+    min_tth_deg=5.0,
+    max_rings=32,
+    ring_half_width_rad=None,
+    min_samples_per_ring=12,
+    min_total_samples=24,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn calibrate_rot3_polarization_py(
+    py: Python<'_>,
+    image: PyReadonlyArray2<'_, f64>,
+    poni: &Bound<'_, PyAny>,
+    calibrant: &PyCalibrant,
+    polarization_factor: f64,
+    mask: Option<PyReadonlyArray2<'_, bool>>,
+    n_az_bins: usize,
+    min_tth_deg: f64,
+    max_rings: usize,
+    ring_half_width_rad: Option<f64>,
+    min_samples_per_ring: usize,
+    min_total_samples: usize,
+) -> PyResult<PyPolarizationRot3Result> {
+    let view = image.as_array();
+    let shape = view.shape();
+    let dim1 = shape[0];
+    let dim2 = shape[1];
+
+    let poni_val: Poni = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
+        let geom = integ.inner().geometry();
+        if geom.dim1() != dim1 || geom.dim2() != dim2 {
+            return Err(PyValueError::new_err(format!(
+                "image shape ({dim1}, {dim2}) does not match Integrator shape ({}, {})",
+                geom.dim1(),
+                geom.dim2()
+            )));
+        }
+        geom.poni.clone()
+    } else if let Ok(dict) = poni.cast::<PyDict>() {
+        poni_from_dict(dict)?
+    } else {
+        return Err(PyValueError::new_err(
+            "poni must be a dioptrin.Integrator or a PONI dict",
+        ));
+    };
+    let img_buf: Vec<f64> = if view.is_standard_layout() {
+        image
+            .as_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|_| view.iter().copied().collect())
+    } else {
+        view.iter().copied().collect()
+    };
+
+    let mask_buf: Option<Vec<bool>> = match mask {
+        Some(m) => {
+            let m_view = m.as_array();
+            let m_shape = m_view.shape();
+            if m_shape != shape {
+                return Err(PyValueError::new_err(format!(
+                    "mask shape ({}, {}) does not match image shape ({}, {})",
+                    m_shape[0], m_shape[1], dim1, dim2
+                )));
+            }
+            Some(if m_view.is_standard_layout() {
+                m.as_slice()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|_| m_view.iter().copied().collect())
+            } else {
+                m_view.iter().copied().collect()
+            })
+        }
+        None => None,
+    };
+
+    let opts = PolarizationRot3Options {
+        n_az_bins,
+        min_tth_rad: min_tth_deg.to_radians(),
+        max_rings,
+        ring_half_width_rad,
+        min_samples_per_ring,
+        min_total_samples,
+    };
+    let cal = calibrant.inner.clone();
+    let res = py
+        .detach(|| {
+            calibrate_rot3_polarization(
+                &img_buf,
+                dim1,
+                dim2,
+                mask_buf.as_deref(),
+                &poni_val,
+                &cal,
+                polarization_factor,
+                &opts,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyPolarizationRot3Result { inner: res })
 }

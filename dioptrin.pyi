@@ -31,6 +31,7 @@ __all__ = [
     "RansacEllipseResult",
     "RingIdResult",
     "AutoCalibrateResult",
+    "PolarizationRot3Result",
     "refine",
     "find_peaks_massif",
     "ransac_ellipses",
@@ -38,6 +39,7 @@ __all__ = [
     "find_peaks_image",
     "auto_calibrate",
     "auto_calibrate_image",
+    "calibrate_rot3_polarization",
     "estimate_ring_center",
     "simulate_diffraction",
 ]
@@ -2137,6 +2139,7 @@ def auto_calibrate_image(
     intensity_limit: Optional[float] = None,
     peak_threshold_sigma: Optional[float] = None,
     search_half_width_px: Optional[int] = None,
+    polarization_factor: Optional[float] = None,
 ) -> AutoCalibrateResult:
     """
     End-to-end automatic calibration directly from a 2D diffraction image
@@ -2165,10 +2168,15 @@ def auto_calibrate_image(
         tol: Relative cost tolerance for convergence (default 1e-9)
         intensity_limit: Optional upper intensity limit; when ``None`` (default),
             auto-detects flat-topped saturation plateaus (``>= 65_000``)
-        peak_threshold_sigma: Optional MAD peak threshold multiplier; when ``None``
-            (default), starts at ``3.5σ`` and relaxes automatically on faint images
+        peak_threshold_sigma: Optional starting MAD peak threshold multiplier;
+            when ``None`` (default), starts at ``3.5σ`` and adapts automatically
+            using local SNR and spatial coverage
         search_half_width_px: Optional 2D ring-profile search half-width in pixels;
             when ``None`` (default), adapts to 1D ring width and local inter-ring spacing
+        polarization_factor: Optional linear X-ray polarization factor in ``[-1, 1]``
+            (e.g. ``0.99`` for horizontal synchrotron polarization). When set with
+            ``|P| >= 0.05``, ``rot3`` is calibrated post-refinement from the
+            azimuthal ring intensity modulation.
 
     Note:
         In the returned ``AutoCalibrateResult``, ``n_identified_ellipses`` reports
@@ -2283,5 +2291,72 @@ def simulate_diffraction(
 
     Returns:
         2D float64 NumPy array of shape ``(dim1, dim2)``
+    """
+    ...
+
+
+class PolarizationRot3Result:
+    """Result of ``calibrate_rot3_polarization``."""
+
+    @property
+    def rot3(self) -> float:
+        """Calibrated in-plane detector rotation ``rot3`` in radians, in ``(-π/2, π/2]``."""
+        ...
+
+    @property
+    def uncertainty_rad(self) -> float:
+        """Estimated 1σ uncertainty on ``rot3`` in radians."""
+        ...
+
+    @property
+    def n_rings_used(self) -> int:
+        """Number of calibrant rings that contributed to the polarization fit."""
+        ...
+
+    @property
+    def n_samples(self) -> int:
+        """Total number of ``(ring, azimuth)`` samples used in the fit."""
+        ...
+
+    @property
+    def modulation_snr(self) -> float:
+        """Detection significance (SNR) of the ``cos(2χ)`` polarization modulation."""
+        ...
+
+    @property
+    def fitted_polarization_ratio(self) -> float:
+        """Ratio of observed to expected polarization modulation amplitude."""
+        ...
+
+    @property
+    def reliable(self) -> bool:
+        """Whether the fit passes SNR, uncertainty, and amplitude-ratio gates."""
+        ...
+
+    @property
+    def poni(self) -> dict[str, float]:
+        """Copy of the input PONI dict with ``rot3`` updated."""
+        ...
+
+
+def calibrate_rot3_polarization(
+    image: NDArray[np.float64],
+    poni: Union[Integrator, dict[str, float]],
+    calibrant: Calibrant,
+    polarization_factor: float = 0.99,
+    mask: Optional[NDArray[np.bool_]] = None,
+    n_az_bins: int = 72,
+    min_tth_deg: float = 5.0,
+    max_rings: int = 32,
+    ring_half_width_rad: Optional[float] = None,
+    min_samples_per_ring: int = 12,
+    min_total_samples: int = 24,
+) -> PolarizationRot3Result:
+    """
+    Calibrate ``rot3`` from the azimuthal intensity modulation of powder rings
+    under a known linear X-ray polarization factor.
+
+    Works after any calibration workflow — manual peak picking + ``refine``,
+    ``auto_calibrate``, ``auto_calibrate_image``, or a loaded ``.poni`` file.
     """
     ...

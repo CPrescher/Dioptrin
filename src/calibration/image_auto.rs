@@ -85,15 +85,22 @@ pub struct AutoCalibrateImageOptions {
     /// (`>= 4e9`), and auto-detected flat-topped saturation plateaus
     /// (`>= 65_000`) are excluded automatically.
     pub intensity_limit: Option<f64>,
-    /// Optional MAD-based peak detection threshold multiplier (`med + factor * sigma`).
-    /// When `None` (default), starts at `3.5σ` and automatically relaxes to
-    /// `2.5σ` / `2.0σ` on faint images with few detected peaks.
+    /// Optional starting MAD-based peak detection threshold multiplier
+    /// (`med + factor * sigma`). When `None` (default), starts at `3.5σ`.
+    /// Either way, `extract_robust_peaks` uses locally normalized SNR on large
+    /// detectors and adapts the threshold automatically if coverage is sparse
+    /// or flooded into background noise.
     pub peak_threshold_sigma: Option<f64>,
     /// Optional base half-width (pixels) for the 2D ring-profile peak search.
     /// When `None` (default), the search width adapts automatically to the
     /// measured 1D ring width and is clamped per-ring to `< 0.45` of the local
     /// inter-ring spacing so adjacent dense/overlapping rings cannot steal peaks.
     pub search_half_width_px: Option<usize>,
+    /// Optional linear X-ray polarization factor in `[-1, 1]` (e.g. `Some(0.99)`
+    /// for horizontal synchrotron polarization). When set with `|P| >= 0.05`,
+    /// `rot3` is calibrated post-refinement from the azimuthal ring intensity
+    /// distribution via [`super::calibrate_rot3_polarization`].
+    pub polarization_factor: Option<f64>,
     /// Maximum L-M iterations per refinement pass.
     pub max_iter: usize,
     /// L-M convergence tolerance.
@@ -115,6 +122,7 @@ impl Default for AutoCalibrateImageOptions {
             intensity_limit: None,
             peak_threshold_sigma: None,
             search_half_width_px: None,
+            polarization_factor: None,
             max_iter: 200,
             tol: 1e-9,
         }
@@ -332,8 +340,9 @@ fn auto_calibrate_image_impl(
     let (valid, valid_median, effective_upper) =
         build_valid_mask(image, mask, dim1, dim2, explicit_upper);
 
-    // 2. Robust image-wide peak extraction with auto-adaptive MAD threshold.
-    let (peaks, residual, sigma_r, used_sigma) = extract_robust_peaks(
+    // 2. Robust image-wide peak extraction with local noise normalization &
+    //    uniformity-guided adaptive threshold.
+    let (peaks, residual, noise, sigma_r, used_sigma) = extract_robust_peaks(
         image,
         &valid,
         valid_median,
@@ -351,12 +360,18 @@ fn auto_calibrate_image_impl(
     } else {
         String::new()
     };
+    let sigma_note = match options.peak_threshold_sigma.filter(|s| s.is_finite()) {
+        Some(s0) if (used_sigma - s0).abs() > 0.05 => {
+            format!("adapted {:.1}σ → {:.1}σ", s0, used_sigma)
+        }
+        _ => format!("{:.1}σ", used_sigma),
+    };
     if !on_progress(AutoCalibrateProgress {
         stage: AutoCalibrateStage::DetectingPeaks,
         message: format!(
-            "Detected {} peaks ({:.1}σ{})",
+            "Detected {} peaks ({}{})",
             peaks.len(),
-            used_sigma,
+            sigma_note,
             sat_note
         ),
         progress: 0.15,
@@ -381,6 +396,7 @@ fn auto_calibrate_image_impl(
         try_radial_profile_calibration(
             image,
             &residual,
+            &noise,
             sigma_r,
             &valid,
             dim1,
@@ -437,26 +453,26 @@ fn auto_calibrate_image_impl(
         && radial_metrics.inlier_rms_rad < 6.5e-4
         && let Some((res, diag, n_rings)) = radial_attempt
     {
-        let _ = on_progress(AutoCalibrateProgress {
-            stage: AutoCalibrateStage::Done,
-            message: format!(
-                "Verified ({n_rings} rings, RMS {:.4}°)",
-                res.rms_rad.to_degrees()
-            ),
-            progress: 1.0,
-            peaks: None,
-            ring_center_px: None,
-            candidate_poni: Some(res.poni.clone()),
-            candidate_rms_rad: Some(res.rms_rad),
-            n_rings: Some(n_rings),
-        });
-        return Ok((res, diag));
+        return Ok(finalize_auto_calibration(
+            res,
+            diag,
+            n_rings,
+            "Verified",
+            image,
+            &valid,
+            dim1,
+            dim2,
+            calibrant,
+            options,
+            on_progress,
+        ));
     }
 
     // 4. Tilt / strip-detector fallback via coarse 5D grid search + 2D image polish.
     if options.enable_tilt_fallback
         && let Some((grid_res, grid_diag, grid_rings)) = try_grid_fallback(
             &residual,
+            &noise,
             sigma_r,
             &valid,
             dim1,
@@ -514,48 +530,45 @@ fn auto_calibrate_image_impl(
                 }
             };
             if use_grid {
-                let _ = on_progress(AutoCalibrateProgress {
-                    stage: AutoCalibrateStage::Done,
-                    message: format!(
-                        "Verified tilted fit ({grid_rings} rings, RMS {:.4}°)",
-                        grid_res.rms_rad.to_degrees()
-                    ),
-                    progress: 1.0,
-                    peaks: None,
-                    ring_center_px: None,
-                    candidate_poni: Some(grid_res.poni.clone()),
-                    candidate_rms_rad: Some(grid_res.rms_rad),
-                    n_rings: Some(grid_rings),
-                });
-                return Ok((grid_res, grid_diag));
+                return Ok(finalize_auto_calibration(
+                    grid_res,
+                    grid_diag,
+                    grid_rings,
+                    "Verified tilted fit",
+                    image,
+                    &valid,
+                    dim1,
+                    dim2,
+                    calibrant,
+                    options,
+                    on_progress,
+                ));
             }
         }
     }
 
     // Return the radial result only if it actually passed verification.
     if radial_verified && let Some((res, diag, n_rings)) = radial_attempt {
-        let _ = on_progress(AutoCalibrateProgress {
-            stage: AutoCalibrateStage::Done,
-            message: format!(
-                "Verified ({n_rings} rings, RMS {:.4}°)",
-                res.rms_rad.to_degrees()
-            ),
-            progress: 1.0,
-            peaks: None,
-            ring_center_px: None,
-            candidate_poni: Some(res.poni.clone()),
-            candidate_rms_rad: Some(res.rms_rad),
-            n_rings: Some(n_rings),
-        });
-        return Ok((res, diag));
+        return Ok(finalize_auto_calibration(
+            res,
+            diag,
+            n_rings,
+            "Verified",
+            image,
+            &valid,
+            dim1,
+            dim2,
+            calibrant,
+            options,
+            on_progress,
+        ));
     }
 
     // 5. Automatic parameter restart when primary calibration fails
     //    verification (e.g. faint rings missed at 3.5σ, bright rings clipped
     //    by auto-saturation, or too many outer rings confusing initial search).
-    let can_retry = allow_retry
-        && options.peak_threshold_sigma.is_none()
-        && (used_sigma > 2.2 || (explicit_upper.is_none() && effective_upper < 3.9e9));
+    let can_retry =
+        allow_retry && (used_sigma > 2.1 || (explicit_upper.is_none() && effective_upper < 3.9e9));
     if can_retry {
         let mut retry_opts = options.clone();
         retry_opts.peak_threshold_sigma = Some(2.0);
@@ -597,6 +610,57 @@ fn auto_calibrate_image_impl(
     }
 
     Err(AutoCalibrateError::NoConfidentIdentity)
+}
+
+fn finalize_auto_calibration(
+    mut res: CalibrationResult,
+    diag: AutoCalibrateDiagnostics,
+    n_rings: usize,
+    label: &str,
+    image: &[f64],
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
+    calibrant: &Calibrant,
+    options: &AutoCalibrateImageOptions,
+    on_progress: &mut dyn FnMut(AutoCalibrateProgress) -> bool,
+) -> (CalibrationResult, AutoCalibrateDiagnostics) {
+    let mut rot3_note = String::new();
+    if let Some(pf) = options.polarization_factor
+        && pf.is_finite()
+        && pf.abs() >= 0.05
+        && pf.abs() <= 1.0
+    {
+        let inv_mask: Vec<bool> = valid.iter().map(|&v| !v).collect();
+        if let Ok(pol) = super::polarization::calibrate_rot3_polarization(
+            image,
+            dim1,
+            dim2,
+            Some(&inv_mask),
+            &res.poni,
+            calibrant,
+            pf,
+            &super::polarization::PolarizationRot3Options::default(),
+        ) && pol.reliable
+        {
+            res.poni.rot3 = pol.rot3_rad;
+            rot3_note = format!(", rot3 {:.2}°", pol.rot3_rad.to_degrees());
+        }
+    }
+    let _ = on_progress(AutoCalibrateProgress {
+        stage: AutoCalibrateStage::Done,
+        message: format!(
+            "{label} ({n_rings} rings, RMS {:.4}°{rot3_note})",
+            res.rms_rad.to_degrees()
+        ),
+        progress: 1.0,
+        peaks: None,
+        ring_center_px: None,
+        candidate_poni: Some(res.poni.clone()),
+        candidate_rms_rad: Some(res.rms_rad),
+        n_rings: Some(n_rings),
+    });
+    (res, diag)
 }
 
 fn distance_bounds(options: &AutoCalibrateImageOptions) -> (f64, f64) {
@@ -1298,6 +1362,127 @@ fn select_spatially_balanced_peaks(
     selected.into_iter().map(|(d1, d2, _)| (d1, d2)).collect()
 }
 
+/// Coarse `8×8` spatially-varying residual noise model (`med`, `sigma`) with
+/// bilinear interpolation across tile centers. Prevents bright/noisy regions
+/// near an off-center beam from inflating the threshold and blinding fainter
+/// sections of the same Debye–Scherrer ring.
+struct LocalNoiseGrid {
+    dim1: usize,
+    dim2: usize,
+    med: [f64; 64],
+    sigma: [f64; 64],
+    valid_tiles: usize,
+    tile_valid: [bool; 64],
+}
+
+impl LocalNoiseGrid {
+    const TILES: usize = 8;
+
+    fn build(
+        residual: &[f64],
+        valid: &[bool],
+        dim1: usize,
+        dim2: usize,
+        global_med: f64,
+        global_sigma: f64,
+    ) -> Self {
+        let mut buckets: Vec<Vec<f64>> = (0..64).map(|_| Vec::with_capacity(512)).collect();
+        // 2D-strided sampling (~180×180 grid) so every tile is sampled evenly
+        // across both rows and columns (avoids 1D-stride column aliasing on
+        // power-of-two detectors like 2048×2048 or 4096×4096).
+        let row_step = (dim1 / 180).max(1);
+        let col_step = (dim2 / 180).max(1);
+        let mut i = 0;
+        while i < dim1 {
+            let ti = ((i * Self::TILES) / dim1.max(1)).min(Self::TILES - 1);
+            let row_off = i * dim2;
+            let mut j = 0;
+            while j < dim2 {
+                let k = row_off + j;
+                if valid[k] {
+                    let tj = ((j * Self::TILES) / dim2.max(1)).min(Self::TILES - 1);
+                    buckets[ti * Self::TILES + tj].push(residual[k]);
+                }
+                j += col_step;
+            }
+            i += row_step;
+        }
+
+        let use_local = dim1.min(dim2) >= 768;
+        let sigma_lo = 0.65 * global_sigma;
+        let sigma_hi = 2.5 * global_sigma;
+        let mut med = [global_med; 64];
+        let mut sigma = [global_sigma; 64];
+        let mut tile_valid = [false; 64];
+        let mut valid_tiles = 0usize;
+
+        for t in 0..64 {
+            let b = &mut buckets[t];
+            if b.len() >= 24 {
+                tile_valid[t] = true;
+                valid_tiles += 1;
+                if use_local {
+                    let mid = b.len() / 2;
+                    b.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+                    let m = b[mid];
+                    let mut dev: Vec<f64> = b.iter().map(|&v| (v - m).abs()).collect();
+                    dev.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+                    let s = (1.4826 * dev[mid]).clamp(sigma_lo, sigma_hi);
+                    med[t] = m;
+                    sigma[t] = s;
+                }
+            }
+        }
+
+        Self {
+            dim1,
+            dim2,
+            med,
+            sigma,
+            valid_tiles: valid_tiles.max(1),
+            tile_valid,
+        }
+    }
+
+    /// Bilinearly interpolated `(med, sigma)` at pixel `(i, j)`.
+    #[inline]
+    fn at(&self, i: f64, j: f64) -> (f64, f64) {
+        let fy = (i / self.dim1.max(1) as f64) * Self::TILES as f64 - 0.5;
+        let fx = (j / self.dim2.max(1) as f64) * Self::TILES as f64 - 0.5;
+        let fy = fy.clamp(0.0, (Self::TILES - 1) as f64);
+        let fx = fx.clamp(0.0, (Self::TILES - 1) as f64);
+        let y0 = fy.floor() as usize;
+        let x0 = fx.floor() as usize;
+        let y1 = (y0 + 1).min(Self::TILES - 1);
+        let x1 = (x0 + 1).min(Self::TILES - 1);
+        let wy = fy - y0 as f64;
+        let wx = fx - x0 as f64;
+
+        let i00 = y0 * Self::TILES + x0;
+        let i01 = y0 * Self::TILES + x1;
+        let i10 = y1 * Self::TILES + x0;
+        let i11 = y1 * Self::TILES + x1;
+
+        let m_top = self.med[i00] * (1.0 - wx) + self.med[i01] * wx;
+        let m_bot = self.med[i10] * (1.0 - wx) + self.med[i11] * wx;
+        let s_top = self.sigma[i00] * (1.0 - wx) + self.sigma[i01] * wx;
+        let s_bot = self.sigma[i10] * (1.0 - wx) + self.sigma[i11] * wx;
+        (
+            m_top * (1.0 - wy) + m_bot * wy,
+            s_top * (1.0 - wy) + s_bot * wy,
+        )
+    }
+
+    #[inline]
+    fn tile_index(&self, d1: f64, d2: f64) -> usize {
+        let ti = ((d1 / self.dim1.max(1) as f64) * Self::TILES as f64)
+            .clamp(0.0, (Self::TILES - 1) as f64) as usize;
+        let tj = ((d2 / self.dim2.max(1) as f64) * Self::TILES as f64)
+            .clamp(0.0, (Self::TILES - 1) as f64) as usize;
+        ti * Self::TILES + tj
+    }
+}
+
 fn extract_robust_peaks(
     image: &[f64],
     valid: &[bool],
@@ -1306,7 +1491,7 @@ fn extract_robust_peaks(
     dim2: usize,
     max_peaks: usize,
     peak_threshold_sigma: Option<f64>,
-) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64) {
+) -> (Vec<(f64, f64)>, Vec<f64>, LocalNoiseGrid, f64, f64) {
     let n = dim1 * dim2;
     // Mask-aware normalized convolution: multiply by validity mask, blur both
     // signal and mask, then divide. Buffers are dropped promptly and the large
@@ -1377,7 +1562,8 @@ fn extract_robust_peaks(
         k += step;
     }
     if r_sample.is_empty() {
-        return (Vec::new(), residual, 0.0, 3.5);
+        let noise = LocalNoiseGrid::build(&residual, valid, dim1, dim2, 0.0, 0.0);
+        return (Vec::new(), residual, noise, 0.0, 3.5);
     }
     let mid = r_sample.len() / 2;
     r_sample.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
@@ -1395,8 +1581,9 @@ fn extract_robust_peaks(
             / r_sample.len() as f64;
         sigma_r = var_r.sqrt();
     }
+    let noise = LocalNoiseGrid::build(&residual, valid, dim1, dim2, med_r, sigma_r);
     if sigma_r < 1e-12 {
-        return (Vec::new(), residual, 0.0, 3.5);
+        return (Vec::new(), residual, noise, 0.0, 3.5);
     }
 
     // Estimate raw (unsmoothed) pixel noise σ from |image - smooth| MAD so
@@ -1418,14 +1605,16 @@ fn extract_robust_peaks(
         sigma_r
     };
 
-    // Collect local maxima with their prominence so we can keep strong,
-    // spatially balanced peaks across the entire detector.
-    // When `peak_threshold_sigma` is `None`, start at 3.5σ and automatically
-    // relax to 2.5σ / 2.0σ on faint images with few detected peaks.
-    let sigma_schedule: Vec<f64> = match peak_threshold_sigma {
-        Some(s) if s.is_finite() => vec![s.clamp(1.5, 20.0)],
-        _ => vec![3.5, 2.5, 2.0],
+    // Treat `peak_threshold_sigma` (e.g. 3.0 forwarded from a GUI) as the
+    // starting point for uniformity-guided threshold adaptation: scan once at
+    // `scan_floor` using locally normalized SNR `(res - med_loc) / sigma_loc`,
+    // then select the cleanest threshold that gives uniform tile coverage
+    // without flooding into the noise floor.
+    let s0 = match peak_threshold_sigma {
+        Some(s) if s.is_finite() => s.clamp(1.5, 20.0),
+        _ => 3.5,
     };
+    let scan_floor = (s0 * 0.55).clamp(1.8, s0);
 
     let valid_margin: usize = if dim1.min(dim2) >= 128 { 3 } else { 2 };
     let nms_r: isize = if dim1.max(dim2) >= 900 { 2 } else { 1 };
@@ -1433,102 +1622,163 @@ fn extract_robust_peaks(
     let row_end = dim1.saturating_sub(border);
     let col_end = dim2.saturating_sub(border);
 
-    let mut used_sigma = sigma_schedule[0];
-    let mut candidates: Vec<(f64, f64, f64)> = Vec::new();
-    for (pass_idx, &sig_mult) in sigma_schedule.iter().enumerate() {
-        used_sigma = sig_mult;
-        let threshold = med_r + sig_mult * sigma_r;
-        candidates = (border..row_end)
-            .into_par_iter()
-            .flat_map_iter(|i| {
-                let row = i * dim2;
-                let mut row_cands = Vec::new();
-                for j in border..col_end {
-                    let idx = row + j;
-                    let res_v = residual[idx];
-                    if res_v <= threshold {
-                        continue;
-                    }
-                    if !neighborhood_valid(valid, dim1, dim2, i, j, valid_margin) {
-                        continue;
-                    }
-                    // Reject isolated single-pixel hot pixels / cosmic rays:
-                    // require both a huge raw excess (> 12σ_raw) AND that even
-                    // the single brightest 8-neighbor sits near background
-                    // (< 12% of the center excess). Preserves real Pilatus
-                    // 1-px Bragg spots (which extend along the ring azimuth).
-                    let local_bg = smooth[idx] - res_v;
-                    let raw_ex = image[idx] - local_bg;
-                    if raw_ex > 12.0 * sigma_raw {
-                        let mut n_max1 = f64::NEG_INFINITY;
-                        for di in -1isize..=1 {
-                            let nr = (i as isize + di) as usize * dim2;
-                            for dj in -1isize..=1 {
-                                if di == 0 && dj == 0 {
-                                    continue;
-                                }
-                                let nv = image[nr + (j as isize + dj) as usize];
-                                if nv > n_max1 {
-                                    n_max1 = nv;
-                                }
-                            }
-                        }
-                        if (n_max1 - local_bg).max(0.0) < 0.12 * raw_ex {
-                            continue;
-                        }
-                    }
-
-                    let v = smooth[idx];
-                    let mut is_max = true;
-                    'nbr: for di in -nms_r..=nms_r {
+    let all_candidates: Vec<(f64, f64, f64)> = (border..row_end)
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let row = i * dim2;
+            let i_f = i as f64;
+            let mut row_cands = Vec::new();
+            for j in border..col_end {
+                let idx = row + j;
+                let res_v = residual[idx];
+                let (m_loc, s_loc) = noise.at(i_f, j as f64);
+                let local_snr = (res_v - m_loc) / s_loc;
+                if local_snr <= scan_floor {
+                    continue;
+                }
+                if !neighborhood_valid(valid, dim1, dim2, i, j, valid_margin) {
+                    continue;
+                }
+                // Reject isolated single-pixel hot pixels / cosmic rays:
+                // require both a huge raw excess (> 12σ_raw) AND that even
+                // the single brightest 8-neighbor sits near background
+                // (< 12% of the center excess). Preserves real Pilatus
+                // 1-px Bragg spots (which extend along the ring azimuth).
+                let local_bg = smooth[idx] - res_v;
+                let raw_ex = image[idx] - local_bg;
+                if raw_ex > 12.0 * sigma_raw {
+                    let mut n_max1 = f64::NEG_INFINITY;
+                    for di in -1isize..=1 {
                         let nr = (i as isize + di) as usize * dim2;
-                        for dj in -nms_r..=nms_r {
+                        for dj in -1isize..=1 {
                             if di == 0 && dj == 0 {
                                 continue;
                             }
-                            let nc = (j as isize + dj) as usize;
-                            if smooth[nr + nc] > v {
-                                is_max = false;
-                                break 'nbr;
+                            let nv = image[nr + (j as isize + dj) as usize];
+                            if nv > n_max1 {
+                                n_max1 = nv;
                             }
                         }
                     }
-                    if !is_max {
+                    if (n_max1 - local_bg).max(0.0) < 0.12 * raw_ex {
                         continue;
                     }
-                    // Parabolic sub-pixel refinement along row and col.
-                    let vm_r = smooth[(i - 1) * dim2 + j];
-                    let vp_r = smooth[(i + 1) * dim2 + j];
-                    let denom_r = vm_r - 2.0 * v + vp_r;
-                    let off_r = if denom_r.abs() > 1e-12 {
-                        (0.5 * (vm_r - vp_r) / denom_r).clamp(-0.5, 0.5)
-                    } else {
-                        0.0
-                    };
-
-                    let vm_c = smooth[idx - 1];
-                    let vp_c = smooth[idx + 1];
-                    let denom_c = vm_c - 2.0 * v + vp_c;
-                    let off_c = if denom_c.abs() > 1e-12 {
-                        (0.5 * (vm_c - vp_c) / denom_c).clamp(-0.5, 0.5)
-                    } else {
-                        0.0
-                    };
-
-                    row_cands.push((i as f64 + off_r, j as f64 + off_c, res_v));
                 }
-                row_cands
-            })
-            .collect();
-        let target_min = if pass_idx == 0 { 25 } else { 20 };
-        if candidates.len() >= target_min {
-            break;
+
+                let v = smooth[idx];
+                let mut is_max = true;
+                'nbr: for di in -nms_r..=nms_r {
+                    let nr = (i as isize + di) as usize * dim2;
+                    for dj in -nms_r..=nms_r {
+                        if di == 0 && dj == 0 {
+                            continue;
+                        }
+                        let nc = (j as isize + dj) as usize;
+                        if smooth[nr + nc] > v {
+                            is_max = false;
+                            break 'nbr;
+                        }
+                    }
+                }
+                if !is_max {
+                    continue;
+                }
+                // Parabolic sub-pixel refinement along row and col.
+                let vm_r = smooth[(i - 1) * dim2 + j];
+                let vp_r = smooth[(i + 1) * dim2 + j];
+                let denom_r = vm_r - 2.0 * v + vp_r;
+                let off_r = if denom_r.abs() > 1e-12 {
+                    (0.5 * (vm_r - vp_r) / denom_r).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                };
+
+                let vm_c = smooth[idx - 1];
+                let vp_c = smooth[idx + 1];
+                let denom_c = vm_c - 2.0 * v + vp_c;
+                let off_c = if denom_c.abs() > 1e-12 {
+                    (0.5 * (vm_c - vp_c) / denom_c).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                };
+
+                row_cands.push((i_f + off_r, j as f64 + off_c, local_snr));
+            }
+            row_cands
+        })
+        .collect();
+
+    // Evaluate spatial tile coverage & count at a threshold in O(|all_candidates|).
+    let eval_sigma = |thr: f64| -> (usize, f64) {
+        let mut counts = [0usize; 64];
+        let mut total = 0usize;
+        for &(d1, d2, snr) in &all_candidates {
+            if snr > thr {
+                counts[noise.tile_index(d1, d2)] += 1;
+                total += 1;
+            }
+        }
+        let occupied = (0..64)
+            .filter(|&t| noise.tile_valid[t] && counts[t] >= 2)
+            .count();
+        (total, occupied as f64 / noise.valid_tiles as f64)
+    };
+
+    let noise_cap = (n / 25).max(30_000);
+    let (n0, cov0) = eval_sigma(s0);
+    let mut used_sigma = s0;
+
+    if n0 > noise_cap {
+        // Starting threshold flooded into background noise — step upward until clean.
+        for mult in [1.35, 1.75, 2.25] {
+            let cand_s = (s0 * mult).min(20.0);
+            let (nc, cov) = eval_sigma(cand_s);
+            if nc >= 40 && cov >= 0.35 {
+                used_sigma = cand_s;
+                if nc <= noise_cap {
+                    break;
+                }
+            }
+        }
+    } else if n0 < 40 || (cov0 < 0.50 && n0 < (n / 400).max(1000)) {
+        // Sparse or uneven coverage at `s0` — step downward to pick up fainter
+        // ring arcs uniformly without entering the background noise floor.
+        let mut best_cov = cov0;
+        let mut best_n = n0;
+        for mult in [0.80, 0.65, 0.55] {
+            let cand_s = (s0 * mult).max(scan_floor);
+            if cand_s >= used_sigma - 0.05 {
+                continue;
+            }
+            let (nc, cov) = eval_sigma(cand_s);
+            if nc > noise_cap {
+                break;
+            }
+            // Guard against flooding into the background noise floor: a sudden
+            // >2.2× jump in peak count relative to `n0` signals random noise
+            // peaks rather than missing ring arcs; stop stepping down.
+            if n0 >= 40 && nc > (n0 as f64 * 2.2) as usize {
+                break;
+            }
+            if (best_n < 40 && nc > best_n) || (cov >= best_cov + 0.08) {
+                used_sigma = cand_s;
+                best_cov = cov;
+                best_n = nc;
+                if best_cov >= 0.60 && best_n >= 200 {
+                    break;
+                }
+            }
         }
     }
 
-    let tile_min_score = med_r + 5.0 * sigma_r;
+    let candidates: Vec<(f64, f64, f64)> = all_candidates
+        .into_iter()
+        .filter(|&(_, _, snr)| snr > used_sigma)
+        .collect();
+
+    let tile_min_score = (used_sigma + 1.5).max(4.5);
     let peaks = select_spatially_balanced_peaks(candidates, dim1, dim2, max_peaks, tile_min_score);
-    (peaks, residual, sigma_r, used_sigma)
+    (peaks, residual, noise, sigma_r, used_sigma)
 }
 
 // ---------- Step 3: Isotropic ring-center estimation + sharpness refinement ----------
@@ -2119,7 +2369,8 @@ fn estimate_profile_fwhm_px(profile: &RadialProfile1D) -> Option<f64> {
 /// calibrant ring predicted by `poni`, using the background-subtracted residual.
 fn extract_ring_peaks_2d(
     residual: &[f64],
-    sigma_r: f64,
+    noise: &LocalNoiseGrid,
+    _sigma_r: f64,
     valid: &[bool],
     dim1: usize,
     dim2: usize,
@@ -2144,7 +2395,6 @@ fn extract_ring_peaks_2d(
     let mut n_rings_with_pts = 0usize;
     let margin = (half_width_px + 2) as f64;
     let mut line = Vec::with_capacity(2 * half_width_px + 1);
-    let min_peak_snr = 2.5 * sigma_r;
 
     for (ring_k, opt_tth) in tth_list.iter().enumerate().take(max_ring_index) {
         if n_rings_with_pts >= max_rings {
@@ -2237,7 +2487,9 @@ fn extract_ring_peaks_2d(
                 continue;
             }
 
-            if best_val < min_peak_snr || (best_val - min_val) < min_peak_snr {
+            let (m_loc, s_loc) = noise.at(d1, d2);
+            let min_peak_snr = 2.5 * s_loc;
+            if (best_val - m_loc) < min_peak_snr || (best_val - min_val) < min_peak_snr {
                 continue;
             }
 
@@ -2263,8 +2515,10 @@ fn extract_ring_peaks_2d(
     (pts, n_rings_with_pts)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn iterative_2d_refine(
     residual: &[f64],
+    noise: &LocalNoiseGrid,
     sigma_r: f64,
     valid: &[bool],
     dim1: usize,
@@ -2281,6 +2535,7 @@ fn iterative_2d_refine(
     for &(half_w, huber_c, n_az, max_rings) in passes {
         let (pts, n_rings) = extract_ring_peaks_2d(
             residual,
+            noise,
             sigma_r,
             valid,
             dim1,
@@ -2368,10 +2623,11 @@ fn refine_on_detected_peaks(
     last
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn try_radial_profile_calibration<F>(
     image: &[f64],
     residual: &[f64],
+    noise: &LocalNoiseGrid,
     sigma_r: f64,
     valid: &[bool],
     dim1: usize,
@@ -2565,6 +2821,7 @@ where
 
         let smooth_res = iterative_2d_refine(
             residual,
+            noise,
             sigma_r,
             valid,
             dim1,
@@ -2690,9 +2947,11 @@ where
 
 // ---------- Step 6: Tilt / strip-detector fallback ----------
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn try_grid_fallback<F>(
     residual: &[f64],
+    noise: &LocalNoiseGrid,
     sigma_r: f64,
     valid: &[bool],
     dim1: usize,
@@ -2929,6 +3188,7 @@ where
     ];
     if let Some((polished, n_rings)) = iterative_2d_refine(
         residual,
+        noise,
         sigma_r,
         valid,
         dim1,
