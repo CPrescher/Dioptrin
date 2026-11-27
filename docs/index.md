@@ -26,6 +26,7 @@ examples
 HDF5_USAGE
 MULTI_DETECTOR
 detectors
+auto-calibration
 simulation
 validation/pyfai-full
 validation/pyfai-full-seam
