@@ -801,7 +801,7 @@ impl Integrator {
     }
 
     /// 4-frame SIMD-tiled fixed-mask 2D CSR integration. Returns `None` for
-    /// dynamic masks, invalid arguments, or CSR `fast_math && errors`.
+    /// dynamic masks or invalid arguments.
     #[allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
     pub(crate) fn try_integrate2d_batch4<P: crate::frame::Pixel>(
         &self,

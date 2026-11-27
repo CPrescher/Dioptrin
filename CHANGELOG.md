@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Marked `CalibrantError` as `#[non_exhaustive]` and added
   `CalibrantError::UnknownBuiltin(String)`.
 
+### Performance
+
+- CPU `batch2d` with errors and the default `fast_math=True` now uses the
+  4-frame tiled CSR kernel (previously only intensity-only or strict
+  arithmetic did), through a new fast-math signal-plus-variance tile with
+  one 8-wide accumulator per lane. Results are
+  bit-identical to per-frame `integrate2d` with errors. Measured on an
+  Apple M4 Pro (32 frames per call, Pilatus 1M into 2000×360 bins): 1 thread
+  158 → 364 frames/s; 8 threads 890 → 2135 frames/s.
+- Fixed-mask 2D integration with errors (single frames and batch tail frames)
+  now normalises intensity and sigma inside the row-parallel pass, so the
+  per-bin 32-byte intermediate and the serial normalisation pass are gone.
+  Results are bit-identical.
+
 ## [0.17.0] - 2026-11-26
 
 ### Added
