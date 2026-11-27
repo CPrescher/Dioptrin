@@ -143,17 +143,29 @@ fn assert_case_passes(c: &Case, starting_distance: Option<f64>) {
         starting_distance,
         ..Default::default()
     };
-    let (res, _diag) = auto_calibrate_image(
+    let mut trace = Vec::new();
+    let (res, _diag) = dioptrin::calibration::auto_calibrate_image_with_progress(
         &frame.data,
         frame.dim1,
         frame.dim2,
+        None,
         &cal,
         c.poni.wavelength,
         c.poni.pixel1,
         c.poni.pixel2,
         &opts,
+        |ev| {
+            trace.push(format!("{:?}: {}", ev.stage, ev.message));
+            true
+        },
     )
-    .unwrap_or_else(|e| panic!("{} (d0={starting_distance:?}) failed: {e}", c.name));
+    .unwrap_or_else(|e| {
+        panic!(
+            "{} (d0={starting_distance:?}) failed: {e}\ntrace:\n{}",
+            c.name,
+            trace.join("\n")
+        )
+    });
 
     let rel_d = (res.poni.distance - c.poni.distance).abs() / c.poni.distance;
     let dp1 = (res.poni.poni1 - c.poni.poni1).abs() / c.poni.pixel1;
@@ -772,6 +784,33 @@ fn build_full_matrix() -> Vec<Case> {
     c_bs.n_outliers = 30;
     cases.push(c_bs);
 
+    // 30. Faint continuous powder ring (8%) with bright single-crystal spots on top.
+    cases.push(case(
+        "30_faint_ring_bright_spots_ceo2",
+        ceo2,
+        512,
+        512,
+        make_poni(100e-6, 100e-6, 0.16, 256.0, 256.0, 2.0, -1.5, 0.31),
+        SimulationOptions {
+            spotty: Some(SpottyOptions {
+                spots_per_ring: 18,
+                azimuthal_fwhm_rad: 0.015,
+                continuous_fraction: 0.08,
+            }),
+            ..sim_realistic()
+        },
+    ));
+
+    // 31. Dense built-in calibrant (Cr2O3: 600+ rings down to 0.25 Å) at 40 keV.
+    cases.push(case(
+        "31_dense_calibrant_cr2o3_40keV",
+        "calibrants/Cr2O3.D",
+        512,
+        512,
+        make_poni(100e-6, 100e-6, 0.18, 250.0, 260.0, 3.0, -2.0, 0.31),
+        sim_realistic(),
+    ));
+
     cases
 }
 
@@ -856,5 +895,122 @@ fn stress_matrix_report() {
         "SUMMARY: blind {blind_pass}/{} passed, hinted {hinted_pass}/{} passed\n",
         cases.len(),
         cases.len()
+    );
+}
+
+#[test]
+fn auto_calibrate_module_gaps_faint_ring_spots_and_dense_cr2o3() {
+    // 1. High-background image with 10-px zero-valued module gaps: normalized
+    //    convolution + auto gap masking must avoid fake gap-edge peaks.
+    let ceo2 = Calibrant::builtin("CeO2").expect("builtin CeO2");
+    let truth_gap = make_poni(100e-6, 100e-6, 0.16, 260.0, 250.0, 2.5, -1.5, 0.31);
+    let geom_gap = Geometry::new(512, 512, truth_gap.clone());
+    let mut frame_gap = simulate_diffraction(
+        &geom_gap,
+        &ceo2,
+        &SimulationOptions {
+            background: 500.0,
+            ..sim_realistic()
+        },
+    )
+    .expect("sim gaps");
+    for i in 160..170 {
+        for j in 0..512 {
+            frame_gap.data[i * 512 + j] = 0.0;
+        }
+    }
+    for i in 0..512 {
+        for j in 210..220 {
+            frame_gap.data[i * 512 + j] = 0.0;
+        }
+    }
+    let mut gap_edge_peaks = 0usize;
+    let mut total_preview_peaks = 0usize;
+    let (res_gap, _) = dioptrin::calibration::auto_calibrate_image_with_progress(
+        &frame_gap.data,
+        512,
+        512,
+        None,
+        &ceo2,
+        truth_gap.wavelength,
+        truth_gap.pixel1,
+        truth_gap.pixel2,
+        &AutoCalibrateImageOptions::default(),
+        |ev| {
+            if let Some(pks) = ev.peaks {
+                total_preview_peaks = pks.len();
+                for &(r, c) in &pks {
+                    if (157.0..=172.0).contains(&r) || (207.0..=222.0).contains(&c) {
+                        gap_edge_peaks += 1;
+                    }
+                }
+            }
+            true
+        },
+    )
+    .expect("gap image should calibrate cleanly");
+    assert_eq!(
+        gap_edge_peaks, 0,
+        "expected 0 peaks on module-gap edges (got {gap_edge_peaks}/{total_preview_peaks})"
+    );
+    assert!(
+        (res_gap.poni.distance - truth_gap.distance).abs() / truth_gap.distance < 0.01,
+        "gap image distance mismatch: {}",
+        res_gap.poni.distance
+    );
+
+    // 2. Faint continuous powder ring (8%) with bright single-crystal spots on top.
+    let truth_sp = make_poni(100e-6, 100e-6, 0.16, 256.0, 256.0, 2.0, -1.5, 0.31);
+    let geom_sp = Geometry::new(512, 512, truth_sp.clone());
+    let frame_sp = simulate_diffraction(
+        &geom_sp,
+        &ceo2,
+        &SimulationOptions {
+            spotty: Some(SpottyOptions {
+                spots_per_ring: 18,
+                azimuthal_fwhm_rad: 0.015,
+                continuous_fraction: 0.08,
+            }),
+            ..sim_realistic()
+        },
+    )
+    .expect("sim faint+spots");
+    let (res_sp, _) = auto_calibrate_image(
+        &frame_sp.data,
+        512,
+        512,
+        &ceo2,
+        truth_sp.wavelength,
+        truth_sp.pixel1,
+        truth_sp.pixel2,
+        &AutoCalibrateImageOptions::default(),
+    )
+    .expect("faint ring + bright spots should calibrate");
+    assert!(
+        (res_sp.poni.distance - truth_sp.distance).abs() / truth_sp.distance < 0.01,
+        "faint+spots distance mismatch: {}",
+        res_sp.poni.distance
+    );
+
+    // 3. Dense built-in calibrant (Cr2O3: 600+ rings) with large max_ring_index.
+    let cr2o3 = Calibrant::builtin("Cr2O3").expect("builtin Cr2O3");
+    let truth_cr = make_poni(100e-6, 100e-6, 0.18, 250.0, 260.0, 3.0, -2.0, 0.31);
+    let geom_cr = Geometry::new(512, 512, truth_cr.clone());
+    let frame_cr = simulate_diffraction(&geom_cr, &cr2o3, &sim_realistic()).expect("sim Cr2O3");
+    let (res_cr, _) = auto_calibrate_image(
+        &frame_cr.data,
+        512,
+        512,
+        &cr2o3,
+        truth_cr.wavelength,
+        truth_cr.pixel1,
+        truth_cr.pixel2,
+        &AutoCalibrateImageOptions::default(),
+    )
+    .expect("dense Cr2O3 should calibrate cleanly");
+    assert!(
+        (res_cr.poni.distance - truth_cr.distance).abs() / truth_cr.distance < 0.01,
+        "Cr2O3 distance mismatch: {}",
+        res_cr.poni.distance
     );
 }

@@ -249,6 +249,35 @@ pub fn auto_calibrate_image_with_progress<F>(
 where
     F: FnMut(AutoCalibrateProgress) -> bool,
 {
+    auto_calibrate_image_impl(
+        image,
+        dim1,
+        dim2,
+        mask,
+        calibrant,
+        wavelength_m,
+        pixel1,
+        pixel2,
+        options,
+        &mut on_progress,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn auto_calibrate_image_impl(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    calibrant: &Calibrant,
+    wavelength_m: f64,
+    pixel1: f64,
+    pixel2: f64,
+    options: &AutoCalibrateImageOptions,
+    mut on_progress: &mut dyn FnMut(AutoCalibrateProgress) -> bool,
+    allow_retry: bool,
+) -> Result<(CalibrationResult, AutoCalibrateDiagnostics), AutoCalibrateError> {
     let expected_len = dim1
         .checked_mul(dim2)
         .ok_or_else(|| AutoCalibrateError::InvalidInput("image dimensions overflow".into()))?;
@@ -384,6 +413,22 @@ where
         })
         .unwrap_or_default();
 
+    let radial_ridge = radial_attempt
+        .as_ref()
+        .map(|(res, _, _)| {
+            evaluate_image_ring_contrast(
+                &residual,
+                sigma_r,
+                &valid,
+                dim1,
+                dim2,
+                &res.poni,
+                calibrant,
+                options.max_ring_index,
+            )
+        })
+        .unwrap_or_default();
+
     let radial_verified = radial_attempt.as_ref().is_some_and(|(res, _, n_rings)| {
         is_verified_calibration(
             res,
@@ -393,7 +438,7 @@ where
             d_min,
             d_max,
             options.starting_distance.is_some(),
-        )
+        ) && radial_ridge.passes()
     });
 
     let radial_tight = radial_attempt
@@ -454,6 +499,16 @@ where
             VERIFY_TOL_RAD,
             options.max_ring_index,
         );
+        let grid_ridge = evaluate_image_ring_contrast(
+            &residual,
+            sigma_r,
+            &valid,
+            dim1,
+            dim2,
+            &grid_res.poni,
+            calibrant,
+            options.max_ring_index,
+        );
         let grid_verified = is_verified_calibration(
             &grid_res,
             grid_rings,
@@ -462,21 +517,25 @@ where
             d_min,
             d_max,
             options.starting_distance.is_some(),
-        );
+        ) && grid_ridge.passes();
         if grid_verified {
             let use_grid = match &radial_attempt {
                 None => true,
-                Some((r_res, _, _)) => {
+                Some((r_res, _, r_rings)) => {
                     if !radial_verified {
                         true
                     } else {
                         let g_rms = grid_res.rms_rad + 0.35 * grid_metrics.inlier_rms_rad;
                         let r_rms = r_res.rms_rad + 0.35 * radial_metrics.inlier_rms_rad;
                         let g_score = (grid_metrics.inlier_frac.max(0.05)
-                            * grid_metrics.ring_recall.max(0.05))
+                            * grid_metrics.ring_recall.max(0.05)
+                            * grid_ridge.supported_ring_frac.max(0.2)
+                            * (grid_rings as f64).min(24.0).sqrt())
                             / (g_rms + 5.0e-5);
                         let r_score = (radial_metrics.inlier_frac.max(0.05)
-                            * radial_metrics.ring_recall.max(0.05))
+                            * radial_metrics.ring_recall.max(0.05)
+                            * radial_ridge.supported_ring_frac.max(0.2)
+                            * (*r_rings as f64).min(24.0).sqrt())
                             / (r_rms + 5.0e-5);
                         g_score > r_score
                     }
@@ -517,6 +576,50 @@ where
             n_rings: Some(n_rings),
         });
         return Ok((res, diag));
+    }
+
+    // 5. Automatic parameter restart when primary calibration fails
+    //    verification (e.g. faint rings missed at 3.5σ, bright rings clipped
+    //    by auto-saturation, or too many outer rings confusing initial search).
+    let can_retry = allow_retry
+        && options.peak_threshold_sigma.is_none()
+        && (used_sigma > 2.2 || (explicit_upper.is_none() && effective_upper < 3.9e9));
+    if can_retry {
+        let mut retry_opts = options.clone();
+        retry_opts.peak_threshold_sigma = Some(2.0);
+        retry_opts.max_ring_index = options.max_ring_index.min(12);
+        if explicit_upper.is_none() && effective_upper < 3.9e9 {
+            retry_opts.intensity_limit = Some(4.0e9);
+        }
+        if !on_progress(AutoCalibrateProgress {
+            stage: AutoCalibrateStage::DetectingPeaks,
+            message:
+                "Primary fit failed verification — retrying with relaxed threshold and inner rings…"
+                    .into(),
+            progress: 0.15,
+            peaks: None,
+            ring_center_px: None,
+            candidate_poni: None,
+            candidate_rms_rad: None,
+            n_rings: None,
+        }) {
+            return Err(AutoCalibrateError::Cancelled);
+        }
+        if let Ok((res, diag)) = auto_calibrate_image_impl(
+            image,
+            dim1,
+            dim2,
+            mask,
+            calibrant,
+            wavelength_m,
+            pixel1,
+            pixel2,
+            &retry_opts,
+            on_progress,
+            false,
+        ) {
+            return Ok((res, diag));
+        }
     }
 
     Err(AutoCalibrateError::NoConfidentIdentity)
@@ -796,6 +899,211 @@ fn evaluate_peak_match(
     }
 }
 
+/// Image-level verification metrics measuring whether a candidate `Poni`'s
+/// predicted rings actually lie on real intensity ridges in the 2D residual
+/// image (as opposed to cutting across background or matching stray noise).
+#[derive(Debug, Clone, Copy, Default)]
+struct ImageRidgeMetrics {
+    mean_ridge_snr: f64,
+    supported_ring_frac: f64,
+    n_rings_tested: usize,
+}
+
+impl ImageRidgeMetrics {
+    fn passes(&self) -> bool {
+        if self.n_rings_tested < 2 {
+            return false;
+        }
+        self.supported_ring_frac >= 0.40
+            && (self.mean_ridge_snr >= 0.25 || self.supported_ring_frac >= 0.60)
+    }
+}
+
+/// Sample the 2D residual image along predicted rings vs off-ring flanks in
+/// `< 0.5 ms` to catch garbage geometries that fooled peak-only metrics.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_image_ring_contrast(
+    residual: &[f64],
+    sigma_r: f64,
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
+    poni: &Poni,
+    calibrant: &Calibrant,
+    max_ring_index: usize,
+) -> ImageRidgeMetrics {
+    if sigma_r <= 1e-12 {
+        return ImageRidgeMetrics::default();
+    }
+    let tth_list: Vec<f64> = calibrant
+        .two_theta_rad(poni.wavelength)
+        .into_iter()
+        .take(max_ring_index)
+        .flatten()
+        .filter(|v| v.is_finite() && *v > 1e-4 && *v < PI * 0.49)
+        .collect();
+    if tth_list.is_empty() {
+        return ImageRidgeMetrics::default();
+    }
+
+    const N_AZ: usize = 72;
+    let inv_sig = 1.0 / sigma_r;
+    let mut n_rings_tested = 0usize;
+    let mut n_rings_supported = 0usize;
+    let mut total_snr_sum = 0.0_f64;
+    let mut total_samples = 0usize;
+
+    for (k, &tth) in tth_list.iter().enumerate() {
+        if n_rings_tested >= 10 {
+            break;
+        }
+        let gap_lo = if k > 0 {
+            tth - tth_list[k - 1]
+        } else {
+            f64::INFINITY
+        };
+        let gap_hi = if k + 1 < tth_list.len() {
+            tth_list[k + 1] - tth
+        } else {
+            f64::INFINITY
+        };
+        let spacing_rad = gap_lo.min(gap_hi);
+
+        let mut ring_snr_sum = 0.0_f64;
+        let mut ring_samples = 0usize;
+        let mut strong_az = 0usize;
+
+        for a in 0..N_AZ {
+            let phi = 2.0 * PI * (a as f64) / (N_AZ as f64);
+            let (d1, d2) = match project_ring_pixel(poni, tth, phi) {
+                Some(p) => p,
+                None => continue,
+            };
+            if d1 < 8.0 || d2 < 8.0 || d1 >= dim1 as f64 - 9.0 || d2 >= dim2 as f64 - 9.0 {
+                continue;
+            }
+            let delta = 1e-4;
+            let (p_hi, p_lo) = match (
+                project_ring_pixel(poni, tth + delta, phi),
+                project_ring_pixel(poni, (tth - delta).max(1e-5), phi),
+            ) {
+                (Some(hi), Some(lo)) => (hi, lo),
+                _ => continue,
+            };
+            let du1 = p_hi.0 - p_lo.0;
+            let du2 = p_hi.1 - p_lo.1;
+            let norm = du1.hypot(du2);
+            if norm < 1e-9 {
+                continue;
+            }
+            let u1 = du1 / norm;
+            let u2 = du2 / norm;
+            let flank = if spacing_rad.is_finite() {
+                let px_per_rad = norm / (2.0 * delta);
+                (0.42 * spacing_rad * px_per_rad).clamp(3.0, 8.0)
+            } else {
+                6.0
+            };
+
+            let (Some(v_m1), Some(v_0), Some(v_p1), Some(v_in), Some(v_out)) = (
+                sample_bilinear_valid(residual, valid, dim1, dim2, d1 - u1, d2 - u2),
+                sample_bilinear_valid(residual, valid, dim1, dim2, d1, d2),
+                sample_bilinear_valid(residual, valid, dim1, dim2, d1 + u1, d2 + u2),
+                sample_bilinear_valid(
+                    residual,
+                    valid,
+                    dim1,
+                    dim2,
+                    d1 - flank * u1,
+                    d2 - flank * u2,
+                ),
+                sample_bilinear_valid(
+                    residual,
+                    valid,
+                    dim1,
+                    dim2,
+                    d1 + flank * u1,
+                    d2 + flank * u2,
+                ),
+            ) else {
+                continue;
+            };
+            let v_on = v_m1.max(v_0).max(v_p1);
+            // `residual` is already locally background-subtracted; using the
+            // maximum of direct residual SNR and flank-relative contrast avoids
+            // false rejections in dense high-2θ regions where ±flank lands on
+            // neighboring rings, while still scoring ~0 on empty background.
+            let snr = v_on.max(v_on - 0.5 * (v_in + v_out)) * inv_sig;
+            ring_snr_sum += snr;
+            ring_samples += 1;
+            if snr >= 2.5 {
+                strong_az += 1;
+            }
+        }
+
+        if ring_samples >= 3 {
+            n_rings_tested += 1;
+            let mean_ring = ring_snr_sum / ring_samples as f64;
+            if mean_ring >= 0.45 || strong_az >= 2 {
+                n_rings_supported += 1;
+            }
+            total_snr_sum += ring_snr_sum;
+            total_samples += ring_samples;
+        }
+    }
+
+    if n_rings_tested == 0 || total_samples == 0 {
+        return ImageRidgeMetrics::default();
+    }
+    ImageRidgeMetrics {
+        mean_ridge_snr: total_snr_sum / total_samples as f64,
+        supported_ring_frac: n_rings_supported as f64 / n_rings_tested as f64,
+        n_rings_tested,
+    }
+}
+
+/// Select a clean subset of innermost strong calibrant rings (sorted by 2θ) for
+/// coarse initial indexing (1D distance scan, 5D grid search, and image-ridge
+/// verification) so dense 100–600 ring calibrants cannot create false aliases.
+fn select_initial_tth_rings(
+    calibrant: &Calibrant,
+    wavelength_m: f64,
+    max_ring_index: usize,
+    cap: usize,
+) -> Vec<f64> {
+    let raw = calibrant.two_theta_rad(wavelength_m);
+    let intensities = &calibrant.intensities;
+    let has_intensities = intensities.iter().any(|v| v.is_some());
+    let window = max_ring_index.min(cap * 2).max(cap);
+    let mut pairs: Vec<(f64, f64)> = raw
+        .into_iter()
+        .take(window)
+        .enumerate()
+        .filter_map(|(k, opt_t)| {
+            let t = opt_t.filter(|v| v.is_finite() && *v > 1e-4 && *v < PI * 0.49)?;
+            let w = intensities.get(k).copied().flatten().unwrap_or(100.0);
+            Some((t, w))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let max_i = pairs.iter().map(|p| p.1).fold(0.0_f64, f64::max);
+    if has_intensities && max_i > 0.0 {
+        let strong: Vec<f64> = pairs
+            .iter()
+            .filter(|&&(_, w)| w >= 0.04 * max_i)
+            .map(|&(t, _)| t)
+            .take(cap)
+            .collect();
+        if strong.len() >= 6 {
+            return strong;
+        }
+    }
+    pairs.truncate(cap);
+    pairs.into_iter().map(|(t, _)| t).collect()
+}
+
 // ---------- Step 1: Automatic valid-pixel mask ----------
 
 fn subsample_median_and_mad(values: &[f64], predicate: impl Fn(f64) -> bool) -> (f64, f64) {
@@ -827,10 +1135,13 @@ fn build_valid_mask(
     let n = dim1 * dim2;
     // Auto-detect flat-topped saturation plateaus (e.g. 16-bit CCDs clipping at
     // 65535) when the caller did not pass an explicit `intensity_limit`.
+    // Require an exact repeated plateau (>= 8 sampled pixels at the exact same
+    // maximum value >= 65_000) so genuinely bright 32-bit/summed powder rings
+    // are never falsely masked out.
     let upper_limit = match explicit_upper_limit {
         Some(lim) => lim,
         None => {
-            let step = (n / 16_384).max(1);
+            let step = (n / 32_768).max(1);
             let mut max_v = 0.0_f64;
             let mut k = 0;
             while k < n {
@@ -841,17 +1152,20 @@ fn build_valid_mask(
                 k += step;
             }
             if max_v >= 65_000.0 {
-                let sat_thresh = 0.999 * max_v;
-                let mut n_sat = 0usize;
+                let mut n_exact_max = 0usize;
                 let mut k = 0;
                 while k < n {
                     let v = image[k];
-                    if v.is_finite() && v < 4.0e9 && v >= sat_thresh {
-                        n_sat += 1;
+                    if v.is_finite() && (v - max_v).abs() <= 1e-6 {
+                        n_exact_max += 1;
                     }
                     k += step;
                 }
-                if n_sat >= 3 { 0.995 * max_v } else { 4.0e9 }
+                if n_exact_max >= 8 {
+                    0.995 * max_v
+                } else {
+                    4.0e9
+                }
             } else {
                 4.0e9
             }
@@ -891,6 +1205,63 @@ fn build_valid_mask(
             || ((v == -1.0 || v == -2.0) && has_same_cardinal_neighbor(image, dim1, dim2, idx, v))
         {
             valid[idx] = false;
+        }
+    }
+
+    // Automatically detect internal exact-zero module gap rows/columns (e.g.
+    // Pilatus/Eiger/Jungfrau gaps encoded as 0.0 rather than -1.0) on images
+    // with a positive background baseline.
+    if p50_pos > 10.0 && dim1 >= 32 && dim2 >= 32 {
+        let row_zero_thresh = (dim2 * 3) / 4;
+        let mut gap_rows = vec![false; dim1];
+        for i in 0..dim1 {
+            let row = i * dim2;
+            let mut zc = 0usize;
+            for j in 0..dim2 {
+                if image[row + j] == 0.0 {
+                    zc += 1;
+                }
+            }
+            if zc >= row_zero_thresh {
+                gap_rows[i] = true;
+            }
+        }
+        let col_zero_thresh = (dim1 * 3) / 4;
+        let mut gap_cols = vec![false; dim2];
+        for j in 0..dim2 {
+            let mut zc = 0usize;
+            for i in 0..dim1 {
+                if image[i * dim2 + j] == 0.0 {
+                    zc += 1;
+                }
+            }
+            if zc >= col_zero_thresh {
+                gap_cols[j] = true;
+            }
+        }
+        for i in 0..dim1 {
+            if gap_rows[i] {
+                let lo = i.saturating_sub(1);
+                let hi = (i + 1).min(dim1 - 1);
+                for ii in lo..=hi {
+                    let row = ii * dim2;
+                    for j in 0..dim2 {
+                        valid[row + j] = false;
+                    }
+                }
+            }
+        }
+        for j in 0..dim2 {
+            if gap_cols[j] {
+                let lo = j.saturating_sub(1);
+                let hi = (j + 1).min(dim2 - 1);
+                for i in 0..dim1 {
+                    let row = i * dim2;
+                    for jj in lo..=hi {
+                        valid[row + jj] = false;
+                    }
+                }
+            }
         }
     }
 
@@ -1019,25 +1390,172 @@ fn neighborhood_valid(
 
 // ---------- Step 2: Robust image-wide peak extraction ----------
 
+/// 1D horizontal sliding-window box blur with clamp-to-edge boundaries.
+/// Strictly O(1) per pixel regardless of `radius`, parallelized across rows.
+fn box_blur_horizontal(src: &[f64], dst: &mut [f64], dim1: usize, dim2: usize, radius: usize) {
+    if dim1 == 0 || dim2 == 0 {
+        return;
+    }
+    let w = 2 * radius + 1;
+    let inv_w = 1.0 / w as f64;
+    dst.par_chunks_mut(dim2)
+        .enumerate()
+        .for_each(|(i, out_row)| {
+            let in_row = &src[i * dim2..(i + 1) * dim2];
+            let mut acc = in_row[0] * (radius + 1) as f64;
+            for k in 1..=radius {
+                acc += in_row[k.min(dim2 - 1)];
+            }
+            let last = dim2 - 1;
+            for x in 0..dim2 {
+                out_row[x] = acc * inv_w;
+                let add_idx = (x + radius + 1).min(last);
+                let sub_idx = x.saturating_sub(radius);
+                acc += in_row[add_idx] - in_row[sub_idx];
+            }
+        });
+}
+
+/// Cache-friendly tiled parallel transpose `(dim1 × dim2) -> (dim2 × dim1)`.
+fn transpose_f64(src: &[f64], dim1: usize, dim2: usize) -> Vec<f64> {
+    let mut dst = vec![0.0; dim1 * dim2];
+    const TILE: usize = 32;
+    dst.par_chunks_mut(TILE * dim1)
+        .enumerate()
+        .for_each(|(tile_j, dst_strip)| {
+            let j0 = tile_j * TILE;
+            let j_end = (j0 + TILE).min(dim2);
+            for i0 in (0..dim1).step_by(TILE) {
+                let i_end = (i0 + TILE).min(dim1);
+                for i in i0..i_end {
+                    let src_row = i * dim2;
+                    for j in j0..j_end {
+                        dst_strip[(j - j0) * dim1 + i] = src[src_row + j];
+                    }
+                }
+            }
+        });
+    dst
+}
+
+/// Fast 3-pass separable box blur approximating a Gaussian of standard deviation `sigma`.
+///
+/// 3 box passes of half-width `r` have variance `r * (r + 1)` and run in O(1)
+/// per pixel independent of `sigma`, making large background blurs (σ = 6..20)
+/// ~30–50× faster than direct 161-tap Gaussian convolution.
+fn fast_gaussian_blur_bg(src: &[f64], dim1: usize, dim2: usize, sigma: f64) -> Vec<f64> {
+    let r = ((sigma * sigma + 0.25).sqrt() - 0.5).round().max(1.0) as usize;
+    let n = dim1 * dim2;
+    let mut a = vec![0.0; n];
+    let mut b = vec![0.0; n];
+
+    // 3 horizontal passes: src -> a -> b -> a
+    box_blur_horizontal(src, &mut a, dim1, dim2, r);
+    box_blur_horizontal(&a, &mut b, dim1, dim2, r);
+    box_blur_horizontal(&b, &mut a, dim1, dim2, r);
+
+    // Transpose once, run 3 horizontal passes on columns, transpose back.
+    let t = transpose_f64(&a, dim1, dim2);
+    box_blur_horizontal(&t, &mut b, dim2, dim1, r);
+    box_blur_horizontal(&b, &mut a, dim2, dim1, r);
+    box_blur_horizontal(&a, &mut b, dim2, dim1, r);
+    transpose_f64(&b, dim2, dim1)
+}
+
+/// Select up to `max_peaks` strongest peaks while guaranteeing spatial
+/// representation across an `8×8` detector tile grid so bright inner rings or
+/// single-crystal spots cannot starve fainter outer rings.
+fn select_spatially_balanced_peaks(
+    mut candidates: Vec<(f64, f64, f64)>,
+    dim1: usize,
+    dim2: usize,
+    max_peaks: usize,
+) -> Vec<(f64, f64)> {
+    candidates.sort_by(|a, b| b.2.total_cmp(&a.2));
+    if candidates.len() <= max_peaks {
+        return candidates.into_iter().map(|(d1, d2, _)| (d1, d2)).collect();
+    }
+
+    const TILES: usize = 8;
+    let per_tile_quota = (max_peaks / (TILES * TILES)).max(16);
+    let mut tile_counts = [0usize; TILES * TILES];
+    let mut selected = Vec::with_capacity(max_peaks);
+    let mut overflow = Vec::new();
+
+    for &(d1, d2, score) in &candidates {
+        let ti = ((d1 / dim1 as f64) * TILES as f64).clamp(0.0, (TILES - 1) as f64) as usize;
+        let tj = ((d2 / dim2 as f64) * TILES as f64).clamp(0.0, (TILES - 1) as f64) as usize;
+        let t = ti * TILES + tj;
+        if tile_counts[t] < per_tile_quota && selected.len() < max_peaks {
+            tile_counts[t] += 1;
+            selected.push((d1, d2, score));
+        } else {
+            overflow.push((d1, d2, score));
+        }
+    }
+
+    let remaining = max_peaks.saturating_sub(selected.len());
+    selected.extend(overflow.into_iter().take(remaining));
+    selected.sort_by(|a, b| b.2.total_cmp(&a.2));
+    selected.into_iter().map(|(d1, d2, _)| (d1, d2)).collect()
+}
+
 fn extract_robust_peaks(
     image: &[f64],
     valid: &[bool],
-    valid_median: f64,
+    _valid_median: f64,
     dim1: usize,
     dim2: usize,
     max_peaks: usize,
     peak_threshold_sigma: Option<f64>,
 ) -> (Vec<(f64, f64)>, Vec<f64>, f64, f64) {
     let n = dim1 * dim2;
-    let filled: Vec<f64> = (0..n)
-        .map(|k| if valid[k] { image[k] } else { valid_median })
+    // Mask-aware normalized convolution: multiply by validity mask, blur both
+    // signal and mask, then divide. Unlike filling gaps with the global median,
+    // normalized convolution produces zero artificial edge ridges along module
+    // gaps, beamstops, or circular detector borders even on steep backgrounds.
+    let masked_img: Vec<f64> = image
+        .par_iter()
+        .zip(valid.par_iter())
+        .map(|(&v, &ok)| if ok { v } else { 0.0 })
+        .collect();
+    let mask_f: Vec<f64> = valid
+        .par_iter()
+        .map(|&ok| if ok { 1.0 } else { 0.0 })
         .collect();
 
-    let smooth = gaussian_blur(&filled, dim1, dim2, 0.8);
-    let sigma_bg = (dim1.max(dim2) as f64 / 80.0).clamp(6.0, 20.0);
-    let bg = gaussian_blur(&smooth, dim1, dim2, sigma_bg);
+    let (smooth_num, smooth_den) = rayon::join(
+        || gaussian_blur(&masked_img, dim1, dim2, 0.8),
+        || gaussian_blur(&mask_f, dim1, dim2, 0.8),
+    );
+    let smooth: Vec<f64> = smooth_num
+        .par_iter()
+        .zip(smooth_den.par_iter())
+        .zip(valid.par_iter())
+        .map(
+            |((&num, &den), &ok)| {
+                if ok && den > 0.25 { num / den } else { 0.0 }
+            },
+        )
+        .collect();
 
-    let residual: Vec<f64> = smooth.iter().zip(&bg).map(|(s, b)| s - b).collect();
+    let sigma_bg = (dim1.max(dim2) as f64 / 80.0).clamp(6.0, 20.0);
+    let (bg_num, bg_den) = rayon::join(
+        || fast_gaussian_blur_bg(&smooth, dim1, dim2, sigma_bg),
+        || fast_gaussian_blur_bg(&mask_f, dim1, dim2, sigma_bg),
+    );
+
+    let residual: Vec<f64> = smooth
+        .par_iter()
+        .zip(bg_num.par_iter())
+        .zip(bg_den.par_iter())
+        .zip(valid.par_iter())
+        .map(
+            |(((&s, &bn), &bd), &ok)| {
+                if ok && bd > 0.15 { s - bn / bd } else { 0.0 }
+            },
+        )
+        .collect();
 
     // Robust median and MAD of residual over valid pixels (subsampled).
     let step = (n / 32_768).max(1);
@@ -1072,8 +1590,8 @@ fn extract_robust_peaks(
         return (Vec::new(), residual, 0.0, 3.5);
     }
 
-    // Collect local maxima with their prominence so we can keep the strongest
-    // peaks across the ENTIRE detector instead of truncating in row order.
+    // Collect local maxima with their prominence so we can keep strong,
+    // spatially balanced peaks across the entire detector.
     // When `peak_threshold_sigma` is `None`, start at 3.5σ and automatically
     // relax to 2.5σ / 2.0σ on faint images with few detected peaks.
     let sigma_schedule: Vec<f64> = match peak_threshold_sigma {
@@ -1081,74 +1599,109 @@ fn extract_robust_peaks(
         _ => vec![3.5, 2.5, 2.0],
     };
 
+    let valid_margin: usize = if dim1.min(dim2) >= 128 { 3 } else { 2 };
+    let nms_r: isize = if dim1.max(dim2) >= 900 { 2 } else { 1 };
+    let border = valid_margin.max(nms_r as usize);
+    let row_end = dim1.saturating_sub(border);
+    let col_end = dim2.saturating_sub(border);
+
     let mut used_sigma = sigma_schedule[0];
     let mut candidates: Vec<(f64, f64, f64)> = Vec::new();
     for (pass_idx, &sig_mult) in sigma_schedule.iter().enumerate() {
         used_sigma = sig_mult;
         let threshold = med_r + sig_mult * sigma_r;
-        candidates.clear();
-        for i in 2..(dim1.saturating_sub(2)) {
-            let row = i * dim2;
-            for j in 2..(dim2.saturating_sub(2)) {
-                let idx = row + j;
-                let res_v = residual[idx];
-                if res_v <= threshold {
-                    continue;
-                }
-                if !neighborhood_valid(valid, dim1, dim2, i, j, 2) {
-                    continue;
-                }
-                let v = smooth[idx];
-                let mut is_max = true;
-                'nbr: for di in -1isize..=1 {
-                    let nr = (i as isize + di) as usize * dim2;
-                    for dj in -1isize..=1 {
-                        if di == 0 && dj == 0 {
-                            continue;
-                        }
-                        let nc = (j as isize + dj) as usize;
-                        if smooth[nr + nc] > v {
-                            is_max = false;
-                            break 'nbr;
+        candidates = (border..row_end)
+            .into_par_iter()
+            .flat_map_iter(|i| {
+                let row = i * dim2;
+                let mut row_cands = Vec::new();
+                for j in border..col_end {
+                    let idx = row + j;
+                    let res_v = residual[idx];
+                    if res_v <= threshold {
+                        continue;
+                    }
+                    if !neighborhood_valid(valid, dim1, dim2, i, j, valid_margin) {
+                        continue;
+                    }
+                    // Reject isolated single-pixel hot pixels / cosmic rays:
+                    // a real diffraction peak (even 1-px wide) has at least 2
+                    // elevated neighbors along the ring or PSF, whereas a hot
+                    // pixel spikes far above its 2nd-brightest 8-neighbor.
+                    let raw_c = image[idx];
+                    let mut n_max1 = f64::NEG_INFINITY;
+                    let mut n_max2 = f64::NEG_INFINITY;
+                    for di in -1isize..=1 {
+                        let nr = (i as isize + di) as usize * dim2;
+                        for dj in -1isize..=1 {
+                            if di == 0 && dj == 0 {
+                                continue;
+                            }
+                            let nv = image[nr + (j as isize + dj) as usize];
+                            if nv > n_max1 {
+                                n_max2 = n_max1;
+                                n_max1 = nv;
+                            } else if nv > n_max2 {
+                                n_max2 = nv;
+                            }
                         }
                     }
-                }
-                if !is_max {
-                    continue;
-                }
-                // Parabolic sub-pixel refinement along row and col.
-                let vm_r = smooth[(i - 1) * dim2 + j];
-                let vp_r = smooth[(i + 1) * dim2 + j];
-                let denom_r = vm_r - 2.0 * v + vp_r;
-                let off_r = if denom_r.abs() > 1e-12 {
-                    (0.5 * (vm_r - vp_r) / denom_r).clamp(-0.5, 0.5)
-                } else {
-                    0.0
-                };
+                    let local_bg = smooth[idx] - res_v;
+                    if raw_c - local_bg > 8.0 * sigma_r
+                        && (n_max2 - local_bg).max(0.0) < 0.15 * (raw_c - local_bg)
+                    {
+                        continue;
+                    }
 
-                let vm_c = smooth[idx - 1];
-                let vp_c = smooth[idx + 1];
-                let denom_c = vm_c - 2.0 * v + vp_c;
-                let off_c = if denom_c.abs() > 1e-12 {
-                    (0.5 * (vm_c - vp_c) / denom_c).clamp(-0.5, 0.5)
-                } else {
-                    0.0
-                };
+                    let v = smooth[idx];
+                    let mut is_max = true;
+                    'nbr: for di in -nms_r..=nms_r {
+                        let nr = (i as isize + di) as usize * dim2;
+                        for dj in -nms_r..=nms_r {
+                            if di == 0 && dj == 0 {
+                                continue;
+                            }
+                            let nc = (j as isize + dj) as usize;
+                            if smooth[nr + nc] > v {
+                                is_max = false;
+                                break 'nbr;
+                            }
+                        }
+                    }
+                    if !is_max {
+                        continue;
+                    }
+                    // Parabolic sub-pixel refinement along row and col.
+                    let vm_r = smooth[(i - 1) * dim2 + j];
+                    let vp_r = smooth[(i + 1) * dim2 + j];
+                    let denom_r = vm_r - 2.0 * v + vp_r;
+                    let off_r = if denom_r.abs() > 1e-12 {
+                        (0.5 * (vm_r - vp_r) / denom_r).clamp(-0.5, 0.5)
+                    } else {
+                        0.0
+                    };
 
-                candidates.push((i as f64 + off_r, j as f64 + off_c, res_v));
-            }
-        }
+                    let vm_c = smooth[idx - 1];
+                    let vp_c = smooth[idx + 1];
+                    let denom_c = vm_c - 2.0 * v + vp_c;
+                    let off_c = if denom_c.abs() > 1e-12 {
+                        (0.5 * (vm_c - vp_c) / denom_c).clamp(-0.5, 0.5)
+                    } else {
+                        0.0
+                    };
+
+                    row_cands.push((i as f64 + off_r, j as f64 + off_c, res_v));
+                }
+                row_cands
+            })
+            .collect();
         let target_min = if pass_idx == 0 { 25 } else { 20 };
         if candidates.len() >= target_min {
             break;
         }
     }
 
-    candidates.sort_by(|a, b| b.2.total_cmp(&a.2));
-    if candidates.len() > max_peaks {
-        candidates.truncate(max_peaks);
-    }
-    let peaks = candidates.into_iter().map(|(d1, d2, _)| (d1, d2)).collect();
+    let peaks = select_spatially_balanced_peaks(candidates, dim1, dim2, max_peaks);
     (peaks, residual, sigma_r, used_sigma)
 }
 
@@ -1238,8 +1791,11 @@ struct RadialProfile1D {
     peaks_r: Vec<(f64, f64)>, // (radius_iso, snr)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_radial_profile_1d(
     image: &[f64],
+    residual: &[f64],
+    sigma_r: f64,
     valid: &[bool],
     dim1: usize,
     dim2: usize,
@@ -1263,6 +1819,15 @@ fn build_radial_profile_1d(
         return None;
     }
 
+    // Cap extreme local spot spikes (> 35σ above local background) so bright
+    // single-crystal spots on top of a faint continuous powder ring do not
+    // overwhelm the radial mean profile.
+    let spot_excess_cap = if sigma_r > 0.0 {
+        35.0 * sigma_r
+    } else {
+        f64::INFINITY
+    };
+
     let chunk_rows = (dim1 / rayon::current_num_threads().max(1)).max(32);
     let (sum, count) = (0..dim1)
         .into_par_iter()
@@ -1282,7 +1847,13 @@ fn build_radial_profile_1d(
                     let dx = j as f64 * scale2 - center_iso.1;
                     let bin = (dy2 + dx * dx).sqrt() as usize;
                     if bin < r_max {
-                        local_sum[bin] += image[idx];
+                        let r_ex = residual[idx];
+                        let val = if r_ex > spot_excess_cap {
+                            image[idx] - (r_ex - spot_excess_cap)
+                        } else {
+                            image[idx]
+                        };
+                        local_sum[bin] += val;
                         local_cnt[bin] += 1;
                     }
                 }
@@ -1526,14 +2097,14 @@ fn scan_distances_1d(
     max_ring_index: usize,
     top_k: usize,
 ) -> Vec<(f64, f64)> {
-    let mut tan_rings: Vec<f64> = calibrant
-        .two_theta_rad(wavelength_m)
-        .into_iter()
-        .take(max_ring_index.max(10))
-        .flatten()
-        .map(|t| t.tan())
-        .filter(|&t| t.is_finite() && t > 0.0)
-        .collect();
+    // Use a clean subset of innermost strong rings for initial 1D distance
+    // indexing so dense 100–600 ring calibrants cannot create false aliases.
+    let mut tan_rings: Vec<f64> =
+        select_initial_tth_rings(calibrant, wavelength_m, max_ring_index.max(10), 16)
+            .into_iter()
+            .map(|t| t.tan())
+            .filter(|&t| t.is_finite() && t > 0.0)
+            .collect();
     tan_rings.sort_by(|a, b| a.total_cmp(b));
     if tan_rings.len() < 3 || profile.peaks_r.is_empty() {
         return Vec::new();
@@ -1933,7 +2504,11 @@ fn iterative_2d_refine(
                 let replace = match &best_result {
                     None => true,
                     Some((prev, prev_rings)) => {
-                        supported >= *prev_rings.min(&3) && res.rms_rad <= prev.rms_rad * 1.25
+                        if supported > *prev_rings {
+                            res.rms_rad <= (prev.rms_rad * 2.5).max(1.0e-3)
+                        } else {
+                            supported >= *prev_rings.min(&3) && res.rms_rad <= prev.rms_rad * 1.25
+                        }
                     }
                 };
                 if replace {
@@ -2065,9 +2640,9 @@ where
         dist_candidates.push((d0, 1.0));
     } else {
         let mut r_min_valid_hint: Option<usize> = None;
-        if let Some(profile) =
-            build_radial_profile_1d(image, valid, dim1, dim2, center_iso, scale1, scale2)
-        {
+        if let Some(profile) = build_radial_profile_1d(
+            image, residual, sigma_r, valid, dim1, dim2, center_iso, scale1, scale2,
+        ) {
             r_min_valid_hint = Some(profile.r_min_obs);
             est_fwhm_px = estimate_profile_fwhm_px(&profile);
             n_detected_1d = n_detected_1d.max(profile.peaks_r.len());
@@ -2147,10 +2722,17 @@ where
         });
     let mid_w = (fine_w * 2).clamp(7, 20);
     let coarse_w = (fine_w * 3).clamp(14, 28);
+    // Progressive coarse-to-fine ring expansion: lock the coarse geometry on
+    // the innermost 6 rings first (preventing outer ring-jumping when initial
+    // tilt/distance is approximate), then expand to 12 and finally up to
+    // `max_ring_index.min(28)` rings for final polish.
+    let final_max_rings = options.max_ring_index.clamp(8, 28);
+    let mid_max_rings = final_max_rings.min(12);
+    let coarse_max_rings = final_max_rings.min(6);
     let passes = [
-        (coarse_w, 3.0e-3, 96usize, 16usize),
-        (mid_w, 1.5e-3, 128, 22),
-        (fine_w, 8.0e-4, 128, 22),
+        (coarse_w, 3.0e-3, 96usize, coarse_max_rings),
+        (mid_w, 1.5e-3, 128, mid_max_rings),
+        (fine_w, 8.0e-4, 128, final_max_rings),
     ];
 
     let has_hint = options.starting_distance.is_some();
@@ -2186,8 +2768,20 @@ where
             options.max_ring_index,
             &passes,
         );
-        let peak_res = refine_on_detected_peaks(peaks, dim1, dim2, init, calibrant, options);
+        // Only fall back to peak-only refinement when 2D ring extraction did
+        // not already achieve a tight multi-ring fit (e.g. spotty rings where
+        // continuous azimuthal profiles are sparse).
+        let need_peak_fallback = match &smooth_res {
+            Some((r, nr)) => *nr < 6 || r.rms_rad >= 1.5e-3,
+            None => true,
+        };
+        let peak_res = if need_peak_fallback {
+            refine_on_detected_peaks(peaks, dim1, dim2, init, calibrant, options)
+        } else {
+            None
+        };
 
+        let mut slam_dunk = false;
         for (res, n_rings) in [smooth_res, peak_res].into_iter().flatten() {
             let m = evaluate_peak_match(
                 peaks,
@@ -2201,6 +2795,15 @@ where
             );
             let cur_ok =
                 is_verified_calibration(&res, n_rings, &m, peaks.len(), d_min, d_max, has_hint);
+            if cur_ok
+                && res.rms_rad < 4.5e-4
+                && n_rings >= 5
+                && m.inlier_frac >= 0.60
+                && m.ring_recall >= 0.70
+                && m.inlier_rms_rad < 6.0e-4
+            {
+                slam_dunk = true;
+            }
             let eff_rms = res.rms_rad + 0.35 * m.inlier_rms_rad;
             let quality = (m.inlier_frac.max(0.05)
                 * m.ring_recall.max(0.05).powi(2)
@@ -2267,6 +2870,9 @@ where
             n_rings: cand_rings,
         }) {
             return Err(AutoCalibrateError::Cancelled);
+        }
+        if slam_dunk {
+            break;
         }
     }
 
@@ -2337,8 +2943,12 @@ where
         poni_search_radius_px: (0.30 * dim1.max(dim2) as f64).clamp(150.0, 450.0),
         poni_grid_steps: 13,
         tolerance_rad: 8.0e-3,
-        max_peaks_for_grid: 400,
-        max_ring_index: options.max_ring_index,
+        max_peaks_for_grid: 300,
+        max_ring_index: if is_strip_detector {
+            options.max_ring_index
+        } else {
+            options.max_ring_index.min(36)
+        },
         top_k: 40,
     };
 
@@ -2442,18 +3052,14 @@ where
         Some((res, score))
     };
 
-    let mut best_grid: Option<(
+    let best_grid: Option<(
         CalibrationResult,
         &super::grid_search::GridSearchCandidate,
         f64,
-    )> = None;
-    for cand in &candidates {
-        if let Some((res, score)) = refine_and_score(&cand.poni)
-            && best_grid.as_ref().is_none_or(|(_, _, s)| score > *s)
-        {
-            best_grid = Some((res, cand, score));
-        }
-    }
+    )> = candidates
+        .par_iter()
+        .filter_map(|cand| refine_and_score(&cand.poni).map(|(res, score)| (res, cand, score)))
+        .max_by(|a, b| a.2.total_cmp(&b.2));
     let Some((mut grid_res, winning, mut grid_score)) = best_grid else {
         return Ok(None);
     };
@@ -2506,9 +3112,11 @@ where
         .map(|w| w.clamp(3, 16))
         .unwrap_or(4);
     let polish_coarse = (polish_fine * 2).clamp(8, 20);
+    let final_polish_rings = options.max_ring_index.clamp(8, 28);
     let polish_passes = [
-        (polish_coarse, 1.5e-3, n_az, 24usize),
-        (polish_fine, 8.0e-4, n_az, 24usize),
+        (polish_coarse, 2.0e-3, n_az, final_polish_rings.min(8)),
+        (polish_fine, 1.0e-3, n_az, final_polish_rings.min(16)),
+        (polish_fine, 8.0e-4, n_az, final_polish_rings),
     ];
     if let Some((polished, n_rings)) = iterative_2d_refine(
         residual,
