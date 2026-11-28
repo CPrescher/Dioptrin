@@ -12,9 +12,10 @@ mod streaming;
 pub mod utils;
 
 use calibration::{
-    PyAutoCalibrateResult, PyCalibrant, PyCalibrationPoints, PyCalibrationResult, PyEllipseFit,
-    PyPolarizationRot3Result, PyRansacEllipseResult, PyRefineImageResult, PyRingIdResult,
-    auto_calibrate_image_py, auto_calibrate_py, calibrate_rot3_polarization_py,
+    PyAutoCalibrateResult, PyCalibrant, PyCalibrationPoints, PyCalibrationResult,
+    PyDistortionResult, PyEllipseFit, PyPolarizationRot3Result, PyRansacEllipseResult,
+    PyRefineImageResult, PyRingIdResult, auto_calibrate_image_py, auto_calibrate_py,
+    calibrate_rot3_polarization_py, estimate_distortion_multi_py, estimate_distortion_py,
     estimate_ring_center_py, extract_ring_peaks_py, find_peaks_image_py, find_peaks_massif_py,
     identify_rings_py, ransac_ellipses_py, refine_image_py, refine_py,
 };
@@ -38,6 +39,8 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_ring_peaks_py, m)?)?;
     m.add_function(wrap_pyfunction!(refine_image_py, m)?)?;
     m.add_function(wrap_pyfunction!(calibrate_rot3_polarization_py, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_distortion_py, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_distortion_multi_py, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_ring_center_py, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_diffraction_py, m)?)?;
     m.add_function(wrap_pyfunction!(cuda::cuda_available, m)?)?;
@@ -77,5 +80,6 @@ fn dioptrin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAutoCalibrateResult>()?;
     m.add_class::<PyPolarizationRot3Result>()?;
     m.add_class::<PyRefineImageResult>()?;
+    m.add_class::<PyDistortionResult>()?;
     Ok(())
 }

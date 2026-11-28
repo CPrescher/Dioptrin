@@ -27,6 +27,7 @@
 mod auto;
 mod calibrant;
 mod center;
+mod distortion;
 mod ellipse;
 mod grid_search;
 mod image_auto;
@@ -45,6 +46,10 @@ pub use auto::{
 };
 pub use calibrant::{Calibrant, CalibrantError};
 pub use center::{RingCenter, RingCenterOptions, estimate_ring_center, fit_circle_3point};
+pub use distortion::{
+    DistortionError, DistortionField, DistortionModel, DistortionObservation, DistortionOptions,
+    DistortionResult, ModuleOffset, estimate_distortion, estimate_distortion_multi,
+};
 pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
 pub use grid_search::{
     GridSearchCandidate, GridSearchOptions, GridSearchResult, grid_search, grid_search_top_k,
