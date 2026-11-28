@@ -936,6 +936,7 @@ pub fn auto_calibrate_image_py(
         peak_threshold_sigma,
         search_half_width_px,
         polarization_factor,
+        detector: None,
         max_iter,
         tol,
     };
@@ -1153,7 +1154,7 @@ pub fn calibrate_rot3_polarization_py(
     let dim1 = shape[0];
     let dim2 = shape[1];
 
-    let poni_val: Poni = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
+    let (poni_val, detector) = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
         let geom = integ.inner().geometry();
         if geom.dim1() != dim1 || geom.dim2() != dim2 {
             return Err(PyValueError::new_err(format!(
@@ -1162,9 +1163,9 @@ pub fn calibrate_rot3_polarization_py(
                 geom.dim2()
             )));
         }
-        geom.poni.clone()
+        (geom.poni.clone(), geom.detector().cloned())
     } else if let Ok(dict) = poni.cast::<PyDict>() {
-        poni_from_dict(dict)?
+        (poni_from_dict(dict)?, None)
     } else {
         return Err(PyValueError::new_err(
             "poni must be a dioptrin.Integrator or a PONI dict",
@@ -1218,6 +1219,7 @@ pub fn calibrate_rot3_polarization_py(
         ring_half_width_rad,
         min_samples_per_ring,
         min_total_samples,
+        detector,
     };
     let cal = calibrant.inner.clone();
     let res = py
@@ -1347,7 +1349,7 @@ pub fn extract_ring_peaks_py(
     let dim1 = shape[0];
     let dim2 = shape[1];
 
-    let poni_val: Poni = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
+    let (poni_val, detector) = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
         let geom = integ.inner().geometry();
         if geom.dim1() != dim1 || geom.dim2() != dim2 {
             return Err(PyValueError::new_err(format!(
@@ -1356,9 +1358,9 @@ pub fn extract_ring_peaks_py(
                 geom.dim2()
             )));
         }
-        geom.poni.clone()
+        (geom.poni.clone(), geom.detector().cloned())
     } else if let Ok(dict) = poni.cast::<PyDict>() {
-        poni_from_dict(dict)?
+        (poni_from_dict(dict)?, None)
     } else {
         return Err(PyValueError::new_err(
             "poni must be a dioptrin.Integrator or a PONI dict",
@@ -1401,6 +1403,7 @@ pub fn extract_ring_peaks_py(
         n_azimuth,
         intensity_limit,
         search_half_width_px,
+        detector,
         ..RefineImageOptions::default()
     };
     let cal = calibrant.inner.clone();
@@ -1465,7 +1468,7 @@ pub fn refine_image_py(
     let dim1 = shape[0];
     let dim2 = shape[1];
 
-    let poni_val: Poni = if let Ok(integ) = start.extract::<PyRef<PyIntegrator>>() {
+    let (poni_val, detector) = if let Ok(integ) = start.extract::<PyRef<PyIntegrator>>() {
         let geom = integ.inner().geometry();
         if geom.dim1() != dim1 || geom.dim2() != dim2 {
             return Err(PyValueError::new_err(format!(
@@ -1474,9 +1477,9 @@ pub fn refine_image_py(
                 geom.dim2()
             )));
         }
-        geom.poni.clone()
+        (geom.poni.clone(), geom.detector().cloned())
     } else if let Ok(dict) = start.cast::<PyDict>() {
-        poni_from_dict(dict)?
+        (poni_from_dict(dict)?, None)
     } else {
         return Err(PyValueError::new_err(
             "start must be a dioptrin.Integrator or a PONI dict",
@@ -1527,6 +1530,7 @@ pub fn refine_image_py(
         search_half_width_px,
         n_passes,
         polarization_factor,
+        detector,
         max_iter,
         tol,
     };

@@ -1279,3 +1279,249 @@ fn auto_calibrate_image_locks_rot3_in_lm_even_when_caller_passes_free_rot3() {
         );
     }
 }
+
+#[test]
+fn distorted_detector_image_auto_calibrate_and_refine_recover_true_poni() {
+    use std::sync::Arc;
+
+    use dioptrin::calibration::{
+        DistortionField, RefineImageOptions, auto_calibrate_image_with_progress,
+        extract_ring_peaks, refine_image,
+    };
+    use dioptrin::geometry::Geometry;
+    use dioptrin::simulation::{RingIntensity, SimulationOptions, simulate_diffraction};
+
+    let dim1 = 1024usize;
+    let dim2 = 1024usize;
+    let pixel = 1.0e-4_f64;
+
+    let mut truth = Poni::new();
+    truth.pixel1 = pixel;
+    truth.pixel2 = pixel;
+    truth.distance = 0.18;
+    truth.poni1 = 500.0 * pixel;
+    truth.poni2 = 520.0 * pixel;
+    truth.rot1 = 2.5_f64.to_radians();
+    truth.rot2 = -1.8_f64.to_radians();
+    truth.rot3 = 0.0;
+    truth.wavelength = 3.738e-11; // ~33.2 keV
+
+    // Build a distorted spline Detector with ~8 px corner shift (radial + tangential + astigmatism).
+    let field = DistortionField::RadialOptical {
+        center_d1: 512.0,
+        center_d2: 512.0,
+        r_scale: 512.0,
+        max_order: 2,
+        // [k1, k2, p1, p2, a1, a2] in pixels at r = r_scale (~8–10 px corner shift)
+        coeffs: vec![6.0, -1.5, 1.2, -0.9, 1.5, -0.8],
+    };
+    let det = Arc::new(
+        field
+            .to_detector(dim1, dim2, pixel, pixel, None)
+            .expect("build spline detector from RadialOptical"),
+    );
+
+    // Sanity-check that the corner distortion is indeed substantial (~5–15 px).
+    let corner_pos = det.position([dim1, dim2], 1000.5, 1000.5);
+    let corner_shift_px = (corner_pos[1] / pixel - 1000.5).hypot(corner_pos[2] / pixel - 1000.5);
+    assert!(
+        corner_shift_px > 5.0,
+        "expected >= 5 px corner shift in synthetic detector, got {corner_shift_px:.2} px"
+    );
+
+    let geom = Geometry::new(dim1, dim2, truth.clone())
+        .with_detector(Arc::clone(&det))
+        .expect("attach distorted detector to Geometry");
+    let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+    let frame = simulate_diffraction(
+        &geom,
+        &cal,
+        &SimulationOptions {
+            fwhm_rad: 2.0e-3,
+            ring_intensity: RingIntensity::FromCalibrant { fallback: 15_000.0 },
+            background: 50.0,
+            poisson_noise: true,
+            readout_noise: 5.0,
+            rng_seed: 2026,
+            ..Default::default()
+        },
+    )
+    .expect("simulate distorted CeO2 image");
+
+    let px_per_rad = truth.distance / pixel;
+
+    // 1. Blind auto_calibrate_image_with_progress with distorted Detector.
+    let auto_opts = AutoCalibrateImageOptions {
+        detector: Some(Arc::clone(&det)),
+        ..Default::default()
+    };
+    let (auto_res, _diag) = auto_calibrate_image_with_progress(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &cal,
+        truth.wavelength,
+        pixel,
+        pixel,
+        &auto_opts,
+        |_| true,
+    )
+    .expect("auto_calibrate_image_with_progress with distorted detector should succeed");
+
+    let auto_rms_px = auto_res.rms_rad * px_per_rad;
+    assert!(
+        auto_rms_px < 0.5,
+        "distorted auto_calibrate RMS too high: {auto_rms_px:.3} px ({:.5}°)",
+        auto_res.rms_rad.to_degrees()
+    );
+    assert_poni_close(
+        "distorted auto_calibrate_image_with_progress",
+        &auto_res.poni,
+        &truth,
+        2e-3,
+        1.0,
+        2e-3,
+    );
+
+    // 2. refine_image from a perturbed PONI with distorted Detector.
+    let mut perturbed = truth.clone();
+    perturbed.distance *= 1.015;
+    perturbed.poni1 += 4.5 * pixel;
+    perturbed.poni2 -= 3.8 * pixel;
+    perturbed.rot1 += 0.25_f64.to_radians();
+    perturbed.rot2 -= 0.20_f64.to_radians();
+
+    let ref_opts = RefineImageOptions {
+        detector: Some(Arc::clone(&det)),
+        ..Default::default()
+    };
+    let ref_res = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &perturbed,
+        &cal,
+        &ref_opts,
+    )
+    .expect("refine_image with distorted detector should succeed");
+
+    let ref_rms_px = ref_res.calibration.rms_rad * px_per_rad;
+    assert!(
+        ref_rms_px < 0.5,
+        "distorted refine_image RMS too high: {ref_rms_px:.3} px ({:.5}°)",
+        ref_res.calibration.rms_rad.to_degrees()
+    );
+    assert_poni_close(
+        "distorted refine_image",
+        &ref_res.calibration.poni,
+        &truth,
+        1.5e-3,
+        0.8,
+        1.5e-3,
+    );
+
+    // 3. extract_ring_peaks with distorted Detector extracts points on the distorted rings.
+    let pts = extract_ring_peaks(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &truth,
+        &cal,
+        &ref_opts,
+    )
+    .expect("extract_ring_peaks with distorted detector should succeed");
+    assert!(
+        pts.len() >= 300,
+        "expected >= 300 extracted ring peaks on distorted image, got {}",
+        pts.len()
+    );
+
+    // 4. Flat calibration (no Detector) should have much worse RMS on the same image.
+    let flat_res = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &perturbed,
+        &cal,
+        &RefineImageOptions::default(),
+    );
+    if let Ok(flat) = flat_res {
+        let flat_rms_px = flat.calibration.rms_rad * px_per_rad;
+        assert!(
+            flat_rms_px > ref_rms_px * 3.0,
+            "expected distorted refine ({ref_rms_px:.3} px) to beat flat refine ({flat_rms_px:.3} px) by >3x"
+        );
+    }
+
+    // 5. PixelMap::Corners detector (NeXus .h5 style) gives the same sub-0.5 px recovery.
+    let mut corner_vals = Vec::with_capacity(dim1 * dim2);
+    for r in 0..dim1 {
+        let rf = r as f64;
+        for c in 0..dim2 {
+            let cf = c as f64;
+            corner_vals.push([
+                det.position([dim1, dim2], rf, cf),
+                det.position([dim1, dim2], rf + 1.0, cf),
+                det.position([dim1, dim2], rf + 1.0, cf + 1.0),
+                det.position([dim1, dim2], rf, cf + 1.0),
+            ]);
+        }
+    }
+    let mut corners_det = dioptrin::detector::Detector::custom(pixel, pixel);
+    corners_det.max_shape = Some([dim1, dim2]);
+    corners_det.map = dioptrin::detector::PixelMap::Corners {
+        shape: [dim1, dim2],
+        values: Arc::new(corner_vals),
+    };
+    let corners_det = Arc::new(corners_det);
+    let corners_res = refine_image(
+        &frame.data,
+        frame.dim1,
+        frame.dim2,
+        None,
+        &perturbed,
+        &cal,
+        &RefineImageOptions {
+            detector: Some(Arc::clone(&corners_det)),
+            ..Default::default()
+        },
+    )
+    .expect("refine_image with PixelMap::Corners detector should succeed");
+    let corners_rms_px = corners_res.calibration.rms_rad * px_per_rad;
+    assert!(
+        corners_rms_px < 0.5,
+        "PixelMap::Corners refine_image RMS too high: {corners_rms_px:.3} px"
+    );
+    assert_poni_close(
+        "PixelMap::Corners refine_image",
+        &corners_res.calibration.poni,
+        &truth,
+        1.5e-3,
+        0.8,
+        1.5e-3,
+    );
+
+    // 6. Shape-mismatched Detector is rejected cleanly with InvalidInput.
+    let mut bad_det = dioptrin::detector::Detector::custom(pixel, pixel);
+    bad_det.max_shape = Some([512, 512]);
+    let bad_det = Arc::new(bad_det);
+    assert!(matches!(
+        refine_image(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            None,
+            &truth,
+            &cal,
+            &RefineImageOptions {
+                detector: Some(Arc::clone(&bad_det)),
+                ..Default::default()
+            },
+        ),
+        Err(dioptrin::calibration::AutoCalibrateError::InvalidInput(_))
+    ));
+}

@@ -616,6 +616,99 @@ pub(crate) fn invert_distortion_pixel(
     Some((d1, d2))
 }
 
+/// Invert a physical [`Detector`] mapping (`.spline`, `PixelMap::Corners`,
+/// `PixelMap::Separable`, or non-identity orientation) at an ideal flat-detector
+/// pixel coordinate `(d1_ideal, d2_ideal)` via damped fixed-point iterations.
+///
+/// Returns the observed detector pixel `(d1, d2)` whose physical position
+/// `det.position([dim1, dim2], d1 + 0.5, d2 + 0.5)` produces the same `2θ` as
+/// the ideal flat pixel `(d1_ideal, d2_ideal)`. Returns `None` if the mapping
+/// is non-finite, fails to converge within `0.25 px`, or shifts beyond
+/// `max_shift_px`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn invert_detector_pixel(
+    det: &Detector,
+    dim1: usize,
+    dim2: usize,
+    poni: &Poni,
+    tc: &TrigonometricConstants,
+    d1_ideal: f64,
+    d2_ideal: f64,
+    max_shift_px: f64,
+) -> Option<(f64, f64)> {
+    const DAMP: f64 = 0.7;
+    let s1 = if matches!(det.orientation, 1 | 2) {
+        -1.0
+    } else {
+        1.0
+    };
+    let s2 = if matches!(det.orientation, 1 | 4) {
+        -1.0
+    } else {
+        1.0
+    };
+    let d1_init = if s1 < 0.0 {
+        dim1 as f64 - 1.0 - d1_ideal
+    } else {
+        d1_ideal
+    };
+    let d2_init = if s2 < 0.0 {
+        dim2 as f64 - 1.0 - d2_ideal
+    } else {
+        d2_ideal
+    };
+    let mut d1 = d1_init;
+    let mut d2 = d2_init;
+    let inv_p1 = 1.0 / poni.pixel1;
+    let inv_p2 = 1.0 / poni.pixel2;
+    let slow_ideal = (d1_ideal + 0.5) * poni.pixel1;
+    let fast_ideal = (d2_ideal + 0.5) * poni.pixel2;
+
+    let step_residual = |r: f64, c: f64| -> Option<(f64, f64)> {
+        let pos = det.position([dim1, dim2], r + 0.5, c + 0.5);
+        if !pos[0].is_finite() || !pos[1].is_finite() || !pos[2].is_finite() {
+            return None;
+        }
+        let dz = pos[0];
+        let (dz_d1, dz_d2) = if dz.abs() > 0.0 {
+            let r_eff = pos[1] * inv_p1 - 0.5;
+            let c_eff = pos[2] * inv_p2 - 0.5;
+            let (g1, g2, gz) = tth_sensitivities(poni, tc, r_eff, c_eff);
+            let g2_norm = g1 * g1 + g2 * g2;
+            if g2_norm.is_finite() && g2_norm > 1e-24 {
+                let s = (gz * dz) / g2_norm;
+                (s * g1, s * g2)
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        if !dz_d1.is_finite() || !dz_d2.is_finite() {
+            return None;
+        }
+        let err1 = ((slow_ideal - pos[1]) * inv_p1 - dz_d1) * s1;
+        let err2 = ((fast_ideal - pos[2]) * inv_p2 - dz_d2) * s2;
+        Some((err1, err2))
+    };
+
+    for _ in 0..8 {
+        let (err1, err2) = step_residual(d1, d2)?;
+        d1 += DAMP * err1;
+        d2 += DAMP * err2;
+        if err1.hypot(err2) < 1e-3 {
+            break;
+        }
+    }
+    let (err1, err2) = step_residual(d1, d2)?;
+    let residual = err1.hypot(err2);
+    let shift = (d1 - d1_init).hypot(d2 - d2_init);
+    if residual > 0.25 || shift > max_shift_px {
+        return None;
+    }
+    Some((d1, d2))
+}
+
 /// One 2D diffraction image exposure for [`estimate_distortion_image_multi`].
 #[derive(Clone, Copy)]
 pub struct DistortionImageObservation<'a> {

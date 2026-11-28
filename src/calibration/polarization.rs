@@ -37,9 +37,11 @@
 
 use std::f64::consts::PI;
 use std::fmt;
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::detector::Detector;
 use crate::geometry::math::{
     TrigonometricConstants, f_azimuth, f_solid_angle, f_tth, f_x1, f_x2, f_x3,
 };
@@ -87,6 +89,10 @@ pub struct PolarizationRot3Options {
     /// Minimum total `(ring/band, azimuth)` samples across all rings/bands
     /// required to accept a fit (default `24`).
     pub min_total_samples: usize,
+    /// Optional physical [`Detector`] (e.g. with a `.spline` or
+    /// `PixelMap::Corners` distortion map). When `None`, assumes a flat uniform
+    /// detector with `poni.pixel1 × poni.pixel2`.
+    pub detector: Option<Arc<Detector>>,
 }
 
 impl Default for PolarizationRot3Options {
@@ -99,6 +105,7 @@ impl Default for PolarizationRot3Options {
             ring_half_width_rad: None,
             min_samples_per_ring: 12,
             min_total_samples: 24,
+            detector: None,
         }
     }
 }
@@ -382,6 +389,14 @@ pub fn calibrate_rot3_polarization(
         ));
     }
 
+    if let Some(det) = &options.detector {
+        det.validate()
+            .map_err(|e| PolarizationRot3Error::InvalidInput(format!("invalid detector: {e}")))?;
+        det.binning([dim1, dim2]).map_err(|e| {
+            PolarizationRot3Error::InvalidInput(format!("detector shape mismatch: {e}"))
+        })?;
+    }
+
     let n_az = options.n_az_bins.clamp(16, 360);
 
     // 2D-strided sample for positive-baseline detection (skip negative sentinel
@@ -515,6 +530,31 @@ pub fn calibrate_rot3_polarization(
     }
 }
 
+#[inline]
+fn pixel_p123(
+    det: Option<&Detector>,
+    dim1: usize,
+    dim2: usize,
+    poni0: &Poni,
+    r: usize,
+    c: usize,
+) -> (f64, f64, f64) {
+    if let Some(d) = det {
+        let pos = d.position([dim1, dim2], r as f64 + 0.5, c as f64 + 0.5);
+        (
+            pos[1] - poni0.poni1,
+            pos[2] - poni0.poni2,
+            poni0.distance + pos[0],
+        )
+    } else {
+        (
+            (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1,
+            (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2,
+            poni0.distance,
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fit_rings(
     image: &[f64],
@@ -593,7 +633,7 @@ fn fit_rings(
     let mut poni0 = poni.clone();
     poni0.rot3 = 0.0;
     let tc = TrigonometricConstants::new(&poni0);
-    let p3 = poni0.distance;
+    let det_ref = options.detector.as_deref();
     let inv_bin_w = (n_az as f64) / (2.0 * PI);
 
     let chunk_rows = (dim1 / rayon::current_num_threads().max(1)).clamp(8, 128);
@@ -603,7 +643,6 @@ fn fit_rings(
         .map(|rows| {
             let mut local = vec![BinAcc::default(); total_bins];
             for r in rows {
-                let p1 = (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
                 let row_off = r * dim2;
                 for c in 0..dim2 {
                     let idx = row_off + c;
@@ -614,7 +653,7 @@ fn fit_rings(
                         || is_eiger_u32_sentinel(v)
                         || v >= sat_thresh;
 
-                    let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+                    let (p1, p2, p3) = pixel_p123(det_ref, dim1, dim2, &poni0, r, c);
                     let x1 = f_x1(&p1, &p2, &p3, &tc);
                     let x2 = f_x2(&p1, &p2, &p3, &tc);
                     let x3 = f_x3(&p1, &p2, &p3, &tc);
@@ -743,16 +782,15 @@ fn fit_diffuse(
     let mut poni0 = poni.clone();
     poni0.rot3 = 0.0;
     let tc = TrigonometricConstants::new(&poni0);
-    let p3 = poni0.distance;
+    let det_ref = options.detector.as_deref();
 
     // Estimate visible maximum 2θ from a fast 64×64 grid + corners.
     let mut tth_max = 0.0_f64;
     let r_step = (dim1 / 64).max(1);
     let c_step = (dim2 / 64).max(1);
     for r in (0..dim1).step_by(r_step).chain(std::iter::once(dim1 - 1)) {
-        let p1 = (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
         for c in (0..dim2).step_by(c_step).chain(std::iter::once(dim2 - 1)) {
-            let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+            let (p1, p2, p3) = pixel_p123(det_ref, dim1, dim2, &poni0, r, c);
             let x1 = f_x1(&p1, &p2, &p3, &tc);
             let x2 = f_x2(&p1, &p2, &p3, &tc);
             let x3 = f_x3(&p1, &p2, &p3, &tc);
@@ -807,7 +845,6 @@ fn fit_diffuse(
     let mut band_samples: Vec<Vec<f64>> = (0..N_BANDS).map(|_| Vec::with_capacity(512)).collect();
     let mut sr = 0;
     while sr < dim1 {
-        let p1 = (sr as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
         let row_off = sr * dim2;
         let mut sc = 0;
         while sc < dim2 {
@@ -823,7 +860,7 @@ fn fit_diffuse(
                 && !is_eiger_u32_sentinel(v)
                 && v < sat_thresh
             {
-                let p2 = (sc as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+                let (p1, p2, p3) = pixel_p123(det_ref, dim1, dim2, &poni0, sr, sc);
                 let x1 = f_x1(&p1, &p2, &p3, &tc);
                 let x2 = f_x2(&p1, &p2, &p3, &tc);
                 let x3 = f_x3(&p1, &p2, &p3, &tc);
@@ -882,7 +919,6 @@ fn fit_diffuse(
                 )
             },
             |(mut local_cells, mut local_tth_sum, mut local_tth_cnt), r| {
-                let p1 = (r as f64 + 0.5) * poni0.pixel1 - poni0.poni1;
                 let row_off = r * dim2;
                 for c in 0..dim2 {
                     let idx = row_off + c;
@@ -896,7 +932,7 @@ fn fit_diffuse(
                     {
                         continue;
                     }
-                    let p2 = (c as f64 + 0.5) * poni0.pixel2 - poni0.poni2;
+                    let (p1, p2, p3) = pixel_p123(det_ref, dim1, dim2, &poni0, r, c);
                     let x1 = f_x1(&p1, &p2, &p3, &tc);
                     let x2 = f_x2(&p1, &p2, &p3, &tc);
                     let x3 = f_x3(&p1, &p2, &p3, &tc);
