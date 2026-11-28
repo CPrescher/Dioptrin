@@ -1243,3 +1243,39 @@ fn ring_extension_does_not_hallucinate_absent_outer_rings() {
         2e-3,
     );
 }
+
+#[test]
+fn auto_calibrate_image_locks_rot3_in_lm_even_when_caller_passes_free_rot3() {
+    let frame = Frame::from_tiff("test_data/ceo2_side.tif".to_string()).expect("load ceo2_side");
+    let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+    let truth = Poni::load("test_data/ceo2_side.poni").expect("load ceo2_side.poni");
+
+    for pol in [None, Some(0.99)] {
+        let mut mask = dioptrin::calibration::ParamMask::fix_wavelength();
+        mask.rot3 = true; // Simulate UI leaving rot3 unlocked during auto-calibration
+        let opts = AutoCalibrateImageOptions {
+            refine_mask: mask,
+            polarization_factor: pol,
+            ..Default::default()
+        };
+        let (res, _diag) = auto_calibrate_image(
+            &frame.data,
+            frame.dim1,
+            frame.dim2,
+            &cal,
+            truth.wavelength,
+            truth.pixel1,
+            truth.pixel2,
+            &opts,
+        )
+        .expect("ceo2_side auto_calibrate_image should succeed");
+
+        // ceo2_side is a narrow strip where polarization rot3 is unreliable, and
+        // 2θ L-M refinement must never drift rot3 away from 0.
+        assert!(
+            res.poni.rot3.abs() < 1e-12,
+            "expected rot3 == 0.0 on ceo2_side (pol={pol:?}) even with refine_mask.rot3=true, got {:.4}°",
+            res.poni.rot3.to_degrees()
+        );
+    }
+}
