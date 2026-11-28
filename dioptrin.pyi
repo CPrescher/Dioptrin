@@ -34,6 +34,7 @@ __all__ = [
     "PolarizationRot3Result",
     "RefineImageResult",
     "DistortionResult",
+    "DistortionImageResult",
     "refine",
     "refine_image",
     "extract_ring_peaks",
@@ -46,6 +47,8 @@ __all__ = [
     "calibrate_rot3_polarization",
     "estimate_distortion",
     "estimate_distortion_multi",
+    "estimate_distortion_image",
+    "estimate_distortion_image_multi",
     "estimate_ring_center",
     "simulate_diffraction",
 ]
@@ -2535,5 +2538,97 @@ def estimate_distortion_multi(
     Jointly estimate a single shared spatial detector distortion field from
     multiple calibration exposures ``(points, poni, calibrant)`` measured at
     different detector positions, distances, tilts, or wavelengths.
+    """
+    ...
+
+
+class DistortionImageResult:
+    """Result of ``estimate_distortion_image`` / ``estimate_distortion_image_multi``."""
+
+    @property
+    def distortion(self) -> DistortionResult: ...
+    @property
+    def points(self) -> list[CalibrationPoints]: ...
+    @property
+    def n_rings(self) -> list[int]: ...
+    @property
+    def initial_rms_px(self) -> float: ...
+    @property
+    def n_passes_completed(self) -> int: ...
+
+
+def estimate_distortion_image(
+    image: NDArray[np.float64],
+    poni: Union[Integrator, dict[str, float]],
+    calibrant: Calibrant,
+    mask: Optional[NDArray[np.bool_]] = None,
+    model: Literal["smooth_spline", "radial_optical", "bow_z", "per_module"] = "smooth_spline",
+    max_order: int = 5,
+    grid_nx: int = 8,
+    grid_ny: int = 8,
+    smoothness: Optional[float] = None,
+    max_degree: int = 3,
+    module_height: Optional[int] = None,
+    module_width: Optional[int] = None,
+    gap_height: int = 0,
+    gap_width: int = 0,
+    fit_z: bool = False,
+    regularization: float = 1e-2,
+    huber_c_px: float = 1.5,
+    refine_poni: bool = True,
+    fix: Optional[list[str]] = None,
+    cv_folds: int = 5,
+    n_passes: int = 3,
+    max_ring_index: int = 100,
+    max_rings: Optional[int] = None,
+    n_azimuth: int = 72,
+    intensity_limit: Optional[float] = None,
+    search_half_width_px: Optional[int] = None,
+) -> DistortionImageResult:
+    """
+    Iteratively pick ring peaks from a 2D image along distorted trajectories
+    and estimate spatial detector distortion.
+    """
+    ...
+
+
+def estimate_distortion_image_multi(
+    observations: list[
+        Union[
+            Tuple[NDArray[np.float64], Union[Integrator, dict[str, float]], Calibrant],
+            Tuple[
+                NDArray[np.float64],
+                Union[Integrator, dict[str, float]],
+                Calibrant,
+                Optional[NDArray[np.bool_]],
+            ],
+        ]
+    ],
+    model: Literal["smooth_spline", "radial_optical", "bow_z", "per_module"] = "smooth_spline",
+    max_order: int = 5,
+    grid_nx: int = 8,
+    grid_ny: int = 8,
+    smoothness: Optional[float] = None,
+    max_degree: int = 3,
+    module_height: Optional[int] = None,
+    module_width: Optional[int] = None,
+    gap_height: int = 0,
+    gap_width: int = 0,
+    fit_z: bool = False,
+    regularization: float = 1e-2,
+    huber_c_px: float = 1.5,
+    refine_poni: bool = True,
+    fix: Optional[list[str]] = None,
+    cv_folds: int = 5,
+    n_passes: int = 3,
+    max_ring_index: int = 100,
+    max_rings: Optional[int] = None,
+    n_azimuth: int = 72,
+    intensity_limit: Optional[float] = None,
+    search_half_width_px: Optional[int] = None,
+) -> DistortionImageResult:
+    """
+    Multi-exposure iterative image-based distortion estimation across
+    ``(image, poni, calibrant[, mask])`` tuples.
     """
     ...

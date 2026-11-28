@@ -7,14 +7,16 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
     AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
-    CalibrationOptions, CalibrationPoints, CalibrationResult, DistortionModel,
-    DistortionObservation, DistortionOptions, DistortionResult, GridSearchOptions,
-    ImagePeakOptions, Loss, MassifOptions, ParamMask, PolarizationRot3Options,
-    PolarizationRot3Result, PolarizationRot3Source, RansacOptions, RansacResult,
-    RefineImageOptions, RefineImageResult, RingCenterOptions, RingIdOptions, RingIdResult,
-    auto_calibrate, auto_calibrate_image_with_mask, calibrate_rot3_polarization,
-    estimate_distortion, estimate_distortion_multi, estimate_ring_center, extract_ring_peaks,
-    find_peaks, find_peaks_image, identify_rings, ransac_ellipses, refine, refine_image,
+    CalibrationOptions, CalibrationPoints, CalibrationResult, DistortionImageObservation,
+    DistortionImageOptions, DistortionImageResult, DistortionModel, DistortionObservation,
+    DistortionOptions, DistortionResult, GridSearchOptions, ImagePeakOptions, Loss, MassifOptions,
+    ParamMask, PolarizationRot3Options, PolarizationRot3Result, PolarizationRot3Source,
+    RansacOptions, RansacResult, RefineImageOptions, RefineImageResult, RingCenterOptions,
+    RingIdOptions, RingIdResult, auto_calibrate, auto_calibrate_image_with_mask,
+    calibrate_rot3_polarization, estimate_distortion, estimate_distortion_image,
+    estimate_distortion_image_multi, estimate_distortion_multi, estimate_ring_center,
+    extract_ring_peaks, find_peaks, find_peaks_image, identify_rings, ransac_ellipses, refine,
+    refine_image,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -1974,6 +1976,405 @@ pub fn estimate_distortion_multi_py(
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     Ok(PyDistortionResult {
+        inner: res,
+        dim1,
+        dim2,
+    })
+}
+
+#[pyclass(name = "DistortionImageResult")]
+pub struct PyDistortionImageResult {
+    inner: DistortionImageResult,
+    dim1: usize,
+    dim2: usize,
+}
+
+#[pymethods]
+impl PyDistortionImageResult {
+    #[getter]
+    fn distortion(&self) -> PyDistortionResult {
+        PyDistortionResult {
+            inner: self.inner.distortion.clone(),
+            dim1: self.dim1,
+            dim2: self.dim2,
+        }
+    }
+    #[getter]
+    fn points(&self) -> Vec<PyCalibrationPoints> {
+        self.inner
+            .points
+            .iter()
+            .cloned()
+            .map(|p| PyCalibrationPoints { inner: p })
+            .collect()
+    }
+    #[getter]
+    fn n_rings(&self) -> Vec<usize> {
+        self.inner.n_rings.clone()
+    }
+    #[getter]
+    fn initial_rms_px(&self) -> f64 {
+        self.inner.initial_rms_px
+    }
+    #[getter]
+    fn n_passes_completed(&self) -> usize {
+        self.inner.n_passes_completed
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "DistortionImageResult(passes={}, rings={:?}, rms_px={:.3}->{:.3}, cv_rms_px={:.3}, significant={})",
+            self.inner.n_passes_completed,
+            self.inner.n_rings,
+            self.inner.initial_rms_px,
+            self.inner.distortion.rms_after_px,
+            self.inner.distortion.cv_rms_px,
+            self.inner.distortion.significant,
+        )
+    }
+}
+
+/// Iteratively extract ring peaks from a 2D image along distorted trajectories
+/// and estimate spatial detector distortion.
+#[pyfunction]
+#[pyo3(name = "estimate_distortion_image")]
+#[pyo3(signature = (
+    image,
+    poni,
+    calibrant,
+    mask=None,
+    model="smooth_spline",
+    max_order=5,
+    grid_nx=8,
+    grid_ny=8,
+    smoothness=None,
+    max_degree=3,
+    module_height=None,
+    module_width=None,
+    gap_height=0,
+    gap_width=0,
+    fit_z=false,
+    regularization=1e-2,
+    huber_c_px=1.5,
+    refine_poni=true,
+    fix=None,
+    cv_folds=5,
+    n_passes=3,
+    max_ring_index=100,
+    max_rings=None,
+    n_azimuth=72,
+    intensity_limit=None,
+    search_half_width_px=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_distortion_image_py(
+    py: Python<'_>,
+    image: PyReadonlyArray2<'_, f64>,
+    poni: &Bound<'_, PyAny>,
+    calibrant: &PyCalibrant,
+    mask: Option<PyReadonlyArray2<'_, bool>>,
+    model: &str,
+    max_order: usize,
+    grid_nx: usize,
+    grid_ny: usize,
+    smoothness: Option<f64>,
+    max_degree: usize,
+    module_height: Option<usize>,
+    module_width: Option<usize>,
+    gap_height: usize,
+    gap_width: usize,
+    fit_z: bool,
+    regularization: f64,
+    huber_c_px: f64,
+    refine_poni: bool,
+    fix: Option<&Bound<'_, PyList>>,
+    cv_folds: usize,
+    n_passes: usize,
+    max_ring_index: usize,
+    max_rings: Option<usize>,
+    n_azimuth: usize,
+    intensity_limit: Option<f64>,
+    search_half_width_px: Option<usize>,
+) -> PyResult<PyDistortionImageResult> {
+    let view = image.as_array();
+    let shape = view.shape();
+    let (dim1, dim2) = (shape[0], shape[1]);
+
+    let poni_val: Poni = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
+        integ.inner().geometry().poni.clone()
+    } else if let Ok(dict) = poni.cast::<PyDict>() {
+        poni_from_dict(dict)?
+    } else {
+        return Err(PyValueError::new_err(
+            "poni must be a dioptrin.Integrator or a PONI dict",
+        ));
+    };
+
+    let img_buf: Vec<f64> = if view.is_standard_layout() {
+        image
+            .as_slice()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|_| view.iter().copied().collect())
+    } else {
+        view.iter().copied().collect()
+    };
+    let mask_buf: Option<Vec<bool>> = match mask {
+        Some(m) => {
+            let mv = m.as_array();
+            if mv.shape() != shape {
+                return Err(PyValueError::new_err(format!(
+                    "mask shape ({}, {}) does not match image shape ({dim1}, {dim2})",
+                    mv.shape()[0],
+                    mv.shape()[1]
+                )));
+            }
+            Some(if mv.is_standard_layout() {
+                m.as_slice()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|_| mv.iter().copied().collect())
+            } else {
+                mv.iter().copied().collect()
+            })
+        }
+        None => None,
+    };
+
+    let model_enum = parse_distortion_model(
+        model,
+        max_order,
+        grid_nx,
+        grid_ny,
+        smoothness,
+        max_degree,
+        module_height,
+        module_width,
+        gap_height,
+        gap_width,
+        fit_z,
+        regularization,
+    )?;
+    let refine_mask = parse_distortion_mask(fix)?;
+    let opts = DistortionImageOptions {
+        distortion: DistortionOptions {
+            model: model_enum,
+            huber_c_px,
+            refine_poni,
+            refine_mask,
+            cv_folds,
+        },
+        n_passes,
+        max_ring_index,
+        max_rings,
+        n_azimuth,
+        intensity_limit,
+        search_half_width_px,
+    };
+    let cal = calibrant.inner.clone();
+    let res = py
+        .detach(|| {
+            estimate_distortion_image(
+                &img_buf,
+                dim1,
+                dim2,
+                mask_buf.as_deref(),
+                &poni_val,
+                &cal,
+                &opts,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyDistortionImageResult {
+        inner: res,
+        dim1,
+        dim2,
+    })
+}
+
+/// Multi-exposure iterative image-based distortion estimation. Each entry in
+/// `observations` is a `(image, poni, calibrant)` or `(image, poni, calibrant, mask)` tuple.
+#[pyfunction]
+#[pyo3(name = "estimate_distortion_image_multi")]
+#[pyo3(signature = (
+    observations,
+    model="smooth_spline",
+    max_order=5,
+    grid_nx=8,
+    grid_ny=8,
+    smoothness=None,
+    max_degree=3,
+    module_height=None,
+    module_width=None,
+    gap_height=0,
+    gap_width=0,
+    fit_z=false,
+    regularization=1e-2,
+    huber_c_px=1.5,
+    refine_poni=true,
+    fix=None,
+    cv_folds=5,
+    n_passes=3,
+    max_ring_index=100,
+    max_rings=None,
+    n_azimuth=72,
+    intensity_limit=None,
+    search_half_width_px=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_distortion_image_multi_py(
+    py: Python<'_>,
+    observations: &Bound<'_, PyList>,
+    model: &str,
+    max_order: usize,
+    grid_nx: usize,
+    grid_ny: usize,
+    smoothness: Option<f64>,
+    max_degree: usize,
+    module_height: Option<usize>,
+    module_width: Option<usize>,
+    gap_height: usize,
+    gap_width: usize,
+    fit_z: bool,
+    regularization: f64,
+    huber_c_px: f64,
+    refine_poni: bool,
+    fix: Option<&Bound<'_, PyList>>,
+    cv_folds: usize,
+    n_passes: usize,
+    max_ring_index: usize,
+    max_rings: Option<usize>,
+    n_azimuth: usize,
+    intensity_limit: Option<f64>,
+    search_half_width_px: Option<usize>,
+) -> PyResult<PyDistortionImageResult> {
+    if observations.is_empty() {
+        return Err(PyValueError::new_err("no image observations provided"));
+    }
+    struct OwnedImageObs {
+        image: Vec<f64>,
+        dim1: usize,
+        dim2: usize,
+        mask: Option<Vec<bool>>,
+        poni: Poni,
+        calibrant: Calibrant,
+    }
+    let mut owned: Vec<OwnedImageObs> = Vec::with_capacity(observations.len());
+    for item in observations.iter() {
+        let tuple = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
+            PyValueError::new_err(
+                "each observation must be (image, poni, calibrant) or (image, poni, calibrant, mask)",
+            )
+        })?;
+        if tuple.len() != 3 && tuple.len() != 4 {
+            return Err(PyValueError::new_err(
+                "each observation must be (image, poni, calibrant) or (image, poni, calibrant, mask)",
+            ));
+        }
+        let img_ro: PyReadonlyArray2<'_, f64> = tuple.get_item(0)?.extract()?;
+        let view = img_ro.as_array();
+        let shape = view.shape();
+        let (d1, d2) = (shape[0], shape[1]);
+        let img_buf: Vec<f64> = if view.is_standard_layout() {
+            img_ro
+                .as_slice()
+                .map(|s| s.to_vec())
+                .unwrap_or_else(|_| view.iter().copied().collect())
+        } else {
+            view.iter().copied().collect()
+        };
+        let poni_any = tuple.get_item(1)?;
+        let poni_val: Poni = if let Ok(integ) = poni_any.extract::<PyRef<PyIntegrator>>() {
+            integ.inner().geometry().poni.clone()
+        } else if let Ok(dict) = poni_any.cast::<PyDict>() {
+            poni_from_dict(dict)?
+        } else {
+            return Err(PyValueError::new_err(
+                "poni must be a dioptrin.Integrator or a PONI dict",
+            ));
+        };
+        let cal_ref: PyRef<PyCalibrant> = tuple.get_item(2)?.extract()?;
+        let mask_buf: Option<Vec<bool>> = if tuple.len() == 4 {
+            let m_item = tuple.get_item(3)?;
+            if m_item.is_none() {
+                None
+            } else {
+                let m_ro: PyReadonlyArray2<'_, bool> = m_item.extract()?;
+                let mv = m_ro.as_array();
+                if mv.shape() != shape {
+                    return Err(PyValueError::new_err(format!(
+                        "mask shape ({}, {}) does not match image shape ({d1}, {d2})",
+                        mv.shape()[0],
+                        mv.shape()[1]
+                    )));
+                }
+                Some(if mv.is_standard_layout() {
+                    m_ro.as_slice()
+                        .map(|s| s.to_vec())
+                        .unwrap_or_else(|_| mv.iter().copied().collect())
+                } else {
+                    mv.iter().copied().collect()
+                })
+            }
+        } else {
+            None
+        };
+        owned.push(OwnedImageObs {
+            image: img_buf,
+            dim1: d1,
+            dim2: d2,
+            mask: mask_buf,
+            poni: poni_val,
+            calibrant: cal_ref.inner.clone(),
+        });
+    }
+    let (dim1, dim2) = (owned[0].dim1, owned[0].dim2);
+    let model_enum = parse_distortion_model(
+        model,
+        max_order,
+        grid_nx,
+        grid_ny,
+        smoothness,
+        max_degree,
+        module_height,
+        module_width,
+        gap_height,
+        gap_width,
+        fit_z,
+        regularization,
+    )?;
+    let refine_mask = parse_distortion_mask(fix)?;
+    let opts = DistortionImageOptions {
+        distortion: DistortionOptions {
+            model: model_enum,
+            huber_c_px,
+            refine_poni,
+            refine_mask,
+            cv_folds,
+        },
+        n_passes,
+        max_ring_index,
+        max_rings,
+        n_azimuth,
+        intensity_limit,
+        search_half_width_px,
+    };
+    let res = py
+        .detach(|| {
+            let refs: Vec<DistortionImageObservation<'_>> = owned
+                .iter()
+                .map(|o| DistortionImageObservation {
+                    image: &o.image,
+                    dim1: o.dim1,
+                    dim2: o.dim2,
+                    mask: o.mask.as_deref(),
+                    poni: &o.poni,
+                    calibrant: &o.calibrant,
+                })
+                .collect();
+            estimate_distortion_image_multi(&refs, &opts)
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyDistortionImageResult {
         inner: res,
         dim1,
         dim2,

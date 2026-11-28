@@ -545,6 +545,346 @@ impl fmt::Display for DistortionError {
 
 impl std::error::Error for DistortionError {}
 
+/// Invert a [`DistortionField`] at an ideal undistorted pixel coordinate
+/// `(d1_ideal, d2_ideal)` via damped fixed-point iterations, returning the
+/// observed detector pixel `(d1, d2)` where the distorted ring physically lands.
+///
+/// Returns `None` if the displacement is non-finite, fails to converge within
+/// `0.25 px` (e.g. bouncing across a `PerModule` gap), or exceeds `max_shift_px`
+/// (guarding against wild polynomial extrapolation in unobserved corners).
+pub(crate) fn invert_distortion_pixel(
+    field: &DistortionField,
+    poni: &Poni,
+    tc: &TrigonometricConstants,
+    d1_ideal: f64,
+    d2_ideal: f64,
+    max_shift_px: f64,
+) -> Option<(f64, f64)> {
+    const DAMP: f64 = 0.7;
+    let mut d1 = d1_ideal;
+    let mut d2 = d2_ideal;
+    for _ in 0..8 {
+        let (dd1, dd2) = field.displacement_px(d1, d2);
+        let dz = field.dz_m(d1, d2);
+        let (dz_d1, dz_d2) = if dz.abs() > 0.0 {
+            let (g1, g2, gz) = tth_sensitivities(poni, tc, d1, d2);
+            let g2_norm = g1 * g1 + g2 * g2;
+            if g2_norm.is_finite() && g2_norm > 1e-24 {
+                let s = (gz * dz) / g2_norm;
+                (s * g1, s * g2)
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        if !dd1.is_finite() || !dd2.is_finite() || !dz_d1.is_finite() || !dz_d2.is_finite() {
+            return None;
+        }
+        let target_d1 = d1_ideal - dd1 - dz_d1;
+        let target_d2 = d2_ideal - dd2 - dz_d2;
+        let err = (target_d1 - d1).hypot(target_d2 - d2);
+        d1 += DAMP * (target_d1 - d1);
+        d2 += DAMP * (target_d2 - d2);
+        if err < 1e-3 {
+            break;
+        }
+    }
+    // Verify convergence and bound total shift against runaway extrapolation.
+    let (dd1, dd2) = field.displacement_px(d1, d2);
+    let dz = field.dz_m(d1, d2);
+    let (dz_d1, dz_d2) = if dz.abs() > 0.0 {
+        let (g1, g2, gz) = tth_sensitivities(poni, tc, d1, d2);
+        let g2_norm = g1 * g1 + g2 * g2;
+        if g2_norm.is_finite() && g2_norm > 1e-24 {
+            let s = (gz * dz) / g2_norm;
+            (s * g1, s * g2)
+        } else {
+            (0.0, 0.0)
+        }
+    } else {
+        (0.0, 0.0)
+    };
+    if !dd1.is_finite() || !dd2.is_finite() || !dz_d1.is_finite() || !dz_d2.is_finite() {
+        return None;
+    }
+    let residual = (d1 + dd1 + dz_d1 - d1_ideal).hypot(d2 + dd2 + dz_d2 - d2_ideal);
+    let shift = (d1 - d1_ideal).hypot(d2 - d2_ideal);
+    if residual > 0.25 || shift > max_shift_px {
+        return None;
+    }
+    Some((d1, d2))
+}
+
+/// One 2D diffraction image exposure for [`estimate_distortion_image_multi`].
+#[derive(Clone, Copy)]
+pub struct DistortionImageObservation<'a> {
+    pub image: &'a [f64],
+    pub dim1: usize,
+    pub dim2: usize,
+    pub mask: Option<&'a [bool]>,
+    pub poni: &'a Poni,
+    pub calibrant: &'a Calibrant,
+}
+
+/// Configuration for [`estimate_distortion_image`] and
+/// [`estimate_distortion_image_multi`].
+#[derive(Debug, Clone)]
+pub struct DistortionImageOptions {
+    /// Underlying distortion model, IRLS, PONI refinement, and CV settings.
+    pub distortion: DistortionOptions,
+    /// Number of iterative `(re-pick along distorted rings → fit distortion)`
+    /// passes (default `3`, clamped to `1..=6`). Pass 0 uses the undistorted
+    /// PONI; passes `1..n_passes` project rings through the current
+    /// [`DistortionField`] so outer rings with large (> 4 px) distortion stay
+    /// centered inside the radial search window.
+    pub n_passes: usize,
+    /// Maximum calibrant ring index to consider (default `100`).
+    pub max_ring_index: usize,
+    /// Optional cap on number of rings; `None` (default) uses all visible rings
+    /// up to `max_ring_index`.
+    pub max_rings: Option<usize>,
+    /// Base azimuthal sampling density around each ring (default `72`).
+    pub n_azimuth: usize,
+    /// Optional explicit intensity ceiling; `None` auto-detects saturation plateaus.
+    pub intensity_limit: Option<f64>,
+    /// Optional fixed radial search half-width in pixels; `None` shrinks
+    /// progressively (`8 → 6 → 4 px`) across passes.
+    pub search_half_width_px: Option<usize>,
+}
+
+impl Default for DistortionImageOptions {
+    fn default() -> Self {
+        Self {
+            distortion: DistortionOptions::default(),
+            n_passes: 3,
+            max_ring_index: 100,
+            max_rings: None,
+            n_azimuth: 72,
+            intensity_limit: None,
+            search_half_width_px: None,
+        }
+    }
+}
+
+/// Output of [`estimate_distortion_image`] / [`estimate_distortion_image_multi`].
+#[derive(Debug, Clone)]
+pub struct DistortionImageResult {
+    /// Final distortion fit from the last re-picking pass.
+    pub distortion: DistortionResult,
+    /// Final re-picked control points for each input image exposure.
+    pub points: Vec<CalibrationPoints>,
+    /// Number of rings with control points on each input image exposure.
+    pub n_rings: Vec<usize>,
+    /// Baseline undistorted radial RMS (pixels) from pass 0 before any
+    /// distortion-guided re-picking.
+    pub initial_rms_px: f64,
+    /// Number of re-picking passes actually completed.
+    pub n_passes_completed: usize,
+}
+
+/// Iteratively pick ring peaks from a 2D image and estimate spatial detector
+/// distortion, re-projecting rings through the fitted [`DistortionField`] on
+/// each pass so outer rings with large (> 4 px) distortion are pulled in cleanly.
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_distortion_image(
+    image: &[f64],
+    dim1: usize,
+    dim2: usize,
+    mask: Option<&[bool]>,
+    poni: &Poni,
+    calibrant: &Calibrant,
+    options: &DistortionImageOptions,
+) -> Result<DistortionImageResult, DistortionError> {
+    estimate_distortion_image_multi(
+        &[DistortionImageObservation {
+            image,
+            dim1,
+            dim2,
+            mask,
+            poni,
+            calibrant,
+        }],
+        options,
+    )
+}
+
+/// Multi-exposure version of [`estimate_distortion_image`]: precomputes the
+/// DoG residual and local noise grid once per image, then alternates
+/// distortion-guided ring re-picking across all exposures with
+/// [`estimate_distortion_multi`].
+pub fn estimate_distortion_image_multi(
+    observations: &[DistortionImageObservation<'_>],
+    options: &DistortionImageOptions,
+) -> Result<DistortionImageResult, DistortionError> {
+    if observations.is_empty() {
+        return Err(DistortionError::InsufficientPoints(
+            "no image observations provided".into(),
+        ));
+    }
+    let dim1 = observations[0].dim1;
+    let dim2 = observations[0].dim2;
+    if dim1 == 0 || dim2 == 0 {
+        return Err(DistortionError::InvalidInput(
+            "detector dimensions must be positive".into(),
+        ));
+    }
+    let explicit_upper = options
+        .intensity_limit
+        .filter(|v| v.is_finite() && *v > 0.0);
+
+    let mut prepared = Vec::with_capacity(observations.len());
+    let mut cur_ponis = Vec::with_capacity(observations.len());
+    for (e, obs) in observations.iter().enumerate() {
+        if obs.dim1 != dim1 || obs.dim2 != dim2 {
+            return Err(DistortionError::InvalidInput(format!(
+                "observation {e} shape ({}, {}) does not match ({dim1}, {dim2})",
+                obs.dim1, obs.dim2
+            )));
+        }
+        let expected = dim1
+            .checked_mul(dim2)
+            .ok_or_else(|| DistortionError::InvalidInput("image dimensions overflow".into()))?;
+        if obs.image.len() != expected {
+            return Err(DistortionError::InvalidInput(format!(
+                "observation {e} image length {} does not match {dim1}x{dim2}",
+                obs.image.len()
+            )));
+        }
+        if let Some(m) = obs.mask
+            && m.len() != expected
+        {
+            return Err(DistortionError::InvalidInput(format!(
+                "observation {e} mask length {} does not match {expected}",
+                m.len()
+            )));
+        }
+        let prep = super::image_auto::PreparedRingImage::prepare(
+            obs.image,
+            obs.mask,
+            dim1,
+            dim2,
+            explicit_upper,
+        )
+        .ok_or_else(|| {
+            DistortionError::InsufficientPoints(format!(
+                "observation {e} has insufficient signal variance for ring extraction"
+            ))
+        })?;
+        prepared.push(prep);
+        cur_ponis.push(obs.poni.clone());
+    }
+
+    let n_passes = options.n_passes.clamp(1, 6);
+    let n_az = options.n_azimuth.clamp(12, 360);
+    let max_ring_index = options.max_ring_index.max(1);
+
+    let mut cur_field: Option<DistortionField> = None;
+    let mut last_result: Option<DistortionResult> = None;
+    let mut last_points: Vec<CalibrationPoints> = Vec::new();
+    let mut last_n_rings: Vec<usize> = Vec::new();
+    let mut last_input_ponis: Vec<Poni> = Vec::new();
+    let mut initial_rms_px = f64::NAN;
+    let mut passes_done = 0usize;
+    let mut ran_final_cv = false;
+
+    for pass in 0..n_passes {
+        // Progressive shrinking window: wider on pass 0 to catch distorted
+        // outer rings before any correction, tightening on later passes once
+        // ring trajectories follow the fitted distortion field.
+        let hw = options.search_half_width_px.unwrap_or(match pass {
+            0 => 8,
+            1 => 6,
+            _ => 4,
+        });
+        let tangent_half = if pass == 0 { 2 } else { 3 };
+
+        let mut pass_pts = Vec::with_capacity(observations.len());
+        let mut pass_n_rings = Vec::with_capacity(observations.len());
+        for (e, obs) in observations.iter().enumerate() {
+            let (pts, nr) = prepared[e].extract_with_distortion(
+                &cur_ponis[e],
+                obs.calibrant,
+                hw,
+                n_az,
+                options.max_rings,
+                max_ring_index,
+                tangent_half,
+                cur_field.as_ref(),
+            );
+            pass_pts.push(pts);
+            pass_n_rings.push(nr);
+        }
+
+        // Skip expensive CV on intermediate passes; run full CV on the final pass.
+        let is_final_pass = pass + 1 == n_passes;
+        let mut pass_opts = options.distortion.clone();
+        if !is_final_pass {
+            pass_opts.cv_folds = 0;
+        }
+        let obs_refs: Vec<DistortionObservation<'_>> = observations
+            .iter()
+            .enumerate()
+            .map(|(e, o)| DistortionObservation {
+                points: &pass_pts[e],
+                poni: &cur_ponis[e],
+                calibrant: o.calibrant,
+            })
+            .collect();
+
+        match estimate_distortion_multi(&obs_refs, dim1, dim2, &pass_opts) {
+            Ok(res) => {
+                if pass == 0 {
+                    initial_rms_px = res.rms_before_px;
+                }
+                last_input_ponis = cur_ponis;
+                cur_ponis = res.ponis.clone();
+                cur_field = Some(res.field.clone());
+                last_result = Some(res);
+                last_points = pass_pts;
+                last_n_rings = pass_n_rings;
+                passes_done = pass + 1;
+                ran_final_cv = is_final_pass;
+            }
+            Err(e) => {
+                if last_result.is_some() {
+                    break;
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    // If a later pass failed after an earlier pass succeeded without CV,
+    // re-run the last good pass with full CV options so `cv_rms_px` and
+    // `significant` are never silently based on in-sample residuals.
+    if !ran_final_cv && options.distortion.cv_folds >= 2 && last_result.is_some() {
+        let obs_refs: Vec<DistortionObservation<'_>> = observations
+            .iter()
+            .enumerate()
+            .map(|(e, o)| DistortionObservation {
+                points: &last_points[e],
+                poni: &last_input_ponis[e],
+                calibrant: o.calibrant,
+            })
+            .collect();
+        if let Ok(res_cv) = estimate_distortion_multi(&obs_refs, dim1, dim2, &options.distortion) {
+            last_result = Some(res_cv);
+        }
+    }
+
+    let distortion = last_result.ok_or_else(|| {
+        DistortionError::InsufficientPoints("no distortion pass succeeded".into())
+    })?;
+    Ok(DistortionImageResult {
+        distortion,
+        points: last_points,
+        n_rings: last_n_rings,
+        initial_rms_px,
+        n_passes_completed: passes_done,
+    })
+}
+
 /// Estimate spatial detector distortion from calibration control points and a
 /// converged [`Poni`].
 pub fn estimate_distortion(
@@ -2083,5 +2423,119 @@ mod tests {
                 "2D displacement mismatch at ({r},{c}): got ({est_d1:.3}, {est_d2:.3}), expected ({true_d1:.3}, {true_d2:.3})"
             );
         }
+    }
+
+    #[test]
+    fn image_repicking_pulls_in_large_corner_distortion() {
+        let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+        let poni = make_test_poni();
+        let dim1 = 512usize;
+        let dim2 = 512usize;
+        let mut p = poni.clone();
+        p.poni1 = 256.0 * p.pixel1;
+        p.poni2 = 256.0 * p.pixel2;
+        p.distance = 0.11;
+        let tc = TrigonometricConstants::new(&p);
+        let tths: Vec<f64> = cal
+            .two_theta_rad(p.wavelength)
+            .into_iter()
+            .take(12)
+            .flatten()
+            .filter(|t| t.is_finite() && *t > 0.03 && *t < 0.7)
+            .collect();
+
+        // Synthesize a 2D image with a strong 6 px corner pincushion distortion
+        // (larger than a 4 px radial search half-width!)
+        let c1 = 255.5;
+        let c2 = 255.5;
+        let r_scale = 256.0;
+        let mut img = vec![50.0_f64; dim1 * dim2];
+        for r in 0..dim1 {
+            for c in 0..dim2 {
+                let dy = r as f64 - c1;
+                let dx = c as f64 - c2;
+                let rad = dy.hypot(dx).max(1e-6);
+                let rho = rad / r_scale;
+                let dr = 6.0 * rho.powi(3);
+                let dd1 = dr * dy / rad;
+                let dd2 = dr * dx / rad;
+                let tth = eval_tth_at(&p, &tc, r as f64 + dd1, c as f64 + dd2, 0.0);
+                let mut val = 50.0;
+                for &rt in &tths {
+                    let dt = (tth - rt) / 0.002;
+                    if dt.abs() < 5.0 {
+                        val += 2000.0 * (-0.5 * dt * dt).exp();
+                    }
+                }
+                img[r * dim2 + c] = val;
+            }
+        }
+
+        let opts_1pass = DistortionImageOptions {
+            distortion: DistortionOptions {
+                model: DistortionModel::RadialOptical { max_order: 5 },
+                refine_poni: false,
+                ..Default::default()
+            },
+            n_passes: 1,
+            search_half_width_px: Some(4),
+            ..Default::default()
+        };
+        let res_1pass = estimate_distortion_image(&img, dim1, dim2, None, &p, &cal, &opts_1pass)
+            .expect("1-pass estimate_distortion_image");
+
+        let opts = DistortionImageOptions {
+            distortion: DistortionOptions {
+                model: DistortionModel::RadialOptical { max_order: 5 },
+                refine_poni: false,
+                ..Default::default()
+            },
+            n_passes: 3,
+            ..Default::default()
+        };
+        let res = estimate_distortion_image(&img, dim1, dim2, None, &p, &cal, &opts)
+            .expect("estimate_distortion_image");
+        assert_eq!(res.n_passes_completed, 3);
+        assert!(res.distortion.significant);
+        // Iterative re-picking must pull in outer points missed by the 1-pass ±4 px window.
+        assert!(
+            res.points[0].len() > res_1pass.points[0].len(),
+            "expected 3-pass re-picking to recover more points than 1-pass: {} vs {}",
+            res.points[0].len(),
+            res_1pass.points[0].len()
+        );
+        let outer_pts = (0..res.points[0].len())
+            .filter(|&i| {
+                let r = (res.points[0].d1[i] - c1).hypot(res.points[0].d2[i] - c2);
+                r > 235.0
+            })
+            .count();
+        assert!(
+            outer_pts >= 20,
+            "expected >= 20 outer corner points (r > 235 px), got {outer_pts}"
+        );
+        // Verify fitted displacement at corner matches true +6*rho^3 in both sign and magnitude.
+        let (est_d1, est_d2) = res.distortion.field.displacement_px(440.0, 440.0);
+        let dy = 440.0 - c1;
+        let dx = 440.0 - c2;
+        let rad = dy.hypot(dx);
+        let dr_true = 6.0 * (rad / r_scale).powi(3);
+        let true_d1 = dr_true * dy / rad;
+        let true_d2 = dr_true * dx / rad;
+        assert!(
+            (est_d1 - true_d1).abs() < 0.35 && (est_d2 - true_d2).abs() < 0.35,
+            "corner displacement mismatch: got ({est_d1:.2}, {est_d2:.2}), expected ({true_d1:.2}, {true_d2:.2})"
+        );
+        assert!(
+            res.distortion.rms_after_px < 0.15,
+            "expected < 0.15 px after iterative re-picking, got {:.3} px (init={:.3} px)",
+            res.distortion.rms_after_px,
+            res.initial_rms_px
+        );
+        assert!(
+            res.distortion.cv_rms_px < 0.20,
+            "CV RMS too large: {:.3} px",
+            res.distortion.cv_rms_px
+        );
     }
 }
