@@ -5,6 +5,24 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.1] - 2026-11-28
+
+### Added
+
+- **Distorted `Detector` support in image-based calibration** (#102):
+  - Added optional `detector: Option<Arc<Detector>>` (default `None`) to
+    `AutoCalibrateImageOptions`, `RefineImageOptions`, and
+    `PolarizationRot3Options`.
+  - `auto_calibrate_image_with_progress`, `refine_image`, `extract_ring_peaks`,
+    and `calibrate_rot3_polarization` now preserve Fit2D `.spline`, NeXus
+    `PixelMap::Corners`, `PixelMap::Separable`, and non-identity detector
+    orientations throughout 2D ring trajectory projection (via damped
+    fixed-point inversion), Levenberg–Marquardt refinement, peak verification,
+    outer-ring extension, and polarization `rot3` estimation.
+  - Python bindings automatically inherit the attached `Detector` when passing
+    a `dioptrin.Integrator` to `extract_ring_peaks`, `refine_image`, or
+    `calibrate_rot3_polarization`.
+
 ## [0.20.0] - 2026-11-28
 
 ### Added
