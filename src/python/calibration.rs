@@ -7,12 +7,14 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::calibration::{
     AutoCalibrateImageOptions, AutoCalibrateOptions, AutoMethod, Calibrant, CalibrationError,
-    CalibrationOptions, CalibrationPoints, CalibrationResult, GridSearchOptions, ImagePeakOptions,
-    Loss, MassifOptions, ParamMask, PolarizationRot3Options, PolarizationRot3Result,
-    PolarizationRot3Source, RansacOptions, RansacResult, RefineImageOptions, RefineImageResult,
-    RingCenterOptions, RingIdOptions, RingIdResult, auto_calibrate, auto_calibrate_image_with_mask,
-    calibrate_rot3_polarization, estimate_ring_center, extract_ring_peaks, find_peaks,
-    find_peaks_image, identify_rings, ransac_ellipses, refine, refine_image,
+    CalibrationOptions, CalibrationPoints, CalibrationResult, DistortionModel,
+    DistortionObservation, DistortionOptions, DistortionResult, GridSearchOptions,
+    ImagePeakOptions, Loss, MassifOptions, ParamMask, PolarizationRot3Options,
+    PolarizationRot3Result, PolarizationRot3Source, RansacOptions, RansacResult,
+    RefineImageOptions, RefineImageResult, RingCenterOptions, RingIdOptions, RingIdResult,
+    auto_calibrate, auto_calibrate_image_with_mask, calibrate_rot3_polarization,
+    estimate_distortion, estimate_distortion_multi, estimate_ring_center, extract_ring_peaks,
+    find_peaks, find_peaks_image, identify_rings, ransac_ellipses, refine, refine_image,
 };
 use crate::geometry::Geometry;
 use crate::poni::Poni;
@@ -1091,18 +1093,7 @@ impl PyPolarizationRot3Result {
     }
     #[getter]
     fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let d = PyDict::new(py);
-        let p = &self.inner.poni;
-        d.set_item("pixel1", p.pixel1)?;
-        d.set_item("pixel2", p.pixel2)?;
-        d.set_item("distance", p.distance)?;
-        d.set_item("poni1", p.poni1)?;
-        d.set_item("poni2", p.poni2)?;
-        d.set_item("rot1", p.rot1)?;
-        d.set_item("rot2", p.rot2)?;
-        d.set_item("rot3", p.rot3)?;
-        d.set_item("wavelength", p.wavelength)?;
-        Ok(d)
+        poni_to_py_dict(py, &self.inner.poni)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -1553,4 +1544,386 @@ pub fn refine_image_py(
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     Ok(PyRefineImageResult { inner: res })
+}
+
+// ---------- Spatial distortion estimation ----------
+
+#[pyclass(name = "DistortionResult")]
+pub struct PyDistortionResult {
+    inner: DistortionResult,
+    dim1: usize,
+    dim2: usize,
+}
+
+#[pymethods]
+impl PyDistortionResult {
+    #[getter]
+    fn poni<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        poni_to_py_dict(py, &self.inner.poni)
+    }
+    #[getter]
+    fn ponis<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for p in &self.inner.ponis {
+            list.append(poni_to_py_dict(py, p)?)?;
+        }
+        Ok(list)
+    }
+    #[getter]
+    fn rms_before_rad(&self) -> f64 {
+        self.inner.rms_before_rad
+    }
+    #[getter]
+    fn rms_after_rad(&self) -> f64 {
+        self.inner.rms_after_rad
+    }
+    #[getter]
+    fn rms_before_px(&self) -> f64 {
+        self.inner.rms_before_px
+    }
+    #[getter]
+    fn rms_after_px(&self) -> f64 {
+        self.inner.rms_after_px
+    }
+    #[getter]
+    fn cv_rms_px(&self) -> f64 {
+        self.inner.cv_rms_px
+    }
+    #[getter]
+    fn significant(&self) -> bool {
+        self.inner.significant
+    }
+    #[getter]
+    fn max_displacement_px(&self) -> f64 {
+        self.inner.max_displacement_px
+    }
+    #[getter]
+    fn n_points_used(&self) -> usize {
+        self.inner.n_points_used
+    }
+    #[getter]
+    fn point_residuals_before_px(&self) -> Vec<f64> {
+        self.inner.point_residuals_before_px.clone()
+    }
+    #[getter]
+    fn point_residuals_after_px(&self) -> Vec<f64> {
+        self.inner.point_residuals_after_px.clone()
+    }
+    #[getter]
+    fn module_offsets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for m in &self.inner.module_offsets {
+            let d = PyDict::new(py);
+            d.set_item("row_index", m.row_index)?;
+            d.set_item("col_index", m.col_index)?;
+            d.set_item("dd1_px", m.dd1_px)?;
+            d.set_item("dd2_px", m.dd2_px)?;
+            d.set_item("dz_m", m.dz_m)?;
+            d.set_item("n_points", m.n_points)?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+    /// Evaluate in-plane pixel displacement `(dd1_px, dd2_px)` at `(d1, d2)`.
+    fn displacement_px(&self, d1: f64, d2: f64) -> (f64, f64) {
+        self.inner.field.displacement_px(d1, d2)
+    }
+    /// Evaluate out-of-plane displacement `dz` in metres at `(d1, d2)`.
+    fn dz_m(&self, d1: f64, d2: f64) -> f64 {
+        self.inner.field.dz_m(d1, d2)
+    }
+    /// Export the fitted smooth in-plane distortion as a Fit2D / pyFAI `.spline` string.
+    fn to_fit2d_spline(&self) -> PyResult<String> {
+        let sp = self
+            .inner
+            .field
+            .to_spline(
+                self.dim1,
+                self.dim2,
+                self.inner.poni.pixel1,
+                self.inner.poni.pixel2,
+            )
+            .map_err(PyValueError::new_err)?;
+        Ok(sp.content)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "DistortionResult(rms_px={:.3}->{:.3}, cv_rms_px={:.3}, max_disp={:.2}px, significant={}, n_pts={})",
+            self.inner.rms_before_px,
+            self.inner.rms_after_px,
+            self.inner.cv_rms_px,
+            self.inner.max_displacement_px,
+            self.inner.significant,
+            self.inner.n_points_used
+        )
+    }
+}
+
+/// Estimate spatial detector distortion from calibration control points and a
+/// converged PONI.
+#[pyfunction]
+#[pyo3(name = "estimate_distortion")]
+#[pyo3(signature = (
+    points,
+    shape,
+    poni,
+    calibrant,
+    model="smooth_spline",
+    max_order=5,
+    grid_nx=8,
+    grid_ny=8,
+    smoothness=1.0,
+    max_degree=3,
+    module_height=None,
+    module_width=None,
+    gap_height=0,
+    gap_width=0,
+    fit_z=false,
+    regularization=1e-2,
+    huber_c_px=1.5,
+    refine_poni=true,
+    fix=None,
+    cv_folds=5,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_distortion_py(
+    py: Python<'_>,
+    points: &PyCalibrationPoints,
+    shape: (usize, usize),
+    poni: &Bound<'_, PyAny>,
+    calibrant: &PyCalibrant,
+    model: &str,
+    max_order: usize,
+    grid_nx: usize,
+    grid_ny: usize,
+    smoothness: f64,
+    max_degree: usize,
+    module_height: Option<usize>,
+    module_width: Option<usize>,
+    gap_height: usize,
+    gap_width: usize,
+    fit_z: bool,
+    regularization: f64,
+    huber_c_px: f64,
+    refine_poni: bool,
+    fix: Option<&Bound<'_, PyList>>,
+    cv_folds: usize,
+) -> PyResult<PyDistortionResult> {
+    let (dim1, dim2) = shape;
+    let poni_val: Poni = if let Ok(integ) = poni.extract::<PyRef<PyIntegrator>>() {
+        integ.inner().geometry().poni.clone()
+    } else if let Ok(dict) = poni.cast::<PyDict>() {
+        poni_from_dict(dict)?
+    } else {
+        return Err(PyValueError::new_err(
+            "poni must be a dioptrin.Integrator or a PONI dict",
+        ));
+    };
+
+    let model_enum = match model.to_ascii_lowercase().as_str() {
+        "radial_optical" => DistortionModel::RadialOptical { max_order },
+        "smooth_spline" => DistortionModel::SmoothSpline {
+            grid_nx,
+            grid_ny,
+            smoothness,
+        },
+        "bow_z" => DistortionModel::BowZ {
+            max_degree,
+            smoothness,
+        },
+        "per_module" => {
+            let mh = module_height
+                .ok_or_else(|| PyValueError::new_err("per_module model requires module_height"))?;
+            let mw = module_width
+                .ok_or_else(|| PyValueError::new_err("per_module model requires module_width"))?;
+            DistortionModel::PerModule {
+                module_height: mh,
+                module_width: mw,
+                gap_height,
+                gap_width,
+                fit_z,
+                regularization,
+            }
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "invalid model {model:?}; expected 'smooth_spline', 'radial_optical', 'bow_z', or 'per_module'"
+            )));
+        }
+    };
+
+    let refine_mask = match fix {
+        Some(list) => parse_mask(Some(list))?,
+        None => DistortionOptions::default().refine_mask,
+    };
+
+    let opts = DistortionOptions {
+        model: model_enum,
+        huber_c_px,
+        refine_poni,
+        refine_mask,
+        cv_folds,
+    };
+    let pts = points.inner.clone();
+    let cal = calibrant.inner.clone();
+    let res = py
+        .detach(|| estimate_distortion(&pts, dim1, dim2, &poni_val, &cal, &opts))
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyDistortionResult {
+        inner: res,
+        dim1,
+        dim2,
+    })
+}
+
+fn poni_to_py_dict<'py>(py: Python<'py>, p: &Poni) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("pixel1", p.pixel1)?;
+    d.set_item("pixel2", p.pixel2)?;
+    d.set_item("distance", p.distance)?;
+    d.set_item("poni1", p.poni1)?;
+    d.set_item("poni2", p.poni2)?;
+    d.set_item("rot1", p.rot1)?;
+    d.set_item("rot2", p.rot2)?;
+    d.set_item("rot3", p.rot3)?;
+    d.set_item("wavelength", p.wavelength)?;
+    Ok(d)
+}
+
+/// Jointly estimate a shared spatial detector distortion field from multiple
+/// calibration exposures `(points, poni, calibrant)` measured at different
+/// detector positions, distances, tilts, or wavelengths.
+#[pyfunction]
+#[pyo3(name = "estimate_distortion_multi")]
+#[pyo3(signature = (
+    observations,
+    shape,
+    model="smooth_spline",
+    max_order=5,
+    grid_nx=8,
+    grid_ny=8,
+    smoothness=1.0,
+    max_degree=3,
+    module_height=None,
+    module_width=None,
+    gap_height=0,
+    gap_width=0,
+    fit_z=false,
+    regularization=1e-2,
+    huber_c_px=1.5,
+    refine_poni=true,
+    fix=None,
+    cv_folds=5,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_distortion_multi_py(
+    py: Python<'_>,
+    observations: &Bound<'_, PyList>,
+    shape: (usize, usize),
+    model: &str,
+    max_order: usize,
+    grid_nx: usize,
+    grid_ny: usize,
+    smoothness: f64,
+    max_degree: usize,
+    module_height: Option<usize>,
+    module_width: Option<usize>,
+    gap_height: usize,
+    gap_width: usize,
+    fit_z: bool,
+    regularization: f64,
+    huber_c_px: f64,
+    refine_poni: bool,
+    fix: Option<&Bound<'_, PyList>>,
+    cv_folds: usize,
+) -> PyResult<PyDistortionResult> {
+    let (dim1, dim2) = shape;
+    let mut owned: Vec<(CalibrationPoints, Poni, Calibrant)> =
+        Vec::with_capacity(observations.len());
+    for item in observations.iter() {
+        let tuple = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
+            PyValueError::new_err("each observation must be a (points, poni, calibrant) 3-tuple")
+        })?;
+        if tuple.len() != 3 {
+            return Err(PyValueError::new_err(
+                "each observation must be a (points, poni, calibrant) 3-tuple",
+            ));
+        }
+        let pts_ref: PyRef<PyCalibrationPoints> = tuple.get_item(0)?.extract()?;
+        let poni_any = tuple.get_item(1)?;
+        let poni_val: Poni = if let Ok(integ) = poni_any.extract::<PyRef<PyIntegrator>>() {
+            integ.inner().geometry().poni.clone()
+        } else if let Ok(dict) = poni_any.cast::<PyDict>() {
+            poni_from_dict(dict)?
+        } else {
+            return Err(PyValueError::new_err(
+                "poni must be a dioptrin.Integrator or a PONI dict",
+            ));
+        };
+        let cal_ref: PyRef<PyCalibrant> = tuple.get_item(2)?.extract()?;
+        owned.push((pts_ref.inner.clone(), poni_val, cal_ref.inner.clone()));
+    }
+
+    let model_enum = match model.to_ascii_lowercase().as_str() {
+        "radial_optical" => DistortionModel::RadialOptical { max_order },
+        "smooth_spline" => DistortionModel::SmoothSpline {
+            grid_nx,
+            grid_ny,
+            smoothness,
+        },
+        "bow_z" => DistortionModel::BowZ {
+            max_degree,
+            smoothness,
+        },
+        "per_module" => {
+            let mh = module_height
+                .ok_or_else(|| PyValueError::new_err("per_module model requires module_height"))?;
+            let mw = module_width
+                .ok_or_else(|| PyValueError::new_err("per_module model requires module_width"))?;
+            DistortionModel::PerModule {
+                module_height: mh,
+                module_width: mw,
+                gap_height,
+                gap_width,
+                fit_z,
+                regularization,
+            }
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "invalid model {model:?}; expected 'smooth_spline', 'radial_optical', 'bow_z', or 'per_module'"
+            )));
+        }
+    };
+    let refine_mask = match fix {
+        Some(list) => parse_mask(Some(list))?,
+        None => DistortionOptions::default().refine_mask,
+    };
+    let opts = DistortionOptions {
+        model: model_enum,
+        huber_c_px,
+        refine_poni,
+        refine_mask,
+        cv_folds,
+    };
+    let res = py
+        .detach(|| {
+            let refs: Vec<DistortionObservation<'_>> = owned
+                .iter()
+                .map(|(pts, p, cal)| DistortionObservation {
+                    points: pts,
+                    poni: p,
+                    calibrant: cal,
+                })
+                .collect();
+            estimate_distortion_multi(&refs, dim1, dim2, &opts)
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    Ok(PyDistortionResult {
+        inner: res,
+        dim1,
+        dim2,
+    })
 }

@@ -134,6 +134,69 @@ impl Spline {
         }
         Ok(())
     }
+    /// Build a validated Fit2D [`Spline`] from precomputed X (fast/col) and
+    /// Y (slow/row) cubic B-spline surfaces, populating `content` with a
+    /// standard Fit2D `.spline` text representation.
+    pub fn from_surfaces(
+        region: [f64; 4],
+        pixels_um: [f64; 2],
+        grid: f64,
+        x: Surface,
+        y: Surface,
+    ) -> Result<Self, String> {
+        let mut s = Self {
+            region,
+            pixels: pixels_um,
+            grid,
+            x,
+            y,
+            content: String::new(),
+        };
+        s.validate()?;
+        s.content = s.to_fit2d_string();
+        Ok(s)
+    }
+
+    /// Format this spline in the standard Fit2D / pyFAI ASCII `.spline` format.
+    pub fn to_fit2d_string(&self) -> String {
+        use std::fmt::Write;
+        fn fmt14(v: f64) -> String {
+            let clean = if v.abs() < 1e-30 { 0.0 } else { v };
+            let s = format!("{clean:14.6E}");
+            if s.len() == 14 {
+                s
+            } else {
+                format!("{clean:14.5E}")
+            }
+        }
+        fn write_floats(out: &mut String, vals: &[f64]) {
+            for (i, &v) in vals.iter().enumerate() {
+                out.push_str(&fmt14(v));
+                if (i + 1) % 5 == 0 || i + 1 == vals.len() {
+                    out.push('\n');
+                }
+            }
+        }
+        let mut out = String::new();
+        out.push_str("VALID REGION\n");
+        write_floats(&mut out, &self.region);
+        out.push('\n');
+        out.push_str("GRID SPACING, X-PIXEL SIZE, Y-PIXEL SIZE\n");
+        write_floats(&mut out, &[self.grid, self.pixels[0], self.pixels[1]]);
+        out.push('\n');
+        for (label, surf) in [("X-DISTORTION", &self.x), ("Y-DISTORTION", &self.y)] {
+            let _ = writeln!(out, "{label}");
+            let _ = writeln!(out, "{:6}{:6}", surf.x.len(), surf.y.len());
+            let mut all = Vec::with_capacity(surf.x.len() + surf.y.len() + surf.coefficients.len());
+            all.extend_from_slice(&surf.x);
+            all.extend_from_slice(&surf.y);
+            all.extend_from_slice(&surf.coefficients);
+            write_floats(&mut out, &all);
+            out.push('\n');
+        }
+        out
+    }
+
     pub fn displacement(&self, x: f64, y: f64) -> (f64, f64) {
         (self.x.evaluate(x, y), self.y.evaluate(x, y))
     }
@@ -145,8 +208,8 @@ impl Spline {
 }
 impl Surface {
     pub fn evaluate(&self, x: f64, y: f64) -> f64 {
-        let (ix, bx) = basis(&self.x, x);
-        let (iy, by) = basis(&self.y, y);
+        let (ix, bx) = bspline_basis(&self.x, x);
+        let (iy, by) = bspline_basis(&self.y, y);
         let ny = self.y.len() - 4;
         let mut out = 0.;
         for (a, wx) in bx.iter().enumerate() {
@@ -157,7 +220,7 @@ impl Surface {
         out
     }
 }
-fn basis(t: &[f64], value: f64) -> (usize, [f64; 4]) {
+pub(crate) fn bspline_basis(t: &[f64], value: f64) -> (usize, [f64; 4]) {
     let n = t.len() - 4;
     let x = value.clamp(t[3], t[n]);
     let span = if x >= t[n] {

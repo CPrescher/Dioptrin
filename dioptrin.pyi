@@ -33,6 +33,7 @@ __all__ = [
     "AutoCalibrateResult",
     "PolarizationRot3Result",
     "RefineImageResult",
+    "DistortionResult",
     "refine",
     "refine_image",
     "extract_ring_peaks",
@@ -43,6 +44,8 @@ __all__ = [
     "auto_calibrate",
     "auto_calibrate_image",
     "calibrate_rot3_polarization",
+    "estimate_distortion",
+    "estimate_distortion_multi",
     "estimate_ring_center",
     "simulate_diffraction",
 ]
@@ -2439,5 +2442,96 @@ def refine_image(
     Refine an existing ``start`` PONI directly against a 2D diffraction image
     using iterative local-MAD 2D ring-profile peak extraction, Huber L-M, and
     optional post-refinement polarization ``rot3`` calibration.
+    """
+    ...
+
+
+class DistortionResult:
+    """Result of ``estimate_distortion``."""
+
+    @property
+    def poni(self) -> dict[str, float]: ...
+    @property
+    def ponis(self) -> list[dict[str, float]]: ...
+    @property
+    def rms_before_rad(self) -> float: ...
+    @property
+    def rms_after_rad(self) -> float: ...
+    @property
+    def rms_before_px(self) -> float: ...
+    @property
+    def rms_after_px(self) -> float: ...
+    @property
+    def cv_rms_px(self) -> float: ...
+    @property
+    def significant(self) -> bool: ...
+    @property
+    def max_displacement_px(self) -> float: ...
+    @property
+    def n_points_used(self) -> int: ...
+    @property
+    def point_residuals_before_px(self) -> list[float]: ...
+    @property
+    def point_residuals_after_px(self) -> list[float]: ...
+    @property
+    def module_offsets(self) -> list[dict[str, Any]]: ...
+    def displacement_px(self, d1: float, d2: float) -> Tuple[float, float]: ...
+    def dz_m(self, d1: float, d2: float) -> float: ...
+    def to_fit2d_spline(self) -> str: ...
+
+
+def estimate_distortion(
+    points: CalibrationPoints,
+    shape: Tuple[int, int],
+    poni: Union[Integrator, dict[str, float]],
+    calibrant: Calibrant,
+    model: Literal["smooth_spline", "radial_optical", "bow_z", "per_module"] = "smooth_spline",
+    max_order: int = 5,
+    grid_nx: int = 8,
+    grid_ny: int = 8,
+    smoothness: float = 1.0,
+    max_degree: int = 3,
+    module_height: Optional[int] = None,
+    module_width: Optional[int] = None,
+    gap_height: int = 0,
+    gap_width: int = 0,
+    fit_z: bool = False,
+    regularization: float = 1e-2,
+    huber_c_px: float = 1.5,
+    refine_poni: bool = True,
+    fix: Optional[list[str]] = None,
+    cv_folds: int = 5,
+) -> DistortionResult:
+    """
+    Estimate spatial detector distortion from calibration control points and a
+    converged ``poni``.
+    """
+    ...
+
+
+def estimate_distortion_multi(
+    observations: list[Tuple[CalibrationPoints, Union[Integrator, dict[str, float]], Calibrant]],
+    shape: Tuple[int, int],
+    model: Literal["smooth_spline", "radial_optical", "bow_z", "per_module"] = "smooth_spline",
+    max_order: int = 5,
+    grid_nx: int = 8,
+    grid_ny: int = 8,
+    smoothness: float = 1.0,
+    max_degree: int = 3,
+    module_height: Optional[int] = None,
+    module_width: Optional[int] = None,
+    gap_height: int = 0,
+    gap_width: int = 0,
+    fit_z: bool = False,
+    regularization: float = 1e-2,
+    huber_c_px: float = 1.5,
+    refine_poni: bool = True,
+    fix: Optional[list[str]] = None,
+    cv_folds: int = 5,
+) -> DistortionResult:
+    """
+    Jointly estimate a single shared spatial detector distortion field from
+    multiple calibration exposures ``(points, poni, calibrant)`` measured at
+    different detector positions, distances, tilts, or wavelengths.
     """
     ...
