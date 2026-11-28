@@ -304,8 +304,83 @@ pub fn extract_ring_peaks(
         max_rings,
         max_ring_index,
         0,
+        None,
     );
     Ok(pts)
+}
+
+/// Precomputed mask, DoG residual, and local noise grid for repeated ring-peak
+/// extraction across iterative distortion-correction passes without recomputing
+/// image filters on each pass.
+pub(crate) struct PreparedRingImage {
+    dim1: usize,
+    dim2: usize,
+    valid: Vec<bool>,
+    residual: Vec<f64>,
+    noise: LocalNoiseGrid,
+    sigma_r: f64,
+}
+
+impl PreparedRingImage {
+    pub(crate) fn prepare(
+        image: &[f64],
+        mask: Option<&[bool]>,
+        dim1: usize,
+        dim2: usize,
+        explicit_upper: Option<f64>,
+    ) -> Option<Self> {
+        let (valid, _, _) = build_valid_mask(image, mask, dim1, dim2, explicit_upper);
+        let (_smooth, residual, noise, sigma_r) =
+            compute_residual_and_noise(image, &valid, dim1, dim2);
+        if sigma_r < 1e-12 {
+            return None;
+        }
+        Some(Self {
+            dim1,
+            dim2,
+            valid,
+            residual,
+            noise,
+            sigma_r,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn extract_with_distortion(
+        &self,
+        poni: &Poni,
+        calibrant: &Calibrant,
+        half_width_px: usize,
+        n_az: usize,
+        max_rings: Option<usize>,
+        max_ring_index: usize,
+        tangent_half_px: usize,
+        distortion: Option<&super::distortion::DistortionField>,
+    ) -> (CalibrationPoints, usize) {
+        let max_idx = max_ring_index.max(1);
+        let eff_max_rings = match max_rings {
+            Some(k) => k.max(1),
+            None => detector_visible_ring_limit(poni, self.dim1, self.dim2, calibrant)
+                .min(max_idx)
+                .max(1),
+        };
+        extract_ring_peaks_2d_with_tangent(
+            &self.residual,
+            &self.noise,
+            self.sigma_r,
+            &self.valid,
+            self.dim1,
+            self.dim2,
+            poni,
+            calibrant,
+            half_width_px,
+            n_az,
+            eff_max_rings,
+            max_idx,
+            tangent_half_px,
+            distortion,
+        )
+    }
 }
 
 /// Evaluate RMS `2θ` residual (radians) of `poni` against already-assigned
@@ -1233,7 +1308,7 @@ fn extend_to_all_detector_rings(
     for &(hw, huber_c) in &[(6usize, 1.0e-3), (4usize, 7.0e-4)] {
         let (pts, _) = extract_ring_peaks_2d_with_tangent(
             residual, noise, sigma_r, valid, dim1, dim2, &cur_poni, calibrant, hw, n_az, n_det,
-            n_det, 3,
+            n_det, 3, None,
         );
         if pts.len() < 15 {
             break;
@@ -3194,6 +3269,7 @@ fn extract_ring_peaks_2d(
         max_rings,
         max_ring_index,
         0,
+        None,
     )
 }
 
@@ -3404,7 +3480,9 @@ fn extract_ring_peaks_2d_with_tangent(
     max_rings: usize,
     max_ring_index: usize,
     tangent_half_px: usize,
+    distortion: Option<&super::distortion::DistortionField>,
 ) -> (CalibrationPoints, usize) {
+    let tc_dist = distortion.map(|_| crate::geometry::math::TrigonometricConstants::new(poni));
     let tth_list = calibrant.two_theta_rad(poni.wavelength);
     // Precompute local angular spacing to nearest neighboring calibrant ring so
     // the radial search window never jumps onto an adjacent overlapping ring.
@@ -3451,9 +3529,15 @@ fn extract_ring_peaks_2d_with_tangent(
         let dphi = 2.0 * PI / (n_az_ring as f64);
         for a in 0..n_az_ring {
             let phi = dphi * (a as f64);
-            let (d1, d2) = match project_ring_pixel(poni, tth, phi) {
+            let (d1_ideal, d2_ideal) = match project_ring_pixel(poni, tth, phi) {
                 Some(p) => p,
                 None => continue,
+            };
+            let (d1, d2) = match (distortion, tc_dist.as_ref()) {
+                (Some(field), Some(tc)) => {
+                    super::distortion::invert_distortion_pixel(field, poni, tc, d1_ideal, d2_ideal)
+                }
+                _ => (d1_ideal, d2_ideal),
             };
             if d1 < margin
                 || d2 < margin

@@ -47,8 +47,10 @@ pub use auto::{
 pub use calibrant::{Calibrant, CalibrantError};
 pub use center::{RingCenter, RingCenterOptions, estimate_ring_center, fit_circle_3point};
 pub use distortion::{
-    DistortionError, DistortionField, DistortionModel, DistortionObservation, DistortionOptions,
-    DistortionResult, ModuleOffset, estimate_distortion, estimate_distortion_multi,
+    DistortionError, DistortionField, DistortionImageObservation, DistortionImageOptions,
+    DistortionImageResult, DistortionModel, DistortionObservation, DistortionOptions,
+    DistortionResult, ModuleOffset, estimate_distortion, estimate_distortion_image,
+    estimate_distortion_image_multi, estimate_distortion_multi,
 };
 pub use ellipse::{Ellipse, RansacOptions, RansacResult, fit_least_squares, ransac_ellipses};
 pub use grid_search::{
