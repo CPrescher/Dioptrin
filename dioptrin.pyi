@@ -2593,7 +2593,17 @@ def estimate_distortion_image(
 
 
 def estimate_distortion_image_multi(
-    observations: list[Any],
+    observations: list[
+        Union[
+            Tuple[NDArray[np.float64], Union[Integrator, dict[str, float]], Calibrant],
+            Tuple[
+                NDArray[np.float64],
+                Union[Integrator, dict[str, float]],
+                Calibrant,
+                Optional[NDArray[np.bool_]],
+            ],
+        ]
+    ],
     model: Literal["smooth_spline", "radial_optical", "bow_z", "per_module"] = "smooth_spline",
     max_order: int = 5,
     grid_nx: int = 8,

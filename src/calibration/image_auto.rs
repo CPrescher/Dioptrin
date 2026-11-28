@@ -3533,10 +3533,19 @@ fn extract_ring_peaks_2d_with_tangent(
                 Some(p) => p,
                 None => continue,
             };
+            let max_shift_px = (0.04 * dim1.max(dim2) as f64).clamp(16.0, 48.0);
             let (d1, d2) = match (distortion, tc_dist.as_ref()) {
-                (Some(field), Some(tc)) => {
-                    super::distortion::invert_distortion_pixel(field, poni, tc, d1_ideal, d2_ideal)
-                }
+                (Some(field), Some(tc)) => match super::distortion::invert_distortion_pixel(
+                    field,
+                    poni,
+                    tc,
+                    d1_ideal,
+                    d2_ideal,
+                    max_shift_px,
+                ) {
+                    Some(p) => p,
+                    None => continue,
+                },
                 _ => (d1_ideal, d2_ideal),
             };
             if d1 < margin
