@@ -38,9 +38,11 @@
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::detector::Detector;
 use crate::geometry::Geometry;
 use crate::poni::Poni;
 
@@ -101,6 +103,13 @@ pub struct AutoCalibrateImageOptions {
     /// `rot3` is calibrated post-refinement from the azimuthal ring intensity
     /// distribution via [`super::calibrate_rot3_polarization`].
     pub polarization_factor: Option<f64>,
+    /// Optional physical [`Detector`] model (e.g. from a Fit2D `.spline` or
+    /// NeXus `.h5` pixel-corners map). When set, the initial blind center /
+    /// distance / grid search runs on nominal `(pixel1, pixel2)`, and all 2D
+    /// ring extraction, L-M refinement, peak verification, outer-ring
+    /// extension, and polarization `rot3` calibration use the distorted
+    /// detector geometry.
+    pub detector: Option<Arc<Detector>>,
     /// Maximum L-M iterations per refinement pass.
     pub max_iter: usize,
     /// L-M convergence tolerance.
@@ -123,6 +132,7 @@ impl Default for AutoCalibrateImageOptions {
             peak_threshold_sigma: None,
             search_half_width_px: None,
             polarization_factor: None,
+            detector: None,
             max_iter: 200,
             tol: 1e-9,
         }
@@ -213,6 +223,11 @@ pub struct RefineImageOptions {
     /// with `|P| < 0.05` skip `rot3` calibration; non-finite or `|P| > 1`
     /// return `InvalidInput`.
     pub polarization_factor: Option<f64>,
+    /// Optional physical [`Detector`] model (e.g. from a Fit2D `.spline` or
+    /// NeXus `.h5` pixel-corners map). When set, ring peak extraction, L-M
+    /// refinement, peak verification, outer-ring extension, and polarization
+    /// `rot3` calibration all use the distorted detector geometry.
+    pub detector: Option<Arc<Detector>>,
     /// Maximum L-M iterations per pass (default `200`).
     pub max_iter: usize,
     /// L-M convergence tolerance (default `1e-9`).
@@ -232,6 +247,7 @@ impl Default for RefineImageOptions {
             search_half_width_px: None,
             n_passes: 3,
             polarization_factor: None,
+            detector: None,
             max_iter: 200,
             tol: 1e-9,
         }
@@ -284,9 +300,10 @@ pub fn extract_ring_peaks(
         .unwrap_or_else(|| ((dim1.max(dim2) as f64 / 70.0).round() as usize).clamp(10, 24));
     let n_az = options.n_azimuth.clamp(12, 360);
     let max_ring_index = options.max_ring_index.max(1);
+    let detector = options.detector.as_ref();
     let max_rings = match options.max_rings {
         Some(k) => k.max(1),
-        None => detector_visible_ring_limit(poni, dim1, dim2, calibrant)
+        None => detector_visible_ring_limit(poni, dim1, dim2, calibrant, detector)
             .min(max_ring_index)
             .max(1),
     };
@@ -304,7 +321,7 @@ pub fn extract_ring_peaks(
         max_rings,
         max_ring_index,
         0,
-        None,
+        detector.map(|d| PixelWarp::Detector(d.as_ref())),
     );
     Ok(pts)
 }
@@ -360,7 +377,7 @@ impl PreparedRingImage {
         let max_idx = max_ring_index.max(1);
         let eff_max_rings = match max_rings {
             Some(k) => k.max(1),
-            None => detector_visible_ring_limit(poni, self.dim1, self.dim2, calibrant)
+            None => detector_visible_ring_limit(poni, self.dim1, self.dim2, calibrant, None)
                 .min(max_idx)
                 .max(1),
         };
@@ -378,8 +395,74 @@ impl PreparedRingImage {
             eff_max_rings,
             max_idx,
             tangent_half_px,
-            distortion,
+            distortion.map(PixelWarp::Distortion),
         )
+    }
+}
+
+/// Optional pixel-to-physical distortion mapping used to invert ideal flat
+/// ring projections into actual image pixel coordinates during 2D peak
+/// extraction.
+#[derive(Clone, Copy)]
+enum PixelWarp<'a> {
+    Distortion(&'a super::distortion::DistortionField),
+    Detector(&'a Detector),
+}
+
+fn validate_detector(
+    detector: Option<&Arc<Detector>>,
+    dim1: usize,
+    dim2: usize,
+) -> Result<(), AutoCalibrateError> {
+    if let Some(det) = detector {
+        Geometry::new(dim1, dim2, Poni::new())
+            .with_detector(Arc::clone(det))
+            .map_err(AutoCalibrateError::InvalidInput)?;
+    }
+    Ok(())
+}
+
+fn make_geometry(
+    dim1: usize,
+    dim2: usize,
+    poni: Poni,
+    detector: Option<&Arc<Detector>>,
+) -> Geometry {
+    let geom = Geometry::new(dim1, dim2, poni);
+    match detector {
+        Some(det) => geom
+            .with_detector(Arc::clone(det))
+            .expect("detector already validated against image dimensions"),
+        None => geom,
+    }
+}
+
+/// Compute detector-frame coordinates `(p1, p2, p3)` in metres for pixel
+/// `(d1, d2)` (0-based pixel center at `(d1 + 0.5, d2 + 0.5)`), accounting for
+/// an optional physical `Detector` model.
+#[inline]
+fn pixel_p123(
+    detector: Option<&Arc<Detector>>,
+    dim1: usize,
+    dim2: usize,
+    poni: &Poni,
+    d1: f64,
+    d2: f64,
+) -> (f64, f64, f64) {
+    match detector {
+        Some(det) => {
+            let pos = det.position([dim1, dim2], d1 + 0.5, d2 + 0.5);
+            (
+                pos[1] - poni.poni1,
+                pos[2] - poni.poni2,
+                poni.distance + pos[0],
+            )
+        }
+        None => (
+            (d1 + 0.5) * poni.pixel1 - poni.poni1,
+            (d2 + 0.5) * poni.pixel2 - poni.poni2,
+            poni.distance,
+        ),
     }
 }
 
@@ -391,14 +474,12 @@ fn eval_points_rms_rad(
     dim2: usize,
     points: &CalibrationPoints,
     calibrant: &Calibrant,
+    detector: Option<&Arc<Detector>>,
 ) -> Option<f64> {
     let tths = calibrant.two_theta_rad(poni.wavelength);
-    let geom = Geometry::new(dim1, dim2, poni.clone());
     let tc = crate::geometry::math::TrigonometricConstants::new(poni);
-    let p3 = poni.distance;
     let mut sum2 = 0.0;
     let mut cnt = 0usize;
-    let _ = geom;
     for i in 0..points.len() {
         let Some(rk) = points.ring[i] else {
             continue;
@@ -406,8 +487,7 @@ fn eval_points_rms_rad(
         let Some(Some(target)) = tths.get(rk) else {
             continue;
         };
-        let p1 = (points.d1[i] + 0.5) * poni.pixel1 - poni.poni1;
-        let p2 = (points.d2[i] + 0.5) * poni.pixel2 - poni.poni2;
+        let (p1, p2, p3) = pixel_p123(detector, dim1, dim2, poni, points.d1[i], points.d2[i]);
         let x1 = crate::geometry::math::f_x1(&p1, &p2, &p3, &tc);
         let x2 = crate::geometry::math::f_x2(&p1, &p2, &p3, &tc);
         let x3 = crate::geometry::math::f_x3(&p1, &p2, &p3, &tc);
@@ -457,6 +537,7 @@ pub fn refine_image(
     let n_az = options.n_azimuth.clamp(12, 360);
     let max_ring_index = options.max_ring_index.max(1);
     let base_max_rings = options.max_rings.map(|k| k.max(1)).unwrap_or(16);
+    let detector = options.detector.as_ref();
     let base_hw = options
         .search_half_width_px
         .unwrap_or_else(|| ((dim1.max(dim2) as f64 / 70.0).round() as usize).clamp(10, 24));
@@ -495,6 +576,7 @@ pub fn refine_image(
                 n_az,
                 pass_rings,
                 max_ring_index,
+                detector,
             );
             if pts.len() < 15 {
                 break;
@@ -508,7 +590,7 @@ pub fn refine_image(
                 max_iter: options.max_iter,
                 tol: options.tol,
             };
-            let geom = Geometry::new(dim1, dim2, p.clone());
+            let geom = make_geometry(dim1, dim2, p.clone(), detector);
             match refine(&geom, &pts, calibrant, &cal_opts) {
                 Ok(res) if res.poni.distance.is_finite() && res.poni.distance > 0.005 => {
                     let nr = count_supported_rings(&res.assignments, 5);
@@ -553,7 +635,7 @@ pub fn refine_image(
         if rel_d_shift > 0.15 || dp1_shift.max(dp2_shift) > max_px_shift {
             return false;
         }
-        if let Some(s_rms) = eval_points_rms_rad(start_poni, dim1, dim2, pts, calibrant)
+        if let Some(s_rms) = eval_points_rms_rad(start_poni, dim1, dim2, pts, calibrant, detector)
             && s_rms < 1.5e-3
             && cal.rms_rad > s_rms * 1.5 + 2.0e-4
         {
@@ -569,6 +651,7 @@ pub fn refine_image(
                 calibrant,
                 2.0e-3,
                 max_ring_index,
+                detector,
             );
             if m.inlier_frac < 0.40 || m.ring_recall < 0.55 || m.inlier_rms_rad > 1.2e-3 {
                 return false;
@@ -600,7 +683,7 @@ pub fn refine_image(
         let mut pk_poni = start_poni.clone();
         let mut pk_ok = false;
         for &(assign_tol, huber_c) in &[(1.2e-2, 3.0e-3), (4.5e-3, 1.5e-3), (2.5e-3, 8.0e-4)] {
-            let geom = Geometry::new(dim1, dim2, pk_poni.clone());
+            let geom = make_geometry(dim1, dim2, pk_poni.clone(), detector);
             let opts_pk = CalibrationOptions {
                 mask: refine_mask,
                 loss: Loss::Huber { c: huber_c },
@@ -661,6 +744,7 @@ pub fn refine_image(
             n_az,
             options.max_iter,
             options.tol,
+            detector,
         )
     {
         calibration = ext_cal;
@@ -670,13 +754,17 @@ pub fn refine_image(
 
     // Compute `start_rms_rad` on the final returned `points` so it is directly
     // comparable to `calibration.rms_rad`.
-    let start_rms_rad = eval_points_rms_rad(start_poni, dim1, dim2, &points, calibrant);
+    let start_rms_rad = eval_points_rms_rad(start_poni, dim1, dim2, &points, calibrant, detector);
 
     let mut rot3_calibration = None;
     if let Some(pf) = options.polarization_factor
         && pf.abs() >= 0.05
     {
         let inv_mask: Vec<bool> = valid.iter().map(|&v| !v).collect();
+        let pol_opts = super::polarization::PolarizationRot3Options {
+            detector: options.detector.clone(),
+            ..Default::default()
+        };
         if let Ok(pol) = super::polarization::calibrate_rot3_polarization(
             image,
             dim1,
@@ -685,7 +773,7 @@ pub fn refine_image(
             &calibration.poni,
             calibrant,
             pf,
-            &super::polarization::PolarizationRot3Options::default(),
+            &pol_opts,
         ) {
             if pol.reliable {
                 calibration.poni.rot3 = pol.rot3_rad;
@@ -763,6 +851,7 @@ fn validate_image_and_poni(
             "poni has non-finite or non-positive distance, wavelength, or pixel size".into(),
         ));
     }
+    validate_detector(options.detector.as_ref(), dim1, dim2)?;
     Ok(())
 }
 
@@ -923,6 +1012,7 @@ fn auto_calibrate_image_impl(
             "starting_distance must be finite and positive, got {d0}"
         )));
     }
+    validate_detector(options.detector.as_ref(), dim1, dim2)?;
 
     let (d_min, d_max) = distance_bounds(options);
 
@@ -1019,6 +1109,7 @@ fn auto_calibrate_image_impl(
                 calibrant,
                 VERIFY_TOL_RAD,
                 options.max_ring_index,
+                options.detector.as_ref(),
             )
         })
         .unwrap_or_default();
@@ -1097,6 +1188,7 @@ fn auto_calibrate_image_impl(
             calibrant,
             VERIFY_TOL_RAD,
             options.max_ring_index,
+            options.detector.as_ref(),
         );
         let grid_verified = is_verified_calibration(
             &grid_res,
@@ -1229,9 +1321,9 @@ fn detector_visible_ring_limit(
     dim1: usize,
     dim2: usize,
     calibrant: &Calibrant,
+    detector: Option<&Arc<Detector>>,
 ) -> usize {
     let tc = crate::geometry::math::TrigonometricConstants::new(poni);
-    let p3 = poni.distance;
     let r_hi = dim1.saturating_sub(1) as f64;
     let c_hi = dim2.saturating_sub(1) as f64;
     let r_mid = 0.5 * r_hi;
@@ -1248,8 +1340,7 @@ fn detector_visible_ring_limit(
     ];
     let mut tth_max = 0.0_f64;
     for &(r, c) in &probes {
-        let p1 = (r + 0.5) * poni.pixel1 - poni.poni1;
-        let p2 = (c + 0.5) * poni.pixel2 - poni.poni2;
+        let (p1, p2, p3) = pixel_p123(detector, dim1, dim2, poni, r, c);
         let x1 = crate::geometry::math::f_x1(&p1, &p2, &p3, &tc);
         let x2 = crate::geometry::math::f_x2(&p1, &p2, &p3, &tc);
         let x3 = crate::geometry::math::f_x3(&p1, &p2, &p3, &tc);
@@ -1294,11 +1385,13 @@ fn extend_to_all_detector_rings(
     n_az: usize,
     max_iter: usize,
     tol: f64,
+    detector: Option<&Arc<Detector>>,
 ) -> Option<(CalibrationResult, CalibrationPoints, usize)> {
     // 2θ is invariant to rot3; never let rot3 drift during ring extension.
     refine_mask.rot3 = false;
 
-    let n_det = detector_visible_ring_limit(&prev.poni, dim1, dim2, calibrant).min(max_ring_index);
+    let n_det = detector_visible_ring_limit(&prev.poni, dim1, dim2, calibrant, detector)
+        .min(max_ring_index);
     if n_det <= prev_n_rings {
         return None;
     }
@@ -1307,13 +1400,25 @@ fn extend_to_all_detector_rings(
     let mut final_res: Option<(CalibrationResult, CalibrationPoints, usize)> = None;
     for &(hw, huber_c) in &[(6usize, 1.0e-3), (4usize, 7.0e-4)] {
         let (pts, _) = extract_ring_peaks_2d_with_tangent(
-            residual, noise, sigma_r, valid, dim1, dim2, &cur_poni, calibrant, hw, n_az, n_det,
-            n_det, 3, None,
+            residual,
+            noise,
+            sigma_r,
+            valid,
+            dim1,
+            dim2,
+            &cur_poni,
+            calibrant,
+            hw,
+            n_az,
+            n_det,
+            n_det,
+            3,
+            detector.map(|d| PixelWarp::Detector(d.as_ref())),
         );
         if pts.len() < 15 {
             break;
         }
-        let geom = Geometry::new(dim1, dim2, cur_poni.clone());
+        let geom = make_geometry(dim1, dim2, cur_poni.clone(), detector);
         let cal_opts = CalibrationOptions {
             mask: refine_mask,
             loss: Loss::Huber { c: huber_c },
@@ -1340,8 +1445,8 @@ fn extend_to_all_detector_rings(
     let inner_ok = match prev_points {
         Some(pp) => {
             match (
-                eval_points_rms_rad(&prev.poni, dim1, dim2, pp, calibrant),
-                eval_points_rms_rad(&ext.poni, dim1, dim2, pp, calibrant),
+                eval_points_rms_rad(&prev.poni, dim1, dim2, pp, calibrant, detector),
+                eval_points_rms_rad(&ext.poni, dim1, dim2, pp, calibrant, detector),
             ) {
                 (Some(r_prev), Some(r_ext)) => r_ext <= (r_prev * 1.25).max(r_prev + 1.0e-4),
                 _ => true,
@@ -1375,6 +1480,7 @@ fn finalize_auto_calibration(
     options: &AutoCalibrateImageOptions,
     on_progress: &mut dyn FnMut(AutoCalibrateProgress) -> bool,
 ) -> (CalibrationResult, AutoCalibrateDiagnostics) {
+    let detector = options.detector.as_ref();
     if let Some((ext_res, _ext_pts, ext_rings)) = extend_to_all_detector_rings(
         &res,
         None,
@@ -1391,6 +1497,7 @@ fn finalize_auto_calibration(
         72,
         options.max_iter,
         options.tol,
+        detector,
     ) {
         // Re-verify against the detected peaks so outer-ring extension can
         // never degrade the already-verified inner calibration.
@@ -1403,6 +1510,7 @@ fn finalize_auto_calibration(
             calibrant,
             2.0e-3,
             options.max_ring_index,
+            detector,
         );
         let non_regression = ext_metrics.inlier_rms_rad
             <= (prev_metrics.inlier_rms_rad * 1.15).max(prev_metrics.inlier_rms_rad + 5.0e-5)
@@ -1422,6 +1530,10 @@ fn finalize_auto_calibration(
         && pf.abs() <= 1.0
     {
         let inv_mask: Vec<bool> = valid.iter().map(|&v| !v).collect();
+        let pol_opts = super::polarization::PolarizationRot3Options {
+            detector: options.detector.clone(),
+            ..Default::default()
+        };
         if let Ok(pol) = super::polarization::calibrate_rot3_polarization(
             image,
             dim1,
@@ -1430,7 +1542,7 @@ fn finalize_auto_calibration(
             &res.poni,
             calibrant,
             pf,
-            &super::polarization::PolarizationRot3Options::default(),
+            &pol_opts,
         ) && pol.reliable
         {
             res.poni.rot3 = pol.rot3_rad;
@@ -1553,6 +1665,7 @@ fn evaluate_peak_match(
     calibrant: &Calibrant,
     tol_rad: f64,
     max_ring_index: usize,
+    detector: Option<&Arc<Detector>>,
 ) -> PeakMatchMetrics {
     if peaks.is_empty() {
         return PeakMatchMetrics::default();
@@ -1622,9 +1735,7 @@ fn evaluate_peak_match(
     let mut obs_tths = Vec::with_capacity(peaks.len());
 
     for &(d1, d2) in peaks {
-        let p1 = (d1 + 0.5) * poni.pixel1 - poni.poni1;
-        let p2 = (d2 + 0.5) * poni.pixel2 - poni.poni2;
-        let p3 = poni.distance;
+        let (p1, p2, p3) = pixel_p123(detector, dim1, dim2, poni, d1, d2);
         let x = p1 * r[0][0] + p2 * r[0][1] + p3 * r[0][2];
         let y = p1 * r[1][0] + p2 * r[1][1] + p3 * r[1][2];
         let z = p1 * r[2][0] + p2 * r[2][1] + p3 * r[2][2];
@@ -1668,9 +1779,26 @@ fn evaluate_peak_match(
     let tth_hi = obs_tths[((n_obs * 49) / 50).min(n_obs - 1)];
 
     let min_hits_for_ring = 2usize;
+    let tc_det = detector.map(|_| crate::geometry::math::TrigonometricConstants::new(poni));
+    let max_shift_px = (0.04 * dim1.max(dim2) as f64).clamp(16.0, 48.0);
+    let map_ideal = |d1_i: f64, d2_i: f64| -> Option<(f64, f64)> {
+        match (detector, tc_det.as_ref()) {
+            (Some(det), Some(tc)) => super::distortion::invert_detector_pixel(
+                det.as_ref(),
+                dim1,
+                dim2,
+                poni,
+                tc,
+                d1_i,
+                d2_i,
+                max_shift_px,
+            ),
+            _ => Some((d1_i, d2_i)),
+        }
+    };
     // Direct beam position in pixel coordinates (for checking whether an inner
     // missing ring lies well outside any central beamstop).
-    let beam_px = project_ring_pixel(poni, 0.0, 0.0);
+    let beam_px = project_ring_pixel(poni, 0.0, 0.0).and_then(|(b1, b2)| map_ideal(b1, b2));
     let mut visible_w = 0.0_f64;
     let mut hit_w = 0.0_f64;
     let mut n_checked = 0usize;
@@ -1686,7 +1814,8 @@ fn evaluate_peak_match(
             let mut n_valid_az = 0usize;
             for a in 0..16 {
                 let phi = 2.0 * PI * (a as f64) / 16.0;
-                if let Some((d1, d2)) = project_ring_pixel(poni, tth_k, phi)
+                if let Some((d1, d2)) =
+                    project_ring_pixel(poni, tth_k, phi).and_then(|(r, c)| map_ideal(r, c))
                     && d1 >= 4.0
                     && d2 >= 4.0
                     && d1 < (dim1 as f64 - 5.0)
@@ -3254,6 +3383,7 @@ fn extract_ring_peaks_2d(
     n_az: usize,
     max_rings: usize,
     max_ring_index: usize,
+    detector: Option<&Arc<Detector>>,
 ) -> (CalibrationPoints, usize) {
     extract_ring_peaks_2d_with_tangent(
         residual,
@@ -3269,7 +3399,7 @@ fn extract_ring_peaks_2d(
         max_rings,
         max_ring_index,
         0,
-        None,
+        detector.map(|d| PixelWarp::Detector(d.as_ref())),
     )
 }
 
@@ -3480,9 +3610,24 @@ fn extract_ring_peaks_2d_with_tangent(
     max_rings: usize,
     max_ring_index: usize,
     tangent_half_px: usize,
-    distortion: Option<&super::distortion::DistortionField>,
+    warp: Option<PixelWarp<'_>>,
 ) -> (CalibrationPoints, usize) {
-    let tc_dist = distortion.map(|_| crate::geometry::math::TrigonometricConstants::new(poni));
+    let tc_warp = warp.map(|_| crate::geometry::math::TrigonometricConstants::new(poni));
+    let (orient_s1, orient_s2) = match warp {
+        Some(PixelWarp::Detector(det)) => (
+            if matches!(det.orientation, 1 | 2) {
+                -1.0
+            } else {
+                1.0
+            },
+            if matches!(det.orientation, 1 | 4) {
+                -1.0
+            } else {
+                1.0
+            },
+        ),
+        _ => (1.0, 1.0),
+    };
     let tth_list = calibrant.two_theta_rad(poni.wavelength);
     // Precompute local angular spacing to nearest neighboring calibrant ring so
     // the radial search window never jumps onto an adjacent overlapping ring.
@@ -3534,18 +3679,35 @@ fn extract_ring_peaks_2d_with_tangent(
                 None => continue,
             };
             let max_shift_px = (0.04 * dim1.max(dim2) as f64).clamp(16.0, 48.0);
-            let (d1, d2) = match (distortion, tc_dist.as_ref()) {
-                (Some(field), Some(tc)) => match super::distortion::invert_distortion_pixel(
-                    field,
-                    poni,
-                    tc,
-                    d1_ideal,
-                    d2_ideal,
-                    max_shift_px,
-                ) {
-                    Some(p) => p,
-                    None => continue,
-                },
+            let (d1, d2) = match (warp, tc_warp.as_ref()) {
+                (Some(PixelWarp::Distortion(field)), Some(tc)) => {
+                    match super::distortion::invert_distortion_pixel(
+                        field,
+                        poni,
+                        tc,
+                        d1_ideal,
+                        d2_ideal,
+                        max_shift_px,
+                    ) {
+                        Some(p) => p,
+                        None => continue,
+                    }
+                }
+                (Some(PixelWarp::Detector(det)), Some(tc)) => {
+                    match super::distortion::invert_detector_pixel(
+                        det,
+                        dim1,
+                        dim2,
+                        poni,
+                        tc,
+                        d1_ideal,
+                        d2_ideal,
+                        max_shift_px,
+                    ) {
+                        Some(p) => p,
+                        None => continue,
+                    }
+                }
                 _ => (d1_ideal, d2_ideal),
             };
             if d1 < margin
@@ -3563,8 +3725,8 @@ fn extract_ring_peaks_2d_with_tangent(
                 (Some(hi), Some(lo)) => (hi, lo),
                 _ => continue,
             };
-            let du1 = p_hi.0 - p_lo.0;
-            let du2 = p_hi.1 - p_lo.1;
+            let du1 = (p_hi.0 - p_lo.0) * orient_s1;
+            let du2 = (p_hi.1 - p_lo.1) * orient_s2;
             let norm = du1.hypot(du2);
             if norm < 1e-9 {
                 continue;
@@ -3880,6 +4042,7 @@ fn iterative_2d_refine(
     let mut current_poni = init_poni;
     let mut best_result: Option<(CalibrationResult, usize)> = None;
 
+    let detector = options.detector.as_ref();
     for &(half_w, huber_c, n_az, max_rings) in passes {
         let (pts, n_rings) = extract_ring_peaks_2d(
             residual,
@@ -3894,11 +4057,12 @@ fn iterative_2d_refine(
             n_az,
             max_rings,
             max_ring_index,
+            detector,
         );
         if pts.len() < 15 || n_rings < 2 {
             break;
         }
-        let geom = Geometry::new(dim1, dim2, current_poni.clone());
+        let geom = make_geometry(dim1, dim2, current_poni.clone(), detector);
         let mut mask = options.refine_mask;
         // 2θ is invariant to rot3; never let rot3 drift from finite-difference
         // noise during L-M refinement (rot3 is calibrated via polarization).
@@ -3950,8 +4114,9 @@ fn refine_on_detected_peaks(
     }
     let mut current = init_poni;
     let mut last: Option<(CalibrationResult, usize)> = None;
+    let detector = options.detector.as_ref();
     for &(assign_tol, huber_c) in &[(1.0e-2, 3.0e-3), (4.0e-3, 1.5e-3), (2.5e-3, 8.0e-4)] {
-        let geom = Geometry::new(dim1, dim2, current.clone());
+        let geom = make_geometry(dim1, dim2, current.clone(), detector);
         let opts = CalibrationOptions {
             mask: options.refine_mask,
             loss: Loss::Huber { c: huber_c },
@@ -4208,6 +4373,7 @@ where
                 calibrant,
                 2.0e-3,
                 options.max_ring_index,
+                options.detector.as_ref(),
             );
             let cur_ok =
                 is_verified_calibration(&res, n_rings, &m, peaks.len(), d_min, d_max, has_hint);
@@ -4432,8 +4598,9 @@ where
     };
 
     let max_rot_rad = 60.0_f64.to_radians();
+    let detector = options.detector.as_ref();
     let refine_and_score = |start_poni: &Poni| -> Option<(CalibrationResult, f64)> {
-        let geom = Geometry::new(dim1, dim2, start_poni.clone());
+        let geom = make_geometry(dim1, dim2, start_poni.clone(), detector);
         let res_coarse = refine(&geom, &pts, calibrant, &refine_opts_coarse).ok()?;
         if !res_coarse.poni.distance.is_finite()
             || res_coarse.poni.distance <= 0.005
@@ -4442,7 +4609,7 @@ where
         {
             return None;
         }
-        let geom_fine = Geometry::new(dim1, dim2, res_coarse.poni.clone());
+        let geom_fine = make_geometry(dim1, dim2, res_coarse.poni.clone(), detector);
         let res = refine(&geom_fine, &pts, calibrant, &refine_opts_fine)
             .ok()
             .filter(|r| {
@@ -4462,6 +4629,7 @@ where
             calibrant,
             2.0e-3,
             options.max_ring_index,
+            detector,
         );
         let eff_rms = res.rms_rad + 0.35 * m.inlier_rms_rad;
         let score = (m.inlier_frac * m.ring_recall.max(0.05).powi(2)) / (eff_rms + 2.0e-4);
@@ -4560,6 +4728,7 @@ where
             calibrant,
             2.0e-3,
             options.max_ring_index,
+            detector,
         );
         let eff_rms = polished.rms_rad + 0.35 * m.inlier_rms_rad;
         let pol_score = (m.inlier_frac * m.ring_recall.max(0.05).powi(2)) / (eff_rms + 2.0e-4);
