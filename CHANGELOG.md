@@ -5,6 +5,48 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-11-28
+
+### Added
+
+- **Spatial detector distortion estimation** (`src/calibration/distortion.rs`;
+  Python: `dioptrin.estimate_distortion`, `dioptrin.estimate_distortion_multi`,
+  `dioptrin.DistortionResult`):
+  - Supports four distortion models under `DistortionModel`:
+    - `RadialOptical { max_order }` — optical/taper pincushion/barrel (`r³, r⁵, r⁷`)
+      plus anisotropic harmonic terms orthogonal to rigid PONI modes.
+    - `SmoothSpline { grid_nx, grid_ny, smoothness }` — regularized 2D cubic
+      tensor-product B-spline displacement `(δd₁, δd₂)` directly matching
+      `detector::spline::Spline`.
+    - `BowZ { max_degree, smoothness }` — smooth out-of-plane detector curvature
+      `δz(d₁, d₂)` (degree `2..=5`) for large flat panels.
+    - `PerModule { module_height, module_width, gap_height, gap_width, fit_z, regularization }` —
+      rigid per-tile `(Δd₁, Δd₂, Δz)` offsets for multi-module detectors
+      (Pilatus, Eiger, Jungfrau).
+  - Supports **multi-exposure joint estimation** (`estimate_distortion_multi`)
+    across multiple detector positions, distances, tilts, or wavelengths sharing
+    one physical detector distortion field while independently refining each
+    exposure's `Poni` (breaking single-position tangential and rigid-PONI
+    degeneracies).
+  - Includes Huber IRLS with lower-triangle normal assembly, alternating rigid
+    PONI re-refinement (`rot3` locked, including `dz_m` coupling), Rayon-parallel
+    K-fold cross-validation (`cv_rms_px` & `significant`), per-point before/after
+    radial residuals, `DistortionField::to_spline`, `DistortionField::to_detector`
+    (`Spline` or Rayon-parallel 3D `PixelMap::Corners`), and Python NumPy
+    `displacement_grid()` / `dz_grid()` exporters.
+- **Iterative distorted-trajectory image re-picking**
+  (`estimate_distortion_image`, `estimate_distortion_image_multi`,
+  `DistortionImageObservation`, `DistortionImageOptions`,
+  `DistortionImageResult`; Python: `dioptrin.estimate_distortion_image`,
+  `dioptrin.estimate_distortion_image_multi`, `dioptrin.DistortionImageResult`):
+  - Precomputes mask, DoG residual, and `LocalNoiseGrid` once per image, then
+    iteratively re-projects rings through the damped inverse of the current
+    `DistortionField` across shrinking search windows (`8 → 6 → 4 px`) so outer
+    rings with large (> 4 px) corner distortion are pulled in cleanly.
+- **Fit2D `.spline` serialization** in `src/detector/spline.rs`: added
+  `Spline::from_surfaces` and `Spline::to_fit2d_string` (round-trip compatible
+  with `Spline::parse`, pyFAI, and Fit2D).
+
 ## [0.19.1] - 2026-11-28
 
 ### Added
