@@ -769,6 +769,13 @@ pub fn auto_calibrate_image_with_progress<F>(
 where
     F: FnMut(AutoCalibrateProgress) -> bool,
 {
+    // 2θ residuals are invariant under rot3 (rotation around the incident
+    // beam), so leaving rot3 free in L-M introduces a zero Jacobian column
+    // that drifts rot3 randomly from finite-difference noise. Always keep
+    // rot3 locked during 2θ refinement; post-refinement polarization
+    // calibration (`polarization_factor`) updates rot3 when reliable.
+    let mut locked_options = options.clone();
+    locked_options.refine_mask.rot3 = false;
     auto_calibrate_image_impl(
         image,
         dim1,
@@ -778,7 +785,7 @@ where
         wavelength_m,
         pixel1,
         pixel2,
-        options,
+        &locked_options,
         &mut on_progress,
         true,
     )
@@ -3193,6 +3200,187 @@ fn extract_ring_peaks_2d(
 /// Like [`extract_ring_peaks_2d`], with optional azimuthal tangent averaging
 /// (`2 * tangent_half_px + 1` parallel rays spaced 1.5 px along the ring
 /// tangent) to boost faint outer-ring SNR by `√(n_taps)` without radial blur.
+/// Scan one azimuthal sector `[phi_center - 0.43·dphi, phi_center + 0.43·dphi]`
+/// for a standout unsaturated Bragg spot and, if found, return its 2D sub-pixel
+/// center `(d1, d2)`. Returns `None` on smooth continuous rings (so the caller
+/// keeps the uniform sector-center ray) or when a candidate touches masked /
+/// saturated pixels.
+#[allow(clippy::too_many_arguments)]
+fn try_lock_sector_spot(
+    residual: &[f64],
+    noise: &LocalNoiseGrid,
+    valid: &[bool],
+    dim1: usize,
+    dim2: usize,
+    poni: &Poni,
+    tth: f64,
+    phi_center: f64,
+    dphi: f64,
+    r_ring_px: f64,
+    w_eff: usize,
+    margin: f64,
+) -> Option<(f64, f64)> {
+    let arc_px = r_ring_px * dphi;
+    if arc_px < 6.0 || w_eff < 2 {
+        return None;
+    }
+    let n_sub = (((0.86 * arc_px) / 2.0).round().clamp(3.0, 23.0) as usize) | 1;
+    let half_span = 0.43 * dphi;
+    let step_phi = (2.0 * half_span) / (n_sub - 1) as f64;
+    let w_scan = w_eff.min(3) as isize;
+    let delta = 1e-4;
+
+    let mut sub_vals: Vec<f64> = Vec::with_capacity(n_sub);
+    let mut best_v = f64::NEG_INFINITY;
+    let mut best_cand: Option<(f64, f64, f64, f64, f64)> = None; // (d1, d2, u1, u2, s_peak)
+
+    for j in 0..n_sub {
+        let phi_j = phi_center - half_span + (j as f64) * step_phi;
+        let (p1, p2) = match project_ring_pixel(poni, tth, phi_j) {
+            Some(p) => p,
+            None => continue,
+        };
+        if p1 < margin
+            || p2 < margin
+            || p1 > (dim1 as f64 - 1.0 - margin)
+            || p2 > (dim2 as f64 - 1.0 - margin)
+        {
+            continue;
+        }
+        let (p_hi, p_lo) = match (
+            project_ring_pixel(poni, tth + delta, phi_j),
+            project_ring_pixel(poni, (tth - delta).max(1e-5), phi_j),
+        ) {
+            (Some(hi), Some(lo)) => (hi, lo),
+            _ => continue,
+        };
+        let du1 = p_hi.0 - p_lo.0;
+        let du2 = p_hi.1 - p_lo.1;
+        let norm = du1.hypot(du2);
+        if norm < 1e-9 {
+            continue;
+        }
+        let u1 = du1 / norm;
+        let u2 = du2 / norm;
+
+        // Require all radial taps in [-w_scan, +w_scan] to be valid so
+        // saturated spot cores and detector gaps are skipped.
+        let mut ray_best_v = f64::NEG_INFINITY;
+        let mut ray_best_s = 0.0_f64;
+        let mut ray_ok = true;
+        for s in -w_scan..=w_scan {
+            let sd = s as f64;
+            match sample_bilinear_valid(residual, valid, dim1, dim2, p1 + sd * u1, p2 + sd * u2) {
+                Some(v) => {
+                    if v > ray_best_v {
+                        ray_best_v = v;
+                        ray_best_s = sd;
+                    }
+                }
+                None => {
+                    ray_ok = false;
+                    break;
+                }
+            }
+        }
+        if !ray_ok {
+            continue;
+        }
+        sub_vals.push(ray_best_v);
+        if ray_best_v > best_v {
+            best_v = ray_best_v;
+            best_cand = Some((p1, p2, u1, u2, ray_best_s));
+        }
+    }
+
+    if sub_vals.len() < 3 {
+        return None;
+    }
+    let (bp1, bp2, u1, u2, s_init) = best_cand?;
+    let mid = sub_vals.len() / 2;
+    sub_vals.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+    let sec_med = sub_vals[mid];
+    let (m_loc, s_loc) = noise.at_unclamped(bp1, bp2);
+
+    // Only lock onto the sector peak when it is a standout Bragg spot
+    // (smooth continuous rings stay on the uniform sector-center ray).
+    if (best_v - m_loc) < 5.0 * s_loc || (best_v - m_loc) <= 2.2 * (sec_med - m_loc).max(s_loc) {
+        return None;
+    }
+
+    // Refine tangent position along a 7-tap 1 px strip through the candidate
+    // spot; require all 7 taps valid so halos next to saturated cores reject.
+    let t1 = -u2;
+    let t2 = u1;
+    let c1 = bp1 + s_init * u1;
+    let c2 = bp2 + s_init * u2;
+    let mut t_vals = [0.0_f64; 7];
+    let mut best_ti = 3usize;
+    let mut best_tv = f64::NEG_INFINITY;
+    for (ti, slot) in t_vals.iter_mut().enumerate() {
+        let td = (ti as isize - 3) as f64;
+        let v = sample_bilinear_valid(residual, valid, dim1, dim2, c1 + td * t1, c2 + td * t2)?;
+        *slot = v;
+        if v > best_tv {
+            best_tv = v;
+            best_ti = ti;
+        }
+    }
+    if best_ti == 0 || best_ti == 6 {
+        return None;
+    }
+    let tm = t_vals[best_ti - 1];
+    let t0 = t_vals[best_ti];
+    let tp = t_vals[best_ti + 1];
+    let tden = tm - 2.0 * t0 + tp;
+    let tsub = if tden.abs() > 1e-12 {
+        (0.5 * (tm - tp) / tden).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    let t_off = (best_ti as isize - 3) as f64 + tsub;
+
+    // Full single-ray radial refinement through the snapped spot center.
+    let sc1 = bp1 + t_off * t1;
+    let sc2 = bp2 + t_off * t2;
+    let w = w_eff as isize;
+    let mut r_line = Vec::with_capacity(2 * w_eff + 1);
+    let mut r_best_idx = 0usize;
+    let mut r_best_v = f64::NEG_INFINITY;
+    let mut r_min_v = f64::INFINITY;
+    for s in -w..=w {
+        let sd = s as f64;
+        let v = sample_bilinear_valid(residual, valid, dim1, dim2, sc1 + sd * u1, sc2 + sd * u2)?;
+        if v > r_best_v {
+            r_best_v = v;
+            r_best_idx = r_line.len();
+        }
+        if v < r_min_v {
+            r_min_v = v;
+        }
+        r_line.push(v);
+    }
+    if r_line.len() < 5
+        || r_best_idx == 0
+        || r_best_idx + 1 >= r_line.len()
+        || (r_best_v - m_loc) < 5.0 * s_loc
+        || (r_best_v - r_min_v) < 3.0 * s_loc
+    {
+        return None;
+    }
+    let rm = r_line[r_best_idx - 1];
+    let r0 = r_line[r_best_idx];
+    let rp = r_line[r_best_idx + 1];
+    let rden = rm - 2.0 * r0 + rp;
+    let rsub = if rden.abs() > 1e-12 {
+        (0.5 * (rm - rp) / rden).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    let s_final = (r_best_idx as isize - w) as f64 + rsub;
+    Some((sc1 + s_final * u1, sc2 + s_final * u2))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn extract_ring_peaks_2d_with_tangent(
     residual: &[f64],
@@ -3251,8 +3439,9 @@ fn extract_ring_peaks_2d_with_tangent(
             .round()
             .clamp(n_az_min, 360.0) as usize;
 
+        let dphi = 2.0 * PI / (n_az_ring as f64);
         for a in 0..n_az_ring {
-            let phi = 2.0 * PI * (a as f64) / (n_az_ring as f64);
+            let phi = dphi * (a as f64);
             let (d1, d2) = match project_ring_pixel(poni, tth, phi) {
                 Some(p) => p,
                 None => continue,
@@ -3297,6 +3486,24 @@ fn extract_ring_peaks_2d_with_tangent(
             } else {
                 half_width_px
             };
+
+            // On spotty rings, lock this azimuthal sector onto its strongest
+            // unsaturated Bragg spot (preserving ~1 pick per sector); on smooth
+            // continuous rings, `try_lock_sector_spot` returns `None` and we
+            // fall through to the uniform sector-center ray.
+            if let Some((out_d1, out_d2)) = try_lock_sector_spot(
+                residual, noise, valid, dim1, dim2, poni, tth, phi, dphi, r_ring_px, w_eff, margin,
+            ) {
+                if ring_pts > 0
+                    && let (Some(&prev_d1), Some(&prev_d2)) = (pts.d1.last(), pts.d2.last())
+                    && (out_d1 - prev_d1).hypot(out_d2 - prev_d2) < 2.0
+                {
+                    continue;
+                }
+                pts.push(out_d1, out_d2, Some(ring_k));
+                ring_pts += 1;
+                continue;
+            }
             let w = w_eff as isize;
             // Only average along the straight tangent on rings with large enough
             // radius that sagittal curvature (td² / (2·r)) stays < 0.04 px.
@@ -3584,8 +3791,12 @@ fn iterative_2d_refine(
             break;
         }
         let geom = Geometry::new(dim1, dim2, current_poni.clone());
+        let mut mask = options.refine_mask;
+        // 2θ is invariant to rot3; never let rot3 drift from finite-difference
+        // noise during L-M refinement (rot3 is calibrated via polarization).
+        mask.rot3 = false;
         let refine_opts = CalibrationOptions {
-            mask: options.refine_mask,
+            mask,
             loss: Loss::Huber { c: huber_c },
             auto_assign_rings: false,
             assign_tolerance_rad: 0.05,
