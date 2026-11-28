@@ -1610,6 +1610,131 @@ fn add_bending_penalty(
     }
 }
 
+/// Add a weak gauge-fixing penalty on the 3 global rigid-body modes of the
+/// `SmoothSpline` control-point grid (mean `d1` translation, mean `d2`
+/// translation, and global rigid rotation) plus a mild discrete-curl floor
+/// `∂(δd₁)/∂d₂ − ∂(δd₂)/∂d₁`.
+///
+/// On a single centered exposure, observations only constrain the radial
+/// component `δ · r̂`: a global rigid rotation `(δd₁, δd₂) = α(x − x̄, −(y − ȳ))`
+/// has both zero radial component and zero second-difference bending energy, so
+/// without gauge fixing it can drift freely into a multi-pixel swirl. Purely
+/// radial optical fields have identically zero curl and zero projection onto
+/// the rotation mode, while the weights are kept mild enough that multi-exposure
+/// fits with shifted beam centers still recover real local twists and shears
+/// accurately.
+#[allow(clippy::too_many_arguments)]
+fn add_rigid_gauge_and_curl_penalty(
+    h: &mut [f64],
+    total_n: usize,
+    nx: usize,
+    ny: usize,
+    tx: &[f64],
+    ty: &[f64],
+    dim1: usize,
+    dim2: usize,
+    lambda: f64,
+) {
+    let n_surf = nx * ny;
+    let idx = |ix: usize, iy: usize| ix * ny + iy;
+
+    // Centered Greville abscissae for the clamped cubic B-spline control grid,
+    // scaled isotropically so aspect ratio is preserved for rigid rotation.
+    let gx: Vec<f64> = (0..nx)
+        .map(|ix| (tx[ix + 1] + tx[ix + 2] + tx[ix + 3]) / 3.0)
+        .collect();
+    let gy: Vec<f64> = (0..ny)
+        .map(|iy| (ty[iy + 1] + ty[iy + 2] + ty[iy + 3]) / 3.0)
+        .collect();
+    let x_mean = gx.iter().sum::<f64>() / (nx as f64);
+    let y_mean = gy.iter().sum::<f64>() / (ny as f64);
+    let scale = (0.5 * (dim1.max(dim2) as f64)).max(1.0);
+    let u: Vec<f64> = gx.iter().map(|&x| (x - x_mean) / scale).collect();
+    let v: Vec<f64> = gy.iter().map(|&y| (y - y_mean) / scale).collect();
+
+    // Rank-1 helper: H += weight * (vec ⊗ vec) where `vec` is unit-normalized.
+    let mut add_unit_mode = |mode: &[f64], weight: f64| {
+        let norm2: f64 = mode.iter().map(|&x| x * x).sum();
+        if norm2 <= 1e-24 || weight <= 0.0 {
+            return;
+        }
+        let scale_w = weight / norm2;
+        for i in 0..total_n {
+            let mi = mode[i];
+            if mi == 0.0 {
+                continue;
+            }
+            let row = i * total_n;
+            let wmi = scale_w * mi;
+            for j in 0..total_n {
+                let mj = mode[j];
+                if mj != 0.0 {
+                    h[row + j] += wmi * mj;
+                }
+            }
+        }
+    };
+
+    // 1 & 2. Weak mean-translation gauge: ∑ c_d1 = 0, ∑ c_d2 = 0.
+    let mut mode_ty = vec![0.0_f64; total_n];
+    let mut mode_tx = vec![0.0_f64; total_n];
+    // 3. Global rigid-rotation gauge: ∑ (u_i · c_d1 − v_j · c_d2) = 0.
+    let mut mode_rot = vec![0.0_f64; total_n];
+    for (ix, &ui) in u.iter().enumerate() {
+        for (iy, &vj) in v.iter().enumerate() {
+            let k = idx(ix, iy);
+            mode_ty[k] = 1.0;
+            mode_tx[n_surf + k] = 1.0;
+            mode_rot[k] = ui;
+            mode_rot[n_surf + k] = -vj;
+        }
+    }
+    let w_trans = (0.5 * lambda).max(1e-3);
+    let w_rot = (10.0 * lambda).max(1e-1);
+    add_unit_mode(&mode_ty, w_trans);
+    add_unit_mode(&mode_tx, w_trans);
+    add_unit_mode(&mode_rot, w_rot);
+
+    // 4. Mild discrete curl floor on each grid cell:
+    //    ω = ∂(δd₁)/∂d₂ − ∂(δd₂)/∂d₁ ≈ 0.
+    //    Identically zero for all purely radial distortion fields, suppresses
+    //    higher-order tangential nullspace swirl on single-exposure grids.
+    let dx = (dim2 as f64) / ((nx - 1).max(1) as f64);
+    let dy = (dim1 as f64) / ((ny - 1).max(1) as f64);
+    let h_avg = 0.5 * (dx + dy);
+    let ax = 0.5 * h_avg / dx.max(1e-9);
+    let ay = 0.5 * h_avg / dy.max(1e-9);
+    let w_curl = (0.01 * lambda).max(1e-5);
+
+    for ix in 0..nx.saturating_sub(1) {
+        for iy in 0..ny.saturating_sub(1) {
+            let k00 = idx(ix, iy);
+            let k10 = idx(ix + 1, iy);
+            let k01 = idx(ix, iy + 1);
+            let k11 = idx(ix + 1, iy + 1);
+            let terms = [
+                // +∂(δd₁)/∂d₂
+                (k00, -ax),
+                (k01, -ax),
+                (k10, ax),
+                (k11, ax),
+                // −∂(δd₂)/∂d₁
+                (n_surf + k00, ay),
+                (n_surf + k10, ay),
+                (n_surf + k01, -ay),
+                (n_surf + k11, -ay),
+            ];
+            for &(i, ci) in &terms {
+                let row = i * total_n;
+                let wci = w_curl * ci;
+                for &(j, cj) in &terms {
+                    h[row + j] += wci * cj;
+                }
+            }
+        }
+    }
+}
+
 fn fit_smooth_spline(
     obs: &[ObsPoint],
     dim1: usize,
@@ -1659,6 +1784,7 @@ fn fit_smooth_spline(
     let mut penalty = vec![0.0_f64; total_n * total_n];
     add_bending_penalty(&mut penalty, total_n, 0, nx, ny, lambda);
     add_bending_penalty(&mut penalty, total_n, n_surf, nx, ny, lambda);
+    add_rigid_gauge_and_curl_penalty(&mut penalty, total_n, nx, ny, &tx, &ty, dim1, dim2, lambda);
 
     let coeffs = solve_huber_irls_sparse(&sparse_rows, &rhs, total_n, &penalty, huber_c_px)?;
 
@@ -2630,5 +2756,262 @@ mod tests {
             "CV RMS too large: {:.3} px",
             res.distortion.cv_rms_px
         );
+    }
+
+    #[test]
+    fn smooth_spline_suppresses_rigid_rotation_nullspace_while_preserving_real_twist() {
+        let cal = Calibrant::from_d_file("test_data/calibrants/CeO2.D").expect("load CeO2");
+        let dim1 = 1024usize;
+        let dim2 = 1024usize;
+        let mut p = make_test_poni();
+        p.poni1 = 512.0 * p.pixel1;
+        p.poni2 = 512.0 * p.pixel2;
+        p.rot1 = 1.2_f64.to_radians();
+        p.rot2 = -0.9_f64.to_radians();
+
+        // 1. Single centered exposure with pure radial pincushion distortion + small noise:
+        //    SmoothSpline at grid=10 and grid=16 must have near-zero net rigid rotation
+        //    and near-zero mean curl (|mean_curl * R| << max |δ|).
+        let r_scale = 512.0;
+        let distort_radial = |d1: f64, d2: f64| -> (f64, f64, f64) {
+            let dy = d1 - 512.0;
+            let dx = d2 - 512.0;
+            let r = dy.hypot(dx).max(1e-6);
+            let rho = r / r_scale;
+            let dr = 3.5 * rho.powi(3) - 0.8 * rho.powi(5);
+            (dr * dy / r, dr * dx / r, 0.0)
+        };
+        let mut pts = sample_ring_points_with_distortion(&p, &cal, dim1, dim2, distort_radial);
+        // Add deterministic ~0.08 px measurement noise to excite any nullspace mode.
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        for i in 0..pts.len() {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let u1 = ((seed >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let u2 = ((seed >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
+            pts.d1[i] += 0.15 * u1;
+            pts.d2[i] += 0.15 * u2;
+        }
+
+        for grid in [10usize, 16usize] {
+            let res = estimate_distortion(
+                &pts,
+                dim1,
+                dim2,
+                &p,
+                &cal,
+                &DistortionOptions {
+                    model: DistortionModel::SmoothSpline {
+                        grid_nx: grid,
+                        grid_ny: grid,
+                        smoothness: 1.0,
+                    },
+                    refine_poni: true,
+                    ..Default::default()
+                },
+            )
+            .expect("SmoothSpline single centered radial fit");
+
+            assert!(res.significant);
+            assert!(
+                res.rms_after_px < 0.12,
+                "grid={grid}: expected rms_after_px < 0.12, got {:.4}",
+                res.rms_after_px
+            );
+
+            // Measure max |δ|, mean curl (∂δd₁/∂d₂ - ∂δd₂/∂d₁), and net rigid rotation
+            // amplitude across the interior.
+            let mut max_disp = 0.0_f64;
+            let mut curl_sum = 0.0_f64;
+            let mut rot_num = 0.0_f64;
+            let mut rot_den = 0.0_f64;
+            let mut cnt = 0usize;
+            let h = 4.0;
+            for gr in 0..16 {
+                let d1 = 96.0 + (gr as f64) * (832.0 / 15.0);
+                let dy = d1 - 512.0;
+                for gc in 0..16 {
+                    let d2 = 96.0 + (gc as f64) * (832.0 / 15.0);
+                    let dx = d2 - 512.0;
+                    let (dd1, dd2) = res.field.displacement_px(d1, d2);
+                    max_disp = max_disp.max(dd1.hypot(dd2));
+                    rot_num += dx * dd1 - dy * dd2;
+                    rot_den += dx * dx + dy * dy;
+                    let (p_x1, _) = res.field.displacement_px(d1, d2 + h);
+                    let (m_x1, _) = res.field.displacement_px(d1, d2 - h);
+                    let (_, p_y2) = res.field.displacement_px(d1 + h, d2);
+                    let (_, m_y2) = res.field.displacement_px(d1 - h, d2);
+                    let curl = (p_x1 - m_x1) / (2.0 * h) - (p_y2 - m_y2) / (2.0 * h);
+                    curl_sum += curl;
+                    cnt += 1;
+                }
+            }
+            let mean_curl_px = (curl_sum / cnt as f64).abs() * r_scale;
+            let net_rot_px = (rot_num / rot_den).abs() * r_scale;
+            assert!(
+                max_disp > 1.5,
+                "grid={grid}: expected real radial field (max |δ| > 1.5 px), got {max_disp:.3}"
+            );
+            assert!(
+                mean_curl_px < 0.05 * max_disp,
+                "grid={grid}: spurious curl swirl too large: |mean curl|*R = {mean_curl_px:.4} px vs max |δ| = {max_disp:.3} px"
+            );
+            assert!(
+                net_rot_px < 0.02 * max_disp,
+                "grid={grid}: spurious net rigid rotation too large: {net_rot_px:.4} px vs max |δ| = {max_disp:.3} px"
+            );
+        }
+
+        // 2. Multi-exposure fit with a real non-uniform twist + shear across shifted
+        //    beam centers must still recover both (δd₁, δd₂) accurately.
+        let distort_twist = |d1: f64, d2: f64| -> (f64, f64, f64) {
+            let y = (d1 - 512.0) / 512.0;
+            let x = (d2 - 512.0) / 512.0;
+            let r2 = x * x + y * y;
+            // Non-uniform radial-dependent twist (zero mean rigid rotation) + shear:
+            let swirl = 2.0 * (r2 - 0.5);
+            let dd1 = swirl * x + 1.5 * x * y;
+            let dd2 = -swirl * y + 1.2 * (x * x - y * y);
+            (dd1, dd2, 0.0)
+        };
+        let mut p1 = make_test_poni();
+        p1.poni1 = 350.0 * p1.pixel1;
+        p1.poni2 = 370.0 * p1.pixel2;
+        let mut p2 = make_test_poni();
+        p2.poni1 = 680.0 * p2.pixel1;
+        p2.poni2 = 390.0 * p2.pixel2;
+        let mut p3 = make_test_poni();
+        p3.poni1 = 460.0 * p3.pixel1;
+        p3.poni2 = 690.0 * p3.pixel2;
+
+        let pts1 = sample_ring_points_with_distortion(&p1, &cal, dim1, dim2, distort_twist);
+        let pts2 = sample_ring_points_with_distortion(&p2, &cal, dim1, dim2, distort_twist);
+        let pts3 = sample_ring_points_with_distortion(&p3, &cal, dim1, dim2, distort_twist);
+        let obs = [
+            DistortionObservation {
+                points: &pts1,
+                poni: &p1,
+                calibrant: &cal,
+            },
+            DistortionObservation {
+                points: &pts2,
+                poni: &p2,
+                calibrant: &cal,
+            },
+            DistortionObservation {
+                points: &pts3,
+                poni: &p3,
+                calibrant: &cal,
+            },
+        ];
+        let res_multi = estimate_distortion_multi(
+            &obs,
+            dim1,
+            dim2,
+            &DistortionOptions {
+                model: DistortionModel::SmoothSpline {
+                    grid_nx: 10,
+                    grid_ny: 10,
+                    smoothness: 0.2,
+                },
+                refine_poni: false,
+                ..Default::default()
+            },
+        )
+        .expect("multi-exposure real twist SmoothSpline fit");
+
+        assert!(res_multi.significant);
+        assert!(
+            res_multi.rms_after_px < 0.12,
+            "multi-exposure twist rms_after_px={:.4}",
+            res_multi.rms_after_px
+        );
+        for &(r, c) in &[
+            (280.0, 280.0),
+            (740.0, 300.0),
+            (310.0, 730.0),
+            (720.0, 720.0),
+        ] {
+            let (est1, est2) = res_multi.field.displacement_px(r, c);
+            let (t1, t2, _) = distort_twist(r, c);
+            assert!(
+                (est1 - t1).abs() < 0.25 && (est2 - t2).abs() < 0.25,
+                "multi-exposure twist mismatch at ({r}, {c}): got ({est1:.3}, {est2:.3}), expected ({t1:.3}, {t2:.3})"
+            );
+        }
+
+        // 3. Real centered MarCCD dataset (LaB6_40keV_MarCCD, grid=10, smoothness=1.0):
+        //    must have near-zero net rigid rotation and near-zero mean curl instead of
+        //    drifting into a multi-pixel swirl.
+        if std::path::Path::new("test_data/LaB6_40keV_MarCCD.tif").exists() {
+            let frame =
+                crate::frame::Frame::from_tiff("test_data/LaB6_40keV_MarCCD.tif".to_string())
+                    .expect("load LaB6_40keV_MarCCD.tif");
+            let poni_mar = Poni::load("test_data/LaB6_40keV_MarCCD.poni")
+                .expect("load LaB6_40keV_MarCCD.poni");
+            let cal_lab6 = Calibrant::from_d_file("test_data/calibrants/LaB6_SRM660b.D")
+                .expect("load LaB6_SRM660b.D");
+            let mar_res = estimate_distortion_image(
+                &frame.data,
+                frame.dim1,
+                frame.dim2,
+                None,
+                &poni_mar,
+                &cal_lab6,
+                &DistortionImageOptions {
+                    distortion: DistortionOptions {
+                        model: DistortionModel::SmoothSpline {
+                            grid_nx: 10,
+                            grid_ny: 10,
+                            smoothness: 1.0,
+                        },
+                        refine_poni: true,
+                        ..Default::default()
+                    },
+                    n_passes: 2,
+                    ..Default::default()
+                },
+            )
+            .expect("LaB6_40keV_MarCCD SmoothSpline fit");
+
+            let r_half = 0.5 * (frame.dim1.max(frame.dim2) as f64);
+            let c1 = 0.5 * (frame.dim1 as f64);
+            let c2 = 0.5 * (frame.dim2 as f64);
+            let mut max_disp = 0.0_f64;
+            let mut curl_sum = 0.0_f64;
+            let mut rot_num = 0.0_f64;
+            let mut rot_den = 0.0_f64;
+            let mut cnt = 0usize;
+            let h = 4.0;
+            for gr in 0..16 {
+                let d1 = 0.15 * frame.dim1 as f64 + (gr as f64) * (0.70 * frame.dim1 as f64 / 15.0);
+                let dy = d1 - c1;
+                for gc in 0..16 {
+                    let d2 =
+                        0.15 * frame.dim2 as f64 + (gc as f64) * (0.70 * frame.dim2 as f64 / 15.0);
+                    let dx = d2 - c2;
+                    let (dd1, dd2) = mar_res.distortion.field.displacement_px(d1, d2);
+                    max_disp = max_disp.max(dd1.hypot(dd2));
+                    rot_num += dx * dd1 - dy * dd2;
+                    rot_den += dx * dx + dy * dy;
+                    let (p_x1, _) = mar_res.distortion.field.displacement_px(d1, d2 + h);
+                    let (m_x1, _) = mar_res.distortion.field.displacement_px(d1, d2 - h);
+                    let (_, p_y2) = mar_res.distortion.field.displacement_px(d1 + h, d2);
+                    let (_, m_y2) = mar_res.distortion.field.displacement_px(d1 - h, d2);
+                    curl_sum += (p_x1 - m_x1) / (2.0 * h) - (p_y2 - m_y2) / (2.0 * h);
+                    cnt += 1;
+                }
+            }
+            let mean_curl_px = (curl_sum / cnt as f64).abs() * r_half;
+            let net_rot_px = (rot_num / rot_den).abs() * r_half;
+            assert!(
+                net_rot_px < 0.05 && mean_curl_px < 0.15,
+                "LaB6_40keV_MarCCD drifted into rigid rotation / curl swirl: net_rot={net_rot_px:.4} px, |mean_curl|*R={mean_curl_px:.4} px (max|δ|={max_disp:.3} px)"
+            );
+        }
     }
 }
