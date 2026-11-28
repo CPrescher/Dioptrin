@@ -300,31 +300,36 @@ impl DistortionField {
                 surface_d1,
                 surface_d2,
             } => {
-                let grid = (dim1.max(dim2) as f64) / ((surface_d2.x.len() - 4).max(1) as f64);
-                Spline::from_surfaces(
-                    region,
-                    pixels_um,
-                    grid,
-                    surface_d2.clone(),
-                    surface_d1.clone(),
-                )
+                // Shift knots by +0.5 so `Detector::position` (which evaluates
+                // the spline at pixel centers `d + 0.5`) matches the pixel-index
+                // coordinates `d` used during fitting.
+                let shift_surface = |s: &Surface| Surface {
+                    x: s.x.iter().map(|&k| k + 0.5).collect(),
+                    y: s.y.iter().map(|&k| k + 0.5).collect(),
+                    coefficients: s.coefficients.clone(),
+                };
+                let sx = shift_surface(surface_d2);
+                let sy = shift_surface(surface_d1);
+                let grid = (dim1.max(dim2) as f64) / ((sx.x.len() - 4).max(1) as f64);
+                Spline::from_surfaces(region, pixels_um, grid, sx, sy)
             }
             Self::RadialOptical { .. } => {
                 // Project the smooth radial-optical field onto a 12×12 cubic
-                // B-spline grid via exact least-squares on a 32×32 sample grid.
+                // B-spline grid via exact least-squares on a 32×32 sample grid,
+                // shifted by +0.5 to match `Detector::position` pixel centers.
                 let nx = 12usize;
                 let ny = 12usize;
-                let tx = clamped_uniform_knots(0.0, dim2 as f64, nx);
-                let ty = clamped_uniform_knots(0.0, dim1 as f64, ny);
+                let tx = clamped_uniform_knots(0.5, dim2 as f64 + 0.5, nx);
+                let ty = clamped_uniform_knots(0.5, dim1 as f64 + 0.5, ny);
                 let mut xs = Vec::with_capacity(32 * 32);
                 let mut ys = Vec::with_capacity(32 * 32);
                 let mut d1_vals = Vec::with_capacity(32 * 32);
                 let mut d2_vals = Vec::with_capacity(32 * 32);
                 for ir in 0..32 {
-                    let y = (ir as f64 / 31.0) * dim1 as f64;
+                    let y = 0.5 + (ir as f64 / 31.0) * dim1 as f64;
                     for ic in 0..32 {
-                        let x = (ic as f64 / 31.0) * dim2 as f64;
-                        let (dd1, dd2) = self.displacement_px(y, x);
+                        let x = 0.5 + (ic as f64 / 31.0) * dim2 as f64;
+                        let (dd1, dd2) = self.displacement_px(y - 0.5, x - 0.5);
                         xs.push(x);
                         ys.push(y);
                         d1_vals.push(dd1);
@@ -386,6 +391,7 @@ impl DistortionField {
             Self::BowZ { .. } => {
                 // Precompute the (dim1 + 1) × (dim2 + 1) corner vertex grid in
                 // parallel so every interior corner is evaluated once instead of 4×.
+                // Shift by -0.5 to match pixel-index coordinates used in fitting.
                 let stride = dim2 + 1;
                 let grid: Vec<[f64; 3]> = (0..=dim1)
                     .into_par_iter()
@@ -393,7 +399,7 @@ impl DistortionField {
                         let rc = r as f64;
                         (0..=dim2).map(move |c| {
                             let cc = c as f64;
-                            let dz = self.dz_m(rc, cc);
+                            let dz = self.dz_m(rc - 0.5, cc - 0.5);
                             if let Some(b) = base {
                                 let p = b.position([dim1, dim2], rc, cc);
                                 [p[0] + dz, p[1], p[2]]
@@ -418,6 +424,9 @@ impl DistortionField {
                     })
                     .collect();
                 det.spline = None;
+                // `base.position` already applied `base.orientation`; reset to
+                // identity orientation (3) so corners are not flipped twice.
+                det.orientation = 3;
                 det.map = PixelMap::Corners {
                     shape: [dim1, dim2],
                     values: Arc::new(corners),
@@ -454,6 +463,7 @@ impl DistortionField {
                     })
                     .collect();
                 det.spline = None;
+                det.orientation = 3;
                 det.map = PixelMap::Corners {
                     shape: [dim1, dim2],
                     values: Arc::new(corners),
@@ -671,15 +681,25 @@ pub fn estimate_distortion_multi(
                 if active_per_obs[e].len() < 6 {
                     continue;
                 }
+                let tc = TrigonometricConstants::new(&cur_ponis[e]);
                 let mut shifted = CalibrationPoints::new();
                 for &i in &active_per_obs[e] {
-                    let (dd1, dd2) =
-                        field.displacement_px(obs_in.points.d1[i], obs_in.points.d2[i]);
-                    shifted.push(
-                        obs_in.points.d1[i] + dd1,
-                        obs_in.points.d2[i] + dd2,
-                        obs_in.points.ring[i],
-                    );
+                    let d1 = obs_in.points.d1[i];
+                    let d2 = obs_in.points.d2[i];
+                    let (mut dd1, mut dd2) = field.displacement_px(d1, d2);
+                    let dz = field.dz_m(d1, d2);
+                    if dz.abs() > 0.0 {
+                        let (g1, g2, gz) = tth_sensitivities(&cur_ponis[e], &tc, d1, d2);
+                        let g2_norm = g1 * g1 + g2 * g2;
+                        if g2_norm.is_finite() && g2_norm > 1e-24 {
+                            // Equivalent radial shift for out-of-plane dz so BowZ
+                            // and 3D PerModule also couple cleanly with PONI refine.
+                            let scale = (gz * dz) / g2_norm;
+                            dd1 += scale * g1;
+                            dd2 += scale * g2;
+                        }
+                    }
+                    shifted.push(d1 + dd1, d2 + dd2, obs_in.points.ring[i]);
                 }
                 let geom = Geometry::new(dim1, dim2, cur_ponis[e].clone());
                 if let Ok(res) = refine(&geom, &shifted, obs_in.calibrant, &cal_opts)
@@ -705,28 +725,22 @@ pub fn estimate_distortion_multi(
 
     // K-fold cross-validation stratified across all observations, reusing
     // precomputed sensitivities and running folds in parallel via Rayon.
-    let cv_rms_px = if options.cv_folds >= 2 && total_active >= options.cv_folds * 6 {
+    let (cv_rms_px, cv_ran) = if options.cv_folds >= 2 && total_active >= options.cv_folds * 6 {
         let k_folds = options.cv_folds;
         let all_obs = build_observations_multi(observations, &active_per_obs, &cur_ponis);
         let (sq_sum, n_cv): (f64, usize) = (0..k_folds)
             .into_par_iter()
             .map(|fold| {
                 let mut train_obs = Vec::with_capacity(all_obs.len());
-                let mut test_per_obs: Vec<Vec<usize>> = Vec::with_capacity(observations.len());
+                let mut test_per_obs: Vec<Vec<usize>> = vec![Vec::new(); observations.len()];
                 let mut test_total = 0usize;
-                let mut flat_pos = 0usize;
-                for active in &active_per_obs {
-                    let mut te = Vec::with_capacity(active.len() / k_folds + 1);
-                    for (pos, &idx) in active.iter().enumerate() {
-                        if pos % k_folds == fold {
-                            te.push(idx);
-                        } else if flat_pos < all_obs.len() {
-                            train_obs.push(all_obs[flat_pos]);
-                        }
-                        flat_pos += 1;
+                for (pos, &o) in all_obs.iter().enumerate() {
+                    if pos % k_folds == fold {
+                        test_per_obs[o.obs_idx].push(o.pt_idx);
+                        test_total += 1;
+                    } else {
+                        train_obs.push(o);
                     }
-                    test_total += te.len();
-                    test_per_obs.push(te);
                 }
                 if test_total == 0 {
                     return (0.0, 0);
@@ -753,15 +767,16 @@ pub fn estimate_distortion_multi(
             })
             .reduce(|| (0.0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         if n_cv > 0 {
-            (sq_sum / n_cv as f64).sqrt()
+            ((sq_sum / n_cv as f64).sqrt(), true)
         } else {
-            rms_after_px
+            (rms_after_px, false)
         }
     } else {
-        rms_after_px
+        (rms_after_px, false)
     };
 
-    let significant = cv_rms_px < 0.95 * rms_before_px && rms_after_px < rms_before_px;
+    // Only mark significant when out-of-sample CV actually ran and improved RMS.
+    let significant = cv_ran && cv_rms_px < 0.95 * rms_before_px && rms_after_px < rms_before_px;
     let module_offsets = match &field {
         DistortionField::PerModule { offsets, .. } => offsets.clone(),
         _ => Vec::new(),
@@ -865,6 +880,8 @@ fn evaluate_residuals_multi(
 
 #[derive(Clone, Copy)]
 struct ObsPoint {
+    obs_idx: usize,
+    pt_idx: usize,
     d1: f64,
     d2: f64,
     /// Unit radial sensitivity `(g1/|g|, g2/|g|)` in pixels⁻¹.
@@ -896,10 +913,12 @@ fn build_observations_multi(
             let pred = eval_tth_at(poni, &tc, d1, d2, 0.0);
             let (g1, g2, gz) = tth_sensitivities(poni, &tc, d1, d2);
             let g_norm = g1.hypot(g2);
-            if g_norm < 1e-12 {
+            if !g_norm.is_finite() || !gz.is_finite() || !pred.is_finite() || g_norm < 1e-12 {
                 continue;
             }
             obs.push(ObsPoint {
+                obs_idx: e,
+                pt_idx: i,
                 d1,
                 d2,
                 u1: g1 / g_norm,
@@ -1331,7 +1350,13 @@ fn module_index(
     n_mod_rows: usize,
     n_mod_cols: usize,
 ) -> Option<usize> {
-    if d1 < 0.0 || d2 < 0.0 || module_height == 0 || module_width == 0 {
+    if !d1.is_finite()
+        || !d2.is_finite()
+        || d1 < 0.0
+        || d2 < 0.0
+        || module_height == 0
+        || module_width == 0
+    {
         return None;
     }
     let pitch_r = module_height + gap_height;
@@ -1408,18 +1433,22 @@ fn fit_per_module(
         ));
     }
 
-    // Diagonal ridge + weak zero-mean gauge penalty across modules so the
-    // global PONI stays anchored.
+    // Diagonal ridge + weak zero-mean gauge penalty restricted to populated
+    // modules (so empty corner modules stay at exactly 0 instead of being
+    // pushed to −Σ_others).
     let reg = regularization.max(1e-6);
     let mut penalty = vec![0.0_f64; total_n * total_n];
     for i in 0..total_n {
         penalty[i * total_n + i] += reg;
     }
-    let gauge_w = 1.0 / (n_mods as f64);
-    for comp in 0..stride {
-        for m1 in 0..n_mods {
-            for m2 in 0..n_mods {
-                penalty[(m1 * stride + comp) * total_n + (m2 * stride + comp)] += gauge_w;
+    let populated: Vec<usize> = (0..n_mods).filter(|&m| counts[m] > 0).collect();
+    if populated.len() > 1 {
+        let gauge_w = 1.0 / (populated.len() as f64);
+        for comp in 0..stride {
+            for &m1 in &populated {
+                for &m2 in &populated {
+                    penalty[(m1 * stride + comp) * total_n + (m2 * stride + comp)] += gauge_w;
+                }
             }
         }
     }
@@ -1430,12 +1459,13 @@ fn fit_per_module(
         for mc in 0..n_mod_cols {
             let m = mr * n_mod_cols + mc;
             let base = m * stride;
+            let has_pts = counts[m] > 0;
             offsets.push(ModuleOffset {
                 row_index: mr,
                 col_index: mc,
-                dd1_px: coeffs[base],
-                dd2_px: coeffs[base + 1],
-                dz_m: if fit_z {
+                dd1_px: if has_pts { coeffs[base] } else { 0.0 },
+                dd2_px: if has_pts { coeffs[base + 1] } else { 0.0 },
+                dz_m: if has_pts && fit_z {
                     coeffs[base + 2] * Z_SCALE
                 } else {
                     0.0
@@ -1728,7 +1758,8 @@ mod tests {
             .to_spline(dim1, dim2, poni.pixel1, poni.pixel2)
             .expect("to_spline");
         let reparsed = Spline::parse(&sp.content).expect("Spline::parse round-trip");
-        let (dx_fit, dy_fit) = reparsed.displacement(850.0, 750.0);
+        // Detector::position evaluates the spline at pixel center (d2 + 0.5, d1 + 0.5)
+        let (dx_fit, dy_fit) = reparsed.displacement(850.5, 750.5);
         let (true_dd1, true_dd2, _) = distort(750.0, 850.0);
         assert!(
             (dy_fit - true_dd1).abs() < 0.05 && (dx_fit - true_dd2).abs() < 0.05,

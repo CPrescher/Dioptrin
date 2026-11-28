@@ -2478,6 +2478,8 @@ class DistortionResult:
     def displacement_px(self, d1: float, d2: float) -> Tuple[float, float]: ...
     def dz_m(self, d1: float, d2: float) -> float: ...
     def to_fit2d_spline(self) -> str: ...
+    def displacement_grid(self) -> Tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+    def dz_grid(self) -> NDArray[np.float64]: ...
 
 
 def estimate_distortion(
@@ -2489,7 +2491,7 @@ def estimate_distortion(
     max_order: int = 5,
     grid_nx: int = 8,
     grid_ny: int = 8,
-    smoothness: float = 1.0,
+    smoothness: Optional[float] = None,
     max_degree: int = 3,
     module_height: Optional[int] = None,
     module_width: Optional[int] = None,
@@ -2516,7 +2518,7 @@ def estimate_distortion_multi(
     max_order: int = 5,
     grid_nx: int = 8,
     grid_ny: int = 8,
-    smoothness: float = 1.0,
+    smoothness: Optional[float] = None,
     max_degree: int = 3,
     module_height: Optional[int] = None,
     module_width: Optional[int] = None,

@@ -1646,6 +1646,38 @@ impl PyDistortionResult {
             .map_err(PyValueError::new_err)?;
         Ok(sp.content)
     }
+    /// Evaluate `(dd1_px, dd2_px)` on the full `(dim1, dim2)` pixel grid.
+    fn displacement_grid<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (
+        Bound<'py, numpy::PyArray2<f64>>,
+        Bound<'py, numpy::PyArray2<f64>>,
+    ) {
+        let mut d1_arr = numpy::ndarray::Array2::<f64>::zeros((self.dim1, self.dim2));
+        let mut d2_arr = numpy::ndarray::Array2::<f64>::zeros((self.dim1, self.dim2));
+        for r in 0..self.dim1 {
+            for c in 0..self.dim2 {
+                let (a, b) = self.inner.field.displacement_px(r as f64, c as f64);
+                d1_arr[[r, c]] = a;
+                d2_arr[[r, c]] = b;
+            }
+        }
+        (
+            numpy::PyArray2::from_owned_array(py, d1_arr),
+            numpy::PyArray2::from_owned_array(py, d2_arr),
+        )
+    }
+    /// Evaluate out-of-plane `dz` (metres) on the full `(dim1, dim2)` pixel grid.
+    fn dz_grid<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray2<f64>> {
+        let mut dz_arr = numpy::ndarray::Array2::<f64>::zeros((self.dim1, self.dim2));
+        for r in 0..self.dim1 {
+            for c in 0..self.dim2 {
+                dz_arr[[r, c]] = self.inner.field.dz_m(r as f64, c as f64);
+            }
+        }
+        numpy::PyArray2::from_owned_array(py, dz_arr)
+    }
     fn __repr__(&self) -> String {
         format!(
             "DistortionResult(rms_px={:.3}->{:.3}, cv_rms_px={:.3}, max_disp={:.2}px, significant={}, n_pts={})",
@@ -1657,6 +1689,67 @@ impl PyDistortionResult {
             self.inner.n_points_used
         )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_distortion_model(
+    model: &str,
+    max_order: usize,
+    grid_nx: usize,
+    grid_ny: usize,
+    smoothness: Option<f64>,
+    max_degree: usize,
+    module_height: Option<usize>,
+    module_width: Option<usize>,
+    gap_height: usize,
+    gap_width: usize,
+    fit_z: bool,
+    regularization: f64,
+) -> PyResult<DistortionModel> {
+    match model.to_ascii_lowercase().as_str() {
+        "radial_optical" => Ok(DistortionModel::RadialOptical { max_order }),
+        "smooth_spline" => Ok(DistortionModel::SmoothSpline {
+            grid_nx,
+            grid_ny,
+            smoothness: smoothness.unwrap_or(1.0),
+        }),
+        "bow_z" => Ok(DistortionModel::BowZ {
+            max_degree,
+            smoothness: smoothness.unwrap_or(1e-3),
+        }),
+        "per_module" => {
+            let mh = module_height
+                .ok_or_else(|| PyValueError::new_err("per_module model requires module_height"))?;
+            let mw = module_width
+                .ok_or_else(|| PyValueError::new_err("per_module model requires module_width"))?;
+            Ok(DistortionModel::PerModule {
+                module_height: mh,
+                module_width: mw,
+                gap_height,
+                gap_width,
+                fit_z,
+                regularization,
+            })
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "invalid model {model:?}; expected 'smooth_spline', 'radial_optical', 'bow_z', or 'per_module'"
+        ))),
+    }
+}
+
+fn parse_distortion_mask(fix: Option<&Bound<'_, PyList>>) -> PyResult<ParamMask> {
+    let mut mask = DistortionOptions::default().refine_mask;
+    if let Some(list) = fix {
+        let user = parse_mask(Some(list))?;
+        mask.distance &= user.distance;
+        mask.poni1 &= user.poni1;
+        mask.poni2 &= user.poni2;
+        mask.rot1 &= user.rot1;
+        mask.rot2 &= user.rot2;
+        mask.rot3 = false;
+        mask.wavelength &= user.wavelength;
+    }
+    Ok(mask)
 }
 
 /// Estimate spatial detector distortion from calibration control points and a
@@ -1672,7 +1765,7 @@ impl PyDistortionResult {
     max_order=5,
     grid_nx=8,
     grid_ny=8,
-    smoothness=1.0,
+    smoothness=None,
     max_degree=3,
     module_height=None,
     module_width=None,
@@ -1696,7 +1789,7 @@ pub fn estimate_distortion_py(
     max_order: usize,
     grid_nx: usize,
     grid_ny: usize,
-    smoothness: f64,
+    smoothness: Option<f64>,
     max_degree: usize,
     module_height: Option<usize>,
     module_width: Option<usize>,
@@ -1720,42 +1813,21 @@ pub fn estimate_distortion_py(
         ));
     };
 
-    let model_enum = match model.to_ascii_lowercase().as_str() {
-        "radial_optical" => DistortionModel::RadialOptical { max_order },
-        "smooth_spline" => DistortionModel::SmoothSpline {
-            grid_nx,
-            grid_ny,
-            smoothness,
-        },
-        "bow_z" => DistortionModel::BowZ {
-            max_degree,
-            smoothness,
-        },
-        "per_module" => {
-            let mh = module_height
-                .ok_or_else(|| PyValueError::new_err("per_module model requires module_height"))?;
-            let mw = module_width
-                .ok_or_else(|| PyValueError::new_err("per_module model requires module_width"))?;
-            DistortionModel::PerModule {
-                module_height: mh,
-                module_width: mw,
-                gap_height,
-                gap_width,
-                fit_z,
-                regularization,
-            }
-        }
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "invalid model {model:?}; expected 'smooth_spline', 'radial_optical', 'bow_z', or 'per_module'"
-            )));
-        }
-    };
-
-    let refine_mask = match fix {
-        Some(list) => parse_mask(Some(list))?,
-        None => DistortionOptions::default().refine_mask,
-    };
+    let model_enum = parse_distortion_model(
+        model,
+        max_order,
+        grid_nx,
+        grid_ny,
+        smoothness,
+        max_degree,
+        module_height,
+        module_width,
+        gap_height,
+        gap_width,
+        fit_z,
+        regularization,
+    )?;
+    let refine_mask = parse_distortion_mask(fix)?;
 
     let opts = DistortionOptions {
         model: model_enum,
@@ -1803,7 +1875,7 @@ fn poni_to_py_dict<'py>(py: Python<'py>, p: &Poni) -> PyResult<Bound<'py, PyDict
     max_order=5,
     grid_nx=8,
     grid_ny=8,
-    smoothness=1.0,
+    smoothness=None,
     max_degree=3,
     module_height=None,
     module_width=None,
@@ -1825,7 +1897,7 @@ pub fn estimate_distortion_multi_py(
     max_order: usize,
     grid_nx: usize,
     grid_ny: usize,
-    smoothness: f64,
+    smoothness: Option<f64>,
     max_degree: usize,
     module_height: Option<usize>,
     module_width: Option<usize>,
@@ -1865,41 +1937,21 @@ pub fn estimate_distortion_multi_py(
         owned.push((pts_ref.inner.clone(), poni_val, cal_ref.inner.clone()));
     }
 
-    let model_enum = match model.to_ascii_lowercase().as_str() {
-        "radial_optical" => DistortionModel::RadialOptical { max_order },
-        "smooth_spline" => DistortionModel::SmoothSpline {
-            grid_nx,
-            grid_ny,
-            smoothness,
-        },
-        "bow_z" => DistortionModel::BowZ {
-            max_degree,
-            smoothness,
-        },
-        "per_module" => {
-            let mh = module_height
-                .ok_or_else(|| PyValueError::new_err("per_module model requires module_height"))?;
-            let mw = module_width
-                .ok_or_else(|| PyValueError::new_err("per_module model requires module_width"))?;
-            DistortionModel::PerModule {
-                module_height: mh,
-                module_width: mw,
-                gap_height,
-                gap_width,
-                fit_z,
-                regularization,
-            }
-        }
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "invalid model {model:?}; expected 'smooth_spline', 'radial_optical', 'bow_z', or 'per_module'"
-            )));
-        }
-    };
-    let refine_mask = match fix {
-        Some(list) => parse_mask(Some(list))?,
-        None => DistortionOptions::default().refine_mask,
-    };
+    let model_enum = parse_distortion_model(
+        model,
+        max_order,
+        grid_nx,
+        grid_ny,
+        smoothness,
+        max_degree,
+        module_height,
+        module_width,
+        gap_height,
+        gap_width,
+        fit_z,
+        regularization,
+    )?;
+    let refine_mask = parse_distortion_mask(fix)?;
     let opts = DistortionOptions {
         model: model_enum,
         huber_c_px,
