@@ -30,6 +30,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::detector::spline::{Spline, Surface, bspline_basis};
 use crate::detector::{Detector, PixelMap};
 use crate::geometry::Geometry;
@@ -381,45 +383,76 @@ impl DistortionField {
                 det.validate()?;
                 Ok(det)
             }
-            Self::BowZ { .. } | Self::PerModule { .. } => {
-                let mut corners = Vec::with_capacity(dim1 * dim2);
-                for r in 0..dim1 {
-                    for c in 0..dim2 {
-                        // Pixel corners ordered A(low,low), B(high,low), C(high,high), D(low,high)
-                        let r0 = r as f64;
-                        let c0 = c as f64;
-                        let r1 = r0 + 1.0;
-                        let c1 = c0 + 1.0;
-                        // For PerModule, evaluate offset at pixel center so all 4
-                        // corners of a pixel move rigidly with its module.
-                        let (dd1_c, dd2_c, dz_c) = if matches!(self, Self::PerModule { .. }) {
-                            let (a, b) = self.displacement_px(r0 + 0.5, c0 + 0.5);
-                            (a, b, self.dz_m(r0 + 0.5, c0 + 0.5))
-                        } else {
-                            (0.0, 0.0, 0.0)
-                        };
-                        let make_corner = |rc: f64, cc: f64| -> [f64; 3] {
-                            let (dd1, dd2, dz) = if matches!(self, Self::PerModule { .. }) {
-                                (dd1_c, dd2_c, dz_c)
-                            } else {
-                                let (a, b) = self.displacement_px(rc, cc);
-                                (a, b, self.dz_m(rc, cc))
-                            };
+            Self::BowZ { .. } => {
+                // Precompute the (dim1 + 1) × (dim2 + 1) corner vertex grid in
+                // parallel so every interior corner is evaluated once instead of 4×.
+                let stride = dim2 + 1;
+                let grid: Vec<[f64; 3]> = (0..=dim1)
+                    .into_par_iter()
+                    .flat_map_iter(|r| {
+                        let rc = r as f64;
+                        (0..=dim2).map(move |c| {
+                            let cc = c as f64;
+                            let dz = self.dz_m(rc, cc);
                             if let Some(b) = base {
                                 let p = b.position([dim1, dim2], rc, cc);
-                                [p[0] + dz, p[1] + dd1 * pixel1, p[2] + dd2 * pixel2]
+                                [p[0] + dz, p[1], p[2]]
                             } else {
-                                [dz, (rc + dd1) * pixel1, (cc + dd2) * pixel2]
+                                [dz, rc * pixel1, cc * pixel2]
                             }
-                        };
-                        corners.push([
-                            make_corner(r0, c0),
-                            make_corner(r1, c0),
-                            make_corner(r1, c1),
-                            make_corner(r0, c1),
-                        ]);
-                    }
-                }
+                        })
+                    })
+                    .collect();
+                let corners: Vec<[[f64; 3]; 4]> = (0..dim1)
+                    .into_par_iter()
+                    .flat_map_iter(|r| {
+                        let g = &grid;
+                        (0..dim2).map(move |c| {
+                            [
+                                g[r * stride + c],
+                                g[(r + 1) * stride + c],
+                                g[(r + 1) * stride + c + 1],
+                                g[r * stride + c + 1],
+                            ]
+                        })
+                    })
+                    .collect();
+                det.spline = None;
+                det.map = PixelMap::Corners {
+                    shape: [dim1, dim2],
+                    values: Arc::new(corners),
+                };
+                det.validate()?;
+                Ok(det)
+            }
+            Self::PerModule { .. } => {
+                let corners: Vec<[[f64; 3]; 4]> = (0..dim1)
+                    .into_par_iter()
+                    .flat_map_iter(|r| {
+                        let r0 = r as f64;
+                        let r1 = r0 + 1.0;
+                        (0..dim2).map(move |c| {
+                            let c0 = c as f64;
+                            let c1 = c0 + 1.0;
+                            let (dd1, dd2) = self.displacement_px(r0 + 0.5, c0 + 0.5);
+                            let dz = self.dz_m(r0 + 0.5, c0 + 0.5);
+                            let make_corner = |rc: f64, cc: f64| -> [f64; 3] {
+                                if let Some(b) = base {
+                                    let p = b.position([dim1, dim2], rc, cc);
+                                    [p[0] + dz, p[1] + dd1 * pixel1, p[2] + dd2 * pixel2]
+                                } else {
+                                    [dz, (rc + dd1) * pixel1, (cc + dd2) * pixel2]
+                                }
+                            };
+                            [
+                                make_corner(r0, c0),
+                                make_corner(r1, c0),
+                                make_corner(r1, c1),
+                                make_corner(r0, c1),
+                            ]
+                        })
+                    })
+                    .collect();
                 det.spline = None;
                 det.map = PixelMap::Corners {
                     shape: [dim1, dim2],
@@ -670,50 +703,55 @@ pub fn estimate_distortion_multi(
         }
     }
 
-    // K-fold cross-validation stratified across all observations.
+    // K-fold cross-validation stratified across all observations, reusing
+    // precomputed sensitivities and running folds in parallel via Rayon.
     let cv_rms_px = if options.cv_folds >= 2 && total_active >= options.cv_folds * 6 {
         let k_folds = options.cv_folds;
-        let mut sq_sum = 0.0;
-        let mut n_cv = 0usize;
-        for fold in 0..k_folds {
-            let mut train_per_obs: Vec<Vec<usize>> = Vec::with_capacity(observations.len());
-            let mut test_per_obs: Vec<Vec<usize>> = Vec::with_capacity(observations.len());
-            let mut test_total = 0usize;
-            for active in &active_per_obs {
-                let mut tr = Vec::with_capacity(active.len());
-                let mut te = Vec::with_capacity(active.len() / k_folds + 1);
-                for (pos, &idx) in active.iter().enumerate() {
-                    if pos % k_folds == fold {
-                        te.push(idx);
-                    } else {
-                        tr.push(idx);
+        let all_obs = build_observations_multi(observations, &active_per_obs, &cur_ponis);
+        let (sq_sum, n_cv): (f64, usize) = (0..k_folds)
+            .into_par_iter()
+            .map(|fold| {
+                let mut train_obs = Vec::with_capacity(all_obs.len());
+                let mut test_per_obs: Vec<Vec<usize>> = Vec::with_capacity(observations.len());
+                let mut test_total = 0usize;
+                let mut flat_pos = 0usize;
+                for active in &active_per_obs {
+                    let mut te = Vec::with_capacity(active.len() / k_folds + 1);
+                    for (pos, &idx) in active.iter().enumerate() {
+                        if pos % k_folds == fold {
+                            te.push(idx);
+                        } else if flat_pos < all_obs.len() {
+                            train_obs.push(all_obs[flat_pos]);
+                        }
+                        flat_pos += 1;
                     }
+                    test_total += te.len();
+                    test_per_obs.push(te);
                 }
-                test_total += te.len();
-                train_per_obs.push(tr);
-                test_per_obs.push(te);
-            }
-            if test_total > 0
-                && let Ok(fold_field) = fit_model_multi(
-                    observations,
-                    &train_per_obs,
+                if test_total == 0 {
+                    return (0.0, 0);
+                }
+                match fit_from_obs(
+                    &train_obs,
                     dim1,
                     dim2,
-                    &cur_ponis,
+                    &cur_ponis[0],
                     &options.model,
                     options.huber_c_px,
-                )
-            {
-                let (_, fold_rms_px, _) = evaluate_residuals_multi(
-                    observations,
-                    &test_per_obs,
-                    &cur_ponis,
-                    Some(&fold_field),
-                );
-                sq_sum += fold_rms_px * fold_rms_px * (test_total as f64);
-                n_cv += test_total;
-            }
-        }
+                ) {
+                    Ok(fold_field) => {
+                        let (_, fold_rms_px, _) = evaluate_residuals_multi(
+                            observations,
+                            &test_per_obs,
+                            &cur_ponis,
+                            Some(&fold_field),
+                        );
+                        (fold_rms_px * fold_rms_px * (test_total as f64), test_total)
+                    }
+                    Err(_) => (0.0, 0),
+                }
+            })
+            .reduce(|| (0.0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         if n_cv > 0 {
             (sq_sum / n_cv as f64).sqrt()
         } else {
@@ -825,6 +863,7 @@ fn evaluate_residuals_multi(
     ((sum_rad2 / n).sqrt(), (sum_px2 / n).sqrt(), per_point_px)
 }
 
+#[derive(Clone, Copy)]
 struct ObsPoint {
     d1: f64,
     d2: f64,
@@ -885,6 +924,17 @@ fn fit_model_multi(
     huber_c_px: f64,
 ) -> Result<DistortionField, DistortionError> {
     let obs = build_observations_multi(observations, active_per_obs, ponis);
+    fit_from_obs(&obs, dim1, dim2, &ponis[0], model, huber_c_px)
+}
+
+fn fit_from_obs(
+    obs: &[ObsPoint],
+    dim1: usize,
+    dim2: usize,
+    ref_poni: &Poni,
+    model: &DistortionModel,
+    huber_c_px: f64,
+) -> Result<DistortionField, DistortionError> {
     if obs.len() < 12 {
         return Err(DistortionError::InsufficientPoints(
             "too few valid observations".into(),
@@ -892,25 +942,17 @@ fn fit_model_multi(
     }
     match model {
         DistortionModel::RadialOptical { max_order } => {
-            fit_radial_optical(&obs, dim1, dim2, &ponis[0], *max_order, huber_c_px)
+            fit_radial_optical(obs, dim1, dim2, ref_poni, *max_order, huber_c_px)
         }
         DistortionModel::SmoothSpline {
             grid_nx,
             grid_ny,
             smoothness,
-        } => fit_smooth_spline(
-            &obs,
-            dim1,
-            dim2,
-            *grid_nx,
-            *grid_ny,
-            *smoothness,
-            huber_c_px,
-        ),
+        } => fit_smooth_spline(obs, dim1, dim2, *grid_nx, *grid_ny, *smoothness, huber_c_px),
         DistortionModel::BowZ {
             max_degree,
             smoothness,
-        } => fit_bow_z(&obs, dim1, dim2, *max_degree, *smoothness, huber_c_px),
+        } => fit_bow_z(obs, dim1, dim2, *max_degree, *smoothness, huber_c_px),
         DistortionModel::PerModule {
             module_height,
             module_width,
@@ -919,7 +961,7 @@ fn fit_model_multi(
             fit_z,
             regularization,
         } => fit_per_module(
-            &obs,
+            obs,
             dim1,
             dim2,
             *module_height,
@@ -1448,8 +1490,9 @@ fn solve_huber_irls_dense(
             for i in 0..n {
                 let wi = w * row[i];
                 g[i] += wi * y;
-                for j in 0..n {
-                    h[i * n + j] += wi * row[j];
+                let row_off = i * n;
+                for j in 0..=i {
+                    h[row_off + j] += wi * row[j];
                 }
             }
         }
@@ -1493,8 +1536,11 @@ fn solve_huber_irls_sparse(
             for &(i, ai) in row {
                 let wi = w * ai;
                 g[i] += wi * y;
+                let row_off = i * n;
                 for &(j, aj) in row {
-                    h[i * n + j] += wi * aj;
+                    if j <= i {
+                        h[row_off + j] += wi * aj;
+                    }
                 }
             }
         }
