@@ -5,6 +5,28 @@ All notable changes to Dioptrin are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-11-28
+
+### Added
+
+- **Per-sector unsaturated Bragg-spot locking** in `extract_ring_peaks_2d_with_tangent`
+  (used by `extract_ring_peaks`, `refine_image`, and `auto_calibrate_image`):
+  within each azimuthal sector (`±0.43·Δφ`), scans along the ring arc via a
+  zero-trig, stack-only circular-arc expansion for standout unsaturated Bragg
+  spots (`≥ 5σ` and `> 3.0 × sector median`, rejecting 1-px zingers and
+  saturated cores/halos) and snaps the sector's pick onto the spot's 2D
+  sub-pixel center while preserving ~1 pick per sector and uniform spacing on
+  smooth continuous rings.
+
+### Fixed
+
+- **Unconditionally lock `rot3` during `2θ` L-M refinement in `auto_calibrate_image`**:
+  `auto_calibrate_image_with_progress` now forces `refine_mask.rot3 = false`
+  before `2θ` Levenberg–Marquardt refinement (matching `refine_image`),
+  preventing random `rot3` drift and L-M instability on strip detectors such as
+  `ceo2_side` when a caller leaves `rot3` unlocked. `rot3` is now only updated
+  by post-refinement `calibrate_rot3_polarization` when `reliable == true`.
+
 ## [0.19.0] - 2026-11-27
 
 ### Added
